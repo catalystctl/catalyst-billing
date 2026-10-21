@@ -221,29 +221,148 @@ Acceptance scenarios covered by tests, by plan number:
 
 ## Not implemented
 
-Listed so nobody assumes otherwise:
+### The web UI gate
 
-- **Web UI.** No rendered frontend, no design system, no components. The customer
-  portal and the operator overview exist as JSON APIs; the browser UI does not.
-- **Self-service registration, email verification, MFA, passkeys, API keys.**
-  Password login, server-side sessions, CSRF and role-based authorization exist;
-  the rest does not. Staff accounts are created by `billing admin create-user`.
-- **Refunds, credit notes, disputes, partial-payment allocation across invoices.**
-  The schema has the tables and the bounds are enforced; the flows are not built.
-- **Off-session charging.** Requires recorded consent and a reusable method; the
-  v1 protocol has no charge method, so dunning escalates instead of charging.
-- **Paymenter import.** No importer, no dry run.
-- **Stripe.** Only the fake gateway is wired. The `HMACSigner` implements a
-  Stripe-shaped signature scheme, but no Stripe adapter has been exercised against
-  the real API.
+The web UI is the last thing to build, not the first. The current server exposes
+**14 routes**: 5 customer reads, 1 customer mutation, 3 auth, 2 ops, 1 webhook and
+2 health checks. There is no staff read surface and no staff write surface at all,
+so most of the operator screens would have nothing to call. Building the frontend
+first means inventing the API in the frontend, which is the expensive way to
+discover it was wrong.
+
+Two kinds of gate are listed below:
+
+- **Hard** — the screen cannot be written at all without it. A list screen with no
+  list endpoint has nothing to render.
+- **Soft** — the screen can be written, but it cannot ship. Shipping it would
+  either be unsafe or would have to be rewritten.
+
+#### Suggested order
+
+| Step | Do | Why this position |
+|---|---|---|
+| 1 | **Gate E contracts** (OpenAPI, pagination, idempotency keys, error envelope, operation resource) | Cheapest while there are 14 routes; at 40 it means editing all 40. Pagination is already missing on a live endpoint, so it is also a fix, not only a convention. |
+| 2 | **Audit log from Gate F** | Every mutation added later must write to it. Retrofitting it after the money actions exist means auditing the actions twice. |
+| 3 | **Gate A staff reads** | The operator workspace is the largest screen set, and every other screen links from it. |
+| 4 | **Gate B staff writes** | Actions need the read surface to hang off, and the audit log to record them. |
+| 5 | **Gate D money actions** | Refund and credit note need the write surface, the audit log, and dual approval — all three exist by now. |
+| 6 | **Gate C account lifecycle** (parallel track) | Independent of the staff surface. Start it alongside step 3 if a second person is free, because password reset is the first thing a real user needs. |
+| 7 | **Gate G serving** | Trivial, and nothing can be demoed in a browser before it. |
+
+#### Gate A — API surface the screens call (hard)
+
+| Missing | Why the UI cannot start | Done when |
+|---|---|---|
+| Staff customer list, detail and search | The customer workspace joins billing, services, support and audit; none of it is reachable | `GET /api/v1/staff/customers` with filter, sort and cursor; detail returns the joined view |
+| Staff invoice list and detail, all customers | Operator billing screen has no source | Same shape as the portal endpoints, scoped by permission rather than by customer |
+| Staff service list and detail | The services screen and every action button need it | Includes current operation state and the last failure reason |
+| Staff order and checkout list | Orders exist in the schema and are invisible | Order detail shows the price snapshot and the resulting invoice |
+| Staff payment attempt and payment history | Support cannot answer "did they pay?" without it | Attempts with provider refs, status, and the allocation each payment produced |
+| Operation and job queue view | The plan's "unknown remote operation" exception links nowhere | `GET /api/v1/staff/operations` filtered by status, with the last error |
+| Catalog read (products, price versions) | Checkout and the price editor need it | Versioned list; edits create a new version, never mutate |
+| Checkout session creation over HTTP | `internal/checkout` is implemented and unreachable — the customer "Pay" button has no endpoint | `POST /api/v1/portal/invoices/{id}/checkout` returns the redirect URL and the exact amount |
+
+#### Gate B — mutations the screens offer (hard)
+
+| Missing | Why | Done when |
+|---|---|---|
+| Staff service actions (suspend, resume, terminate) | Dunning can enqueue them; a human cannot | Enqueues an operation with the current generation, and the response states the consequence |
+| Dunning hold create and clear | The recovery procedure in `docs/operations.md` requires a UI or a CLI | Both, and the hold is visible on the customer |
+| Manual invoice issue and void | Operator escape hatch; `billing admin issue-invoice` exists, so the API is a thin wrapper | Same domain code as the CLI, no shortcut |
+| Billing profile write | A customer cannot correct their own address or tax id | Validated, snapshotted on the next invoice |
+
+#### Gate C — account lifecycle the login screen assumes (soft)
+
+| Missing | Why it blocks shipping | Done when |
+|---|---|---|
+| Password reset | A login page without it generates a support ticket per forgotten password | One-use, expiring, hashed token; non-enumerating response; throttled |
+| Email verification flow | The `email_verified_at` column exists and nothing sets it | Token plus a verification screen |
+| **Notification delivery (SMTP)** | Reset, verification and dunning reminders all need it; no notifications module exists | A delivery interface with a recorded attempt per message, so "we never sent it" is answerable |
+| MFA enrolment (TOTP) | The plan requires mandatory staff MFA before production | Enrolment, recovery codes, and a second step in login |
+| API key create and revoke | Required before automation exists; also the first screen that shows a secret exactly once | Hashed, scoped, expiring, shown once |
+
+MFA and registration can be sequenced **after** the first operator screens if the
+panel stays on loopback. They are gates before it is reachable from the internet,
+not before the first screen is written.
+
+#### Gate D — money actions the UI must not offer without (hard)
+
+| Missing | Why it blocks the UI | Done when |
+|---|---|---|
+| Refund flow | The table exists and nothing can create a refund. A UI with a disabled refund button is worse than no button | Provider call, `unknown` outcome handled like provisioning, allocation and posting in one transaction |
+| Credit note | The plan's correction path for an issued invoice; without it a wrong invoice can only be voided | Immutable document, linked to the invoice it corrects |
+| Customer credit application | Refunds and overpayments have nowhere to land | Credit is a subledger account, applied by an explicit action, never silently |
+| Dual approval for high-value refunds and termination batches | The plan requires it, and it is a UI flow as much as a policy | An approval record that names both actors |
+
+#### Gate E — contracts that are cheap now and expensive later (hard)
+
+These are not screens. They are the things that, if retrofitted after 30 endpoints
+exist, mean touching all 30.
+
+| Missing | Why now | Done when |
+|---|---|---|
+| **OpenAPI document** | The plan requires it; without it the frontend hand-writes types and they drift silently | Generated from the handlers, checked in CI, and a typed client built from it |
+| **Pagination on every list** | `internal/portal` currently returns every invoice a customer has. A UI built against that breaks at scale, not in review | Cursor-based, with a documented default and maximum page size |
+| **Scoped idempotency keys on mutations** | Plan §10 requires them. A UI retries on a flaky network; without this a retry refunds twice | Key bound to principal, route and request digest; reuse with different input fails |
+| **Uniform error contract** | `problem+json` exists on some paths; a UI needs one shape to render | Every error path returns the same envelope with a stable `code` |
+| **Operation resource for long actions** | Plan §10: a long action returns an operation, not a held connection | The action returns `202` plus an operation URL |
+| **SSE for job and service updates** | Plan §4. Otherwise the provisioning screen is a poll loop and the operator sees stale state | One endpoint streaming committed state changes |
+
+#### Gate F — the trust surface the operator workspace renders (soft)
+
+| Missing | Why | Done when |
+|---|---|---|
+| **Application audit log** | Only `auth_events` exists. Plan §8 requires actor, action, target, correlation and redacted changes for *every* staff action | Append-only table written by the domain services, not by handlers |
+| Request rate limiting per principal | Throttling covers login only; a UI invites bulk actions | Bounded requests per principal per window, with a documented limit |
+| Staff permission enforcement on every new route | Permissions exist and are enforced on 7 routes, but all of them are customer-facing or reporting — there are no staff routes yet to protect | Every staff route carries `requirePermission`, and a test enumerates the routes to prove none is missing one |
+
+#### Gate G — serving the UI (soft, last)
+
+| Missing | Why | Done when |
+|---|---|---|
+| Static asset serving and embed | Plan §4: embed the built frontend in the binary | `billing serve` serves the SPA with a strict CSP, hashed asset names, and no directory listing |
+| CSP and security headers | User and extension content is rendered in an authenticated origin | Documented policy, applied by the static handler, verified in a browser test |
+
+### Definition of ready for the web UI
+
+Start the frontend when all of these are true:
+
+1. Every screen in the plan's §9 navigation has a documented endpoint, and that
+   endpoint exists.
+2. `GET /api/v1/auth/me` returns the permissions the UI uses to hide actions, and a
+   hidden action is also refused by the server.
+3. Every list is paginated; every mutation takes an idempotency key; every error
+   has a stable code.
+4. OpenAPI is checked in and a typed client is generated from it in CI.
+5. A refund, a credit note and a termination all have a tested path that ends in a
+   balanced ledger.
+6. Password reset and email verification work end to end, so the login screen is
+   not a dead end.
+
+### Deferred beyond v1
+
+Safe to build the UI without, and listed so nobody assumes otherwise:
+
 - **River queue.** Jobs are a ticker over idempotent batches, which is sufficient
   and safe; River would add prioritisation and per-job retry state.
 - **A sandboxed extension runner.** Extensions are fully trusted operator code; see
   `docs/extensions.md` for exactly what the host enforces and what it does not.
+  Extension *installation* UI is deferred with it.
+- **Off-session charging.** Requires recorded consent and a reusable method; the v1
+  protocol has no charge method, so dunning escalates instead of charging. The UI
+  offers "pay now" instead.
+- **Paymenter import.** No importer, no dry run. Import has no UI in v1.
+- **Stripe.** Only the fake gateway is wired. The `HMACSigner` implements a
+  Stripe-shaped signature scheme, but no Stripe adapter has been exercised against
+  the real API. The UI is gateway-agnostic, so this does not block it.
 - **Tax engine.** One explicitly configured rate per installation, inclusive or
   exclusive, recorded as evidence. No jurisdiction logic, no registration, no
-  filing.
+  filing. Settings shows the configured rate as read-only evidence.
+- **Support tickets and attachments.** Plan v1 includes lightweight tickets; they
+  are a real screen set and are the one plan feature that needs its own design
+  before the API.
 - **Multi-tenancy, resellers, FX, usage billing, a general ledger.**
+- **A design system.** Not a backend gate: the frontend work begins with it.
 
 ---
 

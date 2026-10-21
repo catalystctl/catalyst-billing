@@ -41,11 +41,16 @@ if [[ -z "$BASE" ]]; then
     . ./.env
     set +a
   fi
-  PORT="${SMOKE_PORT:-18099}"
-  # A port that is already in use would make every assertion test somebody else's server, so it is
-  # checked rather than assumed free.
-  if (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then
-    fail "port $PORT is already in use; set SMOKE_PORT to a free port"
+  # The port is chosen by asking the kernel for a free one, unless the caller pinned it. A fixed
+  # default is a fixed collision: this host already had another service on the obvious choice, and a
+  # busy port would silently test somebody else's server.
+  if [[ -n "${SMOKE_PORT:-}" ]]; then
+    PORT="$SMOKE_PORT"
+    if (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then
+      fail "port $PORT is already in use; set SMOKE_PORT to a free port"
+    fi
+  else
+    PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
   fi
   BASE="http://127.0.0.1:${PORT}"
 

@@ -105,7 +105,7 @@ client-check: openapi-check
 	go build ./api/client/...
 
 smoke: build
-	SMOKE_PORT=$${SMOKE_PORT:-18099} bash scripts/browser-smoke.sh
+	bash scripts/browser-smoke.sh
 
 clean:
 	rm -rf bin

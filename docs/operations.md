@@ -1,0 +1,137 @@
+# Operations
+
+Everything an operator needs to run this, and the things that will bite if ignored.
+
+## Deploying
+
+One binary, three roles. A small installation runs `serve` and `worker` in one
+process (`--embedded-worker`); a larger one runs the same binary in separate units.
+
+```bash
+billing migrate          # needs the owner role; the runtime role cannot DDL
+billing doctor           # fails non-zero on any problem; run it in your deploy script
+billing serve            # HTTP
+billing worker           # background jobs
+```
+
+`billing doctor` checks connectivity, schema currency, that the runtime role cannot
+create schema objects, that the ledger balances, the webhook backlog, and that each
+configured extension starts and completes its handshake. A deploy that skips it will
+find the same problems from a support ticket instead.
+
+## The two roles
+
+| Role | May | Used by |
+|---|---|---|
+| owner (e.g. `billing`) | DDL, migrations | `billing migrate`, `billing admin` |
+| runtime (`billing_app`) | SELECT/INSERT/UPDATE/DELETE, sequences | `billing serve`, `billing worker` |
+
+`billing doctor` fails if the runtime URL can create schema objects. That is the
+check that turns "a bug could drop a table" into "a bug gets a permission error".
+
+## Background jobs
+
+Each job is a bounded batch that derives its work from persisted state, so running
+it twice or running two workers is safe. Intervals are deliberately short: the
+work is cheap when there is nothing to do.
+
+| Job | Interval | What it does | Kill switch |
+|---|---|---|---|
+| payments | 5s | inbox → authoritative re-query → applied payment | `BILLING_DISABLE_PAYMENTS` |
+| provisioning | 5s | reaps expired leases, executes operations, reconciles unknowns | `BILLING_DISABLE_PROVISIONING` |
+| dunning | 60s | escalates overdue invoices, resumes paid ones, decides suspensions | `BILLING_DISABLE_SUSPENSION` |
+| renewals | 60s | invoices due subscriptions | — |
+| retention | 6h | deletes bookkeeping rows past their policy | — |
+
+The kill switches are the emergency brake: a misbehaving gateway or provisioner can
+be stopped without a deploy. Stopping provisioning does not lose work — the
+operations stay queued and are picked up when the switch is cleared.
+
+## What to watch
+
+The operator overview (`GET /api/v1/ops/overview`) is the first page to open, and its
+exception list is ordered by what it costs to ignore:
+
+| Code | Severity | Meaning | What to do |
+|---|---|---|---|
+| `paid_not_provisioned` | critical | the customer paid and has nothing | inspect the operation; requeue or provision manually and record the external id |
+| `unknown_operations` | critical | a remote call's outcome is not known | reconcile against the provider, then mark it; never retry blindly |
+| `ledger_imbalance` | critical | the subledger does not sum to zero | stop and investigate; this is a defect, not a queue |
+| `overdue_invoices` | warning | open past the due date | let dunning run or chase |
+| `stalled_webhooks` | warning | events unprocessed for over ten minutes | check the worker and the gateway extension |
+| `failed_operations` | warning | provisioning exhausted its retries | read the last error, fix the cause, requeue with the same key |
+| `renewals_needing_review` | info | catch-up billing was withheld | review before billing |
+| `suspensions_withheld` | info | automation declined to suspend | check the reason: a hold, a fresh payment, a policy limit |
+
+`counts.available: false` means a count query failed. It is deliberately not reported
+as zero: a broken database that looks like an empty one is the most misleading
+dashboard state there is.
+
+`GET /metrics` exposes webhook counters and uptime in Prometheus format. Both
+endpoints require a staff session.
+
+## Recovery procedures
+
+**A worker died mid-call.** The operation stays `running` with an expired lease. The
+claim query treats an expired lease as claimable, so the next tick recovers it; the
+`provisioning` job also calls `Reap`, which records why it acted. The retry reuses
+the same operation key, and reconciliation uses `provisioner.lookup` rather than
+replaying create, so the customer does not get a second server.
+
+**A webhook arrived but was never processed.** It is still in `gateway_events` with
+`processed_at` null and `last_error` set. Nothing was lost. Fix the cause and the
+next tick processes it; the payment is idempotent on the provider payment id, so
+reprocessing cannot double-credit.
+
+**The ledger does not balance.** This is always a defect. Every posting is
+append-only, so the cause is findable: compare `journal_transactions` against the
+documents they reference. Do not "fix" it with an adjustment until you know what
+happened.
+
+**A customer was suspended wrongly.** Check `suspension_decisions` for the reason and
+the generation at decision time. Place a hold (`service_holds`) so automation does not
+act again, correct the cause, then resume. A hold outranks every automated rule.
+
+**An extension is crash-looping.** It is disabled after repeated failures, and
+`billing doctor` reports why it will not start. Payments and provisioning stay
+queued; nothing is lost, and nothing is retried blindly.
+
+## Backup and restore
+
+Back up together, or the restore is not a restore:
+
+1. PostgreSQL — use point-in-time recovery, not only nightly dumps. A dump loses
+   every payment since it was taken.
+2. The extension configuration and any secrets the core holds.
+3. The encryption keys used for gateway credentials, stored separately from the
+   database backup. A backup containing both is a plaintext credential store.
+
+After a restore, expect the world to have moved: payments may have settled, servers
+may have been created or destroyed. Reconcile before enabling workers — the
+`unknown_operations` and `stalled_webhooks` exceptions are exactly what surfaces the
+divergence.
+
+## Scaling notes
+
+- Payment, provisioning and notification throughput is governed by the provider's
+  rate limits, not by the panel. More workers do not buy more charges.
+- The renewal scanner is an index scan on `subscriptions (next_billing_at)`. The
+  benchmark target in the plan (10,000 due subscriptions in five minutes) is bounded
+  by invoice issuance, which takes a row lock per subscription on the number series.
+- Add caches only after profiling. The overview is one query per check and is not on
+  a hot path.
+
+## Development
+
+```bash
+make db-up        # dedicated PostgreSQL 17 on 127.0.0.1:5442
+make test         # the whole suite against it
+make test-race    # with the race detector
+make verify       # fmt + vet + race, the same sequence CI runs
+make cover        # coverage across the packages that have tests
+make db-unlock    # clear a test lock leaked by a killed run
+```
+
+Each test package gets its own database (`billing_test_<pkg>`), created on demand.
+The harness fails if a migration adds a table it has not classified, because an
+unclassified table is how state leaks between tests.

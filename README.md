@@ -247,6 +247,14 @@ Listed so nobody assumes otherwise:
 
 ---
 
+## Documentation
+
+- [`docs/extensions.md`](docs/extensions.md) — the extension host: what is enforced,
+  with the test that proves each property, and what is explicitly not.
+- [`docs/operations.md`](docs/operations.md) — deploying, the two database roles, the
+  job table with kill switches, what the operator overview reports, recovery
+  procedures, backup and restore.
+
 ## Layout
 
 ```

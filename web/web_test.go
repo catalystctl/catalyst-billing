@@ -18,6 +18,34 @@ func newHandler(t *testing.T, secure bool) *web.Handler {
 	return h
 }
 
+// assetFromIndex reads the hashed bundle name out of the served shell, so the test does not
+// have to be edited every time the bundle changes. A test that pins a content hash is a test
+// that fails on an unrelated copy edit and teaches the team to update it without reading it.
+func assetFromIndex(t *testing.T, h *web.Handler) string {
+	t.Helper()
+	index := string(h.Index())
+	for _, marker := range []string{`src="`, `href="`} {
+		rest := index
+		for {
+			i := strings.Index(rest, marker)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(marker):]
+			j := strings.Index(rest, `"`)
+			if j < 0 {
+				break
+			}
+			candidate := rest[:j]
+			if strings.HasPrefix(candidate, "/assets/") && strings.HasSuffix(candidate, ".js") {
+				return candidate
+			}
+		}
+	}
+	t.Fatalf("index.html references no /assets/*.js bundle:\n%s", index)
+	return ""
+}
+
 func get(t *testing.T, h *web.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
@@ -48,7 +76,7 @@ func TestUnknownPathFallsBackToShell(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "<main") {
+	if !strings.Contains(rec.Body.String(), `id="root"`) {
 		t.Fatalf("fallback did not serve the shell: %s", rec.Body.String())
 	}
 }
@@ -57,7 +85,8 @@ func TestUnknownPathFallsBackToShell(t *testing.T) {
 func TestAssetCachePolicy(t *testing.T) {
 	h := newHandler(t, false)
 
-	rec := get(t, h, "/assets/app.4f2c1d9e.js")
+	asset := assetFromIndex(t, h)
+	rec := get(t, h, asset)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -69,7 +98,7 @@ func TestAssetCachePolicy(t *testing.T) {
 	}
 
 	// The same file reached through a normalised path is the same file.
-	rec = get(t, h, "/assets/./app.4f2c1d9e.js")
+	rec = get(t, h, strings.Replace(asset, "/assets/", "/assets/./", 1))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Cache-Control"), "immutable") {
 		t.Fatalf("normalised path served differently: %d %q", rec.Code,
 			rec.Header().Get("Cache-Control"))
@@ -92,7 +121,7 @@ func TestTraversalDoesNotEscape(t *testing.T) {
 			// Either the shell or a 404 is acceptable; leaking a file is not.
 			continue
 		}
-		if !strings.Contains(rec.Body.String(), "<main") {
+		if !strings.Contains(rec.Body.String(), `id="root"`) {
 			t.Fatalf("%s served something other than the shell: %s", path, rec.Body.String())
 		}
 	}
@@ -149,7 +178,7 @@ func TestIsAPIPath(t *testing.T) {
 			t.Fatalf("IsAPIPath(%q) = false", p)
 		}
 	}
-	for _, p := range []string{"/", "/customers", "/assets/app.4f2c1d9e.js"} {
+	for _, p := range []string{"/", "/customers", assetFromIndex(t, h)} {
 		if h.IsAPIPath(p) {
 			t.Fatalf("IsAPIPath(%q) = true", p)
 		}
@@ -167,4 +196,73 @@ func TestNonReadMethodsRejected(t *testing.T) {
 			t.Fatalf("%s /: status %d, want 405", method, rec.Code)
 		}
 	}
+}
+
+// Every asset the shell references must exist in the embedded tree.
+//
+// The dist directory is committed, so it can be half-built: a build that wrote the bundle
+// and then failed before rewriting index.html leaves the previous hash in the HTML and a
+// 404 for the script. The page then renders nothing, which is exactly the kind of failure a
+// unit test on the handler cannot see.
+func TestShellReferencesExistingAssets(t *testing.T) {
+	h := newHandler(t, false)
+	index := string(h.Index())
+
+	for _, ref := range assetRefs(index) {
+		rec := get(t, h, ref)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s is referenced by index.html but served %d", ref, rec.Code)
+		}
+		if rec.Body.Len() == 0 {
+			t.Fatalf("%s is empty", ref)
+		}
+	}
+}
+
+// The bundle must not contain an inline script or style attribute in the shell: the CSP has
+// no 'unsafe-inline', so either would be refused by the browser rather than reported.
+func TestShellHasNoInlineScriptOrStyle(t *testing.T) {
+	h := newHandler(t, false)
+	index := string(h.Index())
+
+	if strings.Contains(index, "style=\"") || strings.Contains(index, "style='") {
+		t.Fatal("the shell contains an inline style attribute; the CSP refuses it")
+	}
+	if strings.Contains(index, "<script>") {
+		t.Fatal("the shell contains an inline script; the CSP refuses it")
+	}
+	for _, ref := range assetRefs(index) {
+		if strings.HasSuffix(ref, ".js") {
+			body := get(t, h, ref).Body.String()
+			if strings.Contains(body, "<script") {
+				t.Fatalf("%s appears to contain HTML", ref)
+			}
+		}
+	}
+}
+
+// assetRefs extracts every /assets/... reference from a document.
+func assetRefs(document string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, marker := range []string{`src="`, `href="`} {
+		rest := document
+		for {
+			i := strings.Index(rest, marker)
+			if i < 0 {
+				break
+			}
+			rest = rest[i+len(marker):]
+			j := strings.Index(rest, `"`)
+			if j < 0 {
+				break
+			}
+			ref := rest[:j]
+			if strings.HasPrefix(ref, "/assets/") && !seen[ref] {
+				seen[ref] = true
+				out = append(out, ref)
+			}
+		}
+	}
+	return out
 }

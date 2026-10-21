@@ -78,23 +78,29 @@ CHROME_FLAGS=(--headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage
               --user-data-dir="$PROFILE_DIR" --virtual-time-budget=8000)
 
 # ---------------------------------------------------------------- the shell --
-DOM="$("$CHROME" "${CHROME_FLAGS[@]}" --dump-dom "$BASE/" 2>/dev/null)" \
+# The module must run and render the sign-in panel. That proves three things at once: the CSP
+# allowed the external module, the bundle parsed, and the router resolved /login.
+DOM="$("$CHROME" "${CHROME_FLAGS[@]}" --dump-dom "$BASE/login" 2>/dev/null)" \
   || fail "chromium could not load the shell"
-[[ "$DOM" == *"<h1>Catalyst Billing</h1>"* ]] || fail "the shell was not served at /"
-ok "the shell is served at /"
+[[ "$DOM" == *'id="root"'* ]] || fail "the shell was not served"
+[[ "$DOM" == *'class="auth-panel"'* ]] || fail "the sign-in panel was not rendered (the module did not run)"
+[[ "$DOM" == *'id="email"'* ]] || fail "the sign-in form is missing its email field"
+[[ "$DOM" == *"Sign in"* ]] || fail "the sign-in panel has no heading"
+ok "the module ran and rendered the sign-in panel"
 
-# The module executed: it rewrites the status line from the static placeholder. That proves the CSP
-# allowed the external module and that the fetch to /api/v1/auth/me ran.
-[[ "$DOM" == *'id="status" data-tone='* ]] \
-  || fail "the module script did not run (the status line was never updated)"
-[[ "$DOM" == *"Not signed in"* ]] || fail "the module did not reach its 401 branch"
-ok "the module script ran and rendered the anonymous state"
+# The anonymous root must land on the sign-in screen rather than an empty shell.
+ROOT_DOM="$("$CHROME" "${CHROME_FLAGS[@]}" --virtual-time-budget=4000 --dump-dom "$BASE/" 2>/dev/null)" \
+  || fail "chromium could not load /"
+[[ "$ROOT_DOM" == *'class="auth-panel"'* ]] || fail "/ did not redirect an anonymous visitor to the sign-in screen"
+ok "an anonymous visitor is sent to the sign-in screen"
 
-# A client-side route must survive a reload by serving the shell.
-ROUTE_DOM="$("$CHROME" "${CHROME_FLAGS[@]}" --dump-dom "$BASE/customers/abc/invoices" 2>/dev/null)" \
+# A client-side route must survive a reload by serving the shell, and the router must render
+# its not-found screen rather than a blank page.
+ROUTE_DOM="$("$CHROME" "${CHROME_FLAGS[@]}" --virtual-time-budget=4000 --dump-dom "$BASE/customers/abc/invoices" 2>/dev/null)" \
   || fail "chromium could not load a client-side route"
-[[ "$ROUTE_DOM" == *"<h1>Catalyst Billing</h1>"* ]] || fail "a client-side route did not fall back to the shell"
-ok "a client-side route falls back to the shell"
+[[ "$ROUTE_DOM" == *'class="auth-panel"'* || "$ROUTE_DOM" == *"does not exist"* ]] \
+  || fail "a client-side route did not render"
+ok "a client-side route falls back to the shell and renders"
 
 # ---------------------------------------------------------------- the headers --
 HEADERS="$(curl -fsS -D- -o /dev/null "$BASE/")"
@@ -107,7 +113,10 @@ grep -qi "cache-control: no-store" <<<"$HEADERS" || fail "index.html is cacheabl
 ok "the documented security headers are present"
 
 # A hashed asset is immutable; an unhashed one is not.
-ASSET_HEADERS="$(curl -fsS -D- -o /dev/null "$BASE/assets/app.4f2c1d9e.js")"
+# The bundle name is read from the shell so the check does not pin a content hash.
+BUNDLE="$(grep -oE '/assets/app\.[0-9a-f]+\.js' <<<"$(curl -fsS "$BASE/")" | head -1)"
+[[ -n "$BUNDLE" ]] || fail "the shell references no hashed bundle"
+ASSET_HEADERS="$(curl -fsS -D- -o /dev/null "$BASE$BUNDLE")"
 grep -qi "cache-control:.*immutable" <<<"$ASSET_HEADERS" || fail "a hashed asset is not immutable"
 ok "a hashed asset is cached immutably"
 

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="Catalyst Billing — revenue operations for the people who keep the ledger honest." />
+    <title>Catalyst Billing</title>
+    <link rel="stylesheet" href="{{STYLE}}" />
+    <link rel="icon" href="/assets/mark.svg" type="image/svg+xml" />
+    <!--
+      The shell. It contains no inline script and no inline style: the Content-Security-Policy
+      forbids both, and a shell that needed an exemption would be the wrong shell.
+
+      The theme is applied before first paint by the module below reading localStorage; the
+      data-theme attribute here is only the default for a cold visit, so the page never
+      flashes the wrong background.
+    -->
+  </head>
+  <body>
+    <div id="root" class="root">
+      <div class="boot" role="status" aria-live="polite">
+        <div class="boot-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
+            <path d="M22.5 6.8A11 11 0 1 0 22.5 25.2" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" />
+            <circle cx="23.6" cy="16" r="3.1" fill="currentColor" />
+          </svg>
+        </div>
+        <p class="boot-text">Opening the ledger…</p>
+      </div>
+    </div>
+    <noscript>
+      <div class="noscript">
+        <h1>JavaScript is required</h1>
+        <p>
+          This panel is a client for the billing API, and it renders everything in the browser.
+          Enable JavaScript, or use the API directly at <code>/api/v1</code>.
+        </p>
+      </div>
+    </noscript>
+    <script src="{{SCRIPT}}" type="module"></script>
+  </body>
+</html>

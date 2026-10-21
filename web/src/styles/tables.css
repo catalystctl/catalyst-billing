@@ -1,0 +1,340 @@
+/* Data tables.
+ *
+ * A billing panel is mostly tables, so the table is a first-class component rather than a
+ * styled <table>. Two decisions matter:
+ *
+ *  - Numbers are right-aligned, monospaced and tabular, so a column of amounts lines up on
+ *    the decimal point and a digit cannot be misread at a glance.
+ *  - Below 780px the table is rebuilt as a list of cards, with each cell labelled by its
+ *    column header via data-label. Horizontal scrolling a nine-column table on a phone is
+ *    how a "responsive" dashboard becomes unusable.
+ */
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--text-sm);
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  text-align: left;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text-faint);
+  padding: 8px var(--s-3);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.table thead th:first-child {
+  padding-left: var(--s-4);
+}
+
+.table thead th:last-child {
+  padding-right: var(--s-4);
+}
+
+.table thead th.is-sortable {
+  cursor: pointer;
+}
+
+.table thead th.is-sortable:hover {
+  color: var(--text-dim);
+}
+
+.table thead th .sort-mark {
+  display: inline-block;
+  margin-left: 4px;
+  opacity: 0.6;
+}
+
+.table tbody td {
+  padding: 9px var(--s-3);
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+  color: var(--text);
+  height: 44px;
+}
+
+.table tbody td:first-child {
+  padding-left: var(--s-4);
+}
+
+.table tbody td:last-child {
+  padding-right: var(--s-4);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.table tbody tr {
+  transition: background var(--dur-1) var(--ease);
+}
+
+.table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.table tbody tr.is-clickable {
+  cursor: pointer;
+}
+
+.table tbody tr.is-selected {
+  background: var(--accent-soft);
+}
+
+.table .num,
+.table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.table .num .money {
+  font-size: var(--text-sm);
+}
+
+.table .cell-actions {
+  text-align: right;
+  white-space: nowrap;
+  width: 1%;
+}
+
+.table .cell-tight {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.table .muted {
+  color: var(--text-dim);
+}
+
+.table .strong {
+  font-weight: 600;
+}
+
+.cell-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.cell-main > .primary {
+  color: var(--text);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cell-main > .primary .truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-main > .secondary {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.cell-stack {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.row-title {
+  color: var(--text);
+  font-weight: 550;
+}
+
+a.row-title:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* A row that links somewhere: the whole row is the target, but only the title is a real
+ * link so the browser's own affordances (open in new tab) still work. */
+.table tr[data-href] {
+  cursor: pointer;
+}
+
+.table tr[data-href] a.row-title::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.table tr[data-href] {
+  position: relative;
+}
+
+/* ------------------------------------------------------------- pagination -- */
+
+.table-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-4);
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  flex-wrap: wrap;
+}
+
+.pager {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+
+.pager-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+.pager-btn:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.pager-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.table-loading {
+  opacity: 0.55;
+  pointer-events: none;
+  transition: opacity var(--dur-2) var(--ease);
+}
+
+/* ---------------------------------------------------------------- mobile -- */
+
+@media (max-width: 780px) {
+  .table-wrap--cards {
+    overflow: visible;
+  }
+
+  .table-wrap--cards .table,
+  .table-wrap--cards .table tbody,
+  .table-wrap--cards .table tr,
+  .table-wrap--cards .table td {
+    display: block;
+    width: auto;
+  }
+
+  .table-wrap--cards .table thead {
+    display: none;
+  }
+
+  .table-wrap--cards .table tbody {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    padding: var(--s-2);
+  }
+
+  .table-wrap--cards .table tbody tr {
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    padding: var(--s-2) var(--s-3);
+  }
+
+  .table-wrap--cards .table tbody tr:hover {
+    background: var(--surface);
+  }
+
+  .table-wrap--cards .table tbody td {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--s-3);
+    height: auto;
+    padding: 5px 0;
+    border-bottom: 1px dashed var(--line);
+    text-align: right;
+  }
+
+  .table-wrap--cards .table tbody td:last-child {
+    border-bottom: 0;
+    padding-right: 0;
+  }
+
+  .table-wrap--cards .table tbody td:first-child {
+    padding-left: 0;
+  }
+
+  .table-wrap--cards .table tbody td::before {
+    content: attr(data-label);
+    flex: none;
+    text-align: left;
+    font-size: var(--text-xs);
+    font-weight: 550;
+    color: var(--text-faint);
+    letter-spacing: 0.02em;
+  }
+
+  /* The primary cell is the card's title: no label, left aligned, larger. */
+  .table-wrap--cards .table tbody td.cell-primary {
+    display: block;
+    text-align: left;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: var(--s-2);
+    margin-bottom: 2px;
+  }
+
+  .table-wrap--cards .table tbody td.cell-primary::before {
+    content: none;
+  }
+
+  .table-wrap--cards .table tbody td.cell-primary .cell-main > .primary {
+    font-size: var(--text-base);
+  }
+
+  .table-wrap--cards .table tbody td.cell-actions {
+    text-align: right;
+    padding-top: var(--s-2);
+  }
+
+  .table-wrap--cards .table tbody td.cell-actions::before {
+    content: none;
+  }
+
+  .table-foot {
+    padding: var(--s-2) var(--s-3);
+  }
+}

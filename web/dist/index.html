@@ -1,33 +1,43 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="Catalyst Billing — revenue operations for the people who keep the ledger honest." />
     <title>Catalyst Billing</title>
-    <link rel="stylesheet" href="/assets/app.9c1f3b7a.css" />
+    <link rel="stylesheet" href="/assets/app.f7fb3291afa7.css" />
+    <link rel="icon" href="/assets/mark.svg" type="image/svg+xml" />
+    <!--
+      The shell. It contains no inline script and no inline style: the Content-Security-Policy
+      forbids both, and a shell that needed an exemption would be the wrong shell.
+
+      The theme is applied before first paint by the module below reading localStorage; the
+      data-theme attribute here is only the default for a cold visit, so the page never
+      flashes the wrong background.
+    -->
   </head>
   <body>
-    <!--
-      This is the application shell, not the application.
-
-      It is embedded and served so that the serving layer (SPA fallback, cache policy,
-      CSP, security headers) is real and testable while the interface is still being
-      built. It contains no inline script: the Content-Security-Policy forbids it, and a
-      shell that needed an exemption would be the wrong shell.
-    -->
-    <main id="app">
-      <h1>Catalyst Billing</h1>
-      <p class="status" id="status">Checking your session…</p>
-      <p class="hint">
-        The HTTP API is available under <code>/api/v1</code>. This page is the embedded
-        shell that proves the serving layer works; the interface itself is not built yet.
-      </p>
-      <nav>
-        <a href="/api/v1/auth/me">Who am I</a>
-        <a href="/api/v1/ops/overview">Operator overview</a>
-        <a href="/healthz">Liveness</a>
-      </nav>
-    </main>
-    <script src="/assets/app.4f2c1d9e.js" type="module"></script>
+    <div id="root" class="root">
+      <div class="boot" role="status" aria-live="polite">
+        <div class="boot-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
+            <path d="M22.5 6.8A11 11 0 1 0 22.5 25.2" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" />
+            <circle cx="23.6" cy="16" r="3.1" fill="currentColor" />
+          </svg>
+        </div>
+        <p class="boot-text">Opening the ledger…</p>
+      </div>
+    </div>
+    <noscript>
+      <div class="noscript">
+        <h1>JavaScript is required</h1>
+        <p>
+          This panel is a client for the billing API, and it renders everything in the browser.
+          Enable JavaScript, or use the API directly at <code>/api/v1</code>.
+        </p>
+      </div>
+    </noscript>
+    <script src="/assets/app.fd149d50e635.js" type="module"></script>
   </body>
 </html>

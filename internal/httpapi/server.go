@@ -426,6 +426,22 @@ type statusRecorder struct {
 	written int
 }
 
+// Flush forwards to the underlying writer.
+//
+// Without this, wrapping the ResponseWriter hides http.Flusher, and the SSE handler refuses
+// to stream ("this server cannot stream responses") even though the real writer can. The
+// type assertion in that handler is a deliberate guard against a wrapper that silently
+// buffers; the wrapper's job is therefore to forward, not to hide.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap exposes the underlying writer to http.ResponseController, which is how a handler
+// reaches SetWriteDeadline or Hijack through a wrapper.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *statusRecorder) WriteHeader(status int) {
 	r.status = status
 	r.ResponseWriter.WriteHeader(status)

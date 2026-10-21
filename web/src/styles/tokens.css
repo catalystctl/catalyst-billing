@@ -1,0 +1,169 @@
+/* Design tokens.
+ *
+ * Two themes, one vocabulary. Every colour a component uses is a token defined here, so
+ * the light theme is a different set of values rather than a different stylesheet, and a
+ * component that looks wrong in one theme is a bug in a token, not a fork.
+ *
+ * The palette is deliberately narrow: a graphite ground, one cobalt accent for action and
+ * focus, and four semantic hues that only ever mean success, warning, danger or information.
+ * Nothing decorative is coloured, because in a billing panel colour is a signal — a green
+ * number has to mean money arrived.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Type */
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --text-xs: 0.6875rem; /* 11px — table meta, badges */
+  --text-sm: 0.75rem; /* 12px — labels, table body */
+  --text-base: 0.8125rem; /* 13px — the panel's body size */
+  --text-md: 0.875rem; /* 14px — prose, form values */
+  --text-lg: 1rem; /* 16px — card titles */
+  --text-xl: 1.25rem; /* 20px — page titles */
+  --text-2xl: 1.625rem; /* 26px — detail titles */
+  --text-3xl: 2.25rem; /* 36px — hero figures */
+
+  --leading-tight: 1.15;
+  --leading-snug: 1.35;
+  --leading-normal: 1.55;
+
+  --tracking-tight: -0.015em;
+  --tracking-wide: 0.06em;
+
+  /* Space — a 4px grid. */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.5rem;
+  --s-6: 2rem;
+  --s-7: 3rem;
+  --s-8: 4rem;
+
+  /* Shape */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-full: 999px;
+
+  --sidebar-w: 232px;
+  --topbar-h: 56px;
+  --content-max: 1440px;
+
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-1: 90ms;
+  --dur-2: 160ms;
+  --dur-3: 260ms;
+}
+
+/* ------------------------------------------------------------------ dark -- */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0a0d13;
+  --bg-grain: radial-gradient(1200px 600px at 15% -10%, rgba(109, 139, 255, 0.09), transparent 60%);
+  --surface: #10141c;
+  --surface-2: #151a24;
+  --surface-3: #1a202c;
+  --surface-hover: #1b2230;
+  --surface-inset: #0c1017;
+
+  --line: #1e2532;
+  --line-strong: #2b3546;
+  --line-accent: rgba(109, 139, 255, 0.42);
+
+  --text: #e8edf7;
+  --text-dim: #96a1b5;
+  --text-faint: #667186;
+  --text-inverse: #0a0d13;
+
+  --accent: #7b95ff;
+  --accent-hover: #94a9ff;
+  --accent-press: #6b86f5;
+  --accent-ink: #0a0d13;
+  --accent-soft: rgba(123, 149, 255, 0.14);
+  --accent-soft-strong: rgba(123, 149, 255, 0.22);
+
+  --success: #45d9a1;
+  --success-soft: rgba(69, 217, 161, 0.13);
+  --warning: #f5b544;
+  --warning-soft: rgba(245, 181, 68, 0.13);
+  --danger: #ff7286;
+  --danger-soft: rgba(255, 114, 134, 0.13);
+  --info: #59c2f7;
+  --info-soft: rgba(89, 194, 247, 0.13);
+
+  --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+  --shadow-2: 0 10px 30px -12px rgba(0, 0, 0, 0.7), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  --shadow-3: 0 32px 80px -24px rgba(0, 0, 0, 0.85);
+  --shadow-focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--line-accent);
+
+  --skeleton: linear-gradient(90deg, #151a24 0%, #1c2331 40%, #151a24 80%);
+  --overlay: rgba(5, 7, 11, 0.72);
+  --scrollbar: #2a3243;
+}
+
+/* ----------------------------------------------------------------- light -- */
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f5f6f8;
+  --bg-grain: radial-gradient(1200px 600px at 15% -10%, rgba(59, 91, 219, 0.07), transparent 60%);
+  --surface: #ffffff;
+  --surface-2: #fbfbfc;
+  --surface-3: #f1f3f7;
+  --surface-hover: #f3f5f9;
+  --surface-inset: #f7f8fa;
+
+  --line: #e3e7ee;
+  --line-strong: #cfd6e2;
+  --line-accent: rgba(59, 91, 219, 0.45);
+
+  --text: #0f1523;
+  --text-dim: #5b6678;
+  --text-faint: #8792a5;
+  --text-inverse: #ffffff;
+
+  --accent: #3b5bdb;
+  --accent-hover: #2f4bc4;
+  --accent-press: #2943b0;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(59, 91, 219, 0.09);
+  --accent-soft-strong: rgba(59, 91, 219, 0.16);
+
+  --success: #0f9d6e;
+  --success-soft: rgba(15, 157, 110, 0.1);
+  --warning: #b06f00;
+  --warning-soft: rgba(176, 111, 0, 0.1);
+  --danger: #d92d4b;
+  --danger-soft: rgba(217, 45, 75, 0.09);
+  --info: #0b7fb8;
+  --info-soft: rgba(11, 127, 184, 0.09);
+
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-2: 0 12px 32px -16px rgba(16, 24, 40, 0.28), 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-3: 0 32px 80px -24px rgba(16, 24, 40, 0.35);
+  --shadow-focus: 0 0 0 2px var(--surface), 0 0 0 4px var(--line-accent);
+
+  --skeleton: linear-gradient(90deg, #eef1f5 0%, #f7f8fa 40%, #eef1f5 80%);
+  --overlay: rgba(15, 21, 35, 0.38);
+  --scrollbar: #cdd4e0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+    --dur-3: 0ms;
+  }
+}

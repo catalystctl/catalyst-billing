@@ -125,26 +125,33 @@ Four tables refuse mutation by trigger, not by convention:
 | `invoices` (once issued) | UPDATE of the snapshot | same reason: a tax authority already has a copy |
 
 This is deliberate and it has an operational consequence worth stating plainly: **you
-cannot delete these rows, even as the owner, without disabling the trigger.** A test
-run that needs to remove them must do so inside a transaction that disables the trigger
-and re-enables it before commit:
+cannot delete these rows, even as the owner, without disabling the trigger.**
 
-```sql
-BEGIN;
-ALTER TABLE audit_events DISABLE TRIGGER audit_events_append_only;
--- ... the deletions ...
-ALTER TABLE audit_events ENABLE TRIGGER audit_events_append_only;
-COMMIT;
+Removing test fixtures therefore has a supported path:
+
+```sh
+billing admin purge-test-data --pattern 'smoke-%@example.test' --dry-run   # preview
+billing admin purge-test-data --pattern 'smoke-%@example.test' --yes       # delete
 ```
 
-PostgreSQL DDL is transactional, so an aborted cleanup leaves every trigger enabled.
-That is the safe failure: a mistake in the cleanup script cannot leave the guarantees
-switched off.
+The command is built so that the dangerous version of it is hard to reach:
 
-If you find yourself doing this on a production database, stop. Deleting financial
-records is a decision for the business and its accountant, not a maintenance task. The
-supported correction is a counter-document: a credit note, a refund, or a reversal
-posting.
+| Guard | Behaviour |
+|---|---|
+| `--pattern` is mandatory | there is no "purge everything" mode; a command that can empty the books with one flag eventually does |
+| the pattern must be ≥ 4 characters | `a%` would match nearly everything |
+| `--yes` is mandatory | a shell history recall cannot delete data |
+| the database name must look like test/dev | `--force` is required otherwise, so a typo cannot reach production |
+| `--dry-run` runs the real deletes and rolls back | the preview cannot disagree with the real run, and it proves the deletes are foreign-key-safe before anything commits |
+| one transaction, triggers re-enabled before commit | an error anywhere leaves the guarantees switched on, because PostgreSQL DDL is transactional |
+| it verifies afterwards | fails loudly if any trigger is left disabled or the ledger no longer balances |
+
+`--dry-run` is the recommended first step against any database you have not purged before.
+
+If you find yourself disabling these triggers by hand on a production database, stop.
+Deleting financial records is a decision for the business and its accountant, not a
+maintenance task. The supported correction is a counter-document: a credit note, a
+refund, or a reversal posting.
 
 ## Backup and restore
 

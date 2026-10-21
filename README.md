@@ -73,6 +73,14 @@ unset BILLING_ADMIN_PASSWORD
 
 ./bin/billing admin create-customer --email a@example.test --name "A"
 ./bin/billing admin issue-invoice --customer <id> --amount 12.00 --tax-rate 20%
+
+# Remove test fixtures. Six tables refuse deletion by trigger (the journal, the audit log,
+# issued invoices and credit notes), so this is a reviewed command rather than a DELETE: it
+# requires a pattern and --yes, refuses a database whose name is not test/dev, runs in one
+# transaction with the triggers re-enabled before commit, and verifies afterwards that the
+# ledger still balances. --dry-run runs the real deletes and rolls back.
+./bin/billing admin purge-test-data --pattern 'smoke-%@example.test' --dry-run
+
 ./bin/billing migrate --status
 ./bin/billing doctor --json
 ```
@@ -354,9 +362,21 @@ Stated here rather than discovered later:
   and can be exceeded by one window at a boundary. It bounds load; it is not a quota.
 - **Refund reconciliation is a poll**, every two minutes, over unresolved refunds. It asks
   the provider rather than retrying, so it is safe, but it is not push.
-- **The frontend is a shell, not a UI.** It proves the serving layer (headers, cache
-  policy, CSP enforcement, SPA fallback, JSON-vs-HTML routing). The screens themselves are
-  the next project, and they start with a design system.
+- **The frontend is partly built.** The foundation is complete and used: a hash-based
+  router, layout, table and form kit, typed API client, formatting and icons (~2,900 lines
+  of TypeScript, typechecked and bundled with esbuild, embedded in the binary). Real
+  screens exist for sign-in, password reset, email verification, the dashboard, refunds
+  and billing details.
+
+  **26 of 34 views are stubs** — a heading and nothing else. `scripts/browser-e2e.sh`
+  prints the count on every run so a green build is not mistaken for a finished product:
+
+  ```
+  note: 26 of 34 views are still stubs (heading only, no data)
+  ```
+
+  Every endpoint those screens need is implemented and documented; the remaining work is
+  view code, not server work.
 - **`pg_trgm` is optional.** The customer search index tries it and falls back to a
   `lower(name)` prefix index, so a deployment that cannot install the extension still
   migrates. Which one is in force is visible in `\d customers`.

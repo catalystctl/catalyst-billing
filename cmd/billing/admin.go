@@ -25,7 +25,8 @@ import (
 // an admin action cannot take a shortcut that the API would refuse.
 func cmdAdmin(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: billing admin <create-user|create-customer|issue-invoice>")
+		return errors.New("usage: billing admin " +
+			"<create-user|create-customer|issue-invoice|purge-test-data>")
 	}
 	switch args[0] {
 	case "create-user":
@@ -34,6 +35,8 @@ func cmdAdmin(args []string) error {
 		return adminCreateCustomer(args[1:])
 	case "issue-invoice":
 		return adminIssueInvoice(args[1:])
+	case "purge-test-data":
+		return adminPurgeTestData(args[1:])
 	default:
 		return fmt.Errorf("unknown admin command %q", args[0])
 	}

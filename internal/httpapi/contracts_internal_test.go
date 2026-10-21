@@ -738,8 +738,12 @@ func TestStaticServingThroughMux(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<main") {
-		t.Fatalf("root: %d %s", rec.Code, rec.Body)
+	// The assertion is "an HTML document was served", not "a particular element exists": pinning a
+	// tag makes this test fail on a frontend change it has no opinion about, and the contract under
+	// test is the routing, not the markup.
+	root := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.HasPrefix(strings.TrimSpace(root), "<!DOCTYPE html") {
+		t.Fatalf("root: %d %.200s", rec.Code, root)
 	}
 	if rec.Header().Get("Content-Security-Policy") == "" {
 		t.Fatal("the shell was served without a CSP")
@@ -747,7 +751,69 @@ func TestStaticServingThroughMux(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/nope", nil))
-	if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "<main") {
+	if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "<!DOCTYPE html") {
 		t.Fatalf("unknown API path: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// The request-log wrapper must not hide http.Flusher.
+//
+// This is a regression test for a defect found by driving the real UI: the SSE handler
+// refuses to stream when its ResponseWriter is not a Flusher ("this server cannot stream
+// responses"), and statusRecorder — the wrapper withRequestLog installs — implemented only
+// Header/Write/WriteHeader. Every unit test called handleEvents directly, so the chain was
+// never exercised and the live feed was a 500 in a browser while the suite stayed green.
+//
+// The assertion is made through the same middleware stack the server builds, not against
+// the wrapper alone, because the defect was in the composition.
+func TestMiddlewareChainPreservesFlusher(t *testing.T) {
+	s := testServer(t)
+
+	var sawFlusher bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		sawFlusher = true
+		flusher.Flush()
+	})
+
+	handler := s.withRecovery(s.withRequestLog(s.withCorrelation(inner)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/events", nil))
+
+	if !sawFlusher {
+		t.Fatal("http.Flusher is not visible through the middleware chain; SSE cannot stream")
+	}
+	if !rec.Flushed {
+		t.Fatal("Flush did not reach the underlying ResponseWriter")
+	}
+}
+
+// An anonymous caller must not be able to open the event stream.
+//
+// The route declares AccessUser. Before the router applied that declaration, the handler
+// streamed to anyone: the filter delivered nothing, so it was not a data leak, but it was an
+// unauthenticated long-lived connection per client and a route that did not do what its
+// declaration said.
+func TestEventsRouteRequiresAuthentication(t *testing.T) {
+	s := testServer(t)
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	res, err := client.Get(srv.URL + "/api/v1/events")
+	if err != nil {
+		t.Fatalf("GET /api/v1/events: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 256))
+		t.Fatalf("status = %d, want 401 for an unauthenticated stream: %s", res.StatusCode, body)
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "json") {
+		t.Fatalf("Content-Type = %q, want problem+json", ct)
 	}
 }

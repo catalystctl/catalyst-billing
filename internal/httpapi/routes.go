@@ -126,6 +126,13 @@ func (r *router) add(rt Route) {
 	if rt.Access == AccessPermission {
 		h = r.s.requirePermission(rt.Permission, h)
 	}
+	// AccessUser means "a session, no particular permission". Without this wrapper the
+	// declaration was documentation rather than a guard: every AccessUser route reached its
+	// handler anonymously, and each one had to remember to check for itself. /api/v1/events
+	// did not, and streamed to a caller with no identity at all.
+	if rt.Access == AccessUser {
+		h = r.s.requireUser(h)
+	}
 	if rt.StaffOnly {
 		h = r.s.requireStaff(h)
 	}

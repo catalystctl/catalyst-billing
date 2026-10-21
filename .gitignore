@@ -8,3 +8,7 @@ node_modules/
 # (.env.example) is committed; the real file must never be.
 .env
 coverage.out
+
+# Written by scripts/browser-e2e.sh during a run; never committed.
+web/dist/e2e-driver.js
+web/dist/e2e.html

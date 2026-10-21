@@ -3,7 +3,7 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build clean openapi openapi-check client smoke
+.PHONY: help db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build clean openapi openapi-check client smoke e2e-ui web-build web-typecheck web-test
 
 help:
 	@echo "db-up      start the dedicated Postgres (compose.yaml, port 5442)"
@@ -19,6 +19,10 @@ help:
 	@echo "openapi-check  fail if api/openapi.yaml is out of date with the router"
 	@echo "client     regenerate the typed client from api/openapi.yaml"
 	@echo "smoke      drive the served UI in a real headless browser"
+	@echo "e2e-ui     sign in through the UI and assert live data renders"
+	@echo "web-build  rebuild the embedded frontend (needs Node; dist/ is committed)"
+	@echo "web-typecheck  typecheck the frontend without emitting"
+	@echo "web-test   run the frontend unit tests (money, routing)"
 
 include .env
 export
@@ -72,6 +76,17 @@ migrate:
 build:
 	go build -o bin/billing ./cmd/billing
 
+# The frontend is a separate toolchain on purpose: `go build` never needs Node, because the
+# built dist/ is committed and embedded. These targets exist for when the frontend changes.
+web-build:
+	cd web && npm run build
+
+web-typecheck:
+	cd web && npm run typecheck
+
+web-test:
+	cd web && npm test
+
 vet:
 	go vet ./...
 
@@ -107,6 +122,11 @@ client-check: openapi-check
 smoke: build
 	bash scripts/browser-smoke.sh
 
+# The authenticated browser test. Separate from `smoke` because it creates an account and needs a
+# seeded database, while `smoke` must run against any server.
+e2e-ui: build
+	bash scripts/browser-e2e.sh
+
 clean:
 	rm -rf bin
 
@@ -114,7 +134,7 @@ clean:
 # scanners. Run this before calling anything done.
 # The browser smoke test is part of verify: the UI is only proven by a browser, and a check
 # nobody runs is a check that rots.
-verify: fmt-check vet openapi-check client-check test-race smoke
+verify: fmt-check vet openapi-check client-check test-race smoke e2e-ui
 	@echo "verify: ok"
 
 fmt-check:

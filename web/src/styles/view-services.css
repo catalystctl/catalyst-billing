@@ -1,0 +1,5 @@
+/* View-specific styles: services.
+ *
+ * Shared components live in components.css and pages.css; this file exists so a screen can
+ * have a shape of its own without editing a file another screen also owns.
+ */

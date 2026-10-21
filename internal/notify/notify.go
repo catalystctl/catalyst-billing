@@ -1,0 +1,299 @@
+// Package notify is the durable outbox behind every message the product sends.
+//
+// The rule that shapes it: a message is a *side effect of a committed change*, so it is
+// written in the same transaction as that change and sent afterwards by a worker. A
+// crash between "the reset token was created" and "the mail went out" therefore cannot
+// lose the mail, and a retry cannot send it twice, because dedupe_key is unique.
+//
+// The alternative — sending mail inside the request — has two failure modes that both
+// matter: a slow SMTP server makes the request slow (or times out and the customer is
+// told the reset failed while the mail arrives), and a rolled-back transaction sends a
+// mail about a change that did not happen.
+package notify
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/catalyst/billing/internal/store"
+	"github.com/jackc/pgx/v5"
+)
+
+// Message kinds. They are a closed set, matching the CHECK on the table, so a typo
+// fails at compile time or at insert rather than silently sending nothing.
+const (
+	KindPasswordReset     = "password_reset"
+	KindEmailVerification = "email_verification"
+	KindInvoiceIssued     = "invoice_issued"
+	KindDunningReminder   = "dunning_reminder"
+)
+
+// Sender delivers one message.
+//
+// It is an interface so the tests can assert what would have been sent, and so an
+// installation without SMTP can use the log sender and still have a delivery record.
+type Sender interface {
+	Send(ctx context.Context, to, subject, body string) error
+}
+
+// Message is one queued delivery.
+type Message struct {
+	Kind    string
+	To      string
+	Subject string
+	Body    string
+	// DedupeKey makes enqueueing idempotent, e.g. "invoice_issued:<invoice id>".
+	// Empty means "always enqueue", which is only correct for a message a human
+	// explicitly asked for.
+	DedupeKey string
+}
+
+// Queue writes and drains the outbox.
+type Queue struct {
+	pool *store.Pool
+	// MaxAttempts bounds retries. A message that cannot be delivered five times is a
+	// configuration problem, not a transient one, and retrying forever turns it into an
+	// unbounded queue.
+	MaxAttempts int
+	// Now is injectable for tests.
+	Now func() time.Time
+}
+
+// NewQueue constructs a Queue.
+func NewQueue(pool *store.Pool) *Queue {
+	return &Queue{pool: pool, MaxAttempts: 5, Now: func() time.Time { return time.Now().UTC() }}
+}
+
+// Enqueue writes a delivery row inside the caller's transaction.
+//
+// It returns the row id and whether the row was created; a duplicate dedupe_key is not
+// an error, because "already queued" and "queued" are the same outcome for the caller.
+func (q *Queue) Enqueue(ctx context.Context, tx pgx.Tx, m Message) (id string, created bool, err error) {
+	if m.To == "" {
+		return "", false, errors.New("notify: message has no recipient")
+	}
+	if m.Kind == "" || m.Subject == "" || m.Body == "" {
+		return "", false, errors.New("notify: message is incomplete")
+	}
+
+	var key any
+	if m.DedupeKey != "" {
+		key = m.DedupeKey
+	}
+	err = tx.QueryRow(ctx, `
+		INSERT INTO notification_deliveries (kind, to_address, subject, body, status, dedupe_key)
+		VALUES ($1, $2, $3, $4, 'queued', $5)
+		ON CONFLICT (dedupe_key) DO NOTHING
+		RETURNING id`,
+		m.Kind, m.To, m.Subject, m.Body, key).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Already queued under this dedupe key.
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("notify: enqueue: %w", err)
+	}
+	return id, true, nil
+}
+
+// Suppress records that a message was deliberately not sent.
+//
+// "We did not send it" and "we failed to send it" are different answers to a support
+// ticket, and only one of them is a bug, so the decision is recorded rather than the
+// message being silently skipped.
+func (q *Queue) Suppress(ctx context.Context, tx pgx.Tx, m Message, reason string) error {
+	var key any
+	if m.DedupeKey != "" {
+		key = m.DedupeKey
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO notification_deliveries
+			(kind, to_address, subject, body, status, dedupe_key, last_error)
+		VALUES ($1, $2, $3, $4, 'suppressed', $5, $6)
+		ON CONFLICT (dedupe_key) DO NOTHING`,
+		m.Kind, m.To, m.Subject, m.Body, key, reason)
+	if err != nil {
+		return fmt.Errorf("notify: record suppression: %w", err)
+	}
+	return nil
+}
+
+// Delivery is one claimed row.
+type Delivery struct {
+	ID       string
+	Kind     string
+	To       string
+	Subject  string
+	Body     string
+	Attempts int
+}
+
+// Result summarises one drain pass.
+type Result struct {
+	Sent     int
+	Failed   int
+	Attempts int
+}
+
+// RunOnce claims due deliveries and sends them.
+//
+// Claiming uses SKIP LOCKED so two workers can drain the same outbox without sending
+// the same message twice. The row is marked 'sending' before the network call, so a
+// worker that dies mid-send leaves a row that a later pass can reclaim.
+func (q *Queue) RunOnce(ctx context.Context, sender Sender, limit int) (Result, error) {
+	if sender == nil {
+		return Result{}, errors.New("notify: no sender configured")
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+	now := q.Now()
+
+	rows, err := q.pool.Query(ctx, `
+		WITH due AS (
+			SELECT id FROM notification_deliveries
+			WHERE status IN ('queued', 'failed', 'sending')
+			  AND attempts < $1
+			  AND next_attempt_at <= $2
+			ORDER BY created_at
+			LIMIT $3
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE notification_deliveries d
+		SET status = 'sending'
+		FROM due
+		WHERE d.id = due.id
+		RETURNING d.id, d.kind, d.to_address, d.subject, d.body, d.attempts`,
+		q.MaxAttempts, now, limit)
+	if err != nil {
+		return Result{}, fmt.Errorf("notify: claim deliveries: %w", err)
+	}
+	var claimed []Delivery
+	for rows.Next() {
+		var d Delivery
+		if err := rows.Scan(&d.ID, &d.Kind, &d.To, &d.Subject, &d.Body, &d.Attempts); err != nil {
+			rows.Close()
+			return Result{}, fmt.Errorf("notify: scan delivery: %w", err)
+		}
+		claimed = append(claimed, d)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return Result{}, fmt.Errorf("notify: read deliveries: %w", err)
+	}
+	rows.Close()
+
+	var res Result
+	for _, d := range claimed {
+		res.Attempts++
+		if err := sender.Send(ctx, d.To, d.Subject, d.Body); err != nil {
+			res.Failed++
+			// Exponential backoff in minutes, capped so a permanently failing address
+			// stops consuming a slot on every pass.
+			delay := time.Duration(1<<min(d.Attempts, 6)) * time.Minute
+			if _, uerr := q.pool.Exec(ctx, `
+				UPDATE notification_deliveries
+				SET status = 'failed', attempts = attempts + 1, last_error = $2,
+				    next_attempt_at = $3
+				WHERE id = $1`,
+				d.ID, truncate(err.Error(), 500), q.Now().Add(delay)); uerr != nil {
+				return res, fmt.Errorf("notify: mark failed: %w", uerr)
+			}
+			continue
+		}
+		res.Sent++
+		if _, err := q.pool.Exec(ctx, `
+			UPDATE notification_deliveries
+			SET status = 'sent', attempts = attempts + 1, sent_at = $2, last_error = NULL
+			WHERE id = $1`, d.ID, q.Now()); err != nil {
+			return res, fmt.Errorf("notify: mark sent: %w", err)
+		}
+	}
+	return res, nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+// LogSender writes messages to the log instead of sending them.
+//
+// It exists so a development installation has a working reset flow with no mail server,
+// and so the delivery record is still written. It is never the right choice in
+// production, which is why the sender is chosen explicitly at startup.
+type LogSender struct {
+	Logger *slog.Logger
+}
+
+// Send implements Sender.
+func (s LogSender) Send(_ context.Context, to, subject, body string) error {
+	logger := s.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Info("notification (log sender)",
+		"to", to, "subject", subject, "body_bytes", len(body))
+	return nil
+}
+
+// Templates. Plain text only: an invoice line description is attacker-controlled, and a
+// template that renders it as markup turns a billing panel into a phishing page.
+
+// PasswordResetMessage renders the reset mail.
+func PasswordResetMessage(to, link string, expires time.Duration) Message {
+	return Message{
+		Kind:    KindPasswordReset,
+		To:      to,
+		Subject: "Reset your password",
+		Body: strings.Join([]string{
+			"Someone asked to reset the password for this account.",
+			"",
+			"Open this link to choose a new password:",
+			link,
+			"",
+			fmt.Sprintf("The link expires in %s and can be used once.", expires),
+			"If you did not ask for this, ignore this message; the password is unchanged.",
+		}, "\n"),
+	}
+}
+
+// EmailVerificationMessage renders the verification mail.
+func EmailVerificationMessage(to, link string, expires time.Duration) Message {
+	return Message{
+		Kind:    KindEmailVerification,
+		To:      to,
+		Subject: "Confirm your email address",
+		Body: strings.Join([]string{
+			"Confirm this address to finish setting up the account.",
+			"",
+			link,
+			"",
+			fmt.Sprintf("The link expires in %s and can be used once.", expires),
+		}, "\n"),
+	}
+}
+
+// InvoiceIssuedMessage renders the "your invoice is ready" mail.
+func InvoiceIssuedMessage(to, number, total, dueAt, invoiceID string) Message {
+	return Message{
+		Kind:    KindInvoiceIssued,
+		To:      to,
+		Subject: "Invoice " + number,
+		Body: strings.Join([]string{
+			"Invoice " + number + " has been issued.",
+			"",
+			"Amount due: " + total,
+			"Due: " + dueAt,
+			"",
+			"Invoice reference: " + invoiceID,
+		}, "\n"),
+		DedupeKey: "invoice_issued:" + invoiceID,
+	}
+}

@@ -48,9 +48,14 @@ func New(pool *store.Pool) *Sweeper {
 // never interpolated, so the retention table cannot be used to point the sweeper at
 // invoices or journal entries.
 var allowedTables = map[string]bool{
-	"login_attempts": true,
-	"auth_events":    true,
-	"gateway_events": true,
+	"login_attempts":          true,
+	"auth_events":             true,
+	"gateway_events":          true,
+	"idempotency_keys":        true,
+	"notification_deliveries": true,
+	"password_resets":         true,
+	"email_verifications":     true,
+	"mfa_challenges":          true,
 }
 
 // allowedColumns is the closed set of age columns.

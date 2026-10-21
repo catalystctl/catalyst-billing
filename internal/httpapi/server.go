@@ -22,14 +22,18 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/catalyst/billing/internal/authn"
+	"github.com/catalyst/billing/internal/approvals"
+	"github.com/catalyst/billing/internal/events"
+	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/ops"
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/portal"
 	"github.com/catalyst/billing/internal/store"
+	"github.com/catalyst/billing/web"
 )
 
 // Config configures the server.
@@ -90,6 +94,24 @@ type Server struct {
 	auth *Auth
 	// portal is nil when the customer portal is not configured.
 	portal *portal.Manager
+	// gateway is nil when no payment gateway is configured; checkout then refuses
+	// with 503 instead of failing halfway through.
+	gateway CheckoutGateway
+	// events is the in-process broker behind GET /api/v1/events. It carries only
+	// events published after their transaction committed.
+	events *events.Broker
+	// rateLimiter is the per-principal fixed-window limiter.
+	rateLimiter *rateLimiter
+	// notify is the durable outbox used by the account lifecycle flows.
+	notify *notify.Queue
+	// approvals handles the second signature on high-value actions.
+	approvals *approvals.Service
+	// web serves the embedded frontend; nil for an API-only deployment.
+	web *web.Handler
+
+	// routes is the table built by the most recent Handler() call.
+	routesMu sync.Mutex
+	routes   []Route
 
 	webhooksReceived  atomic.Int64
 	webhooksDuplicate atomic.Int64
@@ -103,15 +125,42 @@ type Server struct {
 // verifier may be nil when no gateway is configured; the webhook endpoint then
 // refuses requests instead of silently accepting unsigned events.
 func New(cfg Config, pool *store.Pool, inbox *payments.Inbox, provider, account string, verifier payments.Verifier) *Server {
-	return &Server{
-		cfg:       cfg.withDefaults(),
-		pool:      pool,
-		inbox:     inbox,
-		provider:  provider,
-		account:   account,
-		verifier:  verifier,
-		startedAt: time.Now().UTC(),
+	s := &Server{
+		cfg:         cfg.withDefaults(),
+		pool:        pool,
+		inbox:       inbox,
+		provider:    provider,
+		account:     account,
+		verifier:    verifier,
+		events:      events.NewBroker(),
+		rateLimiter: newRateLimiter(),
+		startedAt:   time.Now().UTC(),
 	}
+	if pool != nil {
+		s.notify = notify.NewQueue(pool)
+		if svc, err := approvals.New(pool); err == nil {
+			s.approvals = svc
+		} else {
+			// A malformed threshold is a configuration error, not a reason to refuse to
+			// start: the endpoints that need approvals report that it is unavailable, and
+			// every other screen keeps working.
+			s.cfg.Logger.Error("approval thresholds are invalid; approvals are unavailable",
+				"error", err)
+		}
+	}
+	return s
+}
+
+// WithRateLimits overrides the per-class budgets. It exists for tests and for an
+// installation that wants a different ceiling; zero values keep the defaults.
+func (s *Server) WithRateLimits(limits map[RateClass]int) *Server {
+	if s.rateLimiter == nil {
+		s.rateLimiter = newRateLimiter()
+	}
+	for class, limit := range limits {
+		s.rateLimiter.limits[class] = limit
+	}
+	return s
 }
 
 // WithPortal attaches the customer portal.
@@ -128,38 +177,29 @@ func (s *Server) WithAuth(a *Auth) *Server {
 }
 
 // Handler returns the root handler.
+// Handler returns the root handler.
+//
+// The route table is built by the registrars (see routes.go), so this function does
+// not enumerate endpoints: it applies the outermost middleware and hands the mux to
+// the server. loadSession is deliberately global rather than per-route: public
+// endpoints must still work when a stale cookie is present, and a route that needs an
+// identity is guarded by its own declaration.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
+	mux, _ := s.buildRoutes()
+	return s.withRecovery(s.withRequestLog(s.withCorrelation(s.loadSession(mux))))
+}
 
-	// Public: liveness and readiness must work without a session, and a webhook
-	// arrives with a signature rather than a cookie.
-	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.HandleFunc("GET /readyz", s.handleReady)
-	mux.HandleFunc("POST /webhooks/{provider}", s.handleWebhook)
-
-	// Metrics and the operator overview expose money and customer counts, so they
-	// require staff authentication. They used to be public.
-	mux.HandleFunc("GET /metrics", s.requireStaff(s.handleMetrics))
-	mux.HandleFunc("GET /api/v1/ops/overview",
-		s.requirePermission(authn.PermReportRead, s.handleOverview))
-
-	// Authentication.
-	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
-	mux.HandleFunc("POST /api/v1/auth/logout", s.requireCSRF(s.handleLogout))
-	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
-
-	// Customer portal. Identity comes from the session, never from the URL, and the
-	// cancellation action additionally requires a CSRF token because it changes
-	// state.
-	mux.HandleFunc("GET /api/v1/portal/overview", s.requirePermission(authn.PermCustomerReadSelf, s.handlePortalOverview))
-	mux.HandleFunc("GET /api/v1/portal/invoices", s.requirePermission(authn.PermInvoiceReadSelf, s.handlePortalInvoices))
-	mux.HandleFunc("GET /api/v1/portal/invoices/{id}", s.requirePermission(authn.PermInvoiceReadSelf, s.handlePortalInvoice))
-	mux.HandleFunc("GET /api/v1/portal/services", s.requirePermission(authn.PermServiceReadSelf, s.handlePortalServices))
-	mux.HandleFunc("GET /api/v1/portal/services/{id}", s.requirePermission(authn.PermServiceReadSelf, s.handlePortalService))
-	mux.HandleFunc("POST /api/v1/portal/services/{id}/cancel",
-		s.requireCSRF(s.requirePermission(authn.PermServiceCancelSelf, s.handlePortalCancel)))
-
-	return s.withRecovery(s.withRequestLog(s.loadSession(mux)))
+// withCorrelation attaches a request id to the context and echoes it in the response,
+// so a support report ("it failed at 12:04") can be tied to one audit row.
+func (s *Server) withCorrelation(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.Header.Get("X-Request-Id"))
+		if id == "" || len(id) > 128 {
+			id = newCorrelationID()
+		}
+		w.Header().Set("X-Request-Id", id)
+		next.ServeHTTP(w, r.WithContext(withCorrelationID(r.Context(), id)))
+	})
 }
 
 // handleHealth is liveness only: it must not touch the database, because a

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Catalyst Billing</title>
+    <link rel="stylesheet" href="/assets/app.9c1f3b7a.css" />
+  </head>
+  <body>
+    <!--
+      This is the application shell, not the application.
+
+      It is embedded and served so that the serving layer (SPA fallback, cache policy,
+      CSP, security headers) is real and testable while the interface is still being
+      built. It contains no inline script: the Content-Security-Policy forbids it, and a
+      shell that needed an exemption would be the wrong shell.
+    -->
+    <main id="app">
+      <h1>Catalyst Billing</h1>
+      <p class="status" id="status">Checking your session…</p>
+      <p class="hint">
+        The HTTP API is available under <code>/api/v1</code>. This page is the embedded
+        shell that proves the serving layer works; the interface itself is not built yet.
+      </p>
+      <nav>
+        <a href="/api/v1/auth/me">Who am I</a>
+        <a href="/api/v1/ops/overview">Operator overview</a>
+        <a href="/healthz">Liveness</a>
+      </nav>
+    </main>
+    <script src="/assets/app.4f2c1d9e.js" type="module"></script>
+  </body>
+</html>

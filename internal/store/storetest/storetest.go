@@ -384,14 +384,20 @@ func Truncate(ctx context.Context, conn *pgx.Conn) error {
 	// from the migrated state regardless of what the previous one did.
 	if _, err := conn.Exec(ctx, `
 		DELETE FROM retention_policies WHERE table_name NOT IN
-			('login_attempts', 'auth_events', 'gateway_events')`); err != nil {
+			('login_attempts', 'auth_events', 'gateway_events', 'idempotency_keys',
+			 'notification_deliveries', 'password_resets', 'email_verifications', 'mfa_challenges')`); err != nil {
 		return fmt.Errorf("restore retention policies: %w", err)
 	}
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO retention_policies (table_name, keep_for, age_column) VALUES
-			('login_attempts', interval '1 day',    'created_at'),
-			('auth_events',    interval '180 days', 'created_at'),
-			('gateway_events', interval '400 days', 'received_at')
+			('login_attempts',          interval '1 day',    'created_at'),
+			('auth_events',             interval '180 days', 'created_at'),
+			('gateway_events',          interval '400 days', 'received_at'),
+			('idempotency_keys',        interval '2 days',   'created_at'),
+			('notification_deliveries', interval '180 days', 'created_at'),
+			('password_resets',         interval '7 days',   'created_at'),
+			('email_verifications',     interval '7 days',   'created_at'),
+			('mfa_challenges',          interval '1 day',    'created_at')
 		ON CONFLICT (table_name) DO UPDATE
 			SET keep_for = EXCLUDED.keep_for, age_column = EXCLUDED.age_column`); err != nil {
 		return fmt.Errorf("restore retention policies: %w", err)
@@ -461,6 +467,19 @@ var ReferenceTables = []string{
 
 // Tables lists the mutable application tables to truncate, children first.
 var Tables = []string{
+	"audit_events",
+	"idempotency_keys",
+	"approvals",
+	"api_keys",
+	"mfa_challenges",
+	"mfa_recovery_codes",
+	"mfa_credentials",
+	"email_verifications",
+	"password_resets",
+	"notification_deliveries",
+	"credit_applications",
+	"credit_notes",
+	"billing_profiles",
 	"auth_events",
 	"login_attempts",
 	"sessions",

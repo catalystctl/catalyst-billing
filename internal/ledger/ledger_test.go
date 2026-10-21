@@ -269,3 +269,120 @@ func TestFailedPostWritesNothing(t *testing.T) {
 		t.Fatalf("%d transactions and %d entries left behind", transactions, entries)
 	}
 }
+
+// Balances must be derived from the entries, not cached anywhere, and must be zero
+// for an account with no activity rather than an error.
+func TestBalancesAndNet(t *testing.T) {
+	pool, customerID := newPool(t)
+	ctx := context.Background()
+
+	// No activity yet.
+	empty, err := ledger.Balances(ctx, pool, ledger.AccountReceivable, usd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !empty.Debits.IsZero() || !empty.Credits.IsZero() {
+		t.Fatalf("empty balance = %+v, want zero", empty)
+	}
+	net, err := empty.Net()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !net.IsZero() {
+		t.Fatalf("net of an empty account = %s, want zero", net)
+	}
+
+	// Post something and read it back.
+	if err := pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, _, err := ledger.Post(ctx, tx, posting(refID(t, pool), customerID, 1500, 1500))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ar, err := ledger.Balances(ctx, pool, ledger.AccountReceivable, usd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ar.Debits.Minor() != 1500 || ar.Credits.Minor() != 0 {
+		t.Fatalf("receivable = %s debits / %s credits, want 15.00 / 0.00", ar.Debits, ar.Credits)
+	}
+	if net, err = ar.Net(); err != nil {
+		t.Fatal(err)
+	}
+	if net.Minor() != 1500 {
+		t.Fatalf("net = %s, want 15.00", net)
+	}
+
+	// The revenue account holds the credit side.
+	rev, err := ledger.Balances(ctx, pool, ledger.AccountRevenue, usd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.Credits.Minor() != 1500 {
+		t.Fatalf("revenue credits = %s, want 15.00", rev.Credits)
+	}
+
+	// A different currency sees nothing.
+	eur := money.MustLookupCurrency("EUR")
+	other, err := ledger.Balances(ctx, pool, ledger.AccountReceivable, eur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !other.Debits.IsZero() {
+		t.Fatalf("EUR receivable = %s, want zero", other.Debits)
+	}
+}
+
+// A customer with no entries owes nothing, and one customer's balance never
+// includes another's.
+func TestReceivableIsPerCustomer(t *testing.T) {
+	pool, alice := newPool(t)
+	ctx := context.Background()
+
+	var bob string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO customers (email, name) VALUES ('bob@example.test', 'B') RETURNING id`).
+		Scan(&bob); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, _, err := ledger.Post(ctx, tx, posting(refID(t, pool), alice, 1000, 1000)); err != nil {
+			return err
+		}
+		_, _, err := ledger.Post(ctx, tx, posting(refID(t, pool), bob, 2500, 2500))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	aliceOwed, err := ledger.ReceivableForCustomer(ctx, pool, alice, usd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aliceOwed.Minor() != 1000 {
+		t.Fatalf("alice owes %s, want 10.00", aliceOwed)
+	}
+	bobOwed, err := ledger.ReceivableForCustomer(ctx, pool, bob, usd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bobOwed.Minor() != 2500 {
+		t.Fatalf("bob owes %s, want 25.00", bobOwed)
+	}
+
+	// A customer with no postings owes nothing.
+	var stranger string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO customers (email, name) VALUES ('s@example.test', 'S') RETURNING id`).
+		Scan(&stranger); err != nil {
+		t.Fatal(err)
+	}
+	owed, err := ledger.ReceivableForCustomer(ctx, pool, stranger, usd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owed.IsZero() {
+		t.Fatalf("stranger owes %s, want zero", owed)
+	}
+}

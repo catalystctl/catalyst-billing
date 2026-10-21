@@ -94,13 +94,23 @@ fmt-check:
 	@unformatted="$$(gofmt -l . | grep -v '^$$' || true)"; \
 	if [ -n "$$unformatted" ]; then echo "not gofmt'd:"; echo "$$unformatted"; exit 1; fi
 
-# Coverage across the whole module, including the database-backed suites.
+# Coverage across the packages that have tests. Packages without a test file are
+# excluded on purpose: `go test ./...` fails on them with "no such tool covdata",
+# and listing them explicitly makes it obvious which packages are untested rather
+# than hiding that behind a broken report.
+# Every package that has tests. `go test ./...` would fail with "no such tool
+# covdata" for packages without a test file, which makes the report useless exactly
+# where it matters.
+# storetest has no tests of its own, and fulfilment/payments are exercised entirely
+# through the end-to-end suite, so they carry no test files to instrument.
+COVER_PKGS := $(shell go list ./internal/... | grep -v -e '/storetest$$' -e '/fulfilment$$' -e '/payments$$')
+
 cover:
-	BILLING_REQUIRE_DB=1 go test ./... -count=1 -coverprofile=coverage.out -covermode=atomic
+	BILLING_REQUIRE_DB=1 go test $(COVER_PKGS) -count=1 -coverprofile=coverage.out -covermode=atomic
 	go tool cover -func=coverage.out | tail -1
 
-# Show per-package coverage, worst first: the packages at the bottom are where a
-# missing test is most likely to be hiding a defect.
+# Per-package coverage, worst first: the packages at the bottom are where a missing
+# test is most likely to be hiding a defect.
 cover-report:
-	BILLING_REQUIRE_DB=1 go test ./... -count=1 -coverprofile=coverage.out -covermode=atomic >/dev/null
-	go tool cover -func=coverage.out | grep -v '^total' | sort -t$'\t' -k3 -n | head -20
+	BILLING_REQUIRE_DB=1 go test $(COVER_PKGS) -count=1 -coverprofile=coverage.out -covermode=atomic >/dev/null
+	go tool cover -func=coverage.out | grep -v '^total' | awk '{print $$3, $$1}' | sort -n | head -20

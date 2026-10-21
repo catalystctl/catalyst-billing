@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -262,5 +263,61 @@ func TestPortalAmountsAreIntegerMinorUnits(t *testing.T) {
 	}
 	if got := body.Balance.Outstanding[0].Display; got != "12.34 USD" {
 		t.Fatalf("display = %q", got)
+	}
+}
+
+// With no portal configured, the endpoints must say so rather than panic or fall
+// open.
+func TestPortalNotConfigured(t *testing.T) {
+	env := newAuthEnv(t) // no WithPortal
+	env.createUser(t, "u@example.test", "a good password 1", "")
+	cookie, _ := env.login(t, "u@example.test", "a good password 1")
+
+	for _, path := range []string{
+		"/api/v1/portal/overview",
+		"/api/v1/portal/invoices",
+		"/api/v1/portal/services",
+	} {
+		rec := env.do(t, http.MethodGet, path, cookie, "")
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s without a portal: status %d, want 503", path, rec.Code)
+		}
+	}
+}
+
+// A malformed identifier is a 404, not a 500 carrying database detail.
+func TestPortalMalformedIDIsNotFound(t *testing.T) {
+	env := newAuthEnv(t)
+	env.srv.WithPortal(portal.New(env.pool))
+	env.createTenant(t, "u@example.test", "12.00")
+	cookie, _ := env.login(t, "u@example.test", "a long enough password")
+
+	for _, id := range []string{"not-a-uuid", "123", "00000000-0000-0000-0000-00000000000"} {
+		for _, path := range []string{
+			"/api/v1/portal/invoices/" + id,
+			"/api/v1/portal/services/" + id,
+		} {
+			rec := env.do(t, http.MethodGet, path, cookie, "")
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s: status %d, want 404", path, rec.Code)
+			}
+			if bytes.Contains(rec.Body.Bytes(), []byte("SQLSTATE")) ||
+				bytes.Contains(rec.Body.Bytes(), []byte("uuid")) {
+				t.Fatalf("%s leaked database detail: %s", path, rec.Body)
+			}
+		}
+	}
+}
+
+// A customer with no billing record gets a clear answer, not a 500.
+func TestPortalWithoutCustomerRecord(t *testing.T) {
+	env := newAuthEnv(t)
+	env.srv.WithPortal(portal.New(env.pool))
+	env.createUser(t, "staff@example.test", "a good password 1", "administrator")
+	cookie, _ := env.login(t, "staff@example.test", "a good password 1")
+
+	rec := env.do(t, http.MethodGet, "/api/v1/portal/overview", cookie, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("staff without a customer record: status %d, want 404", rec.Code)
 	}
 }

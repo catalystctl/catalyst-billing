@@ -1,0 +1,68 @@
+# Compose project for the billing panel's dedicated PostgreSQL instance.
+#
+# This is a development and test cluster. It is deliberately separate from any
+# other Postgres on the host so that `go test` can create, truncate and drop
+# whatever it likes without touching another project's data.
+#
+#   podman-compose up -d          start
+#   podman-compose down           stop (data survives in the named volume)
+#   podman-compose down -v        stop and destroy all data
+#
+# Port 5442 is used instead of 5432/5433 so a stale host or container Postgres
+# cannot be reached by accident.
+
+name: catalyst-billing
+
+services:
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    container_name: billing-postgres
+    restart: unless-stopped
+    environment:
+      # `billing` owns the databases and runs migrations. `billing_app` is the
+      # runtime role and deliberately has no DDL rights (see init/01-roles.sql).
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-billing}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-catalyst_billing}
+      APP_ROLE_PASSWORD: ${APP_ROLE_PASSWORD:?set APP_ROLE_PASSWORD in .env}
+      # Deterministic collation so ORDER BY and unique indexes behave the same
+      # on every developer machine and in CI.
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      POSTGRES_INITDB_ARGS: --locale=C.UTF-8 --encoding=UTF8
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5442}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./internal/store/devdb/init:/docker-entrypoint-initdb.d:ro
+    # Settings that matter for billing correctness rather than raw speed:
+    #   * timezone UTC so every stored instant is unambiguous;
+    #   * checkpoints/fsync left at their durable defaults, because a test that
+    #     only passes when fsync is off is not evidence of anything.
+    # `full_page_writes` stays on for the same reason.
+    command:
+      - postgres
+      - -c
+      - timezone=UTC
+      - -c
+      - log_timezone=UTC
+      - -c
+      - max_connections=200
+      - -c
+      - log_min_duration_statement=200ms
+      - -c
+      - log_lock_waits=on
+      - -c
+      - deadlock_timeout=200ms
+      - -c
+      - track_io_timing=on
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -h 127.0.0.1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    stop_grace_period: 30s
+
+volumes:
+  pgdata:

@@ -41,6 +41,8 @@ work is cheap when there is nothing to do.
 | provisioning | 5s | reaps expired leases, executes operations, reconciles unknowns | `BILLING_DISABLE_PROVISIONING` |
 | dunning | 60s | escalates overdue invoices, resumes paid ones, decides suspensions | `BILLING_DISABLE_SUSPENSION` |
 | renewals | 60s | invoices due subscriptions | — |
+| refund-reconcile | 2m | resolves refunds whose provider call timed out | `BILLING_DISABLE_REFUND_RECONCILE` |
+| notifications | 15s | drains the durable message outbox | `BILLING_DISABLE_NOTIFICATIONS` |
 | retention | 6h | deletes bookkeeping rows past their policy | — |
 
 The kill switches are the emergency brake: a misbehaving gateway or provisioner can
@@ -96,6 +98,54 @@ act again, correct the cause, then resume. A hold outranks every automated rule.
 `billing doctor` reports why it will not start. Payments and provisioning stay
 queued; nothing is lost, and nothing is retried blindly.
 
+**A refund's outcome is unknown.** The refund row is `unknown` (or `created`, if the
+process died before the provider answered) and nothing was posted. The
+`refund-reconcile` job asks the provider again using the same operation key, so asking
+is safe: a refund that actually succeeded comes back as the original result rather
+than as a second refund. Do not retry it by hand with a new key — that is how a
+customer is refunded twice. If it stays `unknown` after several passes, the provider's
+dashboard is the authority; record what you find and let the next pass settle it.
+
+**A refund was made twice.** It cannot happen through the panel: the refundable amount
+is computed under a row lock on the payment and the intent row is committed before the
+provider is called, so a concurrent second request sees the first as already spent.
+If the provider shows two refunds, one of them did not come from here — check
+`refunds.operation_key`, which is prefixed `refund_` for every refund this product
+initiated.
+
+## What cannot be deleted, and why
+
+Four tables refuse mutation by trigger, not by convention:
+
+| Table | Refuses | Why |
+|---|---|---|
+| `journal_entries`, `journal_transactions` | UPDATE, DELETE | the books are evidence; a correction is a reversal posting |
+| `audit_events` | UPDATE, DELETE | an audit trail that can be edited is not an audit trail |
+| `credit_notes` (once issued) | UPDATE of the amount, number or snapshot; DELETE | the document the customer received cannot be rewritten |
+| `invoices` (once issued) | UPDATE of the snapshot | same reason: a tax authority already has a copy |
+
+This is deliberate and it has an operational consequence worth stating plainly: **you
+cannot delete these rows, even as the owner, without disabling the trigger.** A test
+run that needs to remove them must do so inside a transaction that disables the trigger
+and re-enables it before commit:
+
+```sql
+BEGIN;
+ALTER TABLE audit_events DISABLE TRIGGER audit_events_append_only;
+-- ... the deletions ...
+ALTER TABLE audit_events ENABLE TRIGGER audit_events_append_only;
+COMMIT;
+```
+
+PostgreSQL DDL is transactional, so an aborted cleanup leaves every trigger enabled.
+That is the safe failure: a mistake in the cleanup script cannot leave the guarantees
+switched off.
+
+If you find yourself doing this on a production database, stop. Deleting financial
+records is a decision for the business and its accountant, not a maintenance task. The
+supported correction is a counter-document: a credit note, a refund, or a reversal
+posting.
+
 ## Backup and restore
 
 Back up together, or the restore is not a restore:
@@ -130,7 +180,28 @@ make test-race    # with the race detector
 make verify       # fmt + vet + race, the same sequence CI runs
 make cover        # coverage across the packages that have tests
 make db-unlock    # clear a test lock leaked by a killed run
+make openapi      # regenerate api/openapi.yaml from the route table
+make openapi-check # fail if the document has drifted from the router
+make client       # regenerate the typed client in api/client
+make smoke        # drive the served UI in a real headless browser
 ```
+
+`make verify` runs formatting, vet, the OpenAPI and client checks, the suite under the
+race detector, and the browser smoke test. The smoke test needs a headless Chromium
+(`CHROME` overrides the path) and asserts things only a browser can prove: that the
+module executes under the Content-Security-Policy, that a client-side route survives a
+reload, and that an injected inline script is refused.
+
+### Configuration the gate added
+
+| Variable | Purpose |
+|---|---|
+| `BILLING_PUBLIC_URL` | the origin used in reset links and gateway redirects. Never derived from the `Host` header: a redirect built from it is a redirect an attacker can aim at their own domain. |
+| `BILLING_SMTP_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_FROM` | the mail relay. With no host, messages are written to the log and still recorded, so a development reset flow is observable end to end. |
+| `BILLING_MFA_KEY` / `BILLING_MFA_KEY_ID` | the 32-byte AES-256-GCM key that seals TOTP secrets, and its id so a rotation can re-wrap without re-enrolling. Enrolment refuses when it is absent rather than storing a secret in the clear. |
+| `BILLING_REFUND_APPROVAL_THRESHOLD_MINOR` | refunds at or above this need a second staff signature. `0` disables the check deliberately. A malformed value fails at startup rather than falling back, because falling back would quietly lower the bar. |
+| `BILLING_TERMINATION_BATCH_APPROVAL` | the batch size at which a termination batch needs a second signature. |
+| `BILLING_CHECKOUT_SUCCESS_URL` / `_CANCEL_URL` | where the gateway returns the customer. |
 
 Each test package gets its own database (`billing_test_<pkg>`), created on demand.
 The harness fails if a migration adds a table it has not classified, because an

@@ -1,9 +1,23 @@
 # Web UI gate — implementation specification
 
-Every task listed in the README's gate tables is specified here so that it can be
-implemented without a design conversation. Each entry states what already exists,
-the schema it needs, the endpoint contract, the rules the implementation must
-enforce, the errors it must return, and the tests that prove it.
+**Status: closed.** Every task below is implemented, tested against a real database, and
+reachable through the route table. This document is kept as the record of *why* each rule
+exists — the reasoning is the expensive part, and it is what a future change has to argue
+against.
+
+Two notes on reading it:
+
+* Where the implementation departs from the text below, the departure is recorded in
+  "Deviations found while implementing" at the end of the relevant gate, together with the
+  bug that forced it. Two of those were real defects the specified design would have had.
+* The contracts here are also generated: `api/openapi.yaml` is produced from the route table
+  by `make openapi`, and a test fails if it drifts. When the prose below and the document
+  disagree, the document is what the server does.
+
+Every task was originally specified so it could be implemented without a design
+conversation. Each entry states what already exists, the schema it needs, the endpoint
+contract, the rules the implementation must enforce, the errors it must return, and the
+tests that prove it.
 
 Conventions used throughout, matching the existing code:
 
@@ -975,3 +989,63 @@ Strict-Transport-Security: max-age=31536000; includeSubDomains   (only when Secu
 
 **Tests:** a browser test asserts the policy is present and that an inline script is
 refused; `/api/unknown` still returns JSON.
+
+
+---
+
+# Deviations found while implementing
+
+Three departures from the specification above, each forced by a defect the tests found. They
+are recorded here rather than silently applied, because a future reader comparing the two
+would otherwise think the document was wrong all along.
+
+## D1 — the refundable calculation must count the intent row
+
+The specification said the refundable balance is the payment amount minus refunds in
+`succeeded` and the in-flight states. That is not sufficient, because the design also
+requires the intent row to be committed **before** the provider is called. Between those two
+moments the row is `created`, which the specified set excluded.
+
+The consequence, found by `TestConcurrentRefundsProduceOne`: two simultaneous full-amount
+refunds each computed the whole balance as available, and both proceeded. The customer was
+refunded twice.
+
+The fix is to include `created` in the sum. `failed` stays excluded, because a definitive
+refusal means nothing moved and the balance is genuinely available again.
+
+## D2 — the operation key must not be derived from the amount
+
+The specification derived the refund's provider operation key from
+`(payment, amount, requester)` so a retry would be a replay. That makes two *deliberate*
+partial refunds of the same amount indistinguishable: the second is treated as a replay of
+the first and silently does nothing, so the operator sees a success and the customer receives
+half of what was promised.
+
+The key now comes from the request's `Idempotency-Key`. A caller that wants retry safety
+supplies the same key twice; one that wants a second refund supplies a new one. When absent, a
+random key is generated and recorded, so the reconciler can still ask the provider the same
+question later.
+
+## D3 — `suspension_decisions` needed actor columns
+
+The specification had the dunning engine record a decision, but the table had no columns for
+*who* decided. That was fine while every decision was automatic. A hold override is the first
+decision a human can make, and a human decision with no named human is not auditable — the
+next incident review asks "who approved suspending a customer who was in a dispute" and the
+answer has to be a person.
+
+Migration `0017_hold_override.sql` adds `decided_by`, `approved_by` and `override_hold`, with a
+`CHECK` that the two actors differ and that an override names both. The engine takes an
+`audit.Auditor` so the row commits inside the same transaction as the operation.
+
+## Also worth knowing
+
+* **Audit attribution.** The audit row for a money action is written by the domain service
+  inside its own transaction, through an `audit.Auditor` the HTTP layer supplies. Without that
+  the row had no correlation id and no source address, which are the fields an incident review
+  actually uses. A password reset is attributed to the account whose token was redeemed, not to
+  `system`.
+* **Customer search.** `pg_trgm` is used when it can be installed, with a `lower(name)` prefix
+  index as the fallback, so a deployment that cannot install extensions still migrates.
+* **The event broker is process-local.** Documented as a limit rather than papered over: a
+  correct multi-instance feed needs a durable log and a per-client cursor.

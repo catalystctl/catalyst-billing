@@ -52,6 +52,10 @@ type Adapter interface {
 	Name() string
 	Capabilities() []string
 	Create(ctx context.Context, req CreateRequest) (extproto.ProvisionCreateResult, error)
+	// Lookup answers authoritatively whether a resource exists for an operation
+	// key. Reconciliation depends on it, because a create replay only works while
+	// the adapter still remembers the key.
+	Lookup(ctx context.Context, operationKey string) (extproto.ProvisionLookupResult, error)
 	Inspect(ctx context.Context, externalID string) (extproto.ProvisionInspectResult, error)
 	Suspend(ctx context.Context, externalID, reason string) (extproto.ProvisionStateResult, error)
 	Resume(ctx context.Context, externalID string) (extproto.ProvisionStateResult, error)
@@ -94,9 +98,13 @@ type Worker struct {
 	// review. A provisioning call that fails deterministically must not retry
 	// forever and mask the problem.
 	MaxAttempts int
-	// CallTimeout bounds one adapter call. It is shorter than the queue lease so
-	// an unknown outcome is noticed while the worker still owns the operation.
+	// CallTimeout bounds one adapter call. It is shorter than LeaseDuration so a
+	// hung call is classified as unknown before the lease expires.
 	CallTimeout time.Duration
+	// LeaseDuration is how long a claim is honoured. A worker that dies mid-call
+	// leaves the row 'running' with an expired lease, and Reap returns it to the
+	// queue instead of leaving it wedged forever.
+	LeaseDuration time.Duration
 	// Now is injectable for tests.
 	Now func() time.Time
 }
@@ -104,11 +112,12 @@ type Worker struct {
 // NewWorker constructs a Worker.
 func NewWorker(pool *store.Pool, adapter Adapter) *Worker {
 	return &Worker{
-		pool:        pool,
-		adapter:     adapter,
-		MaxAttempts: 5,
-		CallTimeout: 30 * time.Second,
-		Now:         func() time.Time { return time.Now().UTC() },
+		pool:          pool,
+		adapter:       adapter,
+		MaxAttempts:   5,
+		CallTimeout:   30 * time.Second,
+		LeaseDuration: 5 * time.Minute,
+		Now:           func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -162,9 +171,10 @@ func (w *Worker) claim(ctx context.Context) (Operation, error) {
 			FROM service_operations o
 			JOIN services s ON s.id = o.service_id
 			WHERE o.status IN ('queued', 'retry_wait')
+		   OR (o.status = 'running' AND o.started_at < $1)
 			ORDER BY o.created_at
 			FOR UPDATE OF o SKIP LOCKED
-			LIMIT 1`).
+			LIMIT 1`, w.Now().Add(-w.LeaseDuration)).
 			Scan(&op.ID, &op.ServiceID, &op.Kind, &op.OperationKey, &op.Generation, &op.Status,
 				&op.Attempts, &op.ServiceStatus, &op.ServiceExternal, &op.ProductID,
 				&op.CustomerID, &op.Config)
@@ -176,8 +186,8 @@ func (w *Worker) claim(ctx context.Context) (Operation, error) {
 		}
 		_, err = tx.Exec(ctx, `
 			UPDATE service_operations
-			SET status = 'running', started_at = COALESCE(started_at, now()), attempts = attempts + 1
-			WHERE id = $1`, op.ID)
+			SET status = 'running', started_at = $2, attempts = attempts + 1
+			WHERE id = $1`, op.ID, w.Now())
 		if err != nil {
 			return fmt.Errorf("provisioning: mark operation running: %w", err)
 		}
@@ -230,6 +240,13 @@ func (w *Worker) execute(ctx context.Context, op Operation) (Result, error) {
 		})
 		if err != nil {
 			return w.recordFailure(ctx, op, res, err)
+		}
+		if out.ExternalID == "" {
+			// "Provisioned" with no resource id is not provisioned: every later
+			// suspend or terminate would call the adapter with an empty target.
+			res.Outcome = "needs_review"
+			res.Detail = "adapter reported success but returned no external id"
+			return res, w.finish(ctx, op, res)
 		}
 		res.Outcome = "succeeded"
 		res.ExternalID = out.ExternalID
@@ -413,6 +430,32 @@ func (w *Worker) serviceGeneration(ctx context.Context, serviceID string) (int64
 	return gen, nil
 }
 
+// Reap returns operations whose lease expired to the queue.
+//
+// A worker that dies between claim and finish leaves a row 'running'. Without
+// this, that row is invisible to Run (which claims queued/retry_wait) and to
+// Reconcile (which reads unknown), so the customer is wedged forever and the
+// dashboard shows nothing wrong. Reaping is bounded and records why it acted.
+func (w *Worker) Reap(ctx context.Context) (int, error) {
+	cutoff := w.Now().Add(-w.LeaseDuration)
+	tag, err := w.pool.Exec(ctx, `
+		UPDATE service_operations
+		SET status = 'retry_wait',
+		    last_error = 'lease expired: the worker stopped mid-call, so the outcome is unknown',
+		    finished_at = NULL
+		WHERE status = 'running' AND started_at < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("provisioning: reap expired leases: %w", err)
+	}
+	n := int(tag.RowsAffected())
+	if n > 0 {
+		// These operations are re-run with the same operation key, so the adapter's
+		// idempotency (or its authoritative lookup) prevents a duplicate.
+		return n, nil
+	}
+	return 0, nil
+}
+
 // Reconcile resolves operations whose remote outcome is unknown.
 //
 // For a create, the adapter is asked what exists for the operation key; if the
@@ -486,27 +529,36 @@ func (w *Worker) reconcileOne(ctx context.Context, op Operation) (Result, error)
 		return res, w.finish(ctx, op, res)
 	}
 
-	// Ask the adapter to look up the operation key by creating again: a
-	// conforming adapter returns the existing resource for a replayed key instead
-	// of creating a second one. That is the contract the SDK enforces and the
-	// fixtures implement.
+	// Ask the adapter whether a resource exists for this operation key. This is a
+	// read, not a create: replaying create would provision a second server
+	// whenever the adapter no longer remembers the key, which is exactly the
+	// situation that produced the unknown outcome in the first place.
 	callCtx, cancel := context.WithTimeout(ctx, w.CallTimeout)
 	defer cancel()
-	out, err := w.adapter.Create(callCtx, CreateRequest{
-		OperationKey: op.OperationKey,
-		ServiceID:    op.ServiceID,
-		PlanID:       op.planID(),
-		Region:       op.region(),
-		Quantity:     1,
-		Metadata:     map[string]string{"service_id": op.ServiceID, "customer_id": op.CustomerID},
-	})
+	found, err := w.adapter.Lookup(callCtx, op.OperationKey)
 	if err != nil {
+		// The adapter cannot answer. That is not "it does not exist", so the
+		// operation stays in review rather than being retried into a duplicate.
 		res.Outcome = "needs_review"
-		res.Detail = "reconciliation call failed: " + err.Error()
+		res.Detail = "lookup failed, so the remote state is still unknown: " + err.Error()
+		return res, w.finish(ctx, op, res)
+	}
+	if !found.Found {
+		// The adapter is certain nothing exists: the create never took effect, so
+		// it is safe to try again with the same key.
+		res.Outcome = "retry_wait"
+		res.Detail = "adapter confirms no resource exists for this operation key"
+		return res, w.finish(ctx, op, res)
+	}
+	if found.ExternalID == "" {
+		// Exists but unidentifiable: a human must resolve it, because a later
+		// suspend or terminate would have no target.
+		res.Outcome = "needs_review"
+		res.Detail = "adapter reports a resource exists but returned no external id"
 		return res, w.finish(ctx, op, res)
 	}
 	res.Outcome = "succeeded"
-	res.ExternalID = out.ExternalID
-	res.Detail = "reconciled through an idempotent replay"
+	res.ExternalID = found.ExternalID
+	res.Detail = "reconciled by authoritative lookup"
 	return res, w.finish(ctx, op, res)
 }

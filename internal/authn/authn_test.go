@@ -27,9 +27,6 @@ func newHasher(t *testing.T) *authn.Hasher {
 	if err != nil {
 		t.Fatalf("hasher: %v", err)
 	}
-	if err := authn.InitDummyHash(h); err != nil {
-		t.Fatalf("dummy hash: %v", err)
-	}
 	return h
 }
 
@@ -54,7 +51,11 @@ func newFixture(t *testing.T) *fixture {
 	}
 	cfg := authn.DefaultConfig()
 	cfg.Now = func() time.Time { return f.now }
-	f.svc = authn.New(pool, h, cfg)
+	svc, err := authn.New(pool, h, cfg)
+	if err != nil {
+		t.Fatalf("authn.New: %v", err)
+	}
+	f.svc = svc
 
 	hash, err := h.Hash("correct horse battery staple")
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
@@ -34,17 +35,24 @@ type jobSpec struct {
 func buildJobs(pool *store.Pool, logger *slog.Logger) []jobSpec {
 	var jobs []jobSpec
 
+	// One long-lived client per extension, launched on first use and reused.
+	//
+	// Relaunching the extension on every tick would discard its in-process state,
+	// including the idempotency records that make a retried create safe. The
+	// process is supervised (see client.go): a crash is detected, the pending call
+	// fails with ErrCrashed, and the next use launches a fresh process.
+	clients := &extensionCache{ctx: context.Background()}
+
 	// ---- payments: turn inbox events into applied payments -------------------
 	if !killSwitch("BILLING_DISABLE_PAYMENTS") {
 		jobs = append(jobs, jobSpec{
 			name:     "payments",
 			interval: 5 * time.Second,
 			run: func(ctx context.Context) error {
-				gw, closeFn, err := launchGateway(ctx)
+				gw, err := clients.gateway()
 				if err != nil {
 					return err
 				}
-				defer closeFn()
 
 				inbox := payments.NewInbox(pool)
 				// Amount verification is always attached in production: a settled
@@ -70,13 +78,19 @@ func buildJobs(pool *store.Pool, logger *slog.Logger) []jobSpec {
 			name:     "provisioning",
 			interval: 5 * time.Second,
 			run: func(ctx context.Context) error {
-				prov, closeFn, err := launchProvisioner(ctx)
+				prov, err := clients.provisioner()
 				if err != nil {
 					return err
 				}
-				defer closeFn()
 
 				worker := provisioning.NewWorker(pool, prov)
+				// Reap first: an operation stranded in 'running' by a worker that
+				// died mid-call is otherwise invisible to both Run and Reconcile.
+				if n, rerr := worker.Reap(ctx); rerr != nil {
+					logger.Error("reap expired leases", "error", rerr)
+				} else if n > 0 {
+					logger.Warn("reaped expired operation leases", "count", n)
+				}
 				results, err := worker.Run(ctx, 20)
 				for _, r := range results {
 					logger.Info("provisioning operation", "operation_id", r.OperationID,
@@ -157,44 +171,67 @@ func buildJobs(pool *store.Pool, logger *slog.Logger) []jobSpec {
 	return jobs
 }
 
-// killSwitch reports whether a subsystem is disabled by the environment.
-func killSwitch(key string) bool {
-	v := envOr(key, "")
-	return v == "1" || v == "true" || v == "yes"
+// extensionCache keeps one client per configured extension for the life of the
+// worker process.
+type extensionCache struct {
+	ctx context.Context
+	mu  sync.Mutex
+	gw  *gatewayExtension
+	gwC *extproto.Client
+	pr  *provExtension
+	prC *extproto.Client
 }
 
-// launchGateway starts the configured payment extension.
-func launchGateway(ctx context.Context) (payments.Gateway, func(), error) {
+func (c *extensionCache) gateway() (*gatewayExtension, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gw != nil {
+		return c.gw, nil
+	}
 	path := envOr("BILLING_GATEWAY_EXTENSION", "")
 	if path == "" {
-		return nil, nil, errMissingConfig("BILLING_GATEWAY_EXTENSION")
+		return nil, errMissingConfig("BILLING_GATEWAY_EXTENSION")
 	}
-	client, err := extproto.Launch(ctx, extproto.Spec{
+	client, err := extproto.Launch(c.ctx, extproto.Spec{
 		Path:        path,
 		CoreVersion: version,
 		CallTimeout: 30 * time.Second,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return gatewayExtension{client: client}, func() { _ = client.Close() }, nil
+	c.gwC = client
+	c.gw = &gatewayExtension{client: client}
+	return c.gw, nil
 }
 
-// launchProvisioner starts the configured infrastructure extension.
-func launchProvisioner(ctx context.Context) (provisioning.Adapter, func(), error) {
+func (c *extensionCache) provisioner() (*provExtension, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pr != nil {
+		return c.pr, nil
+	}
 	path := envOr("BILLING_PROVISIONER_EXTENSION", "")
 	if path == "" {
-		return nil, nil, errMissingConfig("BILLING_PROVISIONER_EXTENSION")
+		return nil, errMissingConfig("BILLING_PROVISIONER_EXTENSION")
 	}
-	client, err := extproto.Launch(ctx, extproto.Spec{
+	client, err := extproto.Launch(c.ctx, extproto.Spec{
 		Path:        path,
 		CoreVersion: version,
 		CallTimeout: 60 * time.Second,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return provExtension{client: client}, func() { _ = client.Close() }, nil
+	c.prC = client
+	c.pr = &provExtension{client: client}
+	return c.pr, nil
+}
+
+// killSwitch reports whether a subsystem is disabled by the environment.
+func killSwitch(key string) bool {
+	v := envOr(key, "")
+	return v == "1" || v == "true" || v == "yes"
 }
 
 // suspendEligible enqueues suspension for services whose invoice is exhausted and

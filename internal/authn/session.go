@@ -104,11 +104,21 @@ type Service struct {
 	pool   *store.Pool
 	hasher *Hasher
 	cfg    Config
+	// dummy is the hash verified against when the account does not exist, so the
+	// response time does not reveal whether an address is registered.
+	dummy string
 }
 
 // New constructs a Service.
-func New(pool *store.Pool, hasher *Hasher, cfg Config) *Service {
-	return &Service{pool: pool, hasher: hasher, cfg: cfg.withDefaults()}
+//
+// It returns an error because the dummy hash has to be generated, and failing to
+// generate one would silently make the login endpoint an account oracle.
+func New(pool *store.Pool, hasher *Hasher, cfg Config) (*Service, error) {
+	dummy, err := prepareDummy(hasher)
+	if err != nil {
+		return nil, fmt.Errorf("authn: prepare dummy hash: %w", err)
+	}
+	return &Service{pool: pool, hasher: hasher, cfg: cfg.withDefaults(), dummy: dummy}, nil
 }
 
 // LoginRequest is one authentication attempt.
@@ -160,7 +170,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResult, err
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Burn comparable time so a missing account is not faster than a wrong
 		// password. The result of this verification is deliberately ignored.
-		_, _ = s.hasher.Verify(req.Password, dummyHash)
+		_, _ = s.hasher.Verify(req.Password, s.dummy)
 		s.recordAttempt(ctx, "account", email, false)
 		s.recordAttempt(ctx, "address", req.IP, false)
 		s.audit(ctx, "", "login_failed", "unknown account", req.IP)
@@ -509,25 +519,23 @@ func (s *Service) audit(ctx context.Context, userID, event, detail, ip string) {
 }
 
 // dummyHash is a valid Argon2id hash of a random value, used to make the
-// unknown-account path cost the same as the wrong-password path. It is generated
-// once at startup so it always matches the configured parameters.
-var dummyHash string
+// unknown-account path cost the same as the wrong-password path.
+//
+// It is generated once per Service rather than stored in a package variable: a
+// package-level cache would be written at startup and read by every request, which
+// is a data race under concurrency (and was caught by the race detector).
+func (s *Service) dummyHash() string { return s.dummy }
 
-// InitDummyHash prepares the constant-time dummy hash. It must be called once at
-// startup with the same parameters the service uses.
-func InitDummyHash(h *Hasher) error {
+// prepareDummy generates the dummy hash for this service. It is called by New, so
+// a Service is always ready to authenticate.
+func prepareDummy(h *Hasher) (string, error) {
 	// 32 random bytes, base64'd: long enough to pass the length check and not a
 	// password anyone could guess.
 	secret, err := newToken(32)
 	if err != nil {
-		return err
+		return "", err
 	}
-	hash, err := h.Hash(secret)
-	if err != nil {
-		return err
-	}
-	dummyHash = hash
-	return nil
+	return h.Hash(secret)
 }
 
 func truncate(s string, n int) string {

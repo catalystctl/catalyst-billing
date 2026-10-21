@@ -29,10 +29,15 @@ const (
 	MethodGatewayRefund         = "gateway.refund"
 	MethodGatewayVerifyWebhook  = "gateway.verify_webhook"
 
-	MethodProvisionerDescribe  = "provisioner.describe"
-	MethodProvisionerValidate  = "provisioner.validate"
-	MethodProvisionerCreate    = "provisioner.create"
-	MethodProvisionerInspect   = "provisioner.inspect"
+	MethodProvisionerDescribe = "provisioner.describe"
+	MethodProvisionerValidate = "provisioner.validate"
+	MethodProvisionerCreate   = "provisioner.create"
+	MethodProvisionerInspect  = "provisioner.inspect"
+	// MethodProvisionerLookup answers "does a resource already exist for this
+	// operation key?". It is what makes reconciliation authoritative: replaying
+	// create only works if the adapter still remembers the key, and after a
+	// restart it may not.
+	MethodProvisionerLookup    = "provisioner.lookup"
 	MethodProvisionerSuspend   = "provisioner.suspend"
 	MethodProvisionerResume    = "provisioner.resume"
 	MethodProvisionerTerminate = "provisioner.terminate"
@@ -55,6 +60,7 @@ const (
 	CapProvisionerValidate  = MethodProvisionerValidate
 	CapProvisionerCreate    = MethodProvisionerCreate
 	CapProvisionerInspect   = MethodProvisionerInspect
+	CapProvisionerLookup    = MethodProvisionerLookup
 	CapProvisionerSuspend   = MethodProvisionerSuspend
 	CapProvisionerResume    = MethodProvisionerResume
 	CapProvisionerTerminate = MethodProvisionerTerminate
@@ -418,6 +424,29 @@ type ProvisionCreateResult struct {
 	PlanID     string         `json:"plan_id"`
 	Region     string         `json:"region"`
 	CreatedAt  time.Time      `json:"created_at"`
+}
+
+// ProvisionLookupParams asks whether a resource already exists for an operation
+// key.
+//
+// This is the authoritative reconciliation question. It is a read, not a create
+// replay: replaying create only returns the existing resource while the adapter
+// still remembers the key, and after a restart it may not, which is how a
+// reconciliation can provision a second server.
+type ProvisionLookupParams struct {
+	OperationKey string `json:"operation_key"`
+}
+
+// ProvisionLookupResult is the answer.
+//
+// Found=false means the adapter is *certain* no resource exists for the key. An
+// adapter that cannot answer must return an error instead, so the core never
+// mistakes "I do not know" for "it does not exist".
+type ProvisionLookupResult struct {
+	Found      bool   `json:"found"`
+	ExternalID string `json:"external_id,omitempty"`
+	// Status is the adapter's own state name, when it has one.
+	Status string `json:"status,omitempty"`
 }
 
 // ProvisionInspectParams looks up one resource. Pure read.

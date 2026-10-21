@@ -73,7 +73,8 @@ func (a *Applier) ApplySettledPayment(ctx context.Context, tx pgx.Tx, p payments
 func (a *Applier) enqueueProvisioning(ctx context.Context, tx pgx.Tx, invoiceID string) error {
 	rows, err := tx.Query(ctx, `
 		SELECT oi.id, o.customer_id, oi.price_version_id, p.id AS product_id,
-		       COALESCE(pv.provision_plan, ''), COALESCE(pv.provision_region, '')
+		       COALESCE(pv.provision_plan, ''), COALESCE(pv.provision_region, ''),
+		       i.subscription_id
 		FROM invoices i
 		JOIN orders o ON o.id = i.order_id
 		JOIN order_items oi ON oi.order_id = o.id
@@ -92,11 +93,16 @@ func (a *Applier) enqueueProvisioning(ctx context.Context, tx pgx.Tx, invoiceID 
 		ProductID  string
 		PlanID     string
 		Region     string
+		// SubscriptionID links the service to its billing schedule. Without it,
+		// dunning cannot find which invoice funds the service, so automated
+		// suspension never happens.
+		SubscriptionID *string
 	}
 	var items []item
 	for rows.Next() {
 		var it item
-		if err := rows.Scan(&it.ID, &it.CustomerID, &it.PriceID, &it.ProductID, &it.PlanID, &it.Region); err != nil {
+		if err := rows.Scan(&it.ID, &it.CustomerID, &it.PriceID, &it.ProductID,
+			&it.PlanID, &it.Region, &it.SubscriptionID); err != nil {
 			rows.Close()
 			return fmt.Errorf("fulfilment: scan order item: %w", err)
 		}
@@ -137,9 +143,9 @@ func (a *Applier) enqueueProvisioning(ctx context.Context, tx pgx.Tx, invoiceID 
 
 		var serviceID string
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO services (customer_id, product_id, status, generation, config)
-			VALUES ($1, $2, 'pending', 1, $3)
-			RETURNING id`, it.CustomerID, it.ProductID, config).Scan(&serviceID); err != nil {
+			INSERT INTO services (customer_id, subscription_id, product_id, status, generation, config)
+			VALUES ($1, $2, $3, 'pending', 1, $4)
+			RETURNING id`, it.CustomerID, it.SubscriptionID, it.ProductID, config).Scan(&serviceID); err != nil {
 			return fmt.Errorf("fulfilment: create service: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `

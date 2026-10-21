@@ -47,6 +47,13 @@ func (p provExtension) Create(ctx context.Context, req provisioning.CreateReques
 	return out, err
 }
 
+func (p provExtension) Lookup(ctx context.Context, operationKey string) (extproto.ProvisionLookupResult, error) {
+	var out extproto.ProvisionLookupResult
+	err := p.client.Call(ctx, extproto.MethodProvisionerLookup,
+		&extproto.ProvisionLookupParams{OperationKey: operationKey}, &out)
+	return out, err
+}
+
 func (p provExtension) Inspect(ctx context.Context, externalID string) (extproto.ProvisionInspectResult, error) {
 	var out extproto.ProvisionInspectResult
 	err := p.client.Call(ctx, "provisioner.inspect",

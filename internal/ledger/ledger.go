@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/store"
@@ -176,6 +177,12 @@ func (p Posting) Validate() error {
 // Poster writes postings inside an existing transaction.
 type Poster struct{}
 
+// ErrReferenceReused is returned when a reference is re-posted with different
+// content. Silently returning the existing transaction would tell the caller its
+// entries were written when they were not, which is how a payment can be marked
+// applied with no ledger behind it.
+var ErrReferenceReused = errors.New("ledger: reference already posted with different content")
+
 // Post writes a posting, or returns the existing transaction id if this exact
 // economic event was already posted.
 //
@@ -195,14 +202,19 @@ func Post(ctx context.Context, tx pgx.Tx, p Posting) (transactionID string, alre
 		string(p.Kind), string(p.Reference), p.ReferenceID, p.Currency.Code(),
 	).Scan(&transactionID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// Already posted: fetch the existing transaction so the caller can
-		// report it without creating a duplicate.
+		// Already posted. The existing transaction is only accepted if it has the
+		// same shape: same currency, same number of entries, and the same accounts
+		// with the same amounts. A re-post of the same event is a no-op; a
+		// different event sharing a reference is a bug that must not be hidden.
 		if err := tx.QueryRow(ctx, `
 			SELECT id FROM journal_transactions
 			WHERE kind = $1 AND reference_type = $2 AND reference_id = $3`,
 			string(p.Kind), string(p.Reference), p.ReferenceID,
 		).Scan(&transactionID); err != nil {
 			return "", false, fmt.Errorf("ledger: look up existing posting: %w", err)
+		}
+		if err := samePosting(ctx, tx, transactionID, p); err != nil {
+			return "", false, err
 		}
 		return transactionID, true, nil
 	}
@@ -334,4 +346,83 @@ func nullableUUID(s string) any {
 		return nil
 	}
 	return s
+}
+
+// samePosting verifies that an existing journal transaction has exactly the
+// entries the caller is trying to post.
+func samePosting(ctx context.Context, tx pgx.Tx, transactionID string, p Posting) error {
+	var currency string
+	if err := tx.QueryRow(ctx,
+		`SELECT currency FROM journal_transactions WHERE id = $1`, transactionID).
+		Scan(&currency); err != nil {
+		return fmt.Errorf("ledger: read existing posting: %w", err)
+	}
+	if currency != p.Currency.Code() {
+		return fmt.Errorf("%w: existing posting is in %s, this one is %s",
+			ErrReferenceReused, currency, p.Currency.Code())
+	}
+
+	type row struct {
+		account string
+		debit   int64
+		credit  int64
+	}
+	want := make([]row, 0, len(p.Debits)+len(p.Credits))
+	for _, e := range p.Debits {
+		want = append(want, row{e.Account, e.Amount.Minor(), 0})
+	}
+	for _, e := range p.Credits {
+		want = append(want, row{e.Account, 0, e.Amount.Minor()})
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT account_code, debit_minor, credit_minor
+		FROM journal_entries WHERE transaction_id = $1
+		ORDER BY account_code, debit_minor, credit_minor`, transactionID)
+	if err != nil {
+		return fmt.Errorf("ledger: read existing entries: %w", err)
+	}
+	defer rows.Close()
+
+	got := make([]row, 0, len(want))
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.account, &r.debit, &r.credit); err != nil {
+			return fmt.Errorf("ledger: scan existing entry: %w", err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("ledger: read existing entries: %w", err)
+	}
+
+	// Compare as multisets: the insertion order of entries is not part of the
+	// posting's identity.
+	sortRows := func(rs []row) {
+		sort.Slice(rs, func(i, j int) bool {
+			if rs[i].account != rs[j].account {
+				return rs[i].account < rs[j].account
+			}
+			if rs[i].debit != rs[j].debit {
+				return rs[i].debit < rs[j].debit
+			}
+			return rs[i].credit < rs[j].credit
+		})
+	}
+	sortRows(want)
+	sortRows(got)
+
+	if len(want) != len(got) {
+		return fmt.Errorf("%w: existing posting has %d entries, this one has %d",
+			ErrReferenceReused, len(got), len(want))
+	}
+	for i := range want {
+		if want[i] != got[i] {
+			return fmt.Errorf("%w: entry %d is %s/%d/%d, this posting wants %s/%d/%d",
+				ErrReferenceReused, i,
+				got[i].account, got[i].debit, got[i].credit,
+				want[i].account, want[i].debit, want[i].credit)
+		}
+	}
+	return nil
 }

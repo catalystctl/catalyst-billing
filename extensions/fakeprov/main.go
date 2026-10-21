@@ -124,7 +124,9 @@ type resource struct {
 	SubscriptionID string    `json:"subscription_id"`
 	CreatedAt      time.Time `json:"created_at"`
 	SuspendedAt    time.Time `json:"suspended_at,omitzero"`
-	OperationKey   string    `json:"-"`
+	// OperationKey is recorded on the resource itself, so the key survives a
+	// process restart and lookup can answer authoritatively.
+	OperationKey string `json:"operation_key"`
 }
 
 // stateResult is the answer to suspend, resume and terminate.
@@ -261,6 +263,8 @@ func (s *server) handle(req *request) reply {
 		return s.create(req)
 	case "provisioner.inspect":
 		return s.inspect(req)
+	case "provisioner.lookup":
+		return s.lookup(req)
 	case "provisioner.suspend":
 		return s.transition(req, "suspended")
 	case "provisioner.resume":
@@ -411,6 +415,50 @@ func (s *server) create(req *request) reply {
 }
 
 // newResource allocates a resource and records it under the operation key.
+// lookupResult is the answer to provisioner.lookup. The fixture does not import
+// the core module: it speaks the wire format only, which is what keeps the
+// protocol the contract rather than the Go types.
+type lookupResult struct {
+	Found      bool   `json:"found"`
+	ExternalID string `json:"external_id,omitempty"`
+	Status     string `json:"status,omitempty"`
+}
+
+// lookup answers "does a resource already exist for this operation key?".
+//
+// This is the authoritative reconciliation path. It searches the *backend* (every
+// resource this fixture has ever created in this process), not the in-memory
+// idempotency map, because the whole point of reconciliation is to survive a
+// restart that cleared that map.
+func (s *server) lookup(req *request) reply {
+	var p struct {
+		OperationKey string `json:"operation_key"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "lookup params: " + err.Error()}}
+	}
+	if p.OperationKey == "" {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "operation_key is required"}}
+	}
+
+	// Fast path: this process still remembers the key.
+	if id, ok := s.byKey[p.OperationKey]; ok {
+		if res, ok := s.resources[id]; ok {
+			s.byKey[p.OperationKey] = id
+			return reply{result: lookupResult{Found: true, ExternalID: res.ExternalID, Status: res.Status}}
+		}
+	}
+	// Authoritative path: the backend records the operation key on the resource
+	// itself, so a restart cannot lose it.
+	for _, res := range s.resources {
+		if res.OperationKey == p.OperationKey {
+			s.byKey[p.OperationKey] = res.ExternalID
+			return reply{result: lookupResult{Found: true, ExternalID: res.ExternalID, Status: res.Status}}
+		}
+	}
+	return reply{result: lookupResult{Found: false}}
+}
+
 func (s *server) newResource(key, planID, region string, quantity int32, subscriptionID string) *resource {
 	s.seq++
 	res := &resource{

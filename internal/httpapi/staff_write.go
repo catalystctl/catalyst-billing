@@ -168,17 +168,17 @@ func (s *Server) handleSuspend(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		elig, err := s.dunning.OverrideHold(r.Context(), dunning.OverrideRequest{
-			ServiceID:   id,
-			Reason:      req.Reason,
-			RequestedBy: user.ID,
-			ApprovedBy:  approval.ApprovedBy,
-		})
+		elig, err := s.dunning.WithAuditor(s.dunningAuditor(r, req.Reason)).
+			OverrideHold(r.Context(), dunning.OverrideRequest{
+				ServiceID:   id,
+				Reason:      req.Reason,
+				RequestedBy: user.ID,
+				ApprovedBy:  approval.ApprovedBy,
+			})
 		if err != nil {
 			s.writeDunningError(w, r, err)
 			return
 		}
-		s.recordSuspensionAudit(r, id, elig.Generation, "hold override: "+req.Reason)
 		s.publishServiceEvent(r, id, "service.suspend_requested", map[string]any{
 			"service_id": id, "generation": elig.Generation, "override_hold": true,
 		})
@@ -186,12 +186,12 @@ func (s *Server) handleSuspend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	elig, err := s.dunning.RequestSuspension(r.Context(), id)
+	elig, err := s.dunning.WithAuditor(s.dunningAuditor(r, req.Reason)).
+		RequestSuspension(r.Context(), id)
 	if err != nil {
 		s.writeDunningError(w, r, err)
 		return
 	}
-	s.recordSuspensionAudit(r, id, elig.Generation, req.Reason)
 	s.publishServiceEvent(r, id, "service.suspend_requested", map[string]any{
 		"service_id": id, "generation": elig.Generation,
 	})
@@ -260,12 +260,12 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	elig, err := s.dunning.RequestResume(r.Context(), id)
+	elig, err := s.dunning.WithAuditor(s.dunningAuditor(r, req.Reason)).
+		RequestResume(r.Context(), id)
 	if err != nil {
 		s.writeDunningError(w, r, err)
 		return
 	}
-	s.recordSuspensionAudit(r, id, elig.Generation, "resume: "+req.Reason)
 	s.publishServiceEvent(r, id, "service.resume_requested", map[string]any{
 		"service_id": id, "generation": elig.Generation,
 	})
@@ -395,30 +395,33 @@ func (s *Server) writeDunningError(w http.ResponseWriter, r *http.Request, err e
 	}
 }
 
-// recordSuspensionAudit writes the audit row in its own transaction.
+// dunningAuditor returns an auditor that writes the audit row inside the engine's transaction.
 //
-// The engine's enqueue path owns its transaction, so the audit row cannot join it without
-// changing the engine's signature. Writing it immediately afterwards is the honest
-// alternative, and the alternative — no audit row — is worse: the operation exists either way,
-// and an operation with no record of who asked for it is unauditable.
-func (s *Server) recordSuspensionAudit(r *http.Request, serviceID string, generation int64, reason string) {
-	action := "service.suspend"
-	if r.URL.Path[len(r.URL.Path)-6:] == "resume" {
-		action = "service.resume"
+// This is what makes F1 true for the service actions: the row that says who suspended a service
+// commits with the operation, so there is no window in which the operation exists and its record
+// does not.
+func (s *Server) dunningAuditor(r *http.Request, reason string) dunning.Auditor {
+	return requestAuditor{server: s, request: r, reason: reason}
+}
+
+// requestAuditor binds an audit write to one request's actor and correlation id.
+type requestAuditor struct {
+	server  *Server
+	request *http.Request
+	reason  string
+}
+
+// RecordAction implements dunning.Auditor.
+func (a requestAuditor) RecordAction(ctx context.Context, tx pgx.Tx, action, serviceID string,
+	generation int64, reason string) error {
+	if reason == "" {
+		reason = a.reason
 	}
-	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
-		return audit.Record(ctx, tx, s.auditEvent(r, action, "service", serviceID,
-			audit.OutcomeSuccess).WithChanges(map[string]any{
-			"reason":     reason,
-			"generation": generation,
-		}))
-	})
-	if err != nil {
-		// The action succeeded. Failing the response now would tell the operator it did not,
-		// and they would retry. Log the gap instead so it is visible.
-		s.cfg.Logger.ErrorContext(r.Context(), "audit write failed after a service action",
-			"service_id", serviceID, "action", action, "error", err)
-	}
+	return audit.Record(ctx, tx, a.server.auditEvent(a.request, action, "service", serviceID,
+		audit.OutcomeSuccess).WithChanges(map[string]any{
+		"reason":     reason,
+		"generation": generation,
+	}))
 }
 
 // publishServiceEvent sends an event scoped to the customer who owns the service.

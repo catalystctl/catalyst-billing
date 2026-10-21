@@ -3,7 +3,7 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build clean openapi openapi-check client
+.PHONY: help db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build clean openapi openapi-check client smoke
 
 help:
 	@echo "db-up      start the dedicated Postgres (compose.yaml, port 5442)"
@@ -18,6 +18,7 @@ help:
 	@echo "openapi    regenerate api/openapi.yaml from the router"
 	@echo "openapi-check  fail if api/openapi.yaml is out of date with the router"
 	@echo "client     regenerate the typed client from api/openapi.yaml"
+	@echo "smoke      drive the served UI in a real headless browser"
 
 include .env
 export
@@ -103,12 +104,17 @@ client-check: openapi-check
 	go run ./cmd/apiclient -out ./api/client -check
 	go build ./api/client/...
 
+smoke: build
+	SMOKE_PORT=$${SMOKE_PORT:-18099} bash scripts/browser-smoke.sh
+
 clean:
 	rm -rf bin
 
 # Full verification: the same sequence CI runs, minus the network-dependent
 # scanners. Run this before calling anything done.
-verify: fmt-check vet openapi-check client-check test-race
+# The browser smoke test is part of verify: the UI is only proven by a browser, and a check
+# nobody runs is a check that rots.
+verify: fmt-check vet openapi-check client-check test-race smoke
 	@echo "verify: ok"
 
 fmt-check:

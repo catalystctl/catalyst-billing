@@ -298,3 +298,72 @@ func TestOperationIDFor(t *testing.T) {
 		t.Fatal("a nonexistent operation was found")
 	}
 }
+
+// failingAuditor makes the audit write fail, so the test can prove the operation was not enqueued.
+type failingAuditor struct{}
+
+func (failingAuditor) RecordAction(context.Context, pgx.Tx, string, string, int64, string) error {
+	return errors.New("audit write refused")
+}
+
+// recordingAuditor captures what it was asked to record.
+type recordingAuditor struct {
+	actions     []string
+	serviceIDs  []string
+	generations []int64
+}
+
+func (r *recordingAuditor) RecordAction(_ context.Context, _ pgx.Tx, action, serviceID string,
+	generation int64, _ string) error {
+	r.actions = append(r.actions, action)
+	r.serviceIDs = append(r.serviceIDs, serviceID)
+	r.generations = append(r.generations, generation)
+	return nil
+}
+
+// The audit row commits with the operation, not after it: a failing audit write must leave no
+// operation behind, or the record and the change could disagree.
+func TestAuditCommitsWithTheOperation(t *testing.T) {
+	e := newHoldEnv(t)
+	_, err := e.engine.WithAuditor(failingAuditor{}).RequestSuspension(context.Background(), e.serviceID)
+	if err == nil {
+		t.Fatal("the suspension succeeded despite a failing audit write")
+	}
+
+	var n int
+	if err := e.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM service_operations WHERE service_id = $1 AND kind = 'suspend'`,
+		e.serviceID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d suspension(s) survived a rolled-back audit write", n)
+	}
+}
+
+// The auditor sees the action, the service and the generation.
+func TestAuditorReceivesTheAction(t *testing.T) {
+	e := newHoldEnv(t)
+	rec := &recordingAuditor{}
+	elig, err := e.engine.WithAuditor(rec).RequestSuspension(context.Background(), e.serviceID)
+	if err != nil {
+		t.Fatalf("RequestSuspension: %v", err)
+	}
+	if len(rec.actions) != 1 || rec.actions[0] != "service.suspend" {
+		t.Fatalf("audited actions = %v", rec.actions)
+	}
+	if rec.serviceIDs[0] != e.serviceID || rec.generations[0] != elig.Generation {
+		t.Fatalf("audited (%s, %d), want (%s, %d)",
+			rec.serviceIDs[0], rec.generations[0], e.serviceID, elig.Generation)
+	}
+
+	// WithAuditor returns a copy: a second call on the original engine must not be audited by the
+	// recorder that was bound to the first.
+	if _, err := e.engine.RequestResume(context.Background(), e.serviceID); err != nil {
+		// The resume may legitimately refuse; what matters is that the recorder saw nothing.
+		_ = err
+	}
+	if len(rec.actions) != 1 {
+		t.Fatalf("the original engine was audited too: %v", rec.actions)
+	}
+}

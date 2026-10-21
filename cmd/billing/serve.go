@@ -17,6 +17,7 @@ import (
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/portal"
 	"github.com/catalyst/billing/internal/store"
+	"github.com/catalyst/billing/web"
 )
 
 // serveConfig is the runtime configuration, read from the environment.
@@ -239,6 +240,15 @@ func cmdServe(args []string) error {
 		WithCheckoutURLs(
 			envOr("BILLING_CHECKOUT_SUCCESS_URL", publicBaseURL()+"/checkout/complete"),
 			envOr("BILLING_CHECKOUT_CANCEL_URL", publicBaseURL()+"/checkout/cancelled"))
+
+	// The embedded frontend. A failure here means the binary was built without its assets, which is
+	// a broken build rather than a runtime condition, so it stops startup instead of serving 404 for
+	// every page.
+	webHandler, err := web.New(strings.HasPrefix(publicBaseURL(), "https://"))
+	if err != nil {
+		return fmt.Errorf("embedded frontend is missing from this build: %w", err)
+	}
+	srv.WithWeb(webHandler)
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Serve(ctx, cfg.addr) }()

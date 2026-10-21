@@ -114,7 +114,7 @@ func (e *Engine) OverrideHold(ctx context.Context, req OverrideRequest) (Eligibi
 
 		out.Eligible = true
 		out.Reason = "hold override approved by a second staff actor"
-		return nil
+		return e.audit(ctx, tx, "service.suspend_override", req.ServiceID, generation, req.Reason)
 	})
 	if err != nil {
 		return Eligibility{}, err

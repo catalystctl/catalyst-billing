@@ -72,6 +72,40 @@ type Engine struct {
 	policy Policy
 	// Now is injectable for tests.
 	Now func() time.Time
+	// auditor, when set, writes an audit row inside the same transaction that enqueues the
+	// operation.
+	//
+	// It is a callback rather than a direct dependency on the audit package so the engine does
+	// not need to know about HTTP identities, and a copy of the engine is given a per-request
+	// auditor (see WithAuditor) rather than the engine holding mutable request state.
+	auditor Auditor
+}
+
+// Auditor records who asked for a service action.
+//
+// It is called inside the enqueue transaction, which is the point: an audit row for a change that
+// rolled back is a lie, and a change with no audit row is a gap.
+type Auditor interface {
+	RecordAction(ctx context.Context, tx pgx.Tx, action, serviceID string, generation int64, reason string) error
+}
+
+// WithAuditor returns a copy of the engine that writes an audit row inside each mutating
+// transaction.
+//
+// A copy, not a mutation: the engine is shared by every request, and an actor set on it would be
+// whichever request happened to set it last.
+func (e *Engine) WithAuditor(a Auditor) *Engine {
+	clone := *e
+	clone.auditor = a
+	return &clone
+}
+
+// audit records the action if an auditor is configured.
+func (e *Engine) audit(ctx context.Context, tx pgx.Tx, action, serviceID string, generation int64, reason string) error {
+	if e.auditor == nil {
+		return nil
+	}
+	return e.auditor.RecordAction(ctx, tx, action, serviceID, generation, reason)
 }
 
 // NewEngine constructs an Engine.
@@ -395,7 +429,7 @@ func (e *Engine) RequestSuspension(ctx context.Context, serviceID string) (Eligi
 			ON CONFLICT (operation_key) DO NOTHING`, serviceID, key, generation); err != nil {
 			return fmt.Errorf("dunning: enqueue suspension: %w", err)
 		}
-		return nil
+		return e.audit(ctx, tx, "service.suspend", serviceID, generation, "")
 	})
 	if err != nil {
 		return elig, err
@@ -492,7 +526,10 @@ func (e *Engine) RequestResume(ctx context.Context, serviceID string) (Eligibili
 		}
 		out.Eligible = true
 		out.Reason = "nothing is owed and no hold applies"
-		return recordDecision(ctx, tx, out, "suspend")
+		if err := recordDecision(ctx, tx, out, "suspend"); err != nil {
+			return err
+		}
+		return e.audit(ctx, tx, "service.resume", serviceID, generation, "")
 	})
 	if err != nil {
 		return Eligibility{}, err

@@ -269,9 +269,15 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 			return err
 		}
 		if price.AnchorDay != sub.Anchor.Day {
-			// A catalog change must not silently move a live schedule.
-			return fmt.Errorf("renewal: price version anchor day %d does not match subscription %d",
+			// The subscription owns its schedule: a catalog edit must not move a live
+			// billing date. Returning an error here would wedge the subscription
+			// forever (every run would fail the same way), so the subscription's
+			// anchor wins and the divergence is reported for review instead.
+			out.Outcome = OutcomeNeedsReview
+			out.Detail = fmt.Sprintf(
+				"price version anchor day %d differs from subscription anchor day %d; billing used the subscription's anchor",
 				price.AnchorDay, sub.Anchor.Day)
+			return e.record(ctx, tx, runID, sub.ID, period.Key(), out)
 		}
 
 		lines := []billing.Line{{

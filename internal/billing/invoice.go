@@ -358,8 +358,13 @@ func (s *Issuer) Issue(ctx context.Context, tx pgx.Tx, invoiceID string, series 
 		return Issued{}, err
 	}
 
+	// An issued invoice must always have a due date. Without one, dunning can never
+	// see it, so it would stay open forever and no reminder would ever fire.
 	if _, err := tx.Exec(ctx, `
-		UPDATE invoices SET status = 'open', number = $2, issued_at = now() WHERE id = $1`,
+		UPDATE invoices
+		SET status = 'open', number = $2, issued_at = now(),
+		    due_at = COALESCE(due_at, now() + interval '7 days')
+		WHERE id = $1`,
 		invoiceID, number.Format(),
 	); err != nil {
 		return Issued{}, fmt.Errorf("billing: mark invoice issued: %w", err)

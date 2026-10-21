@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/ledger"
@@ -674,5 +675,24 @@ func TestInvalidRequestsRejected(t *testing.T) {
 	})
 	if !errors.Is(err, billing.ErrCurrencyMismatch) {
 		t.Fatalf("mixed currency: got %v, want ErrCurrencyMismatch", err)
+	}
+}
+
+// An issued invoice always has a due date: without one, dunning never sees it and
+// it stays open forever.
+func TestIssuedInvoiceAlwaysHasDueDate(t *testing.T) {
+	w := newWorld(t, noTax())
+	req := w.request(line("VPS Small monthly", "12.00", 1000))
+	req.DueAt = time.Time{} // deliberately unset
+
+	issued := w.issue(t, req)
+
+	var dueAt *time.Time
+	if err := w.pool.QueryRow(context.Background(),
+		`SELECT due_at FROM invoices WHERE id = $1`, issued.InvoiceID).Scan(&dueAt); err != nil {
+		t.Fatal(err)
+	}
+	if dueAt == nil {
+		t.Fatal("issued invoice has no due date, so dunning can never act on it")
 	}
 }

@@ -462,3 +462,38 @@ func TestRenewalRunIsRecorded(t *testing.T) {
 		t.Fatalf("%d renewal events, want 1", outcomes)
 	}
 }
+
+// A catalog edit that changes the anchor day must not wedge the subscription: the
+// subscription owns its schedule, so billing proceeds and the divergence is
+// reported for review rather than failing every run forever.
+func TestAnchorDivergenceDoesNotWedgeRenewal(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+
+	// The price version now claims a different anchor day.
+	if _, err := h.pool.Exec(context.Background(),
+		`UPDATE price_versions SET anchor_day = 15`); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := h.engine.Run(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("run must not fail on anchor divergence: %v", err)
+	}
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeNeedsReview {
+		t.Fatalf("results = %+v, want one needs_review", results)
+	}
+	// No invoice was issued on a schedule the customer never agreed to.
+	if n := h.invoiceCount(t); n != 0 {
+		t.Fatalf("%d invoices issued despite the divergence, want 0", n)
+	}
+	// The subscription is untouched, so it is still visible for a human to fix.
+	var version int64
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT version FROM subscriptions`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 {
+		t.Fatalf("subscription version = %d, want 1 (unchanged)", version)
+	}
+}

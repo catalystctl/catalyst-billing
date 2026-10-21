@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/store"
 )
 
@@ -67,6 +68,63 @@ func run(args []string) error {
 		usage(os.Stderr)
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
+}
+
+// extensionChecks launches each configured extension and verifies the handshake.
+//
+// A handshake failure is reported with the extension's stderr, because "the
+// extension did not start" is never actionable on its own.
+func extensionChecks(ctx context.Context) []check {
+	var out []check
+
+	for _, spec := range []struct {
+		name   string
+		envKey string
+		method string
+	}{
+		{"gateway_extension", "BILLING_GATEWAY_EXTENSION", "gateway.describe"},
+		{"provisioner_extension", "BILLING_PROVISIONER_EXTENSION", "provisioner.describe"},
+	} {
+		path := strings.TrimSpace(os.Getenv(spec.envKey))
+		if path == "" {
+			out = append(out, check{
+				Name:   spec.name,
+				OK:     false,
+				Detail: spec.envKey + " is not set",
+			})
+			continue
+		}
+
+		launchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		client, err := extproto.Launch(launchCtx, extproto.Spec{
+			Path:        path,
+			CoreVersion: version,
+			CallTimeout: 5 * time.Second,
+		})
+		if err != nil {
+			cancel()
+			// Launch failed, so there is no client to read stderr from. The error
+			// already carries the reason the handshake or the exec failed.
+			out = append(out, check{Name: spec.name, OK: false, Detail: err.Error()})
+			continue
+		}
+		// The handshake already happened in Launch; describe confirms the method
+		// set the core depends on is actually implemented.
+		var desc map[string]any
+		err = client.Call(launchCtx, spec.method, struct{}{}, &desc)
+		caps := client.Capabilities()
+		cancel()
+		_ = client.Close()
+
+		if err != nil {
+			out = append(out, check{Name: spec.name, OK: false,
+				Detail: fmt.Sprintf("%s failed: %v", spec.method, err)})
+			continue
+		}
+		out = append(out, check{Name: spec.name, OK: true,
+			Detail: fmt.Sprintf("%s, %d capabilities", client.Info().Name, len(caps))})
+	}
+	return out
 }
 
 func usage(w *os.File) {
@@ -148,6 +206,13 @@ func cmdMigrate(args []string) error {
 
 // ------------------------------------------------------------------- doctor --
 
+// check is one doctor result.
+type check struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"`
+}
+
 // cmdDoctor checks the things that are cheap to check and expensive to discover
 // in production: database connectivity, schema state, role privileges and the
 // presence of required configuration.
@@ -161,11 +226,6 @@ func cmdDoctor(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	type check struct {
-		Name   string `json:"name"`
-		OK     bool   `json:"ok"`
-		Detail string `json:"detail,omitempty"`
-	}
 	var checks []check
 	add := func(name string, ok bool, detail string) {
 		checks = append(checks, check{Name: name, OK: ok, Detail: detail})
@@ -250,6 +310,10 @@ func cmdDoctor(args []string) error {
 			}
 		}
 	}
+
+	// Extensions: a broken executable means payments or provisioning silently
+	// stop, so it is checked here rather than discovered from a stalled queue.
+	checks = append(checks, extensionChecks(ctx)...)
 
 	failed := 0
 	for _, c := range checks {

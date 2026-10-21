@@ -271,7 +271,7 @@ func TestOverviewEndpoint(t *testing.T) {
 	var body struct {
 		GeneratedAt string           `json:"generated_at"`
 		Exceptions  []map[string]any `json:"exceptions"`
-		Counts      map[string]int   `json:"counts"`
+		Counts      map[string]any   `json:"counts"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("overview is not valid JSON: %v\n%s", err, rec.Body)
@@ -281,6 +281,10 @@ func TestOverviewEndpoint(t *testing.T) {
 	}
 	if _, ok := body.Counts["customers"]; !ok {
 		t.Fatalf("counts missing customers: %s", rec.Body)
+	}
+	// The availability flag tells a client whether the numbers can be trusted.
+	if _, ok := body.Counts["available"]; !ok {
+		t.Fatalf("counts missing the availability flag: %s", rec.Body)
 	}
 	for _, e := range body.Exceptions {
 		for _, field := range []string{"code", "title", "detail", "severity", "action"} {

@@ -27,6 +27,10 @@ var (
 	ErrAlreadyPaid = errors.New("billing: invoice is already paid")
 	// ErrOverpayment is returned when an allocation exceeds the amount due.
 	ErrOverpayment = errors.New("billing: allocation exceeds the amount due")
+	// ErrPaymentReused is returned when a provider payment id is presented for a
+	// second, different invoice, or with a different amount than it was recorded
+	// with. Allowing either would create money that no provider ever took.
+	ErrPaymentReused = errors.New("billing: provider payment is already applied")
 	// ErrCurrencyMismatch is returned when a payment and invoice differ.
 	ErrCurrencyMismatch = errors.New("billing: currency mismatch")
 	// ErrInvalidInvoice is returned for a malformed invoice request.
@@ -493,14 +497,31 @@ func ApplyPayment(ctx context.Context, tx pgx.Tx, req AllocationRequest) (Alloca
 	duplicate := false
 	if errors.Is(err, pgx.ErrNoRows) {
 		duplicate = true
+
+		// The payment already exists. Its recorded amount and currency are the
+		// truth: the provider took that money once, and it can only ever be
+		// allocated once in total. Presenting the same provider id with a
+		// different amount, or against a second invoice, would mint money that
+		// never existed, so both are refused rather than absorbed.
+		var (
+			existingAmount int64
+			existingCur    string
+		)
 		if err := tx.QueryRow(ctx, `
-			SELECT id FROM payments
+			SELECT id, amount_minor, currency FROM payments
 			WHERE provider = $1 AND provider_account = $2 AND provider_payment_id = $3`,
 			req.Provider, req.ProviderAccount, req.ProviderPaymentID,
-		).Scan(&paymentID); err != nil {
+		).Scan(&paymentID, &existingAmount, &existingCur); err != nil {
 			return AllocationResult{}, fmt.Errorf("billing: load existing payment: %w", err)
 		}
-		// Report the allocation that already exists, if any.
+		if existingAmount != req.Amount.Minor() || existingCur != cur.Code() {
+			return AllocationResult{}, fmt.Errorf(
+				"%w: %s was recorded as %d %s, presented as %d %s",
+				ErrPaymentReused, req.ProviderPaymentID,
+				existingAmount, existingCur, req.Amount.Minor(), cur.Code())
+		}
+
+		// Already applied to this invoice: report it as a duplicate.
 		var allocationID string
 		err := tx.QueryRow(ctx, `
 			SELECT id FROM payment_allocations WHERE payment_id = $1 AND invoice_id = $2`,
@@ -517,9 +538,24 @@ func ApplyPayment(ctx context.Context, tx pgx.Tx, req AllocationRequest) (Alloca
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return AllocationResult{}, fmt.Errorf("billing: look up allocation: %w", err)
 		}
-		// The payment exists but was never allocated to this invoice (for
-		// example it was applied elsewhere, or a previous attempt crashed
-		// between the two writes). Fall through and allocate it.
+
+		// Applied to a different invoice: the payment is spent.
+		var otherInvoice string
+		err = tx.QueryRow(ctx, `
+			SELECT invoice_id FROM payment_allocations WHERE payment_id = $1 LIMIT 1`,
+			paymentID).Scan(&otherInvoice)
+		if err == nil {
+			return AllocationResult{}, fmt.Errorf(
+				"%w: %s is already allocated to invoice %s",
+				ErrPaymentReused, req.ProviderPaymentID, otherInvoice)
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return AllocationResult{}, fmt.Errorf("billing: look up allocation: %w", err)
+		}
+
+		// Recorded but never allocated: a previous attempt crashed between the
+		// payment insert and the allocation. Falling through completes it, which
+		// is exactly the recovery scenario the plan requires.
 	} else if err != nil {
 		return AllocationResult{}, fmt.Errorf("billing: insert payment: %w", err)
 	}

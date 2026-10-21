@@ -3,7 +3,7 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help db-up db-down db-reset db-logs db-psql db-psql-app db-wait migrate test test-race vet fmt build clean
+.PHONY: help db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build clean
 
 help:
 	@echo "db-up      start the dedicated Postgres (compose.yaml, port 5442)"
@@ -12,6 +12,7 @@ help:
 	@echo "db-psql    psql as the owner role (can DDL)"
 	@echo "db-psql-app  psql as the runtime role (cannot DDL)"
 	@echo "migrate    apply pending migrations"
+	@echo "db-unlock  clear a test lock leaked by a killed test run"
 	@echo "test       go test ./... against the real database"
 	@echo "test-race  same, with the race detector"
 
@@ -48,6 +49,15 @@ db-psql:
 	PGPASSWORD=$(POSTGRES_SUPERUSER_PASSWORD) psql -h 127.0.0.1 -p $(POSTGRES_PORT) \
 		-U $(POSTGRES_SUPERUSER) -d $(POSTGRES_DB)
 
+# A killed test binary can leave a session-level advisory lock behind, which
+# would make every later run wait. This clears it explicitly rather than having
+# the harness terminate other backends heuristically.
+db-unlock:
+	@PGPASSWORD=$(POSTGRES_SUPERUSER_PASSWORD) psql -h 127.0.0.1 -p $(POSTGRES_PORT) \
+		-U $(POSTGRES_SUPERUSER) -d $(POSTGRES_DB) -tAc \
+		"select pg_terminate_backend(pid) from pg_locks where locktype='advisory' and objid=2400129460" \
+		| grep -c t || true
+
 db-psql-app:
 	PGPASSWORD=$(APP_ROLE_PASSWORD) psql -h 127.0.0.1 -p $(POSTGRES_PORT) \
 		-U billing_app -d $(POSTGRES_DB)
@@ -64,11 +74,13 @@ vet:
 fmt:
 	gofmt -l -w $$(git ls-files '*.go')
 
+# The integration tests need the cluster and are skipped without it; CI sets
+# BILLING_REQUIRE_DB=1 so a missing database fails instead of silently skipping.
 test:
-	go test ./... -count=1
+	BILLING_REQUIRE_DB=1 go test ./... -count=1
 
 test-race:
-	go test ./... -count=1 -race
+	BILLING_REQUIRE_DB=1 go test ./... -count=1 -race
 
 clean:
 	rm -rf bin

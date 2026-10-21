@@ -148,7 +148,9 @@ func (e *Engine) Run(ctx context.Context, limit int) ([]Result, error) {
 
 	ids, err := e.dueSubscriptionIDs(ctx, now, policy, limit)
 	if err != nil {
-		e.finishRun(ctx, runID, nil, err)
+		if ferr := e.finishRun(ctx, runID, nil, err); ferr != nil {
+			return nil, errors.Join(err, ferr)
+		}
 		return nil, err
 	}
 
@@ -165,7 +167,11 @@ func (e *Engine) Run(ctx context.Context, limit int) ([]Result, error) {
 		results = append(results, res)
 	}
 
-	e.finishRun(ctx, runID, results, runErr)
+	if ferr := e.finishRun(ctx, runID, results, runErr); ferr != nil {
+		// The run's own bookkeeping is part of the contract: a run that cannot
+		// record what it did is a run an operator cannot audit.
+		runErr = errors.Join(runErr, ferr)
+	}
 	return results, runErr
 }
 
@@ -179,7 +185,7 @@ func (e *Engine) dueSubscriptionIDs(ctx context.Context, now time.Time, p Policy
 		SELECT id
 		FROM subscriptions
 		WHERE status IN ('active', 'past_due')
-		  AND next_billing_at <= $1 + make_interval(days => $2)
+		  AND next_billing_at <= $1::timestamptz + make_interval(days => $2::int)
 		ORDER BY next_billing_at
 		LIMIT $3`,
 		now, p.InvoiceLeadDays, limit)
@@ -276,12 +282,12 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 		dueAt := now.AddDate(0, 0, p.PaymentTermsDays)
 
 		req := billing.IssueRequest{
-			CustomerID:   sub.CustomerID,
+			CustomerID:     sub.CustomerID,
 			SubscriptionID: sub.ID,
-			PeriodKey:    period.Key(),
-			Lines:        lines,
-			Merchant:     e.Merchant,
-			Customer:     billing.CustomerDetails{ID: sub.CustomerID},
+			PeriodKey:      period.Key(),
+			Lines:          lines,
+			Merchant:       e.Merchant,
+			Customer:       billing.CustomerDetails{ID: sub.CustomerID},
 			Period: &billing.Period{
 				Start: period.Start.UTC().Format(time.RFC3339),
 				End:   period.End.UTC().Format(time.RFC3339),
@@ -374,7 +380,7 @@ func (e *Engine) record(ctx context.Context, tx pgx.Tx, runID, subscriptionID, p
 	return nil
 }
 
-func (e *Engine) finishRun(ctx context.Context, runID string, results []Result, runErr error) {
+func (e *Engine) finishRun(ctx context.Context, runID string, results []Result, runErr error) error {
 	var invoiced, skipped, review int
 	for _, r := range results {
 		switch r.Outcome {
@@ -393,12 +399,19 @@ func (e *Engine) finishRun(ctx context.Context, runID string, results []Result, 
 	// Use a live context: the run's context may be cancelled by a shutdown, and
 	// the bookkeeping record is exactly what a postmortem needs.
 	ctx = context.WithoutCancel(ctx)
-	_, _ = e.pool.Exec(ctx, `
+	tag, err := e.pool.Exec(ctx, `
 		UPDATE renewal_runs
 		SET finished_at = now(), scanned = $2, invoiced = $3, skipped = $4,
 		    needs_review = $5, error = $6
 		WHERE id = $1`,
 		runID, len(results), invoiced, skipped, review, errText)
+	if err != nil {
+		return fmt.Errorf("renewal: record run %s: %w", runID, err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("renewal: record run %s: %d rows updated", runID, tag.RowsAffected())
+	}
+	return nil
 }
 
 func lockSubscription(ctx context.Context, tx pgx.Tx, id string) (Subscription, error) {
@@ -458,8 +471,9 @@ func loadPrice(ctx context.Context, tx pgx.Tx, priceVersionID string) (price, er
 	if err != nil {
 		return price{}, fmt.Errorf("renewal: load price version: %w", err)
 	}
-	cur, err := money.LookupCurrency(currency)
-	if err != nil || !cur.IsValid() {
+	cur, ok := money.LookupCurrency(currency)
+	if !ok {
+		var err error
 		if cur, err = money.NewCurrency(currency, 2); err != nil {
 			return price{}, fmt.Errorf("renewal: price currency %q: %w", currency, err)
 		}

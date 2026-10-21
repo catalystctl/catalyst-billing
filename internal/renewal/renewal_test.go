@@ -1,0 +1,464 @@
+package renewal_test
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/calendar"
+	"github.com/catalyst/billing/internal/money"
+	"github.com/catalyst/billing/internal/renewal"
+	"github.com/catalyst/billing/internal/store"
+	"github.com/catalyst/billing/internal/store/storetest"
+	"github.com/jackc/pgx/v5"
+)
+
+var usd = money.MustLookupCurrency("USD")
+
+// harnessSeq makes fixture identifiers unique within a test binary.
+var harnessSeq atomic.Int64
+
+type harness struct {
+	pool       *store.Pool
+	engine     *renewal.Engine
+	customerID string
+	productID  string
+	priceID    string
+	now        time.Time
+}
+
+func newHarness(t *testing.T, now time.Time) *harness {
+	t.Helper()
+	pool := storetest.DB(t)
+	ctx := context.Background()
+	h := &harness{pool: pool, now: now}
+
+	pricer := billing.FixedTaxPricer{
+		Rate:     money.MustParseRatio("0%"),
+		Rounding: money.RoundHalfUp,
+		Policy:   "none",
+	}
+	issuer := billing.NewIssuer(pricer)
+	h.engine = renewal.NewEngine(pool, issuer,
+		billing.Merchant{Name: "Catalyst Hosting Ltd", CountryCode: "GB"},
+		"Renews automatically. Cancel any time before the renewal date.")
+	h.engine.Now = func() time.Time { return h.now }
+
+	err := pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// A unique email per harness: one test may build several worlds, and the
+		// schema enforces one account per address.
+		email := fmt.Sprintf("a+%d@example.test", harnessSeq.Add(1))
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO customers (email, name) VALUES ($1, 'A') RETURNING id`, email,
+		).Scan(&h.customerID); err != nil {
+			return err
+		}
+		slug := fmt.Sprintf("vps-%d", harnessSeq.Add(1))
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO products (slug, name) VALUES ($1, 'VPS') RETURNING id`, slug,
+		).Scan(&h.productID); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `
+			INSERT INTO price_versions (product_id, version, currency, amount_minor, interval, anchor_day, anchor_timezone)
+			VALUES ($1, 1, 'USD', 1200, 'monthly', 31, 'UTC') RETURNING id`, h.productID,
+		).Scan(&h.priceID)
+	})
+	if err != nil {
+		t.Fatalf("fixtures: %v", err)
+	}
+	return h
+}
+
+// subscribe creates an active subscription whose *current* period is the one
+// starting in the month of `currentPeriodMonth`, using the given anchor. The
+// next billing instant is therefore the end of that period.
+func (h *harness) subscribe(t *testing.T, start time.Time, interval calendar.Interval, anchorDay int, timezone string) string {
+	t.Helper()
+	ctx := context.Background()
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		t.Fatalf("timezone: %v", err)
+	}
+	schedule, err := calendar.NewSchedule(interval, calendar.Anchor{Day: anchorDay}, loc)
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	// The month is read in UTC: the fixture names a calendar month, and
+	// converting a UTC instant into a western business timezone would silently
+	// move it into the previous month.
+	period := schedule.PeriodStartingIn(start.UTC().Year(), start.UTC().Month())
+
+	var id string
+	err = h.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			UPDATE price_versions SET interval = $2, anchor_day = $3, anchor_timezone = $4 WHERE id = $1`,
+			h.priceID, interval.String(), anchorDay, timezone); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `
+			INSERT INTO subscriptions (customer_id, price_version_id, status, interval,
+				anchor_day, timezone, current_period_start, current_period_end, next_billing_at)
+			VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $7)
+			RETURNING id`,
+			h.customerID, h.priceID, interval.String(), anchorDay, timezone,
+			period.Start, period.End).Scan(&id)
+	})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	return id
+}
+
+func (h *harness) run(t *testing.T) []renewal.Result {
+	t.Helper()
+	results, err := h.engine.Run(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	return results
+}
+
+func (h *harness) invoiceCount(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM invoices`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// -------------------------------------------------------------------- tests --
+
+// A subscription is not billed before its lead time.
+func TestNotDueYet(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
+	// Current period is Feb 28 -> Mar 31, so the next billing date is Mar 31.
+	// Now is Mar 1 and the lead time is 7 days, so it is not due yet.
+	h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+
+	results := h.run(t)
+	if len(results) != 0 {
+		t.Fatalf("%d subscriptions scanned, want 0: %+v", len(results), results)
+	}
+	if n := h.invoiceCount(t); n != 0 {
+		t.Fatalf("%d invoices created, want 0", n)
+	}
+}
+
+func TestDueWithinLeadTime(t *testing.T) {
+	// The next billing date is Mar 31; now is Mar 26, inside the 7-day lead time.
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+
+	results := h.run(t)
+	if len(results) != 1 {
+		t.Fatalf("%d results, want 1", len(results))
+	}
+	if results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("outcome = %s (%s), want invoiced", results[0].Outcome, results[0].Detail)
+	}
+	if results[0].PeriodKey != "2026-03-31/2026-04-30" {
+		t.Fatalf("period = %q, want 2026-03-31/2026-04-30", results[0].PeriodKey)
+	}
+
+	// The schedule advanced to the next period, keeping the month-end anchor.
+	var next time.Time
+	var version int64
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT next_billing_at, version FROM subscriptions WHERE id = $1`, subID,
+	).Scan(&next, &version); err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC); !next.Equal(want) {
+		t.Fatalf("next billing = %s, want %s", next, want)
+	}
+	if version != 2 {
+		t.Fatalf("version = %d, want 2", version)
+	}
+
+	// The invoice carries the period it covers.
+	var periodKey *string
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT period_key FROM invoices`).Scan(&periodKey); err != nil {
+		t.Fatal(err)
+	}
+	if periodKey == nil || *periodKey != "2026-03-31/2026-04-30" {
+		t.Fatalf("invoice period_key = %v", periodKey)
+	}
+}
+
+// Acceptance scenario 5: two workers generating the same renewal concurrently
+// produce one invoice.
+func TestConcurrentRenewalRuns(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+
+	// Two independent engines, as if two processes were running the scanner.
+	issuer := billing.NewIssuer(billing.FixedTaxPricer{
+		Rate: money.MustParseRatio("0%"), Rounding: money.RoundHalfUp, Policy: "none",
+	})
+	mk := func() *renewal.Engine {
+		e := renewal.NewEngine(h.pool, issuer,
+			billing.Merchant{Name: "Catalyst Hosting Ltd", CountryCode: "GB"}, "terms")
+		e.Now = func() time.Time { return h.now }
+		return e
+	}
+
+	const workers = 6
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			// Errors are expected: the loser of the race either finds the
+			// subscription already advanced or hits the unique index.
+			_, _ = mk().Run(context.Background(), 100)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if n := h.invoiceCount(t); n != 1 {
+		t.Fatalf("%d invoices created by %d concurrent workers, want 1", n, workers)
+	}
+}
+
+// Acceptance scenario 6: a cancelled subscription does not renew.
+func TestCancelledSubscriptionDoesNotRenew(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+
+	if _, err := h.pool.Exec(context.Background(), `
+		UPDATE subscriptions SET cancel_at_period_end = true, cancelled_at = now() WHERE id = $1`,
+		subID); err != nil {
+		t.Fatal(err)
+	}
+
+	results := h.run(t)
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeSkippedCancelled {
+		t.Fatalf("results = %+v, want one skipped_cancelled", results)
+	}
+	if n := h.invoiceCount(t); n != 0 {
+		t.Fatalf("%d invoices created for a cancelled subscription, want 0", n)
+	}
+
+	var status string
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT status FROM subscriptions WHERE id = $1`, subID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "ended" {
+		t.Fatalf("status = %s, want ended", status)
+	}
+
+	// A second run finds nothing to do: the subscription is no longer active.
+	if results := h.run(t); len(results) != 0 {
+		t.Fatalf("second run produced %+v, want nothing", results)
+	}
+}
+
+// Acceptance scenario 6: missed scheduler runs recover after downtime, but an
+// ancient backlog is routed to review instead of being billed automatically.
+func TestCatchUpAfterDowntime(t *testing.T) {
+	// The scheduler was down from mid-March until April 20, so the Mar 31
+	// billing date was never processed.
+	h := newHarness(t, time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC))
+	h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+
+	results := h.run(t)
+	if len(results) != 1 {
+		t.Fatalf("%d results, want 1", len(results))
+	}
+	// The March 31 period is 20 days old, inside the 30-day limit, so it is
+	// billed; the customer then owes for the period they are in.
+	if results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("outcome = %s (%s), want invoiced", results[0].Outcome, results[0].Detail)
+	}
+
+	// A backlog older than the limit goes to review rather than being charged.
+	// The same database is reused, so the run sees every subscription that is
+	// now far past its billing date; all of them must be held for review.
+	h.now = time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	before := h.invoiceCount(t)
+	results = h.run(t)
+	if len(results) == 0 {
+		t.Fatal("no subscriptions scanned for an ancient backlog")
+	}
+	for _, r := range results {
+		if r.Outcome != renewal.OutcomeNeedsReview {
+			t.Fatalf("outcome %s (%s), want needs_review for every ancient backlog entry",
+				r.Outcome, r.Detail)
+		}
+	}
+	if after := h.invoiceCount(t); after != before {
+		t.Fatalf("%d invoices created for an ancient backlog, want 0 new", after-before)
+	}
+}
+
+// Month-end anchors must not drift after a renewal.
+func TestMonthEndAnchorSurvivesRenewal(t *testing.T) {
+	// Current period is Jan 31 -> Feb 28, so the next billing date is Feb 28.
+	h := newHarness(t, time.Date(2026, 2, 24, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+
+	// Feb 28 period is due on Feb 24 with a 7-day lead.
+	results := h.run(t)
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("results = %+v", results)
+	}
+	if results[0].PeriodKey != "2026-02-28/2026-03-31" {
+		t.Fatalf("period = %q, want 2026-02-28/2026-03-31", results[0].PeriodKey)
+	}
+
+	// Walk forward a few months; March is 31 days, April is 30, and the anchor
+	// must keep producing the last day of each month.
+	h.now = time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC)
+	results = h.run(t)
+	if len(results) != 1 || results[0].PeriodKey != "2026-03-31/2026-04-30" {
+		t.Fatalf("march results = %+v, want 2026-03-31/2026-04-30", results)
+	}
+
+	h.now = time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC)
+	results = h.run(t)
+	if len(results) != 1 || results[0].PeriodKey != "2026-04-30/2026-05-31" {
+		t.Fatalf("april results = %+v, want 2026-04-30/2026-05-31", results)
+	}
+
+	var next time.Time
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT next_billing_at FROM subscriptions WHERE id = $1`, subID).Scan(&next); err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 5, 31, 0, 0, 0, 0, time.UTC); !next.Equal(want) {
+		t.Fatalf("next billing = %s, want %s", next, want)
+	}
+}
+
+// A leap-day annual subscription renews on Feb 29 in leap years and Feb 28
+// otherwise, and the anchor is not rewritten.
+func TestLeapDayAnnualRenewal(t *testing.T) {
+	// Current period is 2027-02-28 -> 2028-02-29.
+	h := newHarness(t, time.Date(2028, 2, 23, 0, 0, 0, 0, time.UTC))
+	h.subscribe(t, time.Date(2027, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Annual, 29, "UTC")
+
+	results := h.run(t)
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("results = %+v", results)
+	}
+	if results[0].PeriodKey != "2028-02-29/2029-02-28" {
+		t.Fatalf("period = %q, want 2028-02-29/2029-02-28", results[0].PeriodKey)
+	}
+
+	// Next renewal is Feb 28 2029; the anchor day stays 29.
+	var anchorDay int
+	var next time.Time
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT anchor_day, next_billing_at FROM subscriptions`).Scan(&anchorDay, &next); err != nil {
+		t.Fatal(err)
+	}
+	if anchorDay != 29 {
+		t.Fatalf("anchor day = %d, want 29 (leap anchor must not be rewritten)", anchorDay)
+	}
+	if want := time.Date(2029, 2, 28, 0, 0, 0, 0, time.UTC); !next.Equal(want) {
+		t.Fatalf("next billing = %s, want %s", next, want)
+	}
+}
+
+// A business timezone in a DST transition must not shift the billing date.
+func TestBusinessTimezoneRenewal(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Anchor on the 8th at 00:00 New York time, which in March 2026 is the DST
+	// transition day.
+	h := newHarness(t, time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 8, "America/New_York")
+
+	results := h.run(t)
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("results = %+v", results)
+	}
+	if results[0].PeriodKey != "2026-03-08/2026-04-08" {
+		t.Fatalf("period = %q, want 2026-03-08/2026-04-08", results[0].PeriodKey)
+	}
+
+	// The stored instant is midnight New York on the 8th, which is 05:00 UTC
+	// because the clocks had already sprung forward.
+	var start time.Time
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT current_period_start FROM subscriptions WHERE id = $1`, subID).Scan(&start); err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 3, 8, 5, 0, 0, 0, time.UTC); !start.Equal(want) {
+		t.Fatalf("period start = %s, want %s", start.UTC(), want)
+	}
+	if got := start.In(ny).Format("2006-01-02 15:04"); got != "2026-03-08 00:00" {
+		t.Fatalf("business wall clock = %s, want 2026-03-08 00:00", got)
+	}
+}
+
+// The renewal invoice uses the price snapshot of the subscription's price
+// version, not the current catalog.
+func TestRenewalUsesSubscriptionPrice(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+
+	ctx := context.Background()
+	// Publish a new, cheaper price version. The subscription still points at v1.
+	if _, err := h.pool.Exec(ctx, `
+		INSERT INTO price_versions (product_id, version, currency, amount_minor, interval, anchor_day, anchor_timezone)
+		VALUES ($1, 2, 'USD', 100, 'monthly', 31, 'UTC')`, h.productID); err != nil {
+		t.Fatal(err)
+	}
+
+	results := h.run(t)
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("results = %+v", results)
+	}
+	var total int64
+	if err := h.pool.QueryRow(ctx, `SELECT total_minor FROM invoices`).Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total != 1200 {
+		t.Fatalf("total = %d, want 1200 (the subscribed price, not the new catalog price)", total)
+	}
+}
+
+// A renewal run records its own audit trail.
+func TestRenewalRunIsRecorded(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+	h.run(t)
+
+	ctx := context.Background()
+	var scanned, invoiced, skipped, review int
+	var finished *time.Time
+	if err := h.pool.QueryRow(ctx, `
+		SELECT scanned, invoiced, skipped, needs_review, finished_at FROM renewal_runs`).
+		Scan(&scanned, &invoiced, &skipped, &review, &finished); err != nil {
+		t.Fatal(err)
+	}
+	if scanned != 1 || invoiced != 1 || skipped != 0 || review != 0 {
+		t.Fatalf("run counters = scanned %d invoiced %d skipped %d review %d, want 1/1/0/0",
+			scanned, invoiced, skipped, review)
+	}
+	if finished == nil {
+		t.Fatal("run was not marked finished")
+	}
+
+	var outcomes int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM renewal_events`).Scan(&outcomes); err != nil {
+		t.Fatal(err)
+	}
+	if outcomes != 1 {
+		t.Fatalf("%d renewal events, want 1", outcomes)
+	}
+}

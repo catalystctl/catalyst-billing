@@ -485,14 +485,12 @@ func loadPrice(ctx context.Context, tx pgx.Tx, priceVersionID string) (price, er
 	return p, nil
 }
 
+// fillCustomer snapshots the billed party from the customer record and its billing
+// profile, so a renewal invoice carries the address and tax id the customer supplied.
 func fillCustomer(ctx context.Context, tx pgx.Tx, c *billing.CustomerDetails) error {
-	var name, email string
-	if err := tx.QueryRow(ctx, `SELECT name, email FROM customers WHERE id = $1`, c.ID).
-		Scan(&name, &email); err != nil {
+	if err := billing.FillCustomer(ctx, tx, c); err != nil {
 		return fmt.Errorf("renewal: load customer: %w", err)
 	}
-	c.Name = name
-	c.Email = email
 	return nil
 }
 

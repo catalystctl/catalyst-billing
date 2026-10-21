@@ -628,6 +628,19 @@ func ApplyPayment(ctx context.Context, tx pgx.Tx, req AllocationRequest) (Alloca
 		return AllocationResult{}, err
 	}
 
+	// An order is "paid" when the invoice that came from it is settled. Doing it here,
+	// in the same transaction as the allocation, is what makes the order status a fact
+	// rather than a column someone has to remember to update: every payment path ends
+	// here, including a webhook replay.
+	if newStatus == "paid" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE orders SET status = 'paid', updated_at = now(), version = version + 1
+			WHERE id = (SELECT order_id FROM invoices WHERE id = $1)
+			  AND status = 'pending_payment'`, req.InvoiceID); err != nil {
+			return AllocationResult{}, fmt.Errorf("billing: mark order paid: %w", err)
+		}
+	}
+
 	return AllocationResult{
 		PaymentID:    paymentID,
 		InvoiceID:    req.InvoiceID,

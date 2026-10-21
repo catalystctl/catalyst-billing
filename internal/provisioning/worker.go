@@ -397,6 +397,9 @@ func (w *Worker) finish(ctx context.Context, op Operation, res Result) error {
 				WHERE id = $1`, op.ServiceID, res.ExternalID); err != nil {
 				return fmt.Errorf("provisioning: activate service: %w", err)
 			}
+			if err := advanceOrder(ctx, tx, op.ServiceID); err != nil {
+				return err
+			}
 		case "suspend":
 			if _, err := tx.Exec(ctx, `
 				UPDATE services SET status = 'suspended', updated_at = now() WHERE id = $1`,
@@ -418,6 +421,44 @@ func (w *Worker) finish(ctx context.Context, op Operation, res Result) error {
 		}
 		return nil
 	})
+}
+
+// advanceOrder moves the order behind a service along its own lifecycle.
+//
+// The order status is derived, not remembered: a paid order becomes `fulfilling` as
+// soon as its first service is provisioned, and `completed` once no operation for any
+// of its services is still open. Doing it here, in the same transaction as the service
+// transition, means the operator's order screen cannot disagree with reality. The
+// transitions are conditional so a late operation cannot resurrect a cancelled order.
+func advanceOrder(ctx context.Context, tx pgx.Tx, serviceID string) error {
+	// A service reaches its order through the invoice that paid for it: the invoice
+	// carries both the subscription and the order.
+	const ordersForService = `
+		SELECT DISTINCT i.order_id
+		FROM invoices i
+		JOIN services s ON s.subscription_id = i.subscription_id
+		WHERE s.id = $1 AND i.order_id IS NOT NULL`
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE orders SET status = 'fulfilling', updated_at = now(), version = version + 1
+		WHERE status = 'paid' AND id IN (`+ordersForService+`)`, serviceID); err != nil {
+		return fmt.Errorf("provisioning: mark order fulfilling: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE orders SET status = 'completed', updated_at = now(), version = version + 1
+		WHERE status = 'fulfilling' AND id IN (`+ordersForService+`)
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM service_operations so
+			JOIN services s2 ON s2.id = so.service_id
+			JOIN invoices i2 ON i2.subscription_id = s2.subscription_id
+			WHERE i2.order_id = orders.id
+			  AND so.status IN ('queued', 'running', 'retry_wait', 'unknown', 'needs_review')
+		  )`, serviceID); err != nil {
+		return fmt.Errorf("provisioning: mark order completed: %w", err)
+	}
+	return nil
 }
 
 // serviceGeneration reads the fencing token.

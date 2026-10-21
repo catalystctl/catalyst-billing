@@ -50,7 +50,14 @@ BILLING_GATEWAY_ACCOUNT=acct_test \
 ```bash
 curl -s localhost:8080/healthz          # liveness, no database access
 curl -s localhost:8080/readyz           # database reachable and schema current
-curl -s localhost:8080/api/v1/ops/overview | jq   # the operator exception list
+
+# Staff-only: the operator exception list.
+curl -b cookies.txt localhost:8080/api/v1/ops/overview | jq
+
+# Customer-facing: what do I owe, what is renewing, is my service ready.
+curl -b cookies.txt localhost:8080/api/v1/portal/overview | jq
+curl -b cookies.txt localhost:8080/api/v1/portal/invoices | jq
+curl -b cookies.txt localhost:8080/api/v1/portal/services | jq
 ```
 
 ### Operator commands
@@ -98,6 +105,7 @@ the `Secure` cookie flag and logs a warning — use it only on loopback.
 | Provisioning | Persisted intent before the remote call; adapter idempotency keys; unknown outcome reconciled, not retried; generation fencing | `internal/provisioning` |
 | Dunning | Persisted escalation state; every suspension decision recorded with reason and generation; manual holds outrank automation; resume after payment | `internal/dunning` |
 | Auth | Argon2id passwords, hashed server-side sessions, per-session CSRF, login throttling, deny-by-default RBAC with billing/infrastructure separation | `internal/authn`, `internal/httpapi` |
+| Portal | Customer-scoped reads where the scoping is in SQL, so identifier substitution returns "not found" for someone else's record and for a nonexistent one alike; cancellation at period end only | `internal/portal` |
 | Extensions | Versioned JSON-RPC over supervised stdio; bounded frames; deadlines; cancellation; crash isolation; clean environment | `internal/extproto` |
 | Operations | One-request exception overview; independent checks that report themselves when broken | `internal/ops` |
 
@@ -191,8 +199,8 @@ Acceptance scenarios covered by tests, by plan number:
 
 Listed so nobody assumes otherwise:
 
-- **Web UI.** No customer portal, no operator workspace, no design system. The API
-  and the operator overview endpoint exist; the frontend does not.
+- **Web UI.** No rendered frontend, no design system, no components. The customer
+  portal and the operator overview exist as JSON APIs; the browser UI does not.
 - **Self-service registration, email verification, MFA, passkeys, API keys.**
   Password login, server-side sessions, CSRF and role-based authorization exist;
   the rest does not. Staff accounts are created by `billing admin create-user`.

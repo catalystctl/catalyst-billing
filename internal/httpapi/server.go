@@ -28,6 +28,7 @@ import (
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/ops"
 	"github.com/catalyst/billing/internal/payments"
+	"github.com/catalyst/billing/internal/portal"
 	"github.com/catalyst/billing/internal/store"
 )
 
@@ -76,6 +77,8 @@ type Server struct {
 	// auth is nil when authentication is not configured; guarded routes then
 	// refuse rather than allowing anonymous access.
 	auth *Auth
+	// portal is nil when the customer portal is not configured.
+	portal *portal.Manager
 
 	webhooksReceived  atomic.Int64
 	webhooksDuplicate atomic.Int64
@@ -98,6 +101,12 @@ func New(cfg Config, pool *store.Pool, inbox *payments.Inbox, provider, account 
 		verifier:  verifier,
 		startedAt: time.Now().UTC(),
 	}
+}
+
+// WithPortal attaches the customer portal.
+func (s *Server) WithPortal(m *portal.Manager) *Server {
+	s.portal = m
+	return s
 }
 
 // WithAuth attaches authentication. Without it, guarded routes refuse every
@@ -127,6 +136,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.requireCSRF(s.handleLogout))
 	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
+
+	// Customer portal. Identity comes from the session, never from the URL, and the
+	// cancellation action additionally requires a CSRF token because it changes
+	// state.
+	mux.HandleFunc("GET /api/v1/portal/overview", s.requirePermission(authn.PermCustomerReadSelf, s.handlePortalOverview))
+	mux.HandleFunc("GET /api/v1/portal/invoices", s.requirePermission(authn.PermInvoiceReadSelf, s.handlePortalInvoices))
+	mux.HandleFunc("GET /api/v1/portal/invoices/{id}", s.requirePermission(authn.PermInvoiceReadSelf, s.handlePortalInvoice))
+	mux.HandleFunc("GET /api/v1/portal/services", s.requirePermission(authn.PermServiceReadSelf, s.handlePortalServices))
+	mux.HandleFunc("GET /api/v1/portal/services/{id}", s.requirePermission(authn.PermServiceReadSelf, s.handlePortalService))
+	mux.HandleFunc("POST /api/v1/portal/services/{id}/cancel",
+		s.requireCSRF(s.requirePermission(authn.PermServiceCancelSelf, s.handlePortalCancel)))
 
 	return s.withRecovery(s.withRequestLog(s.loadSession(mux)))
 }

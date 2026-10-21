@@ -13,6 +13,7 @@ import (
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/httpapi"
 	"github.com/catalyst/billing/internal/payments"
+	"github.com/catalyst/billing/internal/portal"
 	"github.com/catalyst/billing/internal/store"
 )
 
@@ -155,7 +156,7 @@ func cmdServe(args []string) error {
 		Authz:      authn.NewAuthorizer(),
 		Cookies:    httpapi.CookieConfig{Secure: cfg.secureCookies},
 		SessionTTL: authCfg.SessionLifetime,
-	})
+	}).WithPortal(portal.New(pool))
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Serve(ctx, cfg.addr) }()

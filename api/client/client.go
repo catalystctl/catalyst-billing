@@ -313,6 +313,82 @@ func (c *Client) GetStaffAudit(ctx context.Context, query url.Values, body any) 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffCatalogProducts calls GET /api/v1/staff/catalog/products.
+//
+// # Catalog with price versions
+//
+// Permission: invoice:read:all. Staff only.
+func (c *Client) GetStaffCatalogProducts(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/products"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCatalogProductsById calls GET /api/v1/staff/catalog/products/{id}.
+//
+// # One product
+//
+// Permission: invoice:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffCatalogProductsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/products/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCustomers calls GET /api/v1/staff/customers.
+//
+// # Customer list with search
+//
+// Permission: customer:read:all. Staff only.
+func (c *Client) GetStaffCustomers(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/customers"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCustomersById calls GET /api/v1/staff/customers/{id}.
+//
+// # Customer detail
+//
+// Permission: customer:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffCustomersById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/customers/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffInvoices calls GET /api/v1/staff/invoices.
+//
+// # Invoice list across all customers
+//
+// Permission: invoice:read:all. Staff only.
+func (c *Client) GetStaffInvoices(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/invoices"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffInvoicesById calls GET /api/v1/staff/invoices/{id}.
+//
+// # Invoice detail
+//
+// Permission: invoice:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffInvoicesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/invoices/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffOperations calls GET /api/v1/staff/operations.
+//
+// # Operation queue
+//
+// Permission: service:read:all. Staff only.
+func (c *Client) GetStaffOperations(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/operations"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffOperationsById calls GET /api/v1/staff/operations/{id}.
 //
 // # One operation
@@ -322,6 +398,94 @@ func (c *Client) GetStaffAudit(ctx context.Context, query url.Values, body any) 
 func (c *Client) GetStaffOperationsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/operations/{id}"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffOrders calls GET /api/v1/staff/orders.
+//
+// # Order list
+//
+// Permission: invoice:read:all. Staff only.
+func (c *Client) GetStaffOrders(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/orders"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffOrdersById calls GET /api/v1/staff/orders/{id}.
+//
+// # Order detail
+//
+// Permission: invoice:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffOrdersById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/orders/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffPayments calls GET /api/v1/staff/payments.
+//
+// # Payment history
+//
+// Permission: payment:reconcile. Staff only.
+func (c *Client) GetStaffPayments(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/payments"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffPaymentsById calls GET /api/v1/staff/payments/{id}.
+//
+// # Payment detail
+//
+// Permission: payment:reconcile. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffPaymentsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/payments/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffServices calls GET /api/v1/staff/services.
+//
+// # Service list
+//
+// Permission: service:read:all. Staff only.
+func (c *Client) GetStaffServices(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/services"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffServicesById calls GET /api/v1/staff/services/{id}.
+//
+// # Service detail
+//
+// Permission: service:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffServicesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/services/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffServicesByIdSuspensioneligibility calls GET /api/v1/staff/services/{id}/suspension-eligibility.
+//
+// # Evaluate suspension eligibility
+//
+// Permission: service:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffServicesByIdSuspensioneligibility(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/services/{id}/suspension-eligibility"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffWebhooks calls GET /api/v1/staff/webhooks.
+//
+// # Webhook inbox
+//
+// Permission: payment:reconcile. Staff only.
+func (c *Client) GetStaffWebhooks(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/webhooks"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -340,6 +504,20 @@ func (c *Client) PostAuthLogin(ctx context.Context, query url.Values, body any) 
 func (c *Client) PostAuthLogout(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/auth/logout"
 	return c.do(ctx, "POST", path, query, body, true, false)
+}
+
+// PostPortalInvoicesByIdCheckout calls POST /api/v1/portal/invoices/{id}/checkout.
+//
+// # Start or reuse a payment session
+//
+// Permission: invoice:pay:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostPortalInvoicesByIdCheckout(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/invoices/{id}/checkout"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
 // PostPortalServicesByIdCancel calls POST /api/v1/portal/services/{id}/cancel.

@@ -27,11 +27,13 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/approvals"
+	"github.com/catalyst/billing/internal/dunning"
 	"github.com/catalyst/billing/internal/events"
 	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/ops"
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/portal"
+	"github.com/catalyst/billing/internal/staff"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/catalyst/billing/web"
 )
@@ -108,6 +110,14 @@ type Server struct {
 	approvals *approvals.Service
 	// web serves the embedded frontend; nil for an API-only deployment.
 	web *web.Handler
+	// staff is the operator read surface, constructed on first use.
+	staff   *staff.Service
+	staffMu sync.Mutex
+	// dunning evaluates suspension eligibility; nil when not configured.
+	dunning *dunning.Engine
+	// checkoutSuccessURL and checkoutCancelURL are where the gateway returns the customer.
+	checkoutSuccessURL string
+	checkoutCancelURL  string
 
 	// routes is the table built by the most recent Handler() call.
 	routesMu sync.Mutex
@@ -138,6 +148,10 @@ func New(cfg Config, pool *store.Pool, inbox *payments.Inbox, provider, account 
 	}
 	if pool != nil {
 		s.notify = notify.NewQueue(pool)
+		// The dunning engine is needed by the staff surface (eligibility) and the staff
+		// mutations (suspend, resume). Constructing it here means one instance with one
+		// clock and one policy, rather than one per handler.
+		s.dunning = dunning.NewEngine(pool, dunning.DefaultPolicy())
 		if svc, err := approvals.New(pool); err == nil {
 			s.approvals = svc
 		} else {

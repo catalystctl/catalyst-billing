@@ -34,6 +34,17 @@ func (s *Server) WithGateway(g CheckoutGateway) *Server {
 	return s
 }
 
+// WithCheckoutURLs sets where the gateway returns the customer after a payment attempt.
+//
+// They are configuration rather than constants because a deployment behind a proxy has a
+// different public origin from the one the process binds to, and a hard-coded redirect
+// would send the customer to an unreachable address after paying.
+func (s *Server) WithCheckoutURLs(success, cancel string) *Server {
+	s.checkoutSuccessURL = success
+	s.checkoutCancelURL = cancel
+	return s
+}
+
 // WithEvents attaches the event broker used by the SSE endpoint.
 //
 // A Server without a broker still serves every other endpoint; the events endpoint

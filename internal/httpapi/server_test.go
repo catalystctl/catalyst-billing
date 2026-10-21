@@ -243,3 +243,40 @@ func TestDuplicateRequiresStoredEvent(t *testing.T) {
 		t.Fatalf("stored events = %+v, want one evt_stored", pending)
 	}
 }
+
+// The operator overview is served as one request and never cached: a stale
+// dashboard is worse than no dashboard.
+func TestOverviewEndpoint(t *testing.T) {
+	srv, _ := newServer(t, "stripe", "acct_test")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/ops/overview", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+
+	var body struct {
+		GeneratedAt string           `json:"generated_at"`
+		Exceptions  []map[string]any `json:"exceptions"`
+		Counts      map[string]int   `json:"counts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("overview is not valid JSON: %v\n%s", err, rec.Body)
+	}
+	if body.GeneratedAt == "" {
+		t.Fatal("generated_at missing")
+	}
+	if _, ok := body.Counts["customers"]; !ok {
+		t.Fatalf("counts missing customers: %s", rec.Body)
+	}
+	for _, e := range body.Exceptions {
+		for _, field := range []string{"code", "title", "detail", "severity", "action"} {
+			if _, ok := e[field]; !ok {
+				t.Fatalf("exception missing %q: %v", field, e)
+			}
+		}
+	}
+}

@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/catalyst/billing/internal/ops"
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/store"
 )
@@ -101,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("POST /webhooks/{provider}", s.handleWebhook)
+	mux.HandleFunc("GET /api/v1/ops/overview", s.handleOverview)
 	return s.withRecovery(s.withRequestLog(mux))
 }
 
@@ -245,6 +247,25 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	s.cfg.Logger.InfoContext(ctx, "webhook accepted",
 		"provider", provider, "event_id", ev.EventID, "event_type", ev.EventType)
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted", "event_id": ev.EventID})
+}
+
+// handleOverview serves the operator dashboard.
+//
+// It is a GET because it changes nothing, and it is one request because an
+// operator opening the panel should see the state of the system, not a page of
+// spinners. A slow database therefore fails this endpoint rather than degrading
+// it silently.
+func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
+	if s.pool == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "database_not_configured", "no database is configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	overview := ops.New(s.pool).Overview(ctx)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, overview)
 }
 
 // withRequestLog logs one line per request with a duration, without the body.

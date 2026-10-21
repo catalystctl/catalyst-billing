@@ -67,6 +67,10 @@ const (
 	RefPayment ReferenceType = "payment"
 	RefRefund  ReferenceType = "refund"
 	RefCredit  ReferenceType = "credit_note"
+	// RefCreditApplication is the use of customer credit against an invoice. It is a separate
+	// reference from the credit note that granted the credit, because granting and spending are two
+	// economic events and a replay of one must not be mistaken for the other.
+	RefCreditApplication ReferenceType = "credit_application"
 )
 
 // Entry is one side of a posting. Exactly one of Debit and Credit is set.

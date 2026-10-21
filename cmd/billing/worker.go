@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/catalyst/billing/internal/httpapi"
 	"github.com/catalyst/billing/internal/store"
 )
 
@@ -19,7 +20,7 @@ import (
 //
 // Jobs are separated by interval so a slow or failing subsystem (a gateway that
 // hangs, a provisioner that is down) cannot starve the others.
-func runWorkerLoop(ctx context.Context, pool *store.Pool, logger *slog.Logger) error {
+func runWorkerLoop(ctx context.Context, pool *store.Pool, logger *slog.Logger, apiServer *httpapi.Server) error {
 	type job struct {
 		name     string
 		interval time.Duration
@@ -28,7 +29,7 @@ func runWorkerLoop(ctx context.Context, pool *store.Pool, logger *slog.Logger) e
 
 	// The concrete jobs are wired in jobs.go; keeping the loop generic means a
 	// new periodic task is one entry, not a new control flow.
-	cache, jobs := buildJobs(pool, logger)
+	cache, jobs := buildJobs(pool, logger, apiServer)
 	defer cache.Close()
 	for _, j := range jobs {
 		j := j

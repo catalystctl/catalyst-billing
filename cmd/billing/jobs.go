@@ -12,6 +12,7 @@ import (
 	"github.com/catalyst/billing/internal/dunning"
 	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/fulfilment"
+	"github.com/catalyst/billing/internal/httpapi"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/payments"
@@ -34,7 +35,7 @@ type jobSpec struct {
 // running it twice, or running two workers, is safe. The kill switches below are
 // the operator's emergency brake: a misbehaving gateway or provisioner can be
 // stopped without a deploy.
-func buildJobs(pool *store.Pool, logger *slog.Logger) (*extensionCache, []jobSpec) {
+func buildJobs(pool *store.Pool, logger *slog.Logger, apiServer *httpapi.Server) (*extensionCache, []jobSpec) {
 	var jobs []jobSpec
 
 	// One long-lived client per extension, launched on first use and reused.
@@ -188,6 +189,25 @@ func buildJobs(pool *store.Pool, logger *slog.Logger) (*extensionCache, []jobSpe
 			return err
 		},
 	})
+
+	// ---- refunds: reconcile the ones whose outcome is unknown ----------------
+	//
+	// A refund whose provider call timed out is neither done nor failed, and leaving it that way is
+	// the one outcome a customer will never forgive. The reconciler asks the provider again with the
+	// same operation key rather than retrying the refund, so asking is safe.
+	if apiServer != nil && !killSwitch("BILLING_DISABLE_REFUND_RECONCILE") {
+		jobs = append(jobs, jobSpec{
+			name:     "refund-reconcile",
+			interval: 2 * time.Minute,
+			run: func(ctx context.Context) error {
+				settled, unknown, err := apiServer.ReconcileRefunds(ctx, 25)
+				if settled > 0 || unknown > 0 {
+					logger.Info("refund reconciliation", "settled", settled, "still_unknown", unknown)
+				}
+				return err
+			},
+		})
+	}
 
 	// ---- notifications: drain the durable outbox ----------------------------
 	//

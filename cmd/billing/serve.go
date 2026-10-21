@@ -92,6 +92,14 @@ func parseCIDRs(list string) ([]*net.IPNet, error) {
 // A malformed value falls back rather than failing startup: these are operational knobs, and a
 // typo in a port should not take the process down. The value is logged by the caller when it
 // matters.
+// publicBaseURL is the origin a redirect or a link must point at.
+//
+// It is configuration rather than a request-derived value: a redirect built from the Host header is a
+// redirect an attacker can point at their own domain by sending the request with a forged Host.
+func publicBaseURL() string {
+	return strings.TrimRight(envOr("BILLING_PUBLIC_URL", "http://127.0.0.1:8080"), "/")
+}
+
 func envIntOr(key string, fallback int) int {
 	raw := envOr(key, "")
 	if raw == "" {
@@ -227,14 +235,19 @@ func cmdServe(args []string) error {
 		Cookies:        httpapi.CookieConfig{Secure: cfg.secureCookies},
 		SessionTTL:     authCfg.SessionLifetime,
 		TrustedProxies: nets,
-	}).WithPortal(portal.New(pool))
+	}).WithPortal(portal.New(pool)).WithGateway(newGatewayAdapter(cfg.gatewayProvider)).
+		WithCheckoutURLs(
+			envOr("BILLING_CHECKOUT_SUCCESS_URL", publicBaseURL()+"/checkout/complete"),
+			envOr("BILLING_CHECKOUT_CANCEL_URL", publicBaseURL()+"/checkout/cancelled"))
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Serve(ctx, cfg.addr) }()
 
 	if cfg.embeddedWorker {
+		// The worker needs the server for the refund reconciler, which owns the gateway
+		// assertion: a gateway that cannot refund is a configuration choice, not a startup error.
 		go func() {
-			errCh <- runWorkerLoop(ctx, pool, logger)
+			errCh <- runWorkerLoop(ctx, pool, logger, srv)
 		}()
 	}
 
@@ -281,5 +294,5 @@ func cmdWorker(args []string) error {
 	}
 	defer pool.Close()
 
-	return runWorkerLoop(ctx, pool, logger)
+	return runWorkerLoop(ctx, pool, logger, nil)
 }

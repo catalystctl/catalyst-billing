@@ -125,6 +125,22 @@ func TestPermissionCoverage(t *testing.T) {
 		if rt.Access != AccessPermission && rt.Permission != "" {
 			t.Fatalf("%s declares a permission but does not require it", rt.Path())
 		}
+		// A staff-guarded route outside the /api/v1/staff prefix is a deliberate exemption, and the
+		// set is pinned so a new one cannot appear without a decision. Both entries are pre-existing
+		// role-based guards, not permission-based ones:
+		//
+		//   GET /metrics          — staff-only by role; support is allowed to read counters, which
+		//                           TestMetricsRequiresStaff pins.
+		//   GET /api/v1/ops/overview — staff-only *and* report:read (it is under /api/v1/, not
+		//                           /api/v1/staff, so the prefix rule below does not see it).
+		if rt.StaffOnly && rt.Permission == "" && !rt.DynamicPermission {
+			switch rt.Path() {
+			case "GET /metrics":
+			default:
+				t.Fatalf("%s is staff-only but declares no permission, and is not a pinned "+
+					"exemption", rt.Path())
+			}
+		}
 		if rt.DynamicPermission && !rt.StaffOnly {
 			// A dynamic permission is resolved in the handler; if the route is not also
 			// staff-only there is nothing stopping a customer from reaching it.

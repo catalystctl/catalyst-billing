@@ -67,6 +67,16 @@ type Service struct {
 	pool *store.Pool
 	// Now is injectable for tests.
 	Now func() time.Time
+	// Auditor, when set, writes the audit row inside the transaction that makes the change, with the
+	// caller's actor context.
+	auditor audit.Auditor
+}
+
+// WithAuditor returns a copy of the service that writes its audit rows through a.
+func (s *Service) WithAuditor(a audit.Auditor) *Service {
+	clone := *s
+	clone.auditor = a
+	return &clone
 }
 
 // New constructs the service.
@@ -222,19 +232,24 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (CreditNote, erro
 			return fmt.Errorf("creditnote: post: %w", err)
 		}
 
-		if err := audit.Record(ctx, tx, audit.Event{
+		changes := map[string]any{
+			"invoice_id": req.InvoiceID,
+			"number":     number,
+			"amount":     req.AmountMinor,
+			"tax":        req.TaxMinor,
+			"reason":     req.Reason,
+		}
+		if s.auditor != nil {
+			if err := s.auditor.RecordAction(ctx, tx, "credit_note.issue", "credit_note", id, changes); err != nil {
+				return err
+			}
+		} else if err := audit.Record(ctx, tx, audit.Event{
 			Actor:      audit.Actor{ID: req.IssuedBy, Kind: audit.ActorUser},
 			Action:     "credit_note.issue",
 			TargetType: "credit_note",
 			TargetID:   id,
 			Outcome:    audit.OutcomeSuccess,
-			Changes: map[string]any{
-				"invoice_id": req.InvoiceID,
-				"number":     number,
-				"amount":     req.AmountMinor,
-				"tax":        req.TaxMinor,
-				"reason":     req.Reason,
-			},
+			Changes:    changes,
 		}); err != nil {
 			return err
 		}
@@ -463,17 +478,22 @@ func (s *Service) Apply(ctx context.Context, req ApplyRequest) (Application, err
 			return fmt.Errorf("creditnote: update invoice: %w", err)
 		}
 
-		if err := audit.Record(ctx, tx, audit.Event{
+		changes := map[string]any{
+			"application_id": id,
+			"amount":         amount,
+			"invoice_status": newStatus,
+		}
+		if s.auditor != nil {
+			if err := s.auditor.RecordAction(ctx, tx, "credit.apply", "invoice", req.InvoiceID, changes); err != nil {
+				return err
+			}
+		} else if err := audit.Record(ctx, tx, audit.Event{
 			Actor:      audit.Actor{ID: req.AppliedBy, Kind: audit.ActorUser},
 			Action:     "credit.apply",
 			TargetType: "invoice",
 			TargetID:   req.InvoiceID,
 			Outcome:    audit.OutcomeSuccess,
-			Changes: map[string]any{
-				"application_id": id,
-				"amount":         amount,
-				"invoice_status": newStatus,
-			},
+			Changes:    changes,
 		}); err != nil {
 			return err
 		}

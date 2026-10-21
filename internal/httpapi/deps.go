@@ -11,6 +11,7 @@ import (
 	"github.com/catalyst/billing/internal/events"
 	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/notify"
+	"github.com/jackc/pgx/v5"
 )
 
 // Optional dependencies.
@@ -90,6 +91,43 @@ func newCorrelationID() string {
 		return ""
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// requestAuditor is the audit.Auditor implementation bound to one request.
+//
+// Every domain service that can be driven from HTTP takes one of these, which is what makes the
+// audit row for a refund or a credit note carry the same correlation id and source address as the
+// request that caused it — without those services knowing anything about HTTP.
+type requestAuditor struct {
+	server  *Server
+	request *http.Request
+	reason  string
+	// actor overrides the session identity. It is used by the credential flows, where the acting
+	// principal is the account being changed rather than a signed-in operator.
+	actor *audit.Actor
+}
+
+// RecordAction implements audit.Auditor.
+func (a requestAuditor) RecordAction(ctx context.Context, tx pgx.Tx, action, targetType, targetID string,
+	changes map[string]any) error {
+	ev := a.server.auditEvent(a.request, action, targetType, targetID, audit.OutcomeSuccess)
+	if a.actor != nil {
+		ev.Actor = *a.actor
+	}
+	if a.reason != "" {
+		if changes == nil {
+			changes = map[string]any{}
+		}
+		if _, ok := changes["reason"]; !ok {
+			changes["reason"] = a.reason
+		}
+	}
+	return audit.Record(ctx, tx, ev.WithChanges(changes))
+}
+
+// auditorFor returns the auditor for a request, with an optional reason.
+func (s *Server) auditorFor(r *http.Request, reason string) requestAuditor {
+	return requestAuditor{server: s, request: r, reason: reason}
 }
 
 // actorFor builds the audit actor for the caller.

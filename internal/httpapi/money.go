@@ -120,7 +120,7 @@ func (s *Server) handleCreateRefund(w http.ResponseWriter, r *http.Request) {
 	// already replays a stored response, but that row expires; passing the key down means a retry
 	// after the window is still recognised by the provider as the same refund rather than as a
 	// second one.
-	res, err := svc.Create(r.Context(), refunds.Request{
+	res, err := svc.WithAuditor(s.auditorFor(r, req.Reason)).Create(r.Context(), refunds.Request{
 		PaymentID:    paymentID,
 		AmountMinor:  req.AmountMinor,
 		Reason:       req.Reason,
@@ -324,13 +324,14 @@ func (s *Server) handleIssueCreditNote(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := userFrom(r.Context())
 
-	note, err := creditnote.New(s.pool).Issue(r.Context(), creditnote.IssueRequest{
-		InvoiceID:   invoiceID,
-		AmountMinor: req.AmountMinor,
-		TaxMinor:    req.TaxMinor,
-		Reason:      req.Reason,
-		IssuedBy:    user.ID,
-	})
+	note, err := creditnote.New(s.pool).WithAuditor(s.auditorFor(r, req.Reason)).
+		Issue(r.Context(), creditnote.IssueRequest{
+			InvoiceID:   invoiceID,
+			AmountMinor: req.AmountMinor,
+			TaxMinor:    req.TaxMinor,
+			Reason:      req.Reason,
+			IssuedBy:    user.ID,
+		})
 	switch {
 	case err == nil:
 	case errors.Is(err, creditnote.ErrExceedsInvoice):
@@ -397,7 +398,7 @@ func (s *Server) handleApplyCredit(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := userFrom(r.Context())
 
-	app, err := creditnote.New(s.pool).Apply(r.Context(), creditnote.ApplyRequest{
+	app, err := creditnote.New(s.pool).WithAuditor(s.auditorFor(r, "")).Apply(r.Context(), creditnote.ApplyRequest{
 		CustomerID:  customerID,
 		InvoiceID:   req.InvoiceID,
 		AmountMinor: req.AmountMinor,

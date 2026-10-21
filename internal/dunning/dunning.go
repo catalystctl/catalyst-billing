@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/ledger"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/store"
@@ -81,13 +82,13 @@ type Engine struct {
 	auditor Auditor
 }
 
-// Auditor records who asked for a service action.
+// Auditor is the audit contract shared by every domain service.
 //
-// It is called inside the enqueue transaction, which is the point: an audit row for a change that
-// rolled back is a lie, and a change with no audit row is a gap.
-type Auditor interface {
-	RecordAction(ctx context.Context, tx pgx.Tx, action, serviceID string, generation int64, reason string) error
-}
+// It is audit.Auditor rather than a local interface so there is exactly one shape: the HTTP layer
+// supplies one implementation and every service calls it inside its own transaction. It is called
+// inside the enqueue transaction, which is the point: an audit row for a change that rolled back is a
+// lie, and a change with no audit row is a gap.
+type Auditor = audit.Auditor
 
 // WithAuditor returns a copy of the engine that writes an audit row inside each mutating
 // transaction.
@@ -105,7 +106,11 @@ func (e *Engine) audit(ctx context.Context, tx pgx.Tx, action, serviceID string,
 	if e.auditor == nil {
 		return nil
 	}
-	return e.auditor.RecordAction(ctx, tx, action, serviceID, generation, reason)
+	changes := map[string]any{"generation": generation}
+	if reason != "" {
+		changes["reason"] = reason
+	}
+	return e.auditor.RecordAction(ctx, tx, action, "service", serviceID, changes)
 }
 
 // NewEngine constructs an Engine.

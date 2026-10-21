@@ -312,3 +312,38 @@ func TestCreditNoteIsAudited(t *testing.T) {
 		t.Fatalf("action = %q", action)
 	}
 }
+
+// A credit note's audit row carries the request's correlation id, source address and actor. Without
+// those the row says what happened but not who did it or which request it belonged to, which is the
+// question an incident review actually asks.
+func TestCreditNoteAuditCarriesRequestContext(t *testing.T) {
+	e := newMoneyEnv(t)
+	rec := e.postJSON(t, "/api/v1/staff/invoices/"+e.invoiceID+"/credit-notes",
+		e.billing, e.billingCSRF, map[string]any{
+			"amount_minor": 400, "reason": "traced",
+		})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("issue: %d %s", rec.Code, rec.Body)
+	}
+
+	var (
+		actorID       string
+		correlationID string
+		ip            string
+	)
+	if err := e.pool.QueryRow(context.Background(), `
+		SELECT COALESCE(actor_id::text, ''), correlation_id, COALESCE(host(ip), '')
+		FROM audit_events WHERE action = 'credit_note.issue'
+		ORDER BY created_at DESC LIMIT 1`).Scan(&actorID, &correlationID, &ip); err != nil {
+		t.Fatalf("audit row: %v", err)
+	}
+	if actorID != mustUserID(t, e, "billing@example.test") {
+		t.Fatalf("actor = %s, want the session user", actorID)
+	}
+	if correlationID == "" {
+		t.Fatal("the audit row has no correlation id")
+	}
+	if ip == "" {
+		t.Fatal("the audit row has no source address")
+	}
+}

@@ -401,27 +401,7 @@ func (s *Server) writeDunningError(w http.ResponseWriter, r *http.Request, err e
 // commits with the operation, so there is no window in which the operation exists and its record
 // does not.
 func (s *Server) dunningAuditor(r *http.Request, reason string) dunning.Auditor {
-	return requestAuditor{server: s, request: r, reason: reason}
-}
-
-// requestAuditor binds an audit write to one request's actor and correlation id.
-type requestAuditor struct {
-	server  *Server
-	request *http.Request
-	reason  string
-}
-
-// RecordAction implements dunning.Auditor.
-func (a requestAuditor) RecordAction(ctx context.Context, tx pgx.Tx, action, serviceID string,
-	generation int64, reason string) error {
-	if reason == "" {
-		reason = a.reason
-	}
-	return audit.Record(ctx, tx, a.server.auditEvent(a.request, action, "service", serviceID,
-		audit.OutcomeSuccess).WithChanges(map[string]any{
-		"reason":     reason,
-		"generation": generation,
-	}))
+	return s.auditorFor(r, reason)
 }
 
 // publishServiceEvent sends an event scoped to the customer who owns the service.

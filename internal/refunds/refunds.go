@@ -85,6 +85,19 @@ type Service struct {
 	ThresholdMinor int64
 	// Now is injectable for tests.
 	Now func() time.Time
+	// Auditor, when set, writes the audit row inside the transaction that records the intent, so the
+	// request's correlation id and source address are part of the record.
+	auditor audit.Auditor
+}
+
+// WithAuditor returns a copy of the service that writes its audit row through a.
+//
+// A copy, not a mutation: the service is shared by every request, and an actor stored on it would be
+// whichever request set it last.
+func (s *Service) WithAuditor(a audit.Auditor) *Service {
+	clone := *s
+	clone.auditor = a
+	return &clone
 }
 
 // New constructs the service.
@@ -242,19 +255,22 @@ func (s *Service) Create(ctx context.Context, req Request) (Result, error) {
 			return fmt.Errorf("refunds: record refund intent: %w", err)
 		}
 
+		changes := map[string]any{
+			"payment_id": payment.ID,
+			"amount":     amount,
+			"currency":   payment.Currency,
+			"reason":     req.Reason,
+		}
+		if s.auditor != nil {
+			return s.auditor.RecordAction(ctx, tx, "refund.create", "refund", refundID, changes)
+		}
 		return audit.Record(ctx, tx, audit.Event{
-			Actor:         audit.Actor{ID: req.RequestedBy, Kind: audit.ActorUser},
-			Action:        "refund.create",
-			TargetType:    "refund",
-			TargetID:      refundID,
-			Outcome:       audit.OutcomeSuccess,
-			CorrelationID: "",
-			Changes: map[string]any{
-				"payment_id": payment.ID,
-				"amount":     amount,
-				"currency":   payment.Currency,
-				"reason":     req.Reason,
-			},
+			Actor:      audit.Actor{ID: req.RequestedBy, Kind: audit.ActorUser},
+			Action:     "refund.create",
+			TargetType: "refund",
+			TargetID:   refundID,
+			Outcome:    audit.OutcomeSuccess,
+			Changes:    changes,
 		})
 	})
 	if err != nil {

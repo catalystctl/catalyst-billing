@@ -302,22 +302,24 @@ func TestOperationIDFor(t *testing.T) {
 // failingAuditor makes the audit write fail, so the test can prove the operation was not enqueued.
 type failingAuditor struct{}
 
-func (failingAuditor) RecordAction(context.Context, pgx.Tx, string, string, int64, string) error {
+func (failingAuditor) RecordAction(context.Context, pgx.Tx, string, string, string, map[string]any) error {
 	return errors.New("audit write refused")
 }
 
 // recordingAuditor captures what it was asked to record.
 type recordingAuditor struct {
 	actions     []string
-	serviceIDs  []string
-	generations []int64
+	targetTypes []string
+	targetIDs   []string
+	changes     []map[string]any
 }
 
-func (r *recordingAuditor) RecordAction(_ context.Context, _ pgx.Tx, action, serviceID string,
-	generation int64, _ string) error {
+func (r *recordingAuditor) RecordAction(_ context.Context, _ pgx.Tx, action, targetType, targetID string,
+	changes map[string]any) error {
 	r.actions = append(r.actions, action)
-	r.serviceIDs = append(r.serviceIDs, serviceID)
-	r.generations = append(r.generations, generation)
+	r.targetTypes = append(r.targetTypes, targetType)
+	r.targetIDs = append(r.targetIDs, targetID)
+	r.changes = append(r.changes, changes)
 	return nil
 }
 
@@ -352,9 +354,12 @@ func TestAuditorReceivesTheAction(t *testing.T) {
 	if len(rec.actions) != 1 || rec.actions[0] != "service.suspend" {
 		t.Fatalf("audited actions = %v", rec.actions)
 	}
-	if rec.serviceIDs[0] != e.serviceID || rec.generations[0] != elig.Generation {
-		t.Fatalf("audited (%s, %d), want (%s, %d)",
-			rec.serviceIDs[0], rec.generations[0], e.serviceID, elig.Generation)
+	if rec.targetIDs[0] != e.serviceID || rec.targetTypes[0] != "service" {
+		t.Fatalf("audited (%s, %s), want (service, %s)",
+			rec.targetTypes[0], rec.targetIDs[0], e.serviceID)
+	}
+	if gen, _ := rec.changes[0]["generation"].(int64); gen != elig.Generation {
+		t.Fatalf("audited generation %v, want %d", rec.changes[0]["generation"], elig.Generation)
 	}
 
 	// WithAuditor returns a copy: a second call on the original engine must not be audited by the

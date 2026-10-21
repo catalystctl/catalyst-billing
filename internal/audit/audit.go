@@ -210,6 +210,19 @@ func (e Event) WithChanges(changes map[string]any) Event {
 	return e
 }
 
+// Auditor is implemented by a caller that wants a domain service to write its audit row inside the
+// service's own transaction.
+//
+// It exists because the alternative — the service building the row itself — loses the request's
+// correlation id and source address, which are exactly what an incident review uses to tie a change
+// to the request that caused it. The service calls Record inside its transaction; the caller decides
+// who the actor is and what the diff says.
+type Auditor interface {
+	// RecordAction records one action against one target.
+	RecordAction(ctx context.Context, tx pgx.Tx, action, targetType, targetID string,
+		changes map[string]any) error
+}
+
 // Recorder writes audit events.
 type Recorder struct {
 	tx pgx.Tx

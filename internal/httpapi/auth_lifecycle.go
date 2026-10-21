@@ -169,7 +169,10 @@ func (s *Server) handleResetComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.auditAuthChange(r, "user.password_reset", userID)
+	// The actor is the account itself: the caller proved control of its mailbox with a single-use
+	// token. Attributing this to "system" would make an incident review ask who did it when the
+	// answer is in the row.
+	s.auditAuthChangeAs(r, "user.password_reset", userID)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "password_changed"})
 }
 
@@ -481,8 +484,20 @@ func (s *Server) allowCredentialAttempt(w http.ResponseWriter, r *http.Request, 
 // The auth_events table already has the event; this row is what makes it visible to the operator
 // who reviews "what happened to this account" alongside the invoice and service changes.
 func (s *Server) auditAuthChange(r *http.Request, action, userID string) {
+	s.auditAuthChangeAs(r, action, userID)
+}
+
+// auditAuthChangeAs records a credential change attributed to the account itself.
+//
+// The credential flows are reachable without a session, so there is no operator to name. The account
+// whose token was redeemed is the actor: it proved control of the mailbox, and that is the fact an
+// incident review needs.
+func (s *Server) auditAuthChangeAs(r *http.Request, action, userID string) {
+	actor := audit.Actor{ID: userID, Kind: audit.ActorUser}
 	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
-		return audit.Record(ctx, tx, s.auditEvent(r, action, "user", userID, audit.OutcomeSuccess))
+		ev := s.auditEvent(r, action, "user", userID, audit.OutcomeSuccess)
+		ev.Actor = actor
+		return audit.Record(ctx, tx, ev)
 	})
 	if err != nil {
 		s.cfg.Logger.ErrorContext(r.Context(), "audit write failed for an account change",

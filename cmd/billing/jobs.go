@@ -130,6 +130,9 @@ func buildJobs(pool *store.Pool, logger *slog.Logger) []jobSpec {
 			if killSwitch("BILLING_DISABLE_SUSPENSION") {
 				return nil
 			}
+			if err := resumeCleared(ctx, pool, engine, logger); err != nil {
+				return err
+			}
 			return suspendEligible(ctx, pool, engine, logger)
 		},
 	})
@@ -280,6 +283,56 @@ func suspendEligible(ctx context.Context, pool *store.Pool, engine *dunning.Engi
 		default:
 			logger.Warn("suspension enqueued", "service_id", id,
 				"outstanding", elig.Outstanding, "reason", elig.Reason)
+		}
+	}
+	return nil
+}
+
+// resumeCleared re-enables services that were suspended for non-payment and whose
+// balance is now clear.
+//
+// Resume runs before suspend in the same tick so a customer who pays is restored
+// without waiting for the next cycle, and so a service cannot be suspended and
+// resumed in the same pass.
+func resumeCleared(ctx context.Context, pool *store.Pool, engine *dunning.Engine, logger *slog.Logger) error {
+	rows, err := pool.Query(ctx, `
+		SELECT s.id
+		FROM services s
+		WHERE s.status = 'suspended'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM invoices i
+		      WHERE i.customer_id = s.customer_id
+		        AND i.status = 'open'
+		        AND i.total_minor > i.amount_paid_minor
+		  )
+		LIMIT 50`)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, id := range ids {
+		res, err := engine.RequestResume(ctx, id)
+		switch {
+		case err != nil:
+			logger.Error("resume request failed", "service_id", id, "error", err)
+		case res.Eligible:
+			logger.Info("resume enqueued", "service_id", id)
+		default:
+			logger.Debug("resume withheld", "service_id", id, "reason", res.Reason)
 		}
 	}
 	return nil

@@ -551,3 +551,88 @@ func contains(haystack, needle string) bool {
 	}
 	return false
 }
+
+// A customer who pays must be resumed. Without this, dunning can suspend but
+// nothing can undo it, which is worse than not suspending.
+func TestResumeAfterPayment(t *testing.T) {
+	f := newFixture(t, baseTime.AddDate(0, 0, -30))
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, err := f.engine.Advance(ctx, 100); err != nil {
+			t.Fatal(err)
+		}
+		f.now = f.now.Add(48 * time.Hour)
+	}
+	// Suspend it, as the worker would.
+	if _, err := f.engine.RequestSuspension(ctx, f.serviceID); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE services SET status = 'suspended' WHERE id = $1`, f.serviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Still owing: resume is refused.
+	res, err := f.engine.RequestResume(ctx, f.serviceID)
+	if err != nil {
+		t.Fatalf("resume while owing: %v", err)
+	}
+	if res.Eligible {
+		t.Fatal("resume granted while the invoice is unpaid")
+	}
+	if want := "still owes"; !contains(res.Reason, want) {
+		t.Fatalf("reason = %q, want it to mention %q", res.Reason, want)
+	}
+
+	// Pay it: resume is now granted exactly once.
+	f.pay(t)
+	res, err = f.engine.RequestResume(ctx, f.serviceID)
+	if err != nil {
+		t.Fatalf("resume after payment: %v", err)
+	}
+	if !res.Eligible {
+		t.Fatalf("resume refused after payment: %s", res.Reason)
+	}
+	if _, err := f.engine.RequestResume(ctx, f.serviceID); err != nil {
+		t.Fatalf("second resume: %v", err)
+	}
+
+	var resumes int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM service_operations WHERE kind = 'resume'`).Scan(&resumes); err != nil {
+		t.Fatal(err)
+	}
+	if resumes != 1 {
+		t.Fatalf("%d resume operations, want 1", resumes)
+	}
+}
+
+// A manual hold blocks an automatic resume too.
+func TestHoldBlocksResume(t *testing.T) {
+	f := newFixture(t, baseTime.AddDate(0, 0, -30))
+	ctx := context.Background()
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE services SET status = 'suspended' WHERE id = $1`, f.serviceID); err != nil {
+		t.Fatal(err)
+	}
+	f.pay(t)
+	if _, err := f.engine.AddHold(ctx, f.serviceID, "abuse investigation", "staff:carol", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := f.engine.RequestResume(ctx, f.serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Eligible {
+		t.Fatal("resume granted despite a manual hold")
+	}
+	var resumes int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM service_operations WHERE kind = 'resume'`).Scan(&resumes); err != nil {
+		t.Fatal(err)
+	}
+	if resumes != 0 {
+		t.Fatalf("%d resume operations enqueued despite a hold", resumes)
+	}
+}

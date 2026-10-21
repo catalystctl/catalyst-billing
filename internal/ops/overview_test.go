@@ -39,9 +39,22 @@ func newFixture(t *testing.T) fixture {
 			`INSERT INTO products (slug, name) VALUES ('vps', 'VPS') RETURNING id`).Scan(&f.productID); err != nil {
 			return err
 		}
-		return tx.QueryRow(ctx, `
+		if err := tx.QueryRow(ctx, `
 			INSERT INTO orders (customer_id, status, currency, total_minor)
-			VALUES ($1, 'paid', 'USD', 1200) RETURNING id`, f.customerID).Scan(&f.orderID)
+			VALUES ($1, 'paid', 'USD', 1200) RETURNING id`, f.customerID).Scan(&f.orderID); err != nil {
+			return err
+		}
+		var priceID string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO price_versions (product_id, version, currency, amount_minor, interval, anchor_day, anchor_timezone)
+			VALUES ($1, 1, 'USD', 1200, 'monthly', 1, 'UTC') RETURNING id`, f.productID).Scan(&priceID); err != nil {
+			return err
+		}
+		// A real order has an item; the paid-not-provisioned check is per order item.
+		_, err := tx.Exec(ctx, `
+			INSERT INTO order_items (order_id, price_version_id, description, quantity, unit_minor, line_minor, position)
+			VALUES ($1, $2, 'VPS', 1, 1200, 1200, 1)`, f.orderID, priceID)
+		return err
 	})
 	if err != nil {
 		t.Fatalf("fixture: %v", err)

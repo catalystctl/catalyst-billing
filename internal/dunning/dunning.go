@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/catalyst/billing/internal/ledger"
@@ -400,6 +401,103 @@ func (e *Engine) RequestSuspension(ctx context.Context, serviceID string) (Eligi
 		return elig, err
 	}
 	return elig, nil
+}
+
+// RequestResume enqueues a resume for a suspended service whose balance is clear.
+//
+// Without this, a customer who pays is left suspended: dunning can suspend but
+// nothing could undo it, which is a worse outcome than not suspending at all.
+//
+// The decision is made against the subledger, not the invoice columns: a resume is
+// only safe when the customer owes nothing at all, because a second overdue
+// invoice would suspend the service again immediately.
+func (e *Engine) RequestResume(ctx context.Context, serviceID string) (Eligibility, error) {
+	out := Eligibility{ServiceID: serviceID}
+	err := e.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var (
+			status     string
+			generation int64
+			customerID string
+		)
+		if err := tx.QueryRow(ctx, `
+			SELECT status, generation, customer_id FROM services WHERE id = $1 FOR UPDATE`,
+			serviceID).Scan(&status, &generation, &customerID); err != nil {
+			return fmt.Errorf("dunning: lock service: %w", err)
+		}
+		out.Generation = generation
+
+		if status != "suspended" {
+			out.Reason = fmt.Sprintf("service is %s, not suspended", status)
+			return recordDecision(ctx, tx, out, "held")
+		}
+
+		// A manual hold also blocks an automatic resume: an operator who stopped
+		// the service for a non-billing reason does not want it switched back on.
+		var held bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM service_holds
+				WHERE service_id = $1 AND (expires_at IS NULL OR expires_at > $2)
+			)`, serviceID, e.Now()).Scan(&held); err != nil {
+			return fmt.Errorf("dunning: check holds: %w", err)
+		}
+		if held {
+			out.Reason = "a manual hold is in place"
+			return recordDecision(ctx, tx, out, "held")
+		}
+
+		// What does the customer owe, in every currency they hold invoices in?
+		rows, err := tx.Query(ctx, `
+			SELECT currency, COALESCE(SUM(total_minor - amount_paid_minor), 0)
+			FROM invoices
+			WHERE customer_id = $1 AND status = 'open'
+			GROUP BY currency`, customerID)
+		if err != nil {
+			return fmt.Errorf("dunning: sum open invoices: %w", err)
+		}
+		var owed []string
+		for rows.Next() {
+			var code string
+			var minor int64
+			if err := rows.Scan(&code, &minor); err != nil {
+				rows.Close()
+				return fmt.Errorf("dunning: scan open invoices: %w", err)
+			}
+			if minor > 0 {
+				cur, cerr := currencyOf(code)
+				if cerr != nil {
+					rows.Close()
+					return cerr
+				}
+				owed = append(owed, money.New(minor, cur).Format())
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("dunning: read open invoices: %w", err)
+		}
+		rows.Close()
+
+		if len(owed) > 0 {
+			out.Reason = "the customer still owes " + strings.Join(owed, ", ")
+			return recordDecision(ctx, tx, out, "held")
+		}
+
+		key := fmt.Sprintf("resume:%s:%d", serviceID, generation)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO service_operations (service_id, kind, operation_key, generation, status)
+			VALUES ($1, 'resume', $2, $3, 'queued')
+			ON CONFLICT (operation_key) DO NOTHING`, serviceID, key, generation); err != nil {
+			return fmt.Errorf("dunning: enqueue resume: %w", err)
+		}
+		out.Eligible = true
+		out.Reason = "nothing is owed and no hold applies"
+		return recordDecision(ctx, tx, out, "suspend")
+	})
+	if err != nil {
+		return Eligibility{}, err
+	}
+	return out, nil
 }
 
 // AddHold places a manual hold.

@@ -138,15 +138,23 @@ func (s *Service) paidNotProvisioned(ctx context.Context) Exception {
 	}
 	var count int
 	var oldest *time.Time
+	// The check is per *order*, not per customer: a customer with one working
+	// service and a second paid order that was never delivered is broken, and a
+	// customer-wide check would report them as fine.
 	err := s.pool.QueryRow(ctx, `
 		SELECT count(*), min(i.issued_at)
 		FROM invoices i
 		JOIN orders o ON o.id = i.order_id
 		WHERE i.status = 'paid'
 		  AND NOT EXISTS (
-		      SELECT 1 FROM services s
-		      WHERE s.customer_id = i.customer_id
-		        AND s.status IN ('active', 'suspended')
+		      SELECT 1
+		      FROM order_items oi
+		      JOIN services s ON s.product_id = (
+		          SELECT pv.product_id FROM price_versions pv WHERE pv.id = oi.price_version_id
+		      )
+		                     AND s.customer_id = i.customer_id
+		                     AND s.status IN ('active', 'suspended')
+		      WHERE oi.order_id = o.id
 		  )`).Scan(&count, &oldest)
 	if err != nil {
 		return queryFailure(exc, err)
@@ -156,7 +164,7 @@ func (s *Service) paidNotProvisioned(ctx context.Context) Exception {
 	}
 	exc.Count = count
 	exc.OldestAt = oldest
-	exc.Detail = "The invoice is settled and no active service exists for the customer."
+	exc.Detail = "The invoice is settled and no active service exists for what the order bought."
 	return exc
 }
 

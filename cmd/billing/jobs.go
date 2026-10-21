@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/checkout"
+	"github.com/catalyst/billing/internal/dunning"
 	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/fulfilment"
 	"github.com/catalyst/billing/internal/money"
@@ -97,6 +99,27 @@ func buildJobs(pool *store.Pool, logger *slog.Logger) []jobSpec {
 		logger.Warn("provisioning is disabled by kill switch")
 	}
 
+	// ---- dunning: escalate overdue invoices, and decide suspensions ----------
+	jobs = append(jobs, jobSpec{
+		name:     "dunning",
+		interval: 60 * time.Second,
+		run: func(ctx context.Context) error {
+			engine := dunning.NewEngine(pool, dunning.DefaultPolicy())
+			results, err := engine.Advance(ctx, 200)
+			for _, r := range results {
+				logger.Info("dunning advanced", "invoice_id", r.InvoiceID,
+					"state", string(r.State), "step", r.Step)
+			}
+			if err != nil {
+				return err
+			}
+			if killSwitch("BILLING_DISABLE_SUSPENSION") {
+				return nil
+			}
+			return suspendEligible(ctx, pool, engine, logger)
+		},
+	})
+
 	// ---- renewals: generate invoices for due subscriptions -------------------
 	jobs = append(jobs, jobSpec{
 		name:     "renewals",
@@ -172,4 +195,55 @@ func launchProvisioner(ctx context.Context) (provisioning.Adapter, func(), error
 		return nil, nil, err
 	}
 	return provExtension{client: client}, func() { _ = client.Close() }, nil
+}
+
+// suspendEligible enqueues suspension for services whose invoice is exhausted and
+// past the policy's suspension period.
+//
+// It goes through dunning.RequestSuspension rather than inserting operations
+// directly, so every suspension has an eligibility decision behind it and a
+// generation to fence against.
+func suspendEligible(ctx context.Context, pool *store.Pool, engine *dunning.Engine, logger *slog.Logger) error {
+	rows, err := pool.Query(ctx, `
+		SELECT s.id
+		FROM services s
+		JOIN subscriptions sub ON sub.id = s.subscription_id
+		JOIN invoices i ON i.subscription_id = sub.id
+		JOIN dunning_states d ON d.invoice_id = i.id
+		WHERE s.status = 'active'
+		  AND i.status = 'open'
+		  AND d.state = 'exhausted'
+		ORDER BY i.due_at
+		LIMIT 50`)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, id := range ids {
+		elig, err := engine.RequestSuspension(ctx, id)
+		switch {
+		case errors.Is(err, dunning.ErrNotEligible):
+			logger.Info("suspension withheld", "service_id", id, "reason", elig.Reason)
+		case err != nil:
+			logger.Error("suspension request failed", "service_id", id, "error", err)
+		default:
+			logger.Warn("suspension enqueued", "service_id", id,
+				"outstanding", elig.Outstanding, "reason", elig.Reason)
+		}
+	}
+	return nil
 }

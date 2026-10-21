@@ -435,6 +435,9 @@ var ReferenceTables = []string{
 
 // Tables lists the mutable application tables to truncate, children first.
 var Tables = []string{
+	"suspension_decisions",
+	"service_holds",
+	"dunning_states",
 	"renewal_events",
 	"renewal_runs",
 	"journal_entries",

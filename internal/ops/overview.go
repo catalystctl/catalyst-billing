@@ -105,6 +105,10 @@ func (s *Service) Overview(ctx context.Context) Overview {
 		s.exhaustedOperations,
 		// Renewals held back by the catch-up safety guard.
 		s.renewalsNeedingReview,
+		// Suspensions that were withheld by a hold or a policy rule are not
+		// failures, but an operator should know they happened: a customer kept
+		// service without paying, on purpose.
+		s.withheldSuspensions,
 		// The subledger must always balance. A failure here is a bug, not a
 		// queue.
 		s.ledgerImbalance,
@@ -289,6 +293,33 @@ func (s *Service) renewalsNeedingReview(ctx context.Context) Exception {
 	exc.Count = count
 	exc.OldestAt = oldest
 	exc.Detail = "Catch-up billing was withheld rather than charging many customers automatically."
+	return exc
+}
+
+// withheldSuspensions lists services that automation decided not to suspend.
+func (s *Service) withheldSuspensions(ctx context.Context) Exception {
+	exc := Exception{
+		Code:     "suspensions_withheld",
+		Title:    "Suspension withheld",
+		Severity: SeverityInfo,
+		Action:   "Check the reason: a manual hold, a fresh payment or a policy limit. Clear the hold if service should stop.",
+	}
+	var count int
+	var oldest *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*), min(created_at)
+		FROM suspension_decisions
+		WHERE decision = 'held' AND created_at > $1`,
+		s.Now().AddDate(0, 0, -7)).Scan(&count, &oldest)
+	if err != nil {
+		return queryFailure(exc, err)
+	}
+	if count == 0 {
+		return Exception{}
+	}
+	exc.Count = count
+	exc.OldestAt = oldest
+	exc.Detail = "In the last seven days, automation declined to suspend a service for non-payment."
 	return exc
 }
 

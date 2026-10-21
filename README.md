@@ -132,6 +132,13 @@ double-submit pattern needs it.
 | Retention | Bookkeeping tables are swept on a schedule from policies stored in the database; the sweeper refuses any table it does not own | `internal/retention` |
 | Extensions | Versioned JSON-RPC over supervised stdio; bounded frames; deadlines; cancellation; crash isolation; clean environment | `internal/extproto` |
 | Operations | One-request exception overview; independent checks that report themselves when broken | `internal/ops` |
+| Audit | Append-only by trigger; written by the domain service inside the transaction that made the change; credentials redacted by field name before the insert | `internal/audit`, `0010_audit.sql` |
+| Refunds | Refundable computed under a row lock; intent committed before the provider call; a timeout is `unknown` and posts nothing; the reconciler asks the provider again with the same key instead of retrying | `internal/refunds` |
+| Credit notes | Immutable counter-documents in their own gap-free series; a wrong invoice is corrected, never edited; credit is a subledger account spent by an explicit action | `internal/creditnote` |
+| Approvals | A second, distinct staff actor for high-value actions, enforced by a `CHECK` so a bug cannot self-approve | `internal/approvals`, `0011_contracts.sql` |
+| Account lifecycle | Hashed single-use expiring tokens; non-enumerating responses that match in body and in cost; a reset revokes every session; TOTP secrets sealed with AES-256-GCM | `internal/authn`, `internal/httpapi` |
+| Notifications | A durable outbox written in the same transaction as the change, drained with bounded retries; "we did not send it" and "we failed to send it" are different recorded states | `internal/notify` |
+| API surface | Every route is a table entry, so permission coverage, the error envelope and OpenAPI parity are checked rather than assumed | `internal/httpapi`, `internal/openapi` |
 
 ### Design rules worth knowing before changing anything
 
@@ -151,6 +158,12 @@ double-submit pattern needs it.
    service generation under a row lock.
 6. **Two credentials.** The owner role runs migrations; the runtime role cannot
    create, alter or drop. `billing doctor` fails if that is not true.
+7. **A route is a table entry, not a `mux.HandleFunc`.** Registration applies the
+   wrappers the declaration implies, which is what makes "no route ships without a
+   permission check" a test rather than a review habit.
+8. **An audit row commits with the change it describes.** Writing it afterwards is
+   the fallback, not the design: a row for a rolled-back change is a lie, and a
+   change with no row is a gap.
 
 ---
 
@@ -219,146 +232,134 @@ Acceptance scenarios covered by tests, by plan number:
 
 ---
 
-## Not implemented
+## The web UI gate
 
-### The web UI gate
+The web UI is the last thing to build, not the first. Before this work the server
+exposed **14 routes**: 5 customer reads, 1 customer mutation, 3 auth, 2 ops, 1
+webhook and 2 health checks. There was no staff read surface, no staff write
+surface, no refund, no credit note and no password reset, so most of the operator
+screens would have had nothing to call.
 
-The web UI is the last thing to build, not the first. The current server exposes
-**14 routes**: 5 customer reads, 1 customer mutation, 3 auth, 2 ops, 1 webhook and
-2 health checks. There is no staff read surface and no staff write surface at all,
-so most of the operator screens would have nothing to call. Building the frontend
-first means inventing the API in the frontend, which is the expensive way to
-discover it was wrong.
+That gate is now **closed**. Every item that was listed as missing is implemented,
+tested against a real database, and described in
+[`docs/ui-gate.md`](docs/ui-gate.md). What follows is what exists, in the order the
+work was done, with the property each piece is held to.
 
-Two kinds of gate are listed below:
+### What was built
 
-- **Hard** — the screen cannot be written at all without it. A list screen with no
-  list endpoint has nothing to render.
-- **Soft** — the screen can be written, but it cannot ship. Shipping it would
-  either be unsafe or would have to be rewritten.
+**Contracts first (Gate E), because they are cheap at 14 routes and expensive at 40.**
 
-**Each task is fully specified in [`docs/ui-gate.md`](docs/ui-gate.md)**: the schema
-it needs (as DDL), the endpoint contract with status codes and error codes, the rules
-the implementation must enforce, and the tests that prove it. The tables here are the
-index; that document is the work order. Where a decision is genuinely open it is
-called out inline as a recommendation with the reason, rather than left for the
-implementer to guess.
+| Item | What exists |
+|---|---|
+| Route table | Every route is one entry in `internal/httpapi/routes.go`, registered by a feature's own `init`. The cross-cutting wrappers (authentication, permission, staff guard, CSRF, idempotency, rate class) are applied by the registrar, so a new route cannot ship without them. |
+| OpenAPI | Generated from that same table (`make openapi`). The parity test compares in both directions: served-but-undocumented fails, and documented-but-not-served fails. |
+| Typed client | Generated from the document (`make client`) and compiled in CI, with tests that drive it against a real server. |
+| Pagination | Keyset cursors on every list (`internal/paginate`), never OFFSET. A malformed cursor is `400 invalid_cursor`, never a silent reset to page one. |
+| Idempotency | Scoped to (principal, key), bound to the route and a digest of the body, claim-then-store. A replay with the same body returns the stored response; a different body is `422`; a 5xx is not stored, so a retry can retry. |
+| Error contract | `application/problem+json` with a stable `code`, proven route by route by `TestEveryErrorIsProblemJSON`. |
+| Operation resource | `GET /api/v1/staff/operations/{id}` — the status URL a `202` points at, with `lease_expires_at` derived from an exported lease constant. |
+| SSE | `GET /api/v1/events`, filtered per caller (a customer sees only their own events, staff only events whose permission they hold), `Last-Event-ID` resume, 20-second heartbeat. |
 
-#### Suggested order
+**Trust surface (Gate F).**
 
-| Step | Do | Why this position |
-|---|---|---|
-| 1 | **Gate E contracts** (OpenAPI, pagination, idempotency keys, error envelope, operation resource) | Cheapest while there are 14 routes; at 40 it means editing all 40. Pagination is already missing on a live endpoint, so it is also a fix, not only a convention. |
-| 2 | **Audit log from Gate F** | Every mutation added later must write to it. Retrofitting it after the money actions exist means auditing the actions twice. |
-| 3 | **Gate A staff reads** | The operator workspace is the largest screen set, and every other screen links from it. |
-| 4 | **Gate B staff writes** | Actions need the read surface to hang off, and the audit log to record them. |
-| 5 | **Gate D money actions** | Refund and credit note need the write surface, the audit log, and dual approval — all three exist by now. |
-| 6 | **Gate C account lifecycle** (parallel track) | Independent of the staff surface. Start it alongside step 3 if a second person is free, because password reset is the first thing a real user needs. |
-| 7 | **Gate G serving** | Trivial, and nothing can be demoed in a browser before it. |
+| Item | What exists |
+|---|---|
+| Audit log | `audit_events`, append-only by trigger. Written by the domain services inside the transaction that made the change, with credentials redacted by field name before the insert. Readable at `GET /api/v1/staff/audit` with actor, action, target and date filters. |
+| Rate limiting | Per principal, per route class (read / mutation / export). A `429` carries `Retry-After`. Credential endpoints have their own tighter budget keyed by address. |
+| Permission coverage | `TestPermissionCoverage` enumerates the route table: every staff and portal route declares a permission or a dynamic permission, every staff route is staff-only, and every session mutation requires CSRF. |
 
-#### Gate A — API surface the screens call (hard)
+**Staff read surface (Gate A).**
 
-Spec: [`docs/ui-gate.md#gate-a--staff-read-surface`](docs/ui-gate.md#gate-a--staff-read-surface)
+Customers (list with search, filters, keyset pagination, and a detail view joining
+accounts, subscriptions, services, the last invoices, per-currency balance, holds and
+recent auth events), invoices (list with status/customer/currency/date/overdue filters,
+detail with the snapshot verbatim plus lines, payments, allocations, refunds, credit
+notes and journal postings), services (list and detail with the open-operation count
+and the newest failure), a separate suspension-eligibility endpoint that records its
+decision, orders, payments, the operation queue, the webhook inbox, the catalog, and
+`POST /api/v1/portal/invoices/{id}/checkout` so the customer "Pay" button finally has
+somewhere to go.
 
-| Missing | Why the UI cannot start | Done when |
-|---|---|---|
-| Staff customer list, detail and search | The customer workspace joins billing, services, support and audit; none of it is reachable | `GET /api/v1/staff/customers` with filter, sort and cursor; detail returns the joined view |
-| Staff invoice list and detail, all customers | Operator billing screen has no source | Same shape as the portal endpoints, scoped by permission rather than by customer |
-| Staff service list and detail | The services screen and every action button need it | Includes current operation state and the last failure reason |
-| Staff order and checkout list | Orders exist in the schema and are invisible | Order detail shows the price snapshot and the resulting invoice |
-| Staff payment attempt and payment history | Support cannot answer "did they pay?" without it | Attempts with provider refs, status, and the allocation each payment produced |
-| Operation and job queue view | The plan's "unknown remote operation" exception links nowhere | `GET /api/v1/staff/operations` filtered by status, with the last error |
-| Catalog read (products, price versions) | Checkout and the price editor need it | Versioned list; edits create a new version, never mutate |
-| Checkout session creation over HTTP | `internal/checkout` is implemented and unreachable — the customer "Pay" button has no endpoint | `POST /api/v1/portal/invoices/{id}/checkout` returns the redirect URL and the exact amount |
+Two rules are structural rather than incidental: balances are per currency and never
+summed across them, and `overdue` is derived (`status = 'open' AND due_at < now()`),
+never stored.
 
-#### Gate B — mutations the screens offer (hard)
+**Staff mutations (Gate B).**
 
-Spec: [`docs/ui-gate.md#gate-b--staff-mutations`](docs/ui-gate.md#gate-b--staff-mutations)
+Suspend and resume go through the dunning engine, never by inserting an operation
+directly, so the eligibility decision and the generation are recorded. A manual hold
+refuses suspension; overriding it needs a second staff actor, recorded in
+`suspension_decisions` with both ids and enforced by a `CHECK`. Termination requires the
+operator to echo the service's `external_id` or id. Holds take their `created_by` from
+the session. Manual invoices are priced by the server, `issue_now` drafts and issues in
+one transaction, a paid invoice cannot be voided, and billing profiles are one
+implementation behind two doors (customer and staff).
 
-| Missing | Why | Done when |
-|---|---|---|
-| Staff service actions (suspend, resume, terminate) | Dunning can enqueue them; a human cannot | Enqueues an operation with the current generation, and the response states the consequence |
-| Dunning hold create and clear | The recovery procedure in `docs/operations.md` requires a UI or a CLI | Both, and the hold is visible on the customer |
-| Manual invoice issue and void | Operator escape hatch; `billing admin issue-invoice` exists, so the API is a thin wrapper | Same domain code as the CLI, no shortcut |
-| Billing profile write | A customer cannot correct their own address or tax id | Validated, snapshotted on the next invoice |
+**Money actions (Gate D).**
 
-#### Gate C — account lifecycle the login screen assumes (soft)
+Refunds compute the refundable balance under a row lock, write the intent row before the
+provider call, and distinguish three outcomes: confirmed (post), rejected (record, post
+nothing), and unknown (record, post nothing, reconcile by asking the provider again with
+the same operation key). Credit notes are immutable counter-documents in their own
+gap-free `CN-` series. Applying credit is its own event, keyed by its own id, so a replay
+is a no-op. Dual approval gates amounts above a configurable threshold, and the database
+refuses a self-approval even if the service is bypassed.
 
-Spec: [`docs/ui-gate.md#gate-c--account-lifecycle`](docs/ui-gate.md#gate-c--account-lifecycle)
+**Account lifecycle (Gate C).**
 
-| Missing | Why it blocks shipping | Done when |
-|---|---|---|
-| Password reset | A login page without it generates a support ticket per forgotten password | One-use, expiring, hashed token; non-enumerating response; throttled |
-| Email verification flow | The `email_verified_at` column exists and nothing sets it | Token plus a verification screen |
-| **Notification delivery (SMTP)** | Reset, verification and dunning reminders all need it; no notifications module exists | A delivery interface with a recorded attempt per message, so "we never sent it" is answerable |
-| MFA enrolment (TOTP) | The plan requires mandatory staff MFA before production | Enrolment, recovery codes, and a second step in login |
-| API key create and revoke | Required before automation exists; also the first screen that shows a secret exactly once | Hashed, scoped, expiring, shown once |
+Password reset and email verification with hashed, single-use, expiring tokens and a
+non-enumerating response that is identical in body *and* cost for a known and an unknown
+address. A completed reset revokes every session. A durable notification outbox written in
+the same transaction as the change, drained by a worker with bounded retries. TOTP MFA
+(RFC 6238, secrets sealed with AES-256-GCM under a key from the environment), recovery
+codes, and a login second step that issues a session only after the code. API keys stored
+as a digest plus an eight-character prefix, shown once, scoped so they can only narrow
+their owner's permissions.
 
-MFA and registration can be sequenced **after** the first operator screens if the
-panel stays on loopback. They are gates before it is reachable from the internet,
-not before the first screen is written.
+**Serving the UI (Gate G).**
 
-#### Gate D — money actions the UI must not offer without (hard)
+The frontend is embedded. `scripts/browser-smoke.sh` drives a headless Chromium against a
+real server and asserts the things only a browser can prove: the shell renders, the module
+executes under the CSP, a client-side route survives a reload, a hashed asset is
+immutable, an unknown API path stays `problem+json`, and an injected inline script is
+refused. `make verify` runs it.
 
-Spec: [`docs/ui-gate.md#gate-d--money-actions`](docs/ui-gate.md#gate-d--money-actions)
+### Definition of ready for the web UI — status
 
-| Missing | Why it blocks the UI | Done when |
-|---|---|---|
-| Refund flow | The table exists and nothing can create a refund. A UI with a disabled refund button is worse than no button | Provider call, `unknown` outcome handled like provisioning, allocation and posting in one transaction |
-| Credit note | The plan's correction path for an issued invoice; without it a wrong invoice can only be voided | Immutable document, linked to the invoice it corrects |
-| Customer credit application | Refunds and overpayments have nowhere to land | Credit is a subledger account, applied by an explicit action, never silently |
-| Dual approval for high-value refunds and termination batches | The plan requires it, and it is a UI flow as much as a policy | An approval record that names both actors |
+1. Every screen in the plan's §9 navigation has a documented endpoint, and that endpoint
+   exists. **Met**: the route table and `api/openapi.yaml` are the same set, checked by a
+   test.
+2. `GET /api/v1/auth/me` returns the permissions the UI uses to hide actions, and a hidden
+   action is also refused by the server. **Met**: permissions are enforced by the route
+   table, not by the client.
+3. Every list is paginated; every mutation takes an idempotency key; every error has a
+   stable code. **Met**, and each is a test.
+4. OpenAPI is checked in and a typed client is generated from it in CI. **Met**:
+   `make openapi-check client-check`.
+5. A refund, a credit note and a termination all have a tested path that ends in a balanced
+   ledger. **Met**: `internal/refunds`, `internal/creditnote` and `internal/httpapi` each
+   assert the ledger balances per currency.
+6. Password reset and email verification work end to end, so the login screen is not a dead
+   end. **Met**, including the queued message.
 
-#### Gate E — contracts that are cheap now and expensive later (hard)
+### Known limits of what was built
 
-Spec: [`docs/ui-gate.md#gate-e--contracts`](docs/ui-gate.md#gate-e--contracts)
+Stated here rather than discovered later:
 
-These are not screens. They are the things that, if retrofitted after 30 endpoints
-exist, mean touching all 30.
-
-| Missing | Why now | Done when |
-|---|---|---|
-| **OpenAPI document** | The plan requires it; without it the frontend hand-writes types and they drift silently | Generated from the handlers, checked in CI, and a typed client built from it |
-| **Pagination on every list** | `internal/portal` currently returns every invoice a customer has. A UI built against that breaks at scale, not in review | Cursor-based, with a documented default and maximum page size |
-| **Scoped idempotency keys on mutations** | Plan §10 requires them. A UI retries on a flaky network; without this a retry refunds twice | Key bound to principal, route and request digest; reuse with different input fails |
-| **Uniform error contract** | `problem+json` exists on some paths; a UI needs one shape to render | Every error path returns the same envelope with a stable `code` |
-| **Operation resource for long actions** | Plan §10: a long action returns an operation, not a held connection | The action returns `202` plus an operation URL |
-| **SSE for job and service updates** | Plan §4. Otherwise the provisioning screen is a poll loop and the operator sees stale state | One endpoint streaming committed state changes |
-
-#### Gate F — the trust surface the operator workspace renders (soft)
-
-Spec: [`docs/ui-gate.md#gate-f--trust-surface`](docs/ui-gate.md#gate-f--trust-surface)
-
-| Missing | Why | Done when |
-|---|---|---|
-| **Application audit log** | Only `auth_events` exists. Plan §8 requires actor, action, target, correlation and redacted changes for *every* staff action | Append-only table written by the domain services, not by handlers |
-| Request rate limiting per principal | Throttling covers login only; a UI invites bulk actions | Bounded requests per principal per window, with a documented limit |
-| Staff permission enforcement on every new route | Permissions exist and are enforced on 7 routes, but all of them are customer-facing or reporting — there are no staff routes yet to protect | Every staff route carries `requirePermission`, and a test enumerates the routes to prove none is missing one |
-
-#### Gate G — serving the UI (soft, last)
-
-Spec: [`docs/ui-gate.md#gate-g--serving-the-ui`](docs/ui-gate.md#gate-g--serving-the-ui)
-
-| Missing | Why | Done when |
-|---|---|---|
-| Static asset serving and embed | Plan §4: embed the built frontend in the binary | `billing serve` serves the SPA with a strict CSP, hashed asset names, and no directory listing |
-| CSP and security headers | User and extension content is rendered in an authenticated origin | Documented policy, applied by the static handler, verified in a browser test |
-
-### Definition of ready for the web UI
-
-Start the frontend when all of these are true:
-
-1. Every screen in the plan's §9 navigation has a documented endpoint, and that
-   endpoint exists.
-2. `GET /api/v1/auth/me` returns the permissions the UI uses to hide actions, and a
-   hidden action is also refused by the server.
-3. Every list is paginated; every mutation takes an idempotency key; every error
-   has a stable code.
-4. OpenAPI is checked in and a typed client is generated from it in CI.
-5. A refund, a credit note and a termination all have a tested path that ends in a
-   balanced ledger.
-6. Password reset and email verification work end to end, so the login screen is
-   not a dead end.
+- **The event broker is process-local.** With more than one instance, a client connected to
+  instance A does not see an event published on instance B. Correcting that needs a durable
+  log and a per-client cursor, which is a different design; the SSE contract is documented
+  as such rather than implying more.
+- **The rate limiter is in-process and fixed-window.** The effective limit is per instance
+  and can be exceeded by one window at a boundary. It bounds load; it is not a quota.
+- **Refund reconciliation is a poll**, every two minutes, over unresolved refunds. It asks
+  the provider rather than retrying, so it is safe, but it is not push.
+- **The frontend is a shell, not a UI.** It proves the serving layer (headers, cache
+  policy, CSP enforcement, SPA fallback, JSON-vs-HTML routing). The screens themselves are
+  the next project, and they start with a design system.
+- **`pg_trgm` is optional.** The customer search index tries it and falls back to a
+  `lower(name)` prefix index, so a deployment that cannot install the extension still
+  migrates. Which one is in force is visible in `\d customers`.
 
 ### Deferred beyond v1
 
@@ -394,9 +395,13 @@ Safe to build the UI without, and listed so nobody assumes otherwise:
 - [`docs/operations.md`](docs/operations.md) — deploying, the two database roles, the
   job table with kill switches, what the operator overview reports, recovery
   procedures, backup and restore.
-- [`docs/ui-gate.md`](docs/ui-gate.md) — the implementation specification for every
-  task standing between here and the web UI: DDL, endpoint contracts, rules, errors and
-  required tests.
+- [`docs/ui-gate.md`](docs/ui-gate.md) — the implementation specification for the web UI
+  gate: DDL, endpoint contracts, rules, errors and the tests that prove each one. Every
+  task in it is now implemented; the document is kept as the record of *why* each rule
+  exists.
+- [`api/openapi.yaml`](api/openapi.yaml) — the API document. Generated from the route
+  table by `make openapi`; `make openapi-check` fails when it drifts.
+- [`api/client`](api/client) — the typed client generated from that document.
 
 ## Layout
 
@@ -414,7 +419,20 @@ internal/provisioning/  operation worker, fencing, reconciliation
 internal/renewal/       due-work scanner, catch-up guard, cancellation
 internal/dunning/       escalation, holds, suspension eligibility
 internal/ops/           operator exception overview
-internal/httpapi/       HTTP surface
+internal/audit/         append-only application audit log, with redaction
+internal/approvals/     dual approval for high-value actions
+internal/refunds/       refund intent, provider call, reconciliation, posting
+internal/creditnote/    credit notes and customer credit application
+internal/notify/        durable notification outbox and the SMTP sender
+internal/events/        in-process event broker behind SSE
+internal/paginate/      keyset cursors
+internal/staff/         operator read surface
+internal/openapi/       the API document, generated from the route table
+internal/httpapi/       HTTP surface: route table, middleware, handlers
 internal/extproto/      extension protocol, client, supervisor
+api/openapi.yaml        the generated API document
+api/client/             the generated typed client
+web/                    the embedded frontend shell
 extensions/             conformance fixtures
+scripts/                browser smoke test
 ```

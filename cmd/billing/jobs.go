@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/checkout"
 	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/fulfilment"
 	"github.com/catalyst/billing/internal/money"
@@ -44,8 +45,11 @@ func buildJobs(pool *store.Pool, logger *slog.Logger) []jobSpec {
 				defer closeFn()
 
 				inbox := payments.NewInbox(pool)
+				// Amount verification is always attached in production: a settled
+				// payment is only applied when it matches the recorded checkout.
 				processor := payments.NewProcessor(pool, inbox, gw,
-					envOr("BILLING_GATEWAY_ACCOUNT", ""), fulfilment.NewApplier(pool))
+					envOr("BILLING_GATEWAY_ACCOUNT", ""), fulfilment.NewApplier(pool)).
+					WithAttempts(checkout.LookupFor(pool))
 				results, err := processor.Process(ctx, 50)
 				for _, r := range results {
 					logger.Info("payment applied", "event_id", r.EventID,

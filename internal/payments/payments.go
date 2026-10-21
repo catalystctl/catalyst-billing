@@ -55,6 +55,11 @@ var (
 	// invoice. It is not an error to retry blindly: it means the checkout was
 	// created without an invoice reference.
 	ErrMissingInvoice = errors.New("payments: settled payment has no invoice reference")
+	// ErrAmountMismatch is returned when the provider settled an amount that does
+	// not match what the customer was asked to pay. This is deliberately fatal
+	// rather than treated as a partial payment: a mismatch is an anomaly, and
+	// applying it would launder a wrong charge into legitimate revenue.
+	ErrAmountMismatch = errors.New("payments: settled amount does not match the checkout")
 )
 
 // VerifiedEvent is a normalised, authenticated webhook.
@@ -390,6 +395,9 @@ type ApplyResult struct {
 	PaymentID   string
 }
 
+// AttemptLookup resolves the recorded attempt behind a provider payment.
+type AttemptLookup func(ctx context.Context, provider, providerRef string) (invoiceID string, amountMinor int64, currency string, found bool, err error)
+
 // ProcessResult is the outcome for one inbox event.
 type ProcessResult struct {
 	EventID   string
@@ -408,11 +416,22 @@ type Processor struct {
 	// not cross-credit.
 	Account string
 	Applier Applier
+	// Attempts resolves the recorded checkout attempt for a provider payment, so
+	// the settled amount can be verified against what was asked for. When nil the
+	// check is skipped, which is only appropriate for gateways that cannot report
+	// an amount.
+	Attempts AttemptLookup
 }
 
 // NewProcessor constructs a Processor.
 func NewProcessor(pool *store.Pool, inbox *Inbox, gateway Gateway, account string, applier Applier) *Processor {
 	return &Processor{pool: pool, inbox: inbox, gateway: gateway, Account: account, Applier: applier}
+}
+
+// WithAttempts attaches the attempt lookup used for amount verification.
+func (p *Processor) WithAttempts(lookup AttemptLookup) *Processor {
+	p.Attempts = lookup
+	return p
 }
 
 // Process handles pending events until none are left or the context is done.
@@ -488,6 +507,28 @@ func (p *Processor) processOne(ctx context.Context, ev PendingEvent) (ProcessRes
 		return out, fmt.Errorf("%w: payment %s", ErrMissingInvoice, paymentID)
 	}
 	out.InvoiceID = invoiceID
+
+	// Verify the settled amount against what the customer was asked to pay. The
+	// provider's own numbers are used for the comparison, not the webhook body's.
+	if p.Attempts != nil {
+		attemptInvoice, wantMinor, wantCurrency, found, err := p.Attempts(ctx, ev.Provider, paymentID)
+		if err != nil {
+			return out, err
+		}
+		if !found {
+			// A payment with no recorded attempt was not started by this panel.
+			// Applying it would credit an invoice on an unverifiable basis.
+			return out, fmt.Errorf("%w: payment %s has no recorded checkout", ErrAmountMismatch, paymentID)
+		}
+		if attemptInvoice != invoiceID {
+			return out, fmt.Errorf("%w: payment %s was opened for invoice %s but reports %s",
+				ErrAmountMismatch, paymentID, attemptInvoice, invoiceID)
+		}
+		if amount.Minor() != wantMinor || !strings.EqualFold(amount.Currency().Code(), wantCurrency) {
+			return out, fmt.Errorf("%w: payment %s settled %s, expected %d %s",
+				ErrAmountMismatch, paymentID, amount.Format(), wantMinor, wantCurrency)
+		}
+	}
 
 	var applied ApplyResult
 	err = p.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {

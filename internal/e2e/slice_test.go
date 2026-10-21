@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/checkout"
 	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/fulfilment"
 	"github.com/catalyst/billing/internal/ledger"
@@ -218,7 +219,7 @@ func newWorld(t *testing.T, gatewayMode, provMode string) *world {
 	}
 	w.inbox = payments.NewInbox(w.pool)
 	w.processor = payments.NewProcessor(w.pool, w.inbox, w.gateway, "acct_test",
-		fulfilment.NewApplier(w.pool))
+		fulfilment.NewApplier(w.pool)).WithAttempts(checkout.LookupFor(w.pool))
 	w.worker = provisioning.NewWorker(w.pool, w.prov)
 
 	err = w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -287,20 +288,28 @@ func newWorld(t *testing.T, gatewayMode, provMode string) *world {
 	return w
 }
 
-// checkout starts a gateway session for the invoice, as the checkout flow would.
-func (w *world) checkout(t *testing.T) extproto.CreateCheckoutResult {
+// checkout starts a gateway session through the real checkout service, so the
+// attempt row that amount verification depends on is created exactly as it is in
+// production.
+func (w *world) checkout(t *testing.T) checkout.Session {
 	t.Helper()
-	out, err := w.gateway.CreateCheckout(context.Background(), extproto.CreateCheckoutParams{
-		MutatingMeta: extproto.MutatingMeta{OperationKey: "checkout:" + w.invoiceID},
-		CustomerID:   w.customerID,
-		Amount:       extproto.Amount{Minor: 1200, Currency: "USD"},
-		Description:  "VPS Small monthly",
-		Metadata:     map[string]string{"invoice_id": w.invoiceID},
-	})
+	svc := checkout.New(w.pool, w.gateway, "acct_test", "", "")
+	session, err := svc.Start(context.Background(), w.invoiceID)
 	if err != nil {
 		t.Fatalf("create checkout: %v", err)
 	}
-	return out
+	return session
+}
+
+// paymentID returns the provider payment id recorded on the invoice's attempt.
+func (w *world) paymentID(t *testing.T) string {
+	t.Helper()
+	var ref string
+	if err := w.pool.QueryRow(context.Background(),
+		`SELECT provider_ref FROM payment_attempts WHERE invoice_id = $1`, w.invoiceID).Scan(&ref); err != nil {
+		t.Fatalf("look up provider ref: %v", err)
+	}
+	return ref
 }
 
 // completePayment simulates the customer finishing the hosted checkout: the
@@ -340,13 +349,13 @@ func (w *world) deliverWebhook(t *testing.T, paymentID, eventID string) (accepte
 // allocation and one logical provisioning operation.
 func TestVerticalSliceReplayedWebhook(t *testing.T) {
 	w := newWorld(t, "ok", "ok")
-	session := w.checkout(t)
-	w.completePayment(t, session.PaymentID)
+	w.checkout(t)
+	w.completePayment(t, w.paymentID(t))
 
 	// The provider delivers the same event 100 times, as a retrying provider does.
 	newEvents := 0
 	for i := 0; i < 100; i++ {
-		if w.deliverWebhook(t, session.PaymentID, "evt_1") {
+		if w.deliverWebhook(t, w.paymentID(t), "evt_1") {
 			newEvents++
 		}
 	}
@@ -422,13 +431,13 @@ func TestVerticalSliceReplayedWebhook(t *testing.T) {
 // double-credit the customer.
 func TestTwoEventsForOnePayment(t *testing.T) {
 	w := newWorld(t, "ok", "ok")
-	session := w.checkout(t)
-	w.completePayment(t, session.PaymentID)
+	w.checkout(t)
+	w.completePayment(t, w.paymentID(t))
 
-	if !w.deliverWebhook(t, session.PaymentID, "evt_a") {
+	if !w.deliverWebhook(t, w.paymentID(t), "evt_a") {
 		t.Fatal("first event was not accepted")
 	}
-	if !w.deliverWebhook(t, session.PaymentID, "evt_b") {
+	if !w.deliverWebhook(t, w.paymentID(t), "evt_b") {
 		t.Fatal("second, distinct event was not accepted")
 	}
 
@@ -473,12 +482,12 @@ func TestTwoEventsForOnePayment(t *testing.T) {
 // before the local commit. Reconciliation records it once without recharging.
 func TestCrashBeforeCommitRecordsOnce(t *testing.T) {
 	w := newWorld(t, "ok", "ok")
-	session := w.checkout(t)
-	w.completePayment(t, session.PaymentID)
+	w.checkout(t)
+	w.completePayment(t, w.paymentID(t))
 
 	// Simulate the crash: the event is durably ingested, then the process dies
 	// before applying it. Nothing is applied here.
-	if !w.deliverWebhook(t, session.PaymentID, "evt_crash") {
+	if !w.deliverWebhook(t, w.paymentID(t), "evt_crash") {
 		t.Fatal("event was not ingested")
 	}
 
@@ -515,10 +524,10 @@ func TestCrashBeforeCommitRecordsOnce(t *testing.T) {
 // A webhook that does not authenticate must be refused and must not be stored.
 func TestInvalidSignatureRejected(t *testing.T) {
 	w := newWorld(t, "ok", "ok")
-	session := w.checkout(t)
+	w.checkout(t)
 
 	body := []byte(fmt.Sprintf(`{"event_id":"evt_bad","event_type":"payment.succeeded","payment_id":%q}`,
-		session.PaymentID))
+		w.paymentID(t)))
 	_, err := payments.ExtensionVerifier{Gateway: w.gateway}.Verify(context.Background(), body,
 		map[string]string{"X-Signature": "sha256=wrong"})
 	if !errors.Is(err, payments.ErrInvalidSignature) {
@@ -538,9 +547,9 @@ func TestInvalidSignatureRejected(t *testing.T) {
 // A retry must discover the existing server instead of duplicating it.
 func TestProvisionerTimeoutDoesNotDuplicate(t *testing.T) {
 	w := newWorld(t, "ok", "create_then_timeout")
-	session := w.checkout(t)
-	w.completePayment(t, session.PaymentID)
-	w.deliverWebhook(t, session.PaymentID, "evt_1")
+	w.checkout(t)
+	w.completePayment(t, w.paymentID(t))
+	w.deliverWebhook(t, w.paymentID(t), "evt_1")
 	if _, err := w.processor.Process(context.Background(), 10); err != nil {
 		t.Fatalf("process: %v", err)
 	}
@@ -591,9 +600,9 @@ func TestProvisionerTimeoutDoesNotDuplicate(t *testing.T) {
 // A stale worker must not apply an obsolete destructive intent.
 func TestStaleWorkerCannotSuspendPaidService(t *testing.T) {
 	w := newWorld(t, "ok", "ok")
-	session := w.checkout(t)
-	w.completePayment(t, session.PaymentID)
-	w.deliverWebhook(t, session.PaymentID, "evt_1")
+	w.checkout(t)
+	w.completePayment(t, w.paymentID(t))
+	w.deliverWebhook(t, w.paymentID(t), "evt_1")
 	if _, err := w.processor.Process(context.Background(), 10); err != nil {
 		t.Fatalf("process: %v", err)
 	}
@@ -641,9 +650,9 @@ func TestStaleWorkerCannotSuspendPaidService(t *testing.T) {
 // A gateway that cannot be reached must leave the event pending, not lost.
 func TestGatewayFailureKeepsEventPending(t *testing.T) {
 	w := newWorld(t, "ok", "ok")
-	session := w.checkout(t)
-	w.completePayment(t, session.PaymentID)
-	w.deliverWebhook(t, session.PaymentID, "evt_1")
+	w.checkout(t)
+	w.completePayment(t, w.paymentID(t))
+	w.deliverWebhook(t, w.paymentID(t), "evt_1")
 
 	// The gateway becomes unreachable after the event was ingested: the event must
 	// stay pending with the reason recorded, so a later attempt can succeed.

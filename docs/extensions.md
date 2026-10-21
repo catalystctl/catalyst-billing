@@ -75,31 +75,57 @@ server for a customer who paid once.
 
 ## Writing one
 
+There is no framework to import. An extension is a program with a loop that reads
+one JSON object per line from stdin, dispatches on `method`, and writes one JSON
+object per line to stdout. The wire format is the contract, which is why the two
+fixtures in `extensions/` deliberately do **not** import the core's protocol
+package: if they did, a change to the Go types could silently pass while the wire
+format broke.
+
+The skeleton, with the parts that matter for correctness:
+
 ```go
-package main
-
-import (
-	"context"
-
-	"github.com/catalyst/billing/internal/extproto"
-)
-
-// The adapter must honour the operation key and answer lookup authoritatively.
 func main() {
-	extproto.Serve(extproto.Handlers{
-		Create: func(ctx context.Context, p extproto.ProvisionCreateParams) (extproto.ProvisionCreateResult, error) {
-			// Idempotent on p.OperationKey.
-			return extproto.ProvisionCreateResult{ExternalID: "srv-1", Status: "running"}, nil
-		},
-		Lookup: func(ctx context.Context, p extproto.ProvisionLookupParams) (extproto.ProvisionLookupResult, error) {
-			// Must search the backend, not an in-memory cache.
-			return extproto.ProvisionLookupResult{Found: false}, nil
-		},
-	})
+	dec := bufio.NewReaderSize(os.Stdin, 64<<10)
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
+
+	for {
+		line, err := readLine(dec, 1<<20) // bounded, like the core's reader
+		if err != nil {
+			return // EOF: the core closed us, which is a normal shutdown
+		}
+		var req struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      *uint64         `json:"id"`
+			Method  string          `json:"method"`
+			Params  json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(line, &req); err != nil {
+			continue // one bad frame must not kill the process
+		}
+
+		result, rpcErr := dispatch(req)
+		// A notification (nil ID) gets no reply.
+		if req.ID == nil {
+			continue
+		}
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0", "id": *req.ID, "result": result, "error": rpcErr,
+		})
+	}
 }
 ```
 
-The two conformance fixtures in `extensions/` are working examples and are what the
-end-to-end tests drive, including the failure modes (`create_then_timeout`,
-`duplicate`, `crash`, `hang`, `oversized`) that are impossible to trigger on demand
-against a real provider.
+`dispatch` must implement `initialize` and `health`, plus whatever capabilities it
+advertised in the handshake. The two obligations that make the core safe to operate:
+
+- `provisioner.create` is idempotent on `operation_key`: the same key returns the
+  same resource.
+- `provisioner.lookup` searches the **backend**, not an in-memory cache, and answers
+  `found: false` only when it is certain nothing was created.
+
+The fixtures are complete working examples, and they implement the failure modes the
+end-to-end tests drive — `create_then_timeout`, `duplicate`, `crash`, `hang`,
+`oversized` — because those are impossible to trigger on demand against a real
+provider and are exactly where an integration silently breaks.

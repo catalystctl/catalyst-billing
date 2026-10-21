@@ -65,6 +65,16 @@ type Route struct {
 	// the permission check: no customer role holds a staff permission today, and this
 	// makes sure that stays true even if one is added by mistake.
 	StaffOnly bool
+	// DynamicPermission marks a route whose required permission depends on the record it
+	// acts on, and which therefore checks it inside the handler.
+	//
+	// It exists for approvals: the permission to approve a refund is payment:refund, and the
+	// permission to approve a termination is service:terminate. A single declared permission
+	// on the endpoint would be wrong in one direction or the other, and the wrong direction
+	// lets a support agent approve a refund. Declaring it explicitly means the coverage test
+	// still sees the route and can require that the handler does the check, instead of the
+	// route silently shipping with no guard at all.
+	DynamicPermission bool
 	// CSRF marks a state-changing route. Set for every non-GET route that runs as a
 	// session.
 	CSRF bool
@@ -180,6 +190,16 @@ func (r *router) staffExport(pattern string, p authn.Permission, h http.HandlerF
 func (r *router) staffMutation(method, pattern string, p authn.Permission, h http.HandlerFunc) {
 	r.add(Route{Method: method, Pattern: pattern, Access: AccessPermission,
 		Permission: p, StaffOnly: true, CSRF: true,
+		Idempotent: true, IdempotencyRequired: true,
+		Rate: RateMutation, Handler: h})
+}
+
+// staffMutationDynamic registers a staff mutation whose required permission is resolved
+// from the record it acts on. The handler must perform that check; the route is still
+// staff-only and still requires CSRF and an idempotency key.
+func (r *router) staffMutationDynamic(method, pattern string, h http.HandlerFunc) {
+	r.add(Route{Method: method, Pattern: pattern, Access: AccessUser,
+		StaffOnly: true, CSRF: true, DynamicPermission: true,
 		Idempotent: true, IdempotencyRequired: true,
 		Rate: RateMutation, Handler: h})
 }

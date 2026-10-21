@@ -58,24 +58,28 @@ func LoadProfile(ctx context.Context, q Querier, customerID string) (Profile, er
 	p := Profile{CustomerID: customerID}
 	var (
 		name, email string
+		legalName   *string
 		addr1, addr2,
 		city, postal, region, country, taxID *string
 	)
 	err := q.QueryRow(ctx, `
-		SELECT c.name, c.email,
+		SELECT c.name, c.email, bp.legal_name,
 		       bp.address_line1, bp.address_line2, bp.city, bp.postal_code,
 		       bp.region, bp.country_code, bp.tax_id
 		FROM customers c
 		LEFT JOIN billing_profiles bp ON bp.customer_id = c.id
 		WHERE c.id = $1`, customerID).
-		Scan(&name, &email, &addr1, &addr2, &city, &postal, &region, &country, &taxID)
+		Scan(&name, &email, &legalName, &addr1, &addr2, &city, &postal, &region, &country, &taxID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Profile{}, fmt.Errorf("%w: customer %s", ErrInvalidProfile, customerID)
 	}
 	if err != nil {
 		return Profile{}, fmt.Errorf("billing: load billing profile: %w", err)
 	}
+	// The profile's own legal name wins; the customer record's name is the fallback so a
+	// customer with no profile still has something to print on a document.
 	p.LegalName = name
+	derefInto(&p.LegalName, legalName)
 	derefInto(&p.AddressLine1, addr1)
 	derefInto(&p.AddressLine2, addr2)
 	derefInto(&p.City, city)
@@ -83,8 +87,6 @@ func LoadProfile(ctx context.Context, q Querier, customerID string) (Profile, er
 	derefInto(&p.Region, region)
 	derefInto(&p.CountryCode, country)
 	derefInto(&p.TaxID, taxID)
-	// A profile with no legal name still has the customer's name, which is what a
-	// document needs.
 	if p.LegalName == "" {
 		p.LegalName = name
 	}

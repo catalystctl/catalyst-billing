@@ -19,7 +19,11 @@ type staffEnv struct {
 	admin,
 	billing,
 	support *http.Cookie
-	adminCSRF string
+	// adminCSRF, billingCSRF and supportCSRF are the per-session tokens. They differ per
+	// session, which is the property that makes CSRF protection real.
+	adminCSRF,
+	billingCSRF,
+	supportCSRF string
 }
 
 func newStaffEnv(t *testing.T) *staffEnv {
@@ -31,10 +35,10 @@ func newStaffEnv(t *testing.T) *staffEnv {
 	out.admin, out.adminCSRF = env.login(t, "admin@example.test", "admin password 1")
 
 	env.createUser(t, "billing@example.test", "billing password 1", "billing")
-	out.billing, _ = env.login(t, "billing@example.test", "billing password 1")
+	out.billing, out.billingCSRF = env.login(t, "billing@example.test", "billing password 1")
 
 	env.createUser(t, "support@example.test", "support password 1", "support")
-	out.support, _ = env.login(t, "support@example.test", "support password 1")
+	out.support, out.supportCSRF = env.login(t, "support@example.test", "support password 1")
 
 	return out
 }

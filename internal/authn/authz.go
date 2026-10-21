@@ -26,10 +26,18 @@ const (
 	PermCustomerWriteAll Permission = "customer:write:all"
 	PermInvoiceReadAll   Permission = "invoice:read:all"
 	PermInvoiceWriteAll  Permission = "invoice:write:all"
+	// PermInvoiceVoid is separate from invoice:write:all because voiding is irreversible in
+	// the legal sense: the document was issued with a number, and the number is burned.
+	PermInvoiceVoid      Permission = "invoice:void"
 	PermPaymentRefund    Permission = "payment:refund"
 	PermPaymentReconcile Permission = "payment:reconcile"
 	PermServiceReadAll   Permission = "service:read:all"
 	PermServiceSuspend   Permission = "service:suspend"
+	// PermServiceHold gates placing and clearing a manual hold. It is separate from
+	// service:suspend because a hold is the *opposite* instruction: suspend asks automation
+	// to act, hold asks it to stop. Support staff need the second and should not have the
+	// first.
+	PermServiceHold      Permission = "service:hold"
 	PermServiceTerminate Permission = "service:terminate"
 	PermServiceProvision Permission = "service:provision"
 	PermExtensionManage  Permission = "extension:manage"
@@ -61,23 +69,27 @@ const (
 var rolePermissions = map[Role][]Permission{
 	RoleAdministrator: {
 		PermCustomerReadAll, PermCustomerWriteAll,
-		PermInvoiceReadAll, PermInvoiceWriteAll,
+		PermInvoiceReadAll, PermInvoiceWriteAll, PermInvoiceVoid,
 		PermPaymentRefund, PermPaymentReconcile,
 		PermServiceReadAll, PermServiceSuspend, PermServiceTerminate, PermServiceProvision,
+		PermServiceHold,
 		PermExtensionManage, PermSettingsWrite, PermStaffManage,
 		PermAuditRead, PermReportRead, PermAPIKeyManage,
 	},
 	RoleBilling: {
 		PermCustomerReadAll, PermCustomerWriteAll,
-		PermInvoiceReadAll, PermInvoiceWriteAll,
+		PermInvoiceReadAll, PermInvoiceWriteAll, PermInvoiceVoid,
 		PermPaymentRefund, PermPaymentReconcile,
 		PermServiceReadAll,
 		PermReportRead,
 	},
+	// Support can place and clear a hold, which is exactly the "stop, do not touch this"
+	// instruction a first-line agent needs while a dispute is open. Support cannot suspend,
+	// refund or terminate.
 	RoleSupport: {
 		PermCustomerReadAll,
 		PermInvoiceReadAll,
-		PermServiceReadAll,
+		PermServiceReadAll, PermServiceHold,
 		PermTicketReadSelf, PermTicketWriteSelf,
 	},
 	RoleInfrastructure: {

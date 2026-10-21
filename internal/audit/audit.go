@@ -201,6 +201,15 @@ func List(ctx context.Context, q Querier, f Filter, limit int, cursor string) (L
 	return res, nil
 }
 
+// withChanges returns a copy of the event with a diff attached.
+//
+// It returns a value rather than mutating, so an event can be built inline in a transaction
+// without a shared variable that a second caller could see half-populated.
+func (e Event) WithChanges(changes map[string]any) Event {
+	e.Changes = changes
+	return e
+}
+
 // Recorder writes audit events.
 type Recorder struct {
 	tx pgx.Tx

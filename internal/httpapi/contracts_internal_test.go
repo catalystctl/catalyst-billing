@@ -125,15 +125,20 @@ func TestPermissionCoverage(t *testing.T) {
 		if rt.Access != AccessPermission && rt.Permission != "" {
 			t.Fatalf("%s declares a permission but does not require it", rt.Path())
 		}
+		if rt.DynamicPermission && !rt.StaffOnly {
+			// A dynamic permission is resolved in the handler; if the route is not also
+			// staff-only there is nothing stopping a customer from reaching it.
+			t.Fatalf("%s resolves its permission dynamically but is not staff-only", rt.Path())
+		}
 		if !knownPermission(rt.Permission) && rt.Permission != "" {
 			t.Fatalf("%s declares an undeclared permission %q", rt.Path(), rt.Permission)
 		}
 		if strings.HasPrefix(rt.Pattern, "/api/v1/staff") ||
 			strings.HasPrefix(rt.Pattern, "/api/v1/portal") {
-			if rt.Access != AccessPermission {
+			if rt.Access != AccessPermission && !rt.DynamicPermission {
 				t.Fatalf("%s is a customer/staff route without a permission check", rt.Path())
 			}
-			if rt.Permission == "" {
+			if rt.Permission == "" && !rt.DynamicPermission {
 				t.Fatalf("%s is a customer/staff route without a declared permission", rt.Path())
 			}
 		}

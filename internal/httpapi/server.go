@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/approvals"
+	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/dunning"
 	"github.com/catalyst/billing/internal/events"
 	"github.com/catalyst/billing/internal/notify"
@@ -118,6 +119,14 @@ type Server struct {
 	// checkoutSuccessURL and checkoutCancelURL are where the gateway returns the customer.
 	checkoutSuccessURL string
 	checkoutCancelURL  string
+	// issuer creates and issues invoices; nil when not configured.
+	issuer *billing.Issuer
+	// merchant, terms and series are the document defaults a manual invoice uses.
+	merchant billing.Merchant
+	terms    string
+	series   billing.NumberSeries
+	// now is the clock, injectable for tests.
+	now func() time.Time
 
 	// routes is the table built by the most recent Handler() call.
 	routesMu sync.Mutex
@@ -145,6 +154,9 @@ func New(cfg Config, pool *store.Pool, inbox *payments.Inbox, provider, account 
 		events:      events.NewBroker(),
 		rateLimiter: newRateLimiter(),
 		startedAt:   time.Now().UTC(),
+		issuer:      billing.NewIssuer(billing.FixedTaxPricer{Policy: "no-tax", Jurisdiction: "none"}),
+		series:      billing.DefaultSeries,
+		now:         func() time.Time { return time.Now().UTC() },
 	}
 	if pool != nil {
 		s.notify = notify.NewQueue(pool)

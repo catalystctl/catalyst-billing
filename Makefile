@@ -3,7 +3,7 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build clean
+.PHONY: help db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build clean openapi openapi-check client
 
 help:
 	@echo "db-up      start the dedicated Postgres (compose.yaml, port 5442)"
@@ -15,6 +15,9 @@ help:
 	@echo "db-unlock  clear a test lock leaked by a killed test run"
 	@echo "test       go test ./... against the real database"
 	@echo "test-race  same, with the race detector"
+	@echo "openapi    regenerate api/openapi.yaml from the router"
+	@echo "openapi-check  fail if api/openapi.yaml is out of date with the router"
+	@echo "client     regenerate the typed client from api/openapi.yaml"
 
 include .env
 export
@@ -82,12 +85,30 @@ test:
 test-race:
 	BILLING_REQUIRE_DB=1 go test ./... -count=1 -race
 
+# The API document is generated from the route table, never maintained by hand.
+# `openapi-check` is what CI runs: a route that is not documented, or a documented
+# route that is not served, fails the build.
+openapi:
+	go run ./cmd/openapigen
+
+openapi-check:
+	go run ./cmd/openapigen -check
+
+# A typed client generated from the document. It exists so the frontend cannot
+# hand-write a type that disagrees with the server: `client-check` proves it compiles.
+client: openapi
+	go run ./cmd/apiclient -out ./api/client
+
+client-check: openapi-check
+	go run ./cmd/apiclient -out ./api/client -check
+	go build ./api/client/...
+
 clean:
 	rm -rf bin
 
 # Full verification: the same sequence CI runs, minus the network-dependent
 # scanners. Run this before calling anything done.
-verify: fmt-check vet test-race
+verify: fmt-check vet openapi-check client-check test-race
 	@echo "verify: ok"
 
 fmt-check:

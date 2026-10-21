@@ -109,6 +109,14 @@ type Worker struct {
 	Now func() time.Time
 }
 
+// DefaultLeaseDuration is how long a claim is honoured when a Worker is constructed with
+// NewWorker.
+//
+// It is exported because other packages need to explain a claim to an operator: the
+// operation resource reports when a lease expires, and computing that from a
+// per-instance field would make the answer depend on which process served the request.
+const DefaultLeaseDuration = 5 * time.Minute
+
 // NewWorker constructs a Worker.
 func NewWorker(pool *store.Pool, adapter Adapter) *Worker {
 	return &Worker{
@@ -116,7 +124,7 @@ func NewWorker(pool *store.Pool, adapter Adapter) *Worker {
 		adapter:       adapter,
 		MaxAttempts:   5,
 		CallTimeout:   30 * time.Second,
-		LeaseDuration: 5 * time.Minute,
+		LeaseDuration: DefaultLeaseDuration,
 		Now:           func() time.Time { return time.Now().UTC() },
 	}
 }

@@ -60,6 +60,18 @@ type Config struct {
 	// MaxAccountAttempts and MaxAddressAttempts bound failures per window.
 	MaxAccountAttempts int
 	MaxAddressAttempts int
+	// MaxConcurrentHashes bounds how many password verifications run at once.
+	//
+	// Argon2id is deliberately expensive: one verification costs tens of MiB. Without
+	// a bound, an unauthenticated attacker drives the process out of memory simply by
+	// opening connections, because even an unknown account pays the full cost of the
+	// dummy-hash path. The default is sized for a 4 GiB process running 64 MiB
+	// verifications with headroom for everything else.
+	MaxConcurrentHashes int
+	// HashWaitTimeout bounds how long a login waits for a verification slot. Beyond
+	// it the login is refused as overloaded rather than queued indefinitely, so a
+	// flood cannot hold every request open.
+	HashWaitTimeout time.Duration
 	// Now is injectable for tests.
 	Now func() time.Time
 }
@@ -67,12 +79,14 @@ type Config struct {
 // DefaultConfig is a conservative starting point.
 func DefaultConfig() Config {
 	return Config{
-		SessionLifetime:    12 * time.Hour,
-		AbsoluteLifetime:   7 * 24 * time.Hour,
-		ThrottleWindow:     15 * time.Minute,
-		MaxAccountAttempts: 5,
-		MaxAddressAttempts: 20,
-		Now:                func() time.Time { return time.Now().UTC() },
+		SessionLifetime:     12 * time.Hour,
+		AbsoluteLifetime:    7 * 24 * time.Hour,
+		ThrottleWindow:      15 * time.Minute,
+		MaxAccountAttempts:  5,
+		MaxAddressAttempts:  20,
+		MaxConcurrentHashes: 8,
+		HashWaitTimeout:     5 * time.Second,
+		Now:                 func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -93,6 +107,12 @@ func (c Config) withDefaults() Config {
 	if c.MaxAddressAttempts <= 0 {
 		c.MaxAddressAttempts = d.MaxAddressAttempts
 	}
+	if c.MaxConcurrentHashes <= 0 {
+		c.MaxConcurrentHashes = d.MaxConcurrentHashes
+	}
+	if c.HashWaitTimeout <= 0 {
+		c.HashWaitTimeout = d.HashWaitTimeout
+	}
 	if c.Now == nil {
 		c.Now = d.Now
 	}
@@ -107,7 +127,16 @@ type Service struct {
 	// dummy is the hash verified against when the account does not exist, so the
 	// response time does not reveal whether an address is registered.
 	dummy string
+	// hashSlots bounds concurrent password verifications. It is a semaphore rather
+	// than a worker pool because each verification must complete for the caller to
+	// get an answer; queuing is the only alternative to running them all at once.
+	hashSlots chan struct{}
 }
+
+// ErrOverloaded is returned when the server cannot admit another password
+// verification. It is distinct from a credential failure so a client does not
+// interpret it as a wrong password, and so an operator can alert on it.
+var ErrOverloaded = errors.New("authn: too many concurrent authentications")
 
 // New constructs a Service.
 //
@@ -118,7 +147,14 @@ func New(pool *store.Pool, hasher *Hasher, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("authn: prepare dummy hash: %w", err)
 	}
-	return &Service{pool: pool, hasher: hasher, cfg: cfg.withDefaults(), dummy: dummy}, nil
+	resolved := cfg.withDefaults()
+	return &Service{
+		pool:      pool,
+		hasher:    hasher,
+		cfg:       resolved,
+		dummy:     dummy,
+		hashSlots: make(chan struct{}, resolved.MaxConcurrentHashes),
+	}, nil
 }
 
 // LoginRequest is one authentication attempt.
@@ -151,9 +187,19 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResult, err
 		return LoginResult{}, ErrInvalidCredentials
 	}
 
+	// Throttling is checked before any hashing: a rejected attempt must cost
+	// nothing, or the throttle itself becomes the amplifier.
 	if err := s.checkThrottle(ctx, email, req.IP); err != nil {
 		return LoginResult{}, err
 	}
+
+	// Take a verification slot before reading the user, so the expensive paths
+	// (a real hash and the dummy hash) are both bounded by the same limit.
+	release, err := s.acquireHashSlot(ctx)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	defer release()
 
 	var (
 		userID     string
@@ -163,7 +209,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResult, err
 		verifiedAt *time.Time
 		display    string
 	)
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		SELECT id, password_hash, status, credential_version, email_verified_at, display_name
 		FROM users WHERE lower(email) = $1`, email).
 		Scan(&userID, &hash, &status, &credVer, &verifiedAt, &display)
@@ -245,6 +291,27 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResult, err
 			Roles:             roles,
 		},
 	}, nil
+}
+
+// acquireHashSlot takes one verification slot, or fails when the server is at
+// capacity for longer than the configured wait.
+func (s *Service) acquireHashSlot(ctx context.Context) (func(), error) {
+	select {
+	case s.hashSlots <- struct{}{}:
+		return func() { <-s.hashSlots }, nil
+	default:
+	}
+
+	timer := time.NewTimer(s.cfg.HashWaitTimeout)
+	defer timer.Stop()
+	select {
+	case s.hashSlots <- struct{}{}:
+		return func() { <-s.hashSlots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return nil, ErrOverloaded
+	}
 }
 
 // createSession issues a new session and returns its token.

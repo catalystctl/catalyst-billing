@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ type serveConfig struct {
 	gatewayBin      string
 	signingSecret   string
 	secureCookies   bool
+	trustedProxies  string
 	logFormat       string
 	logLevel        string
 	embeddedWorker  bool
@@ -40,9 +42,48 @@ func serveConfigFromEnv() serveConfig {
 		gatewayBin:      os.Getenv("BILLING_GATEWAY_EXTENSION"),
 		signingSecret:   os.Getenv("BILLING_WEBHOOK_SECRET"),
 		secureCookies:   !killSwitch("BILLING_INSECURE_COOKIES"),
+		trustedProxies:  envOr("BILLING_TRUSTED_PROXIES", ""),
 		logFormat:       envOr("BILLING_LOG_FORMAT", "text"),
 		logLevel:        envOr("BILLING_LOG_LEVEL", "info"),
 	}
+}
+
+// parseCIDRs parses a comma-separated list of networks.
+//
+// A malformed entry is an error rather than being skipped: silently ignoring a typo
+// would leave the operator believing their proxy is trusted when it is not, or worse,
+// that no header is trusted when they intended one to be.
+func parseCIDRs(list string) ([]*net.IPNet, error) {
+	list = strings.TrimSpace(list)
+	if list == "" {
+		return nil, nil
+	}
+	var out []*net.IPNet
+	for _, part := range strings.Split(list, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !strings.Contains(part, "/") {
+			// Accept a bare address as a single-host network.
+			ip := net.ParseIP(part)
+			if ip == nil {
+				return nil, fmt.Errorf("BILLING_TRUSTED_PROXIES: %q is not an address or CIDR", part)
+			}
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			out = append(out, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
+		}
+		_, n, err := net.ParseCIDR(part)
+		if err != nil {
+			return nil, fmt.Errorf("BILLING_TRUSTED_PROXIES: %q is not a valid CIDR: %w", part, err)
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 func envOr(key, fallback string) string {
@@ -148,14 +189,26 @@ func cmdServe(args []string) error {
 			"hint", "set BILLING_INSECURE_COOKIES=1 to silence")
 	}
 
+	// Forwarding headers are only believed from these networks. Empty means the panel
+	// is directly exposed and no header is trusted, which is the safe default.
+	nets, err := parseCIDRs(cfg.trustedProxies)
+	if err != nil {
+		return err
+	}
+	if len(nets) == 0 {
+		logger.Info("no trusted proxies configured; X-Forwarded-* headers are ignored",
+			"hint", "set BILLING_TRUSTED_PROXIES to your proxy's CIDR, e.g. 10.0.0.0/8")
+	}
+
 	srv := httpapi.New(httpapi.Config{
 		Version: version,
 		Logger:  logger,
 	}, pool, inbox, cfg.gatewayProvider, cfg.gatewayAccount, verifier).WithAuth(&httpapi.Auth{
-		Service:    authSvc,
-		Authz:      authn.NewAuthorizer(),
-		Cookies:    httpapi.CookieConfig{Secure: cfg.secureCookies},
-		SessionTTL: authCfg.SessionLifetime,
+		Service:        authSvc,
+		Authz:          authn.NewAuthorizer(),
+		Cookies:        httpapi.CookieConfig{Secure: cfg.secureCookies},
+		SessionTTL:     authCfg.SessionLifetime,
+		TrustedProxies: nets,
 	}).WithPortal(portal.New(pool))
 
 	errCh := make(chan error, 2)

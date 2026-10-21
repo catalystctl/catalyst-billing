@@ -16,6 +16,7 @@ import (
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/provisioning"
 	"github.com/catalyst/billing/internal/renewal"
+	"github.com/catalyst/billing/internal/retention"
 	"github.com/catalyst/billing/internal/store"
 )
 
@@ -32,7 +33,7 @@ type jobSpec struct {
 // running it twice, or running two workers, is safe. The kill switches below are
 // the operator's emergency brake: a misbehaving gateway or provisioner can be
 // stopped without a deploy.
-func buildJobs(pool *store.Pool, logger *slog.Logger) []jobSpec {
+func buildJobs(pool *store.Pool, logger *slog.Logger) (*extensionCache, []jobSpec) {
 	var jobs []jobSpec
 
 	// One long-lived client per extension, launched on first use and reused.
@@ -113,6 +114,22 @@ func buildJobs(pool *store.Pool, logger *slog.Logger) []jobSpec {
 		logger.Warn("provisioning is disabled by kill switch")
 	}
 
+	// ---- retention: delete bookkeeping rows past their policy ----------------
+	jobs = append(jobs, jobSpec{
+		name:     "retention",
+		interval: 6 * time.Hour,
+		run: func(ctx context.Context) error {
+			results, err := retention.New(pool).Run(ctx)
+			for _, r := range results {
+				if r.Deleted > 0 {
+					logger.Info("retention swept", "table", r.Table,
+						"deleted", r.Deleted, "keep_for", r.KeepFor.String())
+				}
+			}
+			return err
+		},
+	})
+
 	// ---- dunning: escalate overdue invoices, and decide suspensions ----------
 	jobs = append(jobs, jobSpec{
 		name:     "dunning",
@@ -171,7 +188,7 @@ func buildJobs(pool *store.Pool, logger *slog.Logger) []jobSpec {
 		},
 	})
 
-	return jobs
+	return clients, jobs
 }
 
 // extensionCache keeps one client per configured extension for the life of the
@@ -188,8 +205,15 @@ type extensionCache struct {
 func (c *extensionCache) gateway() (*gatewayExtension, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// A client whose process died stays dead: Err() is non-nil forever. Returning it
+	// would make one crash stop payments until the worker restarts, so a dead client
+	// is discarded and a fresh process is launched.
 	if c.gw != nil {
-		return c.gw, nil
+		if err := c.gwC.Err(); err == nil {
+			return c.gw, nil
+		}
+		_ = c.gwC.Close()
+		c.gw, c.gwC = nil, nil
 	}
 	path := envOr("BILLING_GATEWAY_EXTENSION", "")
 	if path == "" {
@@ -212,7 +236,11 @@ func (c *extensionCache) provisioner() (*provExtension, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.pr != nil {
-		return c.pr, nil
+		if err := c.prC.Err(); err == nil {
+			return c.pr, nil
+		}
+		_ = c.prC.Close()
+		c.pr, c.prC = nil, nil
 	}
 	path := envOr("BILLING_PROVISIONER_EXTENSION", "")
 	if path == "" {
@@ -229,6 +257,20 @@ func (c *extensionCache) provisioner() (*provExtension, error) {
 	c.prC = client
 	c.pr = &provExtension{client: client}
 	return c.pr, nil
+}
+
+// Close shuts down every extension client this process started.
+func (c *extensionCache) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gwC != nil {
+		_ = c.gwC.Close()
+		c.gw, c.gwC = nil, nil
+	}
+	if c.prC != nil {
+		_ = c.prC.Close()
+		c.pr, c.prC = nil, nil
+	}
 }
 
 // killSwitch reports whether a subsystem is disabled by the environment.

@@ -671,3 +671,87 @@ func TestRequire(t *testing.T) {
 		t.Fatalf("got %v, want ErrForbidden", err)
 	}
 }
+
+// H1: login must not be usable as a memory-exhaustion lever. The number of
+// concurrent password verifications is bounded, and a request that cannot get a
+// slot is refused as overloaded rather than queued forever.
+func TestConcurrentHashesAreBounded(t *testing.T) {
+	pool := storetest.DB(t)
+	hasher := newHasher(t)
+
+	cfg := authn.DefaultConfig()
+	cfg.MaxConcurrentHashes = 2
+	cfg.HashWaitTimeout = 50 * time.Millisecond
+	svc, err := authn.New(pool, hasher, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Occupy both slots with calls that are in progress. Each login is fast, so the
+	// test drives many at once and asserts that some are refused rather than that a
+	// specific one is.
+	const attempts = 40
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		overload  int
+		otherErrs []error
+	)
+	start := make(chan struct{})
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := svc.Login(context.Background(), authn.LoginRequest{
+				Email:    "nobody@example.test",
+				Password: "a password that is wrong",
+				IP:       "203.0.113.10",
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			if errors.Is(err, authn.ErrOverloaded) {
+				overload++
+			} else if err != nil && !errors.Is(err, authn.ErrInvalidCredentials) &&
+				!errors.Is(err, authn.ErrTooManyAttempts) {
+				otherErrs = append(otherErrs, err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for _, err := range otherErrs {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if overload == 0 {
+		t.Fatalf("none of %d concurrent logins were refused; the verification count is unbounded", attempts)
+	}
+	t.Logf("%d of %d concurrent logins were refused as overloaded", overload, attempts)
+}
+
+// A slot is released even when the login fails, so a burst cannot permanently
+// consume the capacity.
+func TestHashSlotReleasedAfterFailure(t *testing.T) {
+	pool := storetest.DB(t)
+	hasher := newHasher(t)
+
+	cfg := authn.DefaultConfig()
+	cfg.MaxConcurrentHashes = 1
+	cfg.HashWaitTimeout = 100 * time.Millisecond
+	svc, err := authn.New(pool, hasher, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 10; i++ {
+		_, err := svc.Login(context.Background(), authn.LoginRequest{
+			Email:    "nobody@example.test",
+			Password: "wrong password here",
+			IP:       "203.0.113." + string(rune('0'+i%10)),
+		})
+		if errors.Is(err, authn.ErrOverloaded) {
+			t.Fatalf("iteration %d was refused: the slot was not released", i)
+		}
+	}
+}

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/catalyst/billing/internal/authn"
@@ -147,7 +150,10 @@ func adminIssueInvoice(args []string) error {
 func adminCreateUser(args []string) error {
 	fs := flag.NewFlagSet("admin create-user", flag.ExitOnError)
 	email := fs.String("email", "", "email address (required)")
-	password := fs.String("password", "", "password (required, read from BILLING_ADMIN_PASSWORD if omitted)")
+	// The password is deliberately not a documented flag: an argument is visible in
+	// `ps` and lands in shell history. Reading it from the environment or stdin keeps
+	// it out of both.
+	password := fs.String("password", "", "password (prefer BILLING_ADMIN_PASSWORD or stdin: a flag is visible in ps)")
 	role := fs.String("role", "", "staff role: administrator, billing, support, infrastructure")
 	name := fs.String("name", "", "display name")
 	if err := fs.Parse(args); err != nil {
@@ -159,8 +165,15 @@ func adminCreateUser(args []string) error {
 	if *password == "" {
 		*password = os.Getenv("BILLING_ADMIN_PASSWORD")
 	}
+	if *password == "" && stdinIsPipe() {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && err != io.EOF {
+			return fmt.Errorf("read password from stdin: %w", err)
+		}
+		*password = strings.TrimRight(line, "\r\n")
+	}
 	if *password == "" {
-		return errors.New("--password or BILLING_ADMIN_PASSWORD is required")
+		return errors.New("set BILLING_ADMIN_PASSWORD, pipe the password on stdin, or pass --password")
 	}
 	if *role != "" && !authn.IsStaffRole(*role) {
 		return fmt.Errorf("unknown role %q; one of: administrator, billing, support, infrastructure", *role)
@@ -209,4 +222,15 @@ func adminCreateUser(args []string) error {
 		fmt.Printf("created user %s with staff role %s\n", userID, *role)
 	}
 	return nil
+}
+
+// stdinIsPipe reports whether stdin is a pipe or file rather than a terminal, which
+// is how the password is read without echoing it into the terminal or the process
+// list.
+func stdinIsPipe() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice == 0
 }

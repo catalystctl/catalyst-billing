@@ -392,12 +392,16 @@ func (s *Service) counts(ctx context.Context) Counts {
 	return c
 }
 
-// queryFailure converts a broken check into a visible exception instead of
-// hiding it: an operator must know that a check did not run.
+// queryFailure converts a broken check into a visible exception instead of hiding
+// it: an operator must know that a check did not run.
+//
+// The database's error text is deliberately not included. It contains SQL, schema
+// and constraint names, and this payload is rendered in a browser; the operator gets
+// a stable message plus the check's own code to search the server log with.
 func queryFailure(exc Exception, err error) Exception {
 	exc.Severity = SeverityWarning
 	exc.Count = 0
-	exc.Detail = "This check could not run: " + err.Error()
+	exc.Detail = "This check could not run. The server log records the cause under check " + exc.Code + "."
 	return exc
 }
 

@@ -28,7 +28,8 @@ func runWorkerLoop(ctx context.Context, pool *store.Pool, logger *slog.Logger) e
 
 	// The concrete jobs are wired in jobs.go; keeping the loop generic means a
 	// new periodic task is one entry, not a new control flow.
-	jobs := buildJobs(pool, logger)
+	cache, jobs := buildJobs(pool, logger)
+	defer cache.Close()
 	for _, j := range jobs {
 		j := j
 		go func() {

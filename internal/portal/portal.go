@@ -462,6 +462,30 @@ func (m *Manager) RequestCancellation(ctx context.Context, userID, serviceID str
 	return endsAt, nil
 }
 
+// ValidID reports whether id is a well-formed UUID.
+//
+// A path identifier that is not a UUID cannot name a record, so it is treated as
+// "not found" rather than handed to the database, where it would produce a cast
+// error, a 500 and a log line containing internal SQL detail.
+func ValidID(id string) bool {
+	if len(id) != 36 {
+		return false
+	}
+	for i, r := range id {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func currencyOf(code string) (money.Currency, error) {
 	if cur, ok := money.LookupCurrency(code); ok {
 		return cur, nil

@@ -378,6 +378,31 @@ func Truncate(ctx context.Context, conn *pgx.Conn) error {
 		ON CONFLICT (code) DO NOTHING`); err != nil {
 		return fmt.Errorf("restore ledger accounts: %w", err)
 	}
+
+	// Reference rows are not truncated, so a test that edited one would leak into
+	// every later test in the package. Restoring them explicitly makes each test start
+	// from the migrated state regardless of what the previous one did.
+	if _, err := conn.Exec(ctx, `
+		DELETE FROM retention_policies WHERE table_name NOT IN
+			('login_attempts', 'auth_events', 'gateway_events')`); err != nil {
+		return fmt.Errorf("restore retention policies: %w", err)
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO retention_policies (table_name, keep_for, age_column) VALUES
+			('login_attempts', interval '1 day',    'created_at'),
+			('auth_events',    interval '180 days', 'created_at'),
+			('gateway_events', interval '400 days', 'received_at')
+		ON CONFLICT (table_name) DO UPDATE
+			SET keep_for = EXCLUDED.keep_for, age_column = EXCLUDED.age_column`); err != nil {
+		return fmt.Errorf("restore retention policies: %w", err)
+	}
+	if _, err := conn.Exec(ctx, `
+		UPDATE billing_policies
+		SET invoice_lead_days = 7, payment_terms_days = 7, grace_days = 3,
+		    catchup_max_periods = 2, catchup_max_age_days = 30
+		WHERE id = 'default'`); err != nil {
+		return fmt.Errorf("restore billing policy: %w", err)
+	}
 	return nil
 }
 
@@ -431,6 +456,7 @@ var ReferenceTables = []string{
 	"schema_migrations",
 	"ledger_accounts",
 	"billing_policies",
+	"retention_policies",
 }
 
 // Tables lists the mutable application tables to truncate, children first.

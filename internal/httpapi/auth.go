@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -62,6 +64,16 @@ type Auth struct {
 	Service *authn.Service
 	Authz   *authn.Authorizer
 	Cookies CookieConfig
+	// TrustedProxies lists the networks whose forwarding headers are believed.
+	//
+	// This is a security boundary, not a convenience. When it is empty, no
+	// forwarding header is honoured at all and the client address is taken from the
+	// connection, which is correct for a directly exposed panel. When the panel sits
+	// behind a proxy, the proxy's networks must be listed here explicitly; otherwise
+	// any client could choose its own throttling bucket by sending X-Forwarded-For,
+	// lock out another address, poison the audit log, and defeat the Origin check by
+	// choosing X-Forwarded-Host.
+	TrustedProxies []*net.IPNet
 	// SessionTTL is the cookie lifetime, kept in step with the session's own
 	// expiry so the browser and the server agree about when to stop sending it.
 	SessionTTL time.Duration
@@ -230,12 +242,38 @@ func (s *Server) clearSessionCookies(w http.ResponseWriter) {
 	}
 }
 
+// trustedProxy reports whether the request arrived from a configured proxy.
+func (s *Server) trustedProxy(r *http.Request) bool {
+	if s.auth == nil || len(s.auth.TrustedProxies) == 0 {
+		return false
+	}
+	ip := remoteIP(r)
+	if ip == nil {
+		return false
+	}
+	for _, n := range s.auth.TrustedProxies {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteIP parses the address of the immediate peer.
+func remoteIP(r *http.Request) net.IP {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return net.ParseIP(host)
+}
+
 // sameOrigin enforces that a state-changing request came from this origin.
 //
 // SameSite=Lax already blocks most cross-site posts, but a defence in depth check
 // costs nothing and closes the cases SameSite does not cover (older clients,
 // subdomain origins, and a misconfigured proxy that rewrites headers).
-func sameOrigin(r *http.Request) bool {
+func (s *Server) sameOrigin(r *http.Request) bool {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 		return true
 	}
@@ -245,13 +283,32 @@ func sameOrigin(r *http.Request) bool {
 		// CSRF attack, and they must still pass the CSRF token check.
 		return true
 	}
+
 	host := r.Host
-	if forwarded := r.Header.Get("X-Forwarded-Host"); forwarded != "" {
-		// Only trust the forwarded host if a proxy set it; using it unvalidated
-		// would let an attacker choose the comparison value.
-		host = forwarded
+	// X-Forwarded-Host is only believed when the request came from a trusted proxy.
+	// Honouring it unconditionally let a client choose the value it is compared
+	// against, which defeats the whole check.
+	if s.trustedProxy(r) {
+		if forwarded := r.Header.Get("X-Forwarded-Host"); forwarded != "" {
+			host = forwarded
+		}
 	}
-	return strings.HasSuffix(origin, "://"+host)
+
+	// Compare the host exactly, including the scheme, rather than by suffix: a
+	// suffix test accepts "https://evil.example.attacker.test" for host
+	// "attacker.test" and accepts "https://notpanel.example" for "panel.example".
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if u.Host != host {
+		return false
+	}
+	// An origin carrying a scheme we did not serve over is a different origin.
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	return true
 }
 
 // loginRequest is the credential submission.
@@ -266,7 +323,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusServiceUnavailable, "auth_not_configured", "authentication is not configured")
 		return
 	}
-	if !sameOrigin(r) {
+	if !s.sameOrigin(r) {
 		writeProblem(w, http.StatusForbidden, "bad_origin", "the request did not come from this site")
 		return
 	}
@@ -279,7 +336,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	res, err := s.auth.Service.Login(r.Context(), authn.LoginRequest{
 		Email:     req.Email,
 		Password:  req.Password,
-		IP:        clientIP(r),
+		IP:        s.clientIP(r),
 		UserAgent: r.UserAgent(),
 	})
 	if err != nil {
@@ -288,6 +345,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", "900")
 			writeProblem(w, http.StatusTooManyRequests, "too_many_attempts",
 				"too many attempts; try again later")
+		case errors.Is(err, authn.ErrOverloaded):
+			// The server is saturated, not the credentials. Saying so lets a client
+			// back off instead of concluding the password is wrong.
+			w.Header().Set("Retry-After", "5")
+			writeProblem(w, http.StatusServiceUnavailable, "overloaded",
+				"the server is busy; try again shortly")
 		case errors.Is(err, authn.ErrAccountDisabled):
 			// Reached only after a correct password, so it is safe to be specific.
 			writeProblem(w, http.StatusForbidden, "account_disabled", "this account is disabled")
@@ -358,30 +421,48 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// clientIP extracts the caller's address.
+// clientIP extracts the caller's address for throttling and audit.
 //
-// X-Forwarded-For is only honoured for its first entry and only when the request
-// arrived from a trusted proxy; without that distinction a client could choose its
-// own throttling bucket by setting the header.
-func clientIP(r *http.Request) string {
-	if s := r.Header.Get("X-Forwarded-For"); s != "" {
-		if first, _, ok := strings.Cut(s, ","); ok {
-			return strings.TrimSpace(first)
-		}
-		return strings.TrimSpace(s)
+// The returned value is always a valid IP or the empty string. A header value that
+// is not an address is ignored rather than stored: an attacker-chosen string would
+// otherwise poison the audit log, and a value that fails the inet cast would make a
+// *correct* login fail.
+//
+// X-Forwarded-For is honoured only when the immediate peer is a trusted proxy, and
+// then only the right-most entry that is not itself a trusted proxy. Taking the
+// left-most entry (the common shortcut) is wrong: with a proxy that appends rather
+// than replaces, the left-most value is whatever the client sent.
+func (s *Server) clientIP(r *http.Request) string {
+	peer := remoteIP(r)
+	if peer == nil {
+		return ""
 	}
-	host, _, err := splitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	if !s.trustedProxy(r) {
+		return peer.String()
 	}
-	return host
-}
 
-func splitHostPort(addr string) (string, string, error) {
-	if i := strings.LastIndexByte(addr, ':'); i >= 0 {
-		return addr[:i], addr[i+1:], nil
+	// Walk right to left, skipping trusted proxies, and take the first untrusted
+	// address: that is the client as the outermost proxy saw it.
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		candidate := net.ParseIP(strings.TrimSpace(parts[i]))
+		if candidate == nil {
+			// A malformed entry invalidates the chain: fall back to the peer rather
+			// than trusting anything to its left.
+			return peer.String()
+		}
+		trusted := false
+		for _, n := range s.auth.TrustedProxies {
+			if n.Contains(candidate) {
+				trusted = true
+				break
+			}
+		}
+		if !trusted {
+			return candidate.String()
+		}
 	}
-	return addr, "", errors.New("no port")
+	return peer.String()
 }
 
 // decodeJSON reads a bounded JSON body.

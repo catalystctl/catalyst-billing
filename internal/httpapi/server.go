@@ -39,6 +39,11 @@ type Config struct {
 	MaxWebhookBytes int64
 	// ReadHeaderTimeout bounds how long a client may take to send headers.
 	ReadHeaderTimeout time.Duration
+	// ReadTimeout bounds reading the whole request, so a client that sends a
+	// Content-Length and then trickles bytes cannot hold a connection forever.
+	ReadTimeout time.Duration
+	// WriteTimeout bounds writing the response.
+	WriteTimeout time.Duration
 	// ShutdownGrace bounds in-flight request completion on shutdown.
 	ShutdownGrace time.Duration
 	// Version is reported by the health endpoint.
@@ -53,6 +58,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.ReadHeaderTimeout <= 0 {
 		c.ReadHeaderTimeout = 10 * time.Second
+	}
+	if c.ReadTimeout <= 0 {
+		c.ReadTimeout = 30 * time.Second
+	}
+	if c.WriteTimeout <= 0 {
+		c.WriteTimeout = 30 * time.Second
 	}
 	if c.ShutdownGrace <= 0 {
 		c.ShutdownGrace = 20 * time.Second
@@ -154,11 +165,10 @@ func (s *Server) Handler() http.Handler {
 // handleHealth is liveness only: it must not touch the database, because a
 // database blip should not cause an orchestrator to restart every instance.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"version": s.cfg.Version,
-		"uptime":  time.Since(s.startedAt).Round(time.Second).String(),
-	})
+	// Liveness only. The version and uptime are not reported here: this endpoint is
+	// anonymous and reachable from the internet, and the version alone tells an
+	// attacker which vulnerabilities to try.
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 // handleReady reports whether this instance can serve traffic: the database must
@@ -182,12 +192,12 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(pending) > 0 {
-		names := make([]string, len(pending))
-		for i, m := range pending {
-			names[i] = m.Name
-		}
+		// Readiness is anonymous, so it must not enumerate migration names: that
+		// tells an unauthenticated caller which version the deployment is on and what
+		// changed recently. The count is enough to act on.
+		s.cfg.Logger.WarnContext(ctx, "schema is outdated", "pending", len(pending))
 		writeProblem(w, http.StatusServiceUnavailable, "schema_outdated",
-			"pending migrations: "+strings.Join(names, ", "))
+			fmt.Sprintf("%d pending migration(s); run billing migrate", len(pending)))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
@@ -397,9 +407,12 @@ func (s *Server) Serve(ctx context.Context, addr string) error {
 		Addr:              addr,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: s.cfg.ReadHeaderTimeout,
-		// No write timeout: responses are small, but a slow database read should
-		// surface as a client timeout rather than a truncated response.
-		IdleTimeout: 60 * time.Second,
+		ReadTimeout:       s.cfg.ReadTimeout,
+		// WriteTimeout is generous but finite: responses are small, and a connection
+		// held open by a client that stopped reading is a resource leak, not a
+		// feature.
+		WriteTimeout: s.cfg.WriteTimeout,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

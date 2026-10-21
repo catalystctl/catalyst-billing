@@ -141,7 +141,13 @@ func (s *Server) handlePortalInvoice(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := userFrom(r.Context())
 
-	inv, err := s.portal.Invoice(r.Context(), user.ID, r.PathValue("id"))
+	id := r.PathValue("id")
+	if !portal.ValidID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+		return
+	}
+
+	inv, err := s.portal.Invoice(r.Context(), user.ID, id)
 	if err != nil {
 		s.writePortalError(w, r, err)
 		return
@@ -177,7 +183,13 @@ func (s *Server) handlePortalService(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := userFrom(r.Context())
 
-	svc, err := s.portal.Service(r.Context(), user.ID, r.PathValue("id"))
+	id := r.PathValue("id")
+	if !portal.ValidID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+		return
+	}
+
+	svc, err := s.portal.Service(r.Context(), user.ID, id)
 	if err != nil {
 		s.writePortalError(w, r, err)
 		return
@@ -193,7 +205,13 @@ func (s *Server) handlePortalCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := userFrom(r.Context())
 
-	endsAt, err := s.portal.RequestCancellation(r.Context(), user.ID, r.PathValue("id"))
+	id := r.PathValue("id")
+	if !portal.ValidID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+		return
+	}
+
+	endsAt, err := s.portal.RequestCancellation(r.Context(), user.ID, id)
 	if err != nil {
 		s.writePortalError(w, r, err)
 		return

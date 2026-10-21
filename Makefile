@@ -84,3 +84,23 @@ test-race:
 
 clean:
 	rm -rf bin
+
+# Full verification: the same sequence CI runs, minus the network-dependent
+# scanners. Run this before calling anything done.
+verify: fmt-check vet test-race
+	@echo "verify: ok"
+
+fmt-check:
+	@unformatted="$$(gofmt -l . | grep -v '^$$' || true)"; \
+	if [ -n "$$unformatted" ]; then echo "not gofmt'd:"; echo "$$unformatted"; exit 1; fi
+
+# Coverage across the whole module, including the database-backed suites.
+cover:
+	BILLING_REQUIRE_DB=1 go test ./... -count=1 -coverprofile=coverage.out -covermode=atomic
+	go tool cover -func=coverage.out | tail -1
+
+# Show per-package coverage, worst first: the packages at the bottom are where a
+# missing test is most likely to be hiding a defect.
+cover-report:
+	BILLING_REQUIRE_DB=1 go test ./... -count=1 -coverprofile=coverage.out -covermode=atomic >/dev/null
+	go tool cover -func=coverage.out | grep -v '^total' | sort -t$'\t' -k3 -n | head -20

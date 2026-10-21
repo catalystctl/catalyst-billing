@@ -64,8 +64,12 @@ curl -b cookies.txt localhost:8080/api/v1/portal/services | jq
 
 ```bash
 # The first staff account. Without this there is no way to sign in.
-./bin/billing admin create-user --email you@example.test \
-    --password 'a long passphrase' --role administrator
+# The password is read from the environment or stdin, never from argv: an argument
+# is visible in `ps` and lands in shell history.
+read -rsp 'password: ' BILLING_ADMIN_PASSWORD; echo
+BILLING_ADMIN_PASSWORD="$BILLING_ADMIN_PASSWORD" \
+  ./bin/billing admin create-user --email you@example.test --role administrator
+unset BILLING_ADMIN_PASSWORD
 
 ./bin/billing admin create-customer --email a@example.test --name "A"
 ./bin/billing admin issue-invoice --customer <id> --amount 12.00 --tax-rate 20%
@@ -87,8 +91,27 @@ curl -b cookies.txt localhost:8080/api/v1/ops/overview
 
 The metrics endpoint and the operator overview require staff authentication; the
 webhook, liveness and readiness endpoints are public because a provider has no
-cookie and an orchestrator has no session. `BILLING_INSECURE_COOKIES=1` disables
-the `Secure` cookie flag and logs a warning — use it only on loopback.
+cookie and an orchestrator has no session.
+
+### Behind a proxy
+
+`X-Forwarded-For` and `X-Forwarded-Host` are **ignored unless the immediate peer is a
+configured trusted proxy**. This is a security boundary, not a convenience: believing
+those headers unconditionally lets a client choose its own throttling bucket, lock out
+another address, poison the audit log, and defeat the origin check.
+
+```bash
+BILLING_TRUSTED_PROXIES=10.0.0.0/8,192.168.1.5   # your proxy's networks
+```
+
+Empty (the default) is correct for a directly exposed panel.
+
+### Development-only flags
+
+`BILLING_INSECURE_COOKIES=1` disables the `Secure` cookie flag and logs a warning —
+use it only on loopback. The session cookie is `HttpOnly` and `SameSite=Lax`
+regardless; the CSRF cookie is readable by the client on purpose, because the
+double-submit pattern needs it.
 
 ---
 
@@ -106,6 +129,7 @@ the `Secure` cookie flag and logs a warning — use it only on loopback.
 | Dunning | Persisted escalation state; every suspension decision recorded with reason and generation; manual holds outrank automation; resume after payment | `internal/dunning` |
 | Auth | Argon2id passwords, hashed server-side sessions, per-session CSRF, login throttling, deny-by-default RBAC with billing/infrastructure separation | `internal/authn`, `internal/httpapi` |
 | Portal | Customer-scoped reads where the scoping is in SQL, so identifier substitution returns "not found" for someone else's record and for a nonexistent one alike; cancellation at period end only | `internal/portal` |
+| Retention | Bookkeeping tables are swept on a schedule from policies stored in the database; the sweeper refuses any table it does not own | `internal/retention` |
 | Extensions | Versioned JSON-RPC over supervised stdio; bounded frames; deadlines; cancellation; crash isolation; clean environment | `internal/extproto` |
 | Operations | One-request exception overview; independent checks that report themselves when broken | `internal/ops` |
 
@@ -214,6 +238,8 @@ Listed so nobody assumes otherwise:
   the real API.
 - **River queue.** Jobs are a ticker over idempotent batches, which is sufficient
   and safe; River would add prioritisation and per-job retry state.
+- **A sandboxed extension runner.** Extensions are fully trusted operator code; see
+  `docs/extensions.md` for exactly what the host enforces and what it does not.
 - **Tax engine.** One explicitly configured rate per installation, inclusive or
   exclusive, recorded as evidence. No jurisdiction logic, no registration, no
   filing.

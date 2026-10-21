@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/ops"
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/store"
@@ -72,6 +73,10 @@ type Server struct {
 
 	// Counters are exported by the metrics endpoint. They are process-local on
 	// purpose: they describe what this instance saw, not global state.
+	// auth is nil when authentication is not configured; guarded routes then
+	// refuse rather than allowing anonymous access.
+	auth *Auth
+
 	webhooksReceived  atomic.Int64
 	webhooksDuplicate atomic.Int64
 	webhooksRejected  atomic.Int64
@@ -95,15 +100,35 @@ func New(cfg Config, pool *store.Pool, inbox *payments.Inbox, provider, account 
 	}
 }
 
+// WithAuth attaches authentication. Without it, guarded routes refuse every
+// request rather than falling open.
+func (s *Server) WithAuth(a *Auth) *Server {
+	s.auth = a
+	return s
+}
+
 // Handler returns the root handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+
+	// Public: liveness and readiness must work without a session, and a webhook
+	// arrives with a signature rather than a cookie.
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
-	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("POST /webhooks/{provider}", s.handleWebhook)
-	mux.HandleFunc("GET /api/v1/ops/overview", s.handleOverview)
-	return s.withRecovery(s.withRequestLog(mux))
+
+	// Metrics and the operator overview expose money and customer counts, so they
+	// require staff authentication. They used to be public.
+	mux.HandleFunc("GET /metrics", s.requireStaff(s.handleMetrics))
+	mux.HandleFunc("GET /api/v1/ops/overview",
+		s.requirePermission(authn.PermReportRead, s.handleOverview))
+
+	// Authentication.
+	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/v1/auth/logout", s.requireCSRF(s.handleLogout))
+	mux.HandleFunc("GET /api/v1/auth/me", s.handleMe)
+
+	return s.withRecovery(s.withRequestLog(s.loadSession(mux)))
 }
 
 // handleHealth is liveness only: it must not touch the database, because a

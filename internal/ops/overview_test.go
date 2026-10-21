@@ -2,6 +2,7 @@ package ops_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -366,4 +367,25 @@ func contains(haystack, needle string) bool {
 		}
 		return false
 	})()
+}
+
+// A healthy system must serialise an empty list, not null: clients iterate it.
+func TestOverviewJSONUsesEmptyArray(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO services (customer_id, product_id, status, generation)
+		VALUES ($1, $2, 'active', 1)`, f.customerID, f.productID); err != nil {
+		t.Fatal(err)
+	}
+	f.paidInvoice(t)
+
+	overview := ops.New(f.pool).Overview(ctx)
+	encoded, err := json.Marshal(overview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(string(encoded), `"exceptions":[]`) {
+		t.Fatalf("healthy overview serialised as %s, want an empty exceptions array", encoded)
+	}
 }

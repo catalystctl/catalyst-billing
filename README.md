@@ -56,11 +56,32 @@ curl -s localhost:8080/api/v1/ops/overview | jq   # the operator exception list
 ### Operator commands
 
 ```bash
+# The first staff account. Without this there is no way to sign in.
+./bin/billing admin create-user --email you@example.test \
+    --password 'a long passphrase' --role administrator
+
 ./bin/billing admin create-customer --email a@example.test --name "A"
 ./bin/billing admin issue-invoice --customer <id> --amount 12.00 --tax-rate 20%
 ./bin/billing migrate --status
 ./bin/billing doctor --json
 ```
+
+### Authentication
+
+```bash
+# Sign in; the session cookie is HttpOnly and the CSRF token is returned here.
+curl -c cookies.txt -X POST localhost:8080/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.test","password":"a long passphrase"}'
+
+curl -b cookies.txt localhost:8080/api/v1/auth/me
+curl -b cookies.txt localhost:8080/api/v1/ops/overview
+```
+
+The metrics endpoint and the operator overview require staff authentication; the
+webhook, liveness and readiness endpoints are public because a provider has no
+cookie and an orchestrator has no session. `BILLING_INSECURE_COOKIES=1` disables
+the `Secure` cookie flag and logs a warning — use it only on loopback.
 
 ---
 
@@ -75,7 +96,8 @@ curl -s localhost:8080/api/v1/ops/overview | jq   # the operator exception list
 | Payments | Verify → persist → process → apply. Duplicate absorbed on event id *and* provider payment id. Settled amount verified against the recorded checkout | `internal/payments`, `internal/checkout` |
 | Renewals | One invoice per subscription per period enforced by index; version-guarded schedule advance; catch-up backlog routed to review | `internal/renewal` |
 | Provisioning | Persisted intent before the remote call; adapter idempotency keys; unknown outcome reconciled, not retried; generation fencing | `internal/provisioning` |
-| Dunning | Persisted escalation state; every suspension decision recorded with reason and generation; manual holds outrank automation | `internal/dunning` |
+| Dunning | Persisted escalation state; every suspension decision recorded with reason and generation; manual holds outrank automation; resume after payment | `internal/dunning` |
+| Auth | Argon2id passwords, hashed server-side sessions, per-session CSRF, login throttling, deny-by-default RBAC with billing/infrastructure separation | `internal/authn`, `internal/httpapi` |
 | Extensions | Versioned JSON-RPC over supervised stdio; bounded frames; deadlines; cancellation; crash isolation; clean environment | `internal/extproto` |
 | Operations | One-request exception overview; independent checks that report themselves when broken | `internal/ops` |
 
@@ -171,8 +193,9 @@ Listed so nobody assumes otherwise:
 
 - **Web UI.** No customer portal, no operator workspace, no design system. The API
   and the operator overview endpoint exist; the frontend does not.
-- **Accounts and auth.** No registration, sessions, MFA, passkeys, RBAC or API
-  keys. Everything that needs a principal is currently an operator action.
+- **Self-service registration, email verification, MFA, passkeys, API keys.**
+  Password login, server-side sessions, CSRF and role-based authorization exist;
+  the rest does not. Staff accounts are created by `billing admin create-user`.
 - **Refunds, credit notes, disputes, partial-payment allocation across invoices.**
   The schema has the tables and the bounds are enforced; the flows are not built.
 - **Off-session charging.** Requires recorded consent and a reusable method; the

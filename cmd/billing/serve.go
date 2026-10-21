@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/httpapi"
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/store"
@@ -23,6 +24,7 @@ type serveConfig struct {
 	gatewayAccount  string
 	gatewayBin      string
 	signingSecret   string
+	secureCookies   bool
 	logFormat       string
 	logLevel        string
 	embeddedWorker  bool
@@ -36,6 +38,7 @@ func serveConfigFromEnv() serveConfig {
 		gatewayAccount:  envOr("BILLING_GATEWAY_ACCOUNT", ""),
 		gatewayBin:      os.Getenv("BILLING_GATEWAY_EXTENSION"),
 		signingSecret:   os.Getenv("BILLING_WEBHOOK_SECRET"),
+		secureCookies:   !killSwitch("BILLING_INSECURE_COOKIES"),
 		logFormat:       envOr("BILLING_LOG_FORMAT", "text"),
 		logLevel:        envOr("BILLING_LOG_LEVEL", "info"),
 	}
@@ -126,10 +129,33 @@ func cmdServe(args []string) error {
 			"hint", "set BILLING_GATEWAY_PROVIDER and BILLING_WEBHOOK_SECRET")
 	}
 
+	// Authentication. A panel served over plain HTTP outside loopback would send
+	// the session cookie in the clear, so Secure is on unless the operator
+	// explicitly opted out for a local development server.
+	hasher, err := authn.NewHasher(authn.DefaultArgon2Params())
+	if err != nil {
+		return err
+	}
+	authCfg := authn.DefaultConfig()
+	authCfg.Now = func() time.Time { return time.Now().UTC() }
+	authSvc, err := authn.New(pool, hasher, authCfg)
+	if err != nil {
+		return err
+	}
+	if !cfg.secureCookies {
+		logger.Warn("session cookies are not marked Secure; use this only on loopback",
+			"hint", "set BILLING_INSECURE_COOKIES=1 to silence")
+	}
+
 	srv := httpapi.New(httpapi.Config{
 		Version: version,
 		Logger:  logger,
-	}, pool, inbox, cfg.gatewayProvider, cfg.gatewayAccount, verifier)
+	}, pool, inbox, cfg.gatewayProvider, cfg.gatewayAccount, verifier).WithAuth(&httpapi.Auth{
+		Service:    authSvc,
+		Authz:      authn.NewAuthorizer(),
+		Cookies:    httpapi.CookieConfig{Secure: cfg.secureCookies},
+		SessionTTL: authCfg.SessionLifetime,
+	})
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Serve(ctx, cfg.addr) }()

@@ -196,10 +196,13 @@ func TestReadyzReportsDatabase(t *testing.T) {
 	}
 }
 
-// Metrics count what actually happened.
+// Metrics count what actually happened. The endpoint is staff-only, so this test
+// signs in first; anonymous access is covered in auth_test.go.
 func TestMetricsReflectActivity(t *testing.T) {
-	srv, _ := newServer(t, "stripe", "acct_test")
-	handler := srv.Handler()
+	env := newAuthEnv(t)
+	env.createUser(t, "support@example.test", "support password 1", "support")
+	cookie, _ := env.login(t, "support@example.test", "support password 1")
+	handler := env.srv.Handler()
 
 	body := eventBody("evt_metrics", "pi_1")
 	for i := 0; i < 3; i++ {
@@ -207,7 +210,9 @@ func TestMetricsReflectActivity(t *testing.T) {
 		handler.ServeHTTP(rec, signedRequest(t, "stripe", body, time.Now()))
 	}
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.AddCookie(cookie)
+	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
@@ -247,9 +252,14 @@ func TestDuplicateRequiresStoredEvent(t *testing.T) {
 // The operator overview is served as one request and never cached: a stale
 // dashboard is worse than no dashboard.
 func TestOverviewEndpoint(t *testing.T) {
-	srv, _ := newServer(t, "stripe", "acct_test")
+	env := newAuthEnv(t)
+	env.createUser(t, "billing@example.test", "billing password 1", "billing")
+	cookie, _ := env.login(t, "billing@example.test", "billing password 1")
+
 	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/ops/overview", nil))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ops/overview", nil)
+	req.AddCookie(cookie)
+	env.srv.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body)

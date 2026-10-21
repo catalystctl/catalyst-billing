@@ -86,7 +86,10 @@ func New(pool *store.Pool) *Service {
 // rather than blanking the whole page, because an operator looking at a broken
 // system needs to see the parts that still work.
 func (s *Service) Overview(ctx context.Context) Overview {
-	out := Overview{GeneratedAt: s.Now()}
+	// The slice is initialised so the JSON field is [] rather than null: a client
+	// iterating the exception list should not have to distinguish "no exceptions"
+	// from "field absent".
+	out := Overview{GeneratedAt: s.Now(), Exceptions: []Exception{}}
 
 	// Order matters: the list is presented in this order, most costly first.
 	checks := []func(context.Context) Exception{

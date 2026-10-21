@@ -5,8 +5,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"time"
 
+	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/store"
@@ -20,9 +22,11 @@ import (
 // an admin action cannot take a shortcut that the API would refuse.
 func cmdAdmin(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: billing admin <create-customer|issue-invoice>")
+		return errors.New("usage: billing admin <create-user|create-customer|issue-invoice>")
 	}
 	switch args[0] {
+	case "create-user":
+		return adminCreateUser(args[1:])
 	case "create-customer":
 		return adminCreateCustomer(args[1:])
 	case "issue-invoice":
@@ -134,5 +138,75 @@ func adminIssueInvoice(args []string) error {
 		return err
 	}
 	fmt.Printf("issued %s: %s\n", issued.Number, issued.Totals.Total.Format())
+	return nil
+}
+
+// adminCreateUser creates a login. Without this, a fresh installation has no way
+// to obtain the first staff account, and a panel nobody can sign in to is not
+// deployable.
+func adminCreateUser(args []string) error {
+	fs := flag.NewFlagSet("admin create-user", flag.ExitOnError)
+	email := fs.String("email", "", "email address (required)")
+	password := fs.String("password", "", "password (required, read from BILLING_ADMIN_PASSWORD if omitted)")
+	role := fs.String("role", "", "staff role: administrator, billing, support, infrastructure")
+	name := fs.String("name", "", "display name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *email == "" {
+		return errors.New("--email is required")
+	}
+	if *password == "" {
+		*password = os.Getenv("BILLING_ADMIN_PASSWORD")
+	}
+	if *password == "" {
+		return errors.New("--password or BILLING_ADMIN_PASSWORD is required")
+	}
+	if *role != "" && !authn.IsStaffRole(*role) {
+		return fmt.Errorf("unknown role %q; one of: administrator, billing, support, infrastructure", *role)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := store.Open(ctx, store.ConfigFromEnv())
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	hasher, err := authn.NewHasher(authn.DefaultArgon2Params())
+	if err != nil {
+		return err
+	}
+	hash, err := hasher.Hash(*password)
+	if err != nil {
+		return err
+	}
+
+	var userID string
+	err = pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO users (email, password_hash, display_name, email_verified_at)
+			VALUES ($1, $2, $3, now()) RETURNING id`, *email, hash, *name).Scan(&userID); err != nil {
+			return err
+		}
+		if *role == "" {
+			return nil
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO staff_roles (user_id, role) VALUES ($1, $2)`, userID, *role)
+		return err
+	})
+	if err != nil {
+		if store.IsUniqueViolation(err) {
+			return fmt.Errorf("a user with email %q already exists", *email)
+		}
+		return err
+	}
+	if *role == "" {
+		fmt.Printf("created user %s (customer, no staff role)\n", userID)
+	} else {
+		fmt.Printf("created user %s with staff role %s\n", userID, *role)
+	}
 	return nil
 }

@@ -37,6 +37,11 @@
 //	health          liveness probe; the only call allowed before initialize
 //	fixture.echo    returns the raw params it received, verbatim
 //	fixture.env     returns the child's environment as {"vars": {...}}
+//	fixture.complete_payment {"payment_id":...} marks a checkout as paid, which
+//	is what a real gateway does when the customer finishes the hosted flow.
+//	Without it a fixture payment would stay pending forever and the core's
+//	"authoritative state" rule could never be exercised. It also accepts an
+//	optional "amount" to simulate a wrong-amount charge.
 //
 // fixture.echo is not part of the protocol; it lets tests assert on the exact
 // bytes the client put on the wire.
@@ -251,6 +256,8 @@ func (s *server) handle(req *request) reply {
 			return reply{result: json.RawMessage("null")}
 		}
 		return reply{result: json.RawMessage(req.Params)}
+	case "fixture.complete_payment":
+		return s.completePayment(req)
 	case "fixture.env":
 		vars := make(map[string]string)
 		for _, kv := range os.Environ() {
@@ -482,6 +489,36 @@ func (s *server) refund(req *request) reply {
 	}
 	s.refunds[p.OperationKey] = res
 	return reply{result: *res}
+}
+
+// completePayment marks a payment as succeeded, as the provider would after the
+// customer pays. It is the fixture-only counterpart of the customer completing a
+// hosted checkout.
+func (s *server) completePayment(req *request) reply {
+	var p struct {
+		PaymentID string  `json:"payment_id"`
+		Amount    *amount `json:"amount"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "complete_payment params: " + err.Error()}}
+	}
+	pay, ok := s.payments[p.PaymentID]
+	if !ok {
+		return reply{rpcErr: &rpcError{Code: codeNotFound, Message: "unknown payment " + p.PaymentID}}
+	}
+	if p.Amount != nil {
+		// A gateway that reports a different amount is exactly the case the core
+		// must refuse, so the fixture can produce it.
+		pay.Amount = *p.Amount
+	}
+	pay.Status = "succeeded"
+	pay.UpdatedAt = time.Now().UTC()
+	return reply{result: map[string]any{
+		"payment_id": pay.ID,
+		"status":     pay.Status,
+		"amount":     pay.Amount,
+		"updated_at": pay.UpdatedAt,
+	}}
 }
 
 func (s *server) verifyWebhook(req *request) reply {

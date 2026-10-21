@@ -33,6 +33,7 @@ package storetest
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,15 +94,20 @@ func packageName() string {
 }
 
 // DSN returns the connection string for this package's database.
+//
+// The database name is replaced in the URL itself. pgx's ConnConfig.ConnString()
+// returns the original string it was parsed from, so mutating
+// ConnConfig.Database and then asking for the string silently yields the
+// unmodified DSN -- which made every package share one database.
 func DSN() string {
-	cfg, err := pgxpool.ParseConfig(BaseDSN())
-	if err != nil {
-		return BaseDSN()
+	base := BaseDSN()
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme == "" {
+		// Not a URL (keyword/value DSN): cannot safely rewrite, so use it as-is.
+		return base
 	}
-	cfg.ConnConfig.Database = databaseName()
-	// Rebuild the URL so the caller (and failure messages) see exactly what is
-	// being connected to.
-	return cfg.ConnConfig.ConnString()
+	u.Path = "/" + databaseName()
+	return u.String()
 }
 
 // databaseName is the per-package database name.

@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+// Rat is an exact arbitrary-precision rational. It is exported so callers can
+// compose ratios without dropping to binary floating point.
+type Rat = big.Rat
+
 // Ratio is an exact rational factor used for percentages, tax rates and
 // proration. It never loses precision; precision is only given up at the single
 // point where a Ratio is applied to an Amount with an explicit Rounding mode.
@@ -55,6 +59,15 @@ func ParseRatio(s string) (Ratio, error) {
 	return Ratio{r: r.Mul(r, scale)}, nil
 }
 
+// MustParseRatio is ParseRatio for static values; it panics on error.
+func MustParseRatio(s string) Ratio {
+	r, err := ParseRatio(s)
+	if err != nil {
+		panic(err)
+	}
+	return r
+}
+
 // IsZero reports whether the ratio is zero.
 func (r Ratio) IsZero() bool { return r.r == nil || r.r.Sign() == 0 }
 
@@ -83,6 +96,24 @@ func (r Ratio) rat() *big.Rat {
 		return new(big.Rat)
 	}
 	return r.r
+}
+
+// RatioFromRat wraps an exact rational, copying it so later mutation of the
+// argument cannot change the ratio.
+func RatioFromRat(r *Rat) (Ratio, error) {
+	if r == nil {
+		return Ratio{}, fmt.Errorf("%w: nil rational", ErrInvalidAmount)
+	}
+	return Ratio{r: new(big.Rat).Set(r)}, nil
+}
+
+// Divide returns r/o exactly. Dividing by zero is an error rather than a panic
+// or a silent zero, because both would corrupt a price.
+func (r Ratio) Divide(o Ratio) (Ratio, error) {
+	if o.IsZero() {
+		return Ratio{}, fmt.Errorf("%w: division by zero ratio", ErrInvalidAmount)
+	}
+	return Ratio{r: new(big.Rat).Quo(r.rat(), o.rat())}, nil
 }
 
 // Rat returns a copy of the underlying rational.

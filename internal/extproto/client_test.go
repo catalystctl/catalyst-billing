@@ -932,3 +932,56 @@ func TestRemoteErrorDecoding(t *testing.T) {
 		t.Errorf("CodeOf = %d, %v", code, ok)
 	}
 }
+
+// TestOversizedFrameCustomLimit proves the frame limit is configurable, so an
+// operator can tighten it below the 1 MiB default.
+func TestOversizedFrameCustomLimit(t *testing.T) {
+	spec := gatewaySpec()
+	spec.MaxFrame = 2048
+	c, err := Launch(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	// The echo of a 4 kB marker cannot fit in a 2 kB frame.
+	var out echoParams
+	err = c.Call(testCtx(t), "fixture.echo", &echoParams{Marker: strings.Repeat("m", 4096)}, &out)
+	if !errors.Is(err, ErrOversized) {
+		t.Fatalf("got %v, want ErrOversized", err)
+	}
+	// A small payload still fits, but the client is already dead: an oversized
+	// frame kills the connection, not just that one call.
+	var health HealthResult
+	if err := c.Call(testCtx(t), MethodHealth, &HealthParams{}, &health); !errors.Is(err, ErrOversized) && !errors.Is(err, ErrClosed) {
+		t.Fatalf("got %v, want ErrOversized or ErrClosed", err)
+	}
+}
+
+// TestUnparseableFrame proves a frame that is not JSON fails the call with the
+// crashed sentinel and leaves the client unusable.
+func TestUnparseableFrame(t *testing.T) {
+	c := launchGateway(t, "FAKE_GATEWAY_MODE=garbage")
+	var health HealthResult
+	err := c.Call(testCtx(t), MethodHealth, &HealthParams{}, &health)
+	if !errors.Is(err, ErrCrashed) {
+		t.Fatalf("got %v, want ErrCrashed", err)
+	}
+	select {
+	case <-c.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("client was not marked unusable after an unparseable frame")
+	}
+}
+
+// TestBadJSONRPCEnvelope proves a well-formed JSON object that is not JSON-RPC
+// 2.0 is reported as a protocol violation, not as a crash: the distinction tells
+// an operator whether the extension is broken or simply speaking another dialect.
+func TestBadJSONRPCEnvelope(t *testing.T) {
+	c := launchGateway(t, "FAKE_GATEWAY_MODE=badrpc")
+	var health HealthResult
+	err := c.Call(testCtx(t), MethodHealth, &HealthParams{}, &health)
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("got %v, want ErrProtocol", err)
+	}
+}

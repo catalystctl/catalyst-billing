@@ -90,6 +90,9 @@ type FileStore struct {
 // Load reads the state file. A missing file is not an error: it means nothing has
 // been recorded yet.
 func (f FileStore) Load() (State, error) {
+	if f.Path == "" {
+		return State{}, fmt.Errorf("%w: FileStore.Path is empty", ErrInvalidSpec)
+	}
 	data, err := os.ReadFile(f.Path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -296,7 +299,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		case <-kill:
 			s.release(client)
 			_ = client.Close()
-			return s.disabledError()
+			return s.stopReason()
 		case <-client.Done():
 			cause := client.Err()
 			s.release(client)
@@ -438,10 +441,10 @@ func (s *Supervisor) runnable(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	switch {
-	case s.closed:
+	if s.closed {
 		return fmt.Errorf("%w: supervisor closed", ErrClosed)
-	case s.state.Disabled:
+	}
+	if s.state.Disabled {
 		return s.disabledErrorLocked()
 	}
 	return nil
@@ -461,10 +464,17 @@ func (s *Supervisor) signalKillLocked() {
 	}
 }
 
-func (s *Supervisor) disabledError() error {
+// stopReason explains why the supervisor stopped: a Close is not a disable.
+func (s *Supervisor) stopReason() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.disabledErrorLocked()
+	if s.closed {
+		return fmt.Errorf("%w: supervisor closed", ErrClosed)
+	}
+	if s.state.Disabled {
+		return s.disabledErrorLocked()
+	}
+	return ErrDisabled
 }
 
 func (s *Supervisor) disabledErrorLocked() error {

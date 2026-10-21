@@ -10,7 +10,7 @@
 //
 // # Programming the fixture
 //
-//	FAKE_GATEWAY_MODE=ok|fail|hang|oversized|crash|slow
+//	FAKE_GATEWAY_MODE=ok|fail|hang|oversized|crash|slow|garbage|badrpc
 //	FAKE_GATEWAY_SLOW_MS=<n>       delay for slow mode (default 500)
 //	FAKE_GATEWAY_VERSION=<n>       reply with this protocol version instead of 1
 //	FAKE_GATEWAY_NEGOTIATE=fail    refuse version negotiation
@@ -20,6 +20,10 @@
 // The failure mode applies to every method except "initialize", so the handshake
 // always succeeds and the failure happens where the test wants it: on the call,
 // or on the supervisor's post-restart health check.
+//
+// garbage answers with a line that is not JSON at all, and badrpc answers with a
+// well-formed JSON object that is not JSON-RPC 2.0; the two are different
+// protocol failures and the core must distinguish them.
 //
 // # Idempotency
 //
@@ -231,6 +235,10 @@ func (s *server) handle(req *request) reply {
 		}}
 	case "oversized":
 		return reply{raw: oversizedFrame(*req.ID)}
+	case "garbage":
+		return reply{raw: []byte("this is not json at all\n")}
+	case "badrpc":
+		return reply{raw: []byte(fmt.Sprintf("{\"jsonrpc\":\"1.0\",\"id\":%d,\"result\":{}}\n", *req.ID))}
 	case "slow":
 		time.Sleep(s.slow)
 	}

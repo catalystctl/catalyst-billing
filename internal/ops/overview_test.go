@@ -389,3 +389,27 @@ func TestOverviewJSONUsesEmptyArray(t *testing.T) {
 		t.Fatalf("healthy overview serialised as %s, want an empty exceptions array", encoded)
 	}
 }
+
+// A count that cannot be read must say so, not report zero: a broken database
+// that looks like an empty one is the most misleading dashboard state there is.
+func TestUnavailableCountsAreFlagged(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	overview := ops.New(f.pool).Overview(ctx)
+	if !overview.Counts.Available {
+		t.Fatal("counts reported unavailable on a healthy database")
+	}
+
+	if _, err := f.pool.Exec(ctx, `ALTER TABLE invoices RENAME TO invoices_moved`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(context.Background(), `ALTER TABLE invoices_moved RENAME TO invoices`)
+	})
+
+	overview = ops.New(f.pool).Overview(ctx)
+	if overview.Counts.Available {
+		t.Fatal("counts reported available while a query was failing")
+	}
+}

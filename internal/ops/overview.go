@@ -61,11 +61,16 @@ type Overview struct {
 }
 
 // Counts are the headline numbers.
+//
+// Available is false when a count could not be read. Reporting zero instead would
+// make a broken database look like an empty one, which is the most misleading thing
+// a dashboard can do.
 type Counts struct {
-	Customers        int `json:"customers"`
-	Services         int `json:"services"`
-	OpenInvoices     int `json:"open_invoices"`
-	DueSubscriptions int `json:"due_subscriptions"`
+	Customers        int  `json:"customers"`
+	Services         int  `json:"services"`
+	OpenInvoices     int  `json:"open_invoices"`
+	DueSubscriptions int  `json:"due_subscriptions"`
+	Available        bool `json:"available"`
 }
 
 // Service reports the overview.
@@ -362,13 +367,28 @@ func (s *Service) ledgerImbalance(ctx context.Context) Exception {
 
 func (s *Service) counts(ctx context.Context) Counts {
 	var c Counts
-	_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM customers`).Scan(&c.Customers)
-	_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM services WHERE status <> 'terminated'`).Scan(&c.Services)
-	_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM invoices WHERE status = 'open'`).Scan(&c.OpenInvoices)
-	_ = s.pool.QueryRow(ctx, `
-		SELECT count(*) FROM subscriptions
-		WHERE status IN ('active','past_due') AND next_billing_at <= $1`,
-		s.Now().AddDate(0, 0, 7)).Scan(&c.DueSubscriptions)
+	c.Available = true
+
+	queries := []struct {
+		dst   *int
+		query string
+		args  []any
+	}{
+		{&c.Customers, `SELECT count(*) FROM customers`, nil},
+		{&c.Services, `SELECT count(*) FROM services WHERE status <> 'terminated'`, nil},
+		{&c.OpenInvoices, `SELECT count(*) FROM invoices WHERE status = 'open'`, nil},
+		{&c.DueSubscriptions, `
+			SELECT count(*) FROM subscriptions
+			WHERE status IN ('active','past_due') AND next_billing_at <= $1`,
+			[]any{s.Now().AddDate(0, 0, 7)}},
+	}
+	for _, q := range queries {
+		if err := s.pool.QueryRow(ctx, q.query, q.args...).Scan(q.dst); err != nil {
+			// One failing count marks the whole set unavailable rather than showing
+			// a plausible-looking zero.
+			c.Available = false
+		}
+	}
 	return c
 }
 

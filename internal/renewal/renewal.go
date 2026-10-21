@@ -246,7 +246,7 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 		// Cancellation at period end: the customer still receives the final
 		// period they paid for, but the schedule stops.
 		if sub.CancelAtPeriodEnd {
-			if err := e.endSubscription(ctx, tx, sub, period, now); err != nil {
+			if err := e.endSubscription(ctx, tx, sub, now); err != nil {
 				return err
 			}
 			out.Outcome = OutcomeSkippedCancelled
@@ -335,7 +335,6 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 // advance moves the schedule forward, guarding against a concurrent advance with
 // a version comparison.
 func (e *Engine) advance(ctx context.Context, tx pgx.Tx, sub Subscription, period calendar.Period) error {
-	next := period.Next()
 	tag, err := tx.Exec(ctx, `
 		UPDATE subscriptions
 		SET current_period_start = $2,
@@ -350,12 +349,11 @@ func (e *Engine) advance(ctx context.Context, tx pgx.Tx, sub Subscription, perio
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("%w: %s", ErrVersionConflict, sub.ID)
 	}
-	_ = next
 	return nil
 }
 
 // endSubscription applies a cancellation at period end.
-func (e *Engine) endSubscription(ctx context.Context, tx pgx.Tx, sub Subscription, period calendar.Period, now time.Time) error {
+func (e *Engine) endSubscription(ctx context.Context, tx pgx.Tx, sub Subscription, now time.Time) error {
 	tag, err := tx.Exec(ctx, `
 		UPDATE subscriptions
 		SET status = 'ended', ended_at = $2, version = version + 1
@@ -367,7 +365,6 @@ func (e *Engine) endSubscription(ctx context.Context, tx pgx.Tx, sub Subscriptio
 	if tag.RowsAffected() != 1 {
 		return fmt.Errorf("%w: %s", ErrVersionConflict, sub.ID)
 	}
-	_ = period
 	return nil
 }
 

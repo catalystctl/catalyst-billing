@@ -1,0 +1,54 @@
+# Linter configuration for `golangci-lint run`.
+#
+# The enabled set is deliberately narrow and correctness-focused: this codebase
+# moves money, so the linters that matter are the ones that catch ignored errors,
+# wrong rounding, and accidental shadowing.
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck        # an ignored error on a write is a silent failure
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - errorlint       # errors.Is/As instead of == and type assertions
+    - nilerr          # returning nil after checking an error is non-nil
+    - sqlclosecheck   # leaked rows
+    - rowserrcheck
+    - wastedassign
+    - predeclared
+    - makezero
+    - durationcheck
+    - forbidigo
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+    exclude-functions:
+      # Rollback and Close on a path that is already returning an error: the
+      # original error is the one worth reporting.
+      - (pgx.Tx).Rollback
+  forbidigo:
+    forbid:
+      # Money must never touch a float. These are the entry points that would.
+      - p: 'float64'
+        msg: 'no binary floating point in the billing core; use internal/money'
+  staticcheck:
+    checks: ["all", "-ST1000", "-ST1003", "-ST1020", "-ST1021", "-ST1022"]
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - forbidigo
+    # Logging helpers legitimately format values.
+    - path: cmd/billing/
+      linters:
+        - forbidigo

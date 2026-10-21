@@ -1,0 +1,164 @@
+name: CI
+
+# The gates here mirror the plan's §8 CI requirements: race detection,
+# vulnerability and dependency scanning, secret scanning, static analysis, and a
+# reproducible test run against a real PostgreSQL.
+#
+# The integration tests are the point of this pipeline. They are skipped on a
+# developer machine without a database, but here BILLING_REQUIRE_DB=1 makes a
+# missing database a failure: a green build must never mean "the money tests did
+# not run".
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Never let a workflow inherit a caller's proxy or token behaviour.
+  GOFLAGS: -mod=readonly
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: billing
+          POSTGRES_PASSWORD: ci-only-owner
+          POSTGRES_DB: billing_test
+        ports:
+          - 5442:5432
+        options: >-
+          --health-cmd "pg_isready -U billing -d billing_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      BILLING_TEST_DSN: postgres://billing:ci-only-owner@127.0.0.1:5442/billing_test?sslmode=disable
+      BILLING_DATABASE_URL: postgres://billing:ci-only-owner@127.0.0.1:5442/billing_test?sslmode=disable
+      BILLING_REQUIRE_DB: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # The runtime role and its privileges are part of what the tests verify.
+      - name: Create runtime role
+        env:
+          PGPASSWORD: ci-only-owner
+        run: |
+          psql -h 127.0.0.1 -p 5442 -U billing -d billing_test -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE billing_app LOGIN PASSWORD 'ci-only-app';
+          REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+          GRANT USAGE ON SCHEMA public TO billing_app;
+          ALTER DEFAULT PRIVILEGES FOR ROLE billing IN SCHEMA public
+              GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO billing_app;
+          ALTER DEFAULT PRIVILEGES FOR ROLE billing IN SCHEMA public
+              GRANT USAGE, SELECT ON SEQUENCES TO billing_app;
+          SQL
+          echo "BILLING_APP_TEST_DSN=postgres://billing_app:ci-only-app@127.0.0.1:5442/billing_test?sslmode=disable" >> "$GITHUB_ENV"
+
+      - name: Formatting
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^$' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race detector)
+        run: go test ./... -count=1 -race -timeout 10m
+
+      # A test that silently skips is worse than no test. Assert that the
+      # database-backed suites actually ran.
+      - name: Assert integration tests were not skipped
+        run: |
+          go test ./internal/billing/ ./internal/store/ ./internal/e2e/ -count=1 -v 2>&1 | tee /tmp/test.log
+          if grep -q '^--- SKIP' /tmp/test.log; then
+            echo "database-backed tests were skipped in CI"; exit 1
+          fi
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      - name: Dependencies are tidy and pinned
+        run: |
+          cp go.mod /tmp/go.mod.before
+          cp go.sum /tmp/go.sum.before
+          go mod tidy
+          diff -u /tmp/go.mod.before go.mod
+          diff -u /tmp/go.sum.before go.sum
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan for committed secrets
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@latest
+          gitleaks detect --source . --verbose --redact --exit-code 1
+
+  release:
+    # Signed checksums and an SBOM for the artifact an operator installs.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, static-analysis, secrets]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
+              go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "dist/billing_${os}_${arch}" ./cmd/billing
+          done
+
+      - name: SBOM
+        run: |
+          go install github.com/anchore/syft/cmd/syft@latest
+          syft dir:. -o spdx-json=dist/sbom.spdx.json
+
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: billing-${{ github.ref_name }}
+          path: dist/

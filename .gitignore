@@ -1,7 +1,9 @@
 /bin/
 /dist/
 *.test
-.env
 *.out
 node_modules/
+
+# Development credentials for the loopback test cluster. The template
+# (.env.example) is committed; the real file must never be.
 .env

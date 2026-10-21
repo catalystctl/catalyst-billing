@@ -237,6 +237,13 @@ Two kinds of gate are listed below:
 - **Soft** — the screen can be written, but it cannot ship. Shipping it would
   either be unsafe or would have to be rewritten.
 
+**Each task is fully specified in [`docs/ui-gate.md`](docs/ui-gate.md)**: the schema
+it needs (as DDL), the endpoint contract with status codes and error codes, the rules
+the implementation must enforce, and the tests that prove it. The tables here are the
+index; that document is the work order. Where a decision is genuinely open it is
+called out inline as a recommendation with the reason, rather than left for the
+implementer to guess.
+
 #### Suggested order
 
 | Step | Do | Why this position |
@@ -251,6 +258,8 @@ Two kinds of gate are listed below:
 
 #### Gate A — API surface the screens call (hard)
 
+Spec: [`docs/ui-gate.md#gate-a--staff-read-surface`](docs/ui-gate.md#gate-a--staff-read-surface)
+
 | Missing | Why the UI cannot start | Done when |
 |---|---|---|
 | Staff customer list, detail and search | The customer workspace joins billing, services, support and audit; none of it is reachable | `GET /api/v1/staff/customers` with filter, sort and cursor; detail returns the joined view |
@@ -264,6 +273,8 @@ Two kinds of gate are listed below:
 
 #### Gate B — mutations the screens offer (hard)
 
+Spec: [`docs/ui-gate.md#gate-b--staff-mutations`](docs/ui-gate.md#gate-b--staff-mutations)
+
 | Missing | Why | Done when |
 |---|---|---|
 | Staff service actions (suspend, resume, terminate) | Dunning can enqueue them; a human cannot | Enqueues an operation with the current generation, and the response states the consequence |
@@ -272,6 +283,8 @@ Two kinds of gate are listed below:
 | Billing profile write | A customer cannot correct their own address or tax id | Validated, snapshotted on the next invoice |
 
 #### Gate C — account lifecycle the login screen assumes (soft)
+
+Spec: [`docs/ui-gate.md#gate-c--account-lifecycle`](docs/ui-gate.md#gate-c--account-lifecycle)
 
 | Missing | Why it blocks shipping | Done when |
 |---|---|---|
@@ -287,6 +300,8 @@ not before the first screen is written.
 
 #### Gate D — money actions the UI must not offer without (hard)
 
+Spec: [`docs/ui-gate.md#gate-d--money-actions`](docs/ui-gate.md#gate-d--money-actions)
+
 | Missing | Why it blocks the UI | Done when |
 |---|---|---|
 | Refund flow | The table exists and nothing can create a refund. A UI with a disabled refund button is worse than no button | Provider call, `unknown` outcome handled like provisioning, allocation and posting in one transaction |
@@ -295,6 +310,8 @@ not before the first screen is written.
 | Dual approval for high-value refunds and termination batches | The plan requires it, and it is a UI flow as much as a policy | An approval record that names both actors |
 
 #### Gate E — contracts that are cheap now and expensive later (hard)
+
+Spec: [`docs/ui-gate.md#gate-e--contracts`](docs/ui-gate.md#gate-e--contracts)
 
 These are not screens. They are the things that, if retrofitted after 30 endpoints
 exist, mean touching all 30.
@@ -310,6 +327,8 @@ exist, mean touching all 30.
 
 #### Gate F — the trust surface the operator workspace renders (soft)
 
+Spec: [`docs/ui-gate.md#gate-f--trust-surface`](docs/ui-gate.md#gate-f--trust-surface)
+
 | Missing | Why | Done when |
 |---|---|---|
 | **Application audit log** | Only `auth_events` exists. Plan §8 requires actor, action, target, correlation and redacted changes for *every* staff action | Append-only table written by the domain services, not by handlers |
@@ -317,6 +336,8 @@ exist, mean touching all 30.
 | Staff permission enforcement on every new route | Permissions exist and are enforced on 7 routes, but all of them are customer-facing or reporting — there are no staff routes yet to protect | Every staff route carries `requirePermission`, and a test enumerates the routes to prove none is missing one |
 
 #### Gate G — serving the UI (soft, last)
+
+Spec: [`docs/ui-gate.md#gate-g--serving-the-ui`](docs/ui-gate.md#gate-g--serving-the-ui)
 
 | Missing | Why | Done when |
 |---|---|---|
@@ -373,6 +394,9 @@ Safe to build the UI without, and listed so nobody assumes otherwise:
 - [`docs/operations.md`](docs/operations.md) — deploying, the two database roles, the
   job table with kill switches, what the operator overview reports, recovery
   procedures, backup and restore.
+- [`docs/ui-gate.md`](docs/ui-gate.md) — the implementation specification for every
+  task standing between here and the web UI: DDL, endpoint contracts, rules, errors and
+  required tests.
 
 ## Layout
 

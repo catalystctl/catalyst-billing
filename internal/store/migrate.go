@@ -126,12 +126,17 @@ func (m *Migrator) logf(format string, args ...any) {
 const migrationLockID int64 = 8_421_196_317_004_211
 
 // Applied returns the versions already recorded, keyed by version.
+//
+// It is strictly read-only: a runtime role is not allowed to create tables, and a
+// readiness check that needs DDL rights would report a healthy database as broken.
+// A missing schema_migrations table therefore means "nothing applied yet", not an
+// error.
 func (m *Migrator) Applied(ctx context.Context) (map[int]string, error) {
-	if err := m.ensureTable(ctx); err != nil {
-		return nil, err
-	}
 	rows, err := m.pool.Query(ctx, `SELECT version, checksum FROM schema_migrations`)
 	if err != nil {
+		if SQLState(err) == stateUndefinedTable {
+			return map[int]string{}, nil
+		}
 		return nil, fmt.Errorf("store: read schema_migrations: %w", err)
 	}
 	defer rows.Close()

@@ -184,6 +184,8 @@ const (
 	StateDeadlockDetected = "40P01"
 	// StateInsufficientPrivilege is SQLSTATE 42501.
 	StateInsufficientPrivilege = "42501"
+	// stateUndefinedTable is SQLSTATE 42P01: the relation does not exist.
+	stateUndefinedTable = "42P01"
 )
 
 // IsUniqueViolation reports whether err is a unique-constraint violation,

@@ -191,6 +191,20 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values,
 	return out, nil
 }
 
+// DeleteStaffApikeysById calls DELETE /api/v1/staff/api-keys/{id}.
+//
+// # Revoke an API key
+//
+// Permission: apikey:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeleteStaffApikeysById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/api-keys/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffHoldsByHoldid calls DELETE /api/v1/staff/holds/{hold_id}.
 //
 // # Clear a manual hold
@@ -218,6 +232,14 @@ func (c *Client) Get(ctx context.Context, query url.Values, body any) (*Result, 
 // The current identity and its permissions
 func (c *Client) GetAuthMe(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/auth/me"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetAuthVerify calls GET /api/v1/auth/verify.
+//
+// Verify an address with a token
+func (c *Client) GetAuthVerify(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/verify"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -324,6 +346,16 @@ func (c *Client) GetPortalServicesById(ctx context.Context, id string, query url
 // Readiness
 func (c *Client) GetReadyz(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/readyz"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffApikeys calls GET /api/v1/staff/api-keys.
+//
+// # List API keys
+//
+// Permission: apikey:manage. Staff only.
+func (c *Client) GetStaffApikeys(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/api-keys"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -564,6 +596,65 @@ func (c *Client) PostAuthLogout(ctx context.Context, query url.Values, body any)
 	return c.do(ctx, "POST", path, query, body, true, false)
 }
 
+// PostAuthMfaConfirm calls POST /api/v1/auth/mfa/confirm.
+//
+// Confirm TOTP enrolment
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+func (c *Client) PostAuthMfaConfirm(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/mfa/confirm"
+	return c.do(ctx, "POST", path, query, body, true, false)
+}
+
+// PostAuthMfaDisable calls POST /api/v1/auth/mfa/disable.
+//
+// Disable TOTP for the current user
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+func (c *Client) PostAuthMfaDisable(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/mfa/disable"
+	return c.do(ctx, "POST", path, query, body, true, false)
+}
+
+// PostAuthMfaEnrol calls POST /api/v1/auth/mfa/enrol.
+//
+// Start TOTP enrolment
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+func (c *Client) PostAuthMfaEnrol(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/mfa/enrol"
+	return c.do(ctx, "POST", path, query, body, true, false)
+}
+
+// PostAuthMfaVerify calls POST /api/v1/auth/mfa/verify.
+//
+// Complete the second login step
+func (c *Client) PostAuthMfaVerify(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/mfa/verify"
+	return c.do(ctx, "POST", path, query, body, false, false)
+}
+
+// PostAuthPasswordresetComplete calls POST /api/v1/auth/password-reset/complete.
+//
+// Complete a password reset
+func (c *Client) PostAuthPasswordresetComplete(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/password-reset/complete"
+	return c.do(ctx, "POST", path, query, body, false, false)
+}
+
+// PostAuthPasswordresetRequest calls POST /api/v1/auth/password-reset/request.
+//
+// Request a password reset
+func (c *Client) PostAuthPasswordresetRequest(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/password-reset/request"
+	return c.do(ctx, "POST", path, query, body, false, false)
+}
+
+// PostAuthVerifyRequest calls POST /api/v1/auth/verify/request.
+//
+// Request an email verification message
+func (c *Client) PostAuthVerifyRequest(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/verify/request"
+	return c.do(ctx, "POST", path, query, body, false, false)
+}
+
 // PostPortalInvoicesByIdCheckout calls POST /api/v1/portal/invoices/{id}/checkout.
 //
 // # Start or reuse a payment session
@@ -589,6 +680,18 @@ func (c *Client) PostPortalInvoicesByIdCheckout(ctx context.Context, id string, 
 func (c *Client) PostPortalServicesByIdCancel(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/services/{id}/cancel"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffApikeys calls POST /api/v1/staff/api-keys.
+//
+// # Create an API key
+//
+// Permission: apikey:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffApikeys(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/api-keys"
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 

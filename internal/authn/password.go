@@ -107,6 +107,12 @@ func NewHasher(p Argon2Params) (*Hasher, error) {
 // Params returns the current parameters.
 func (h *Hasher) Params() Argon2Params { return h.params }
 
+// ErrWeakPassword is returned when a password is outside the accepted length bounds.
+//
+// It is a distinct error from a hashing failure because the two are answered differently: a weak
+// password is the caller's mistake (422), a hashing failure is ours (500).
+var ErrWeakPassword = errors.New("authn: password is too short or too long")
+
 // Hash produces an encoded Argon2id hash:
 //
 //	$argon2id$v=19$m=65536,t=3,p=2$<salt>$<key>
@@ -115,10 +121,12 @@ func (h *Hasher) Params() Argon2Params { return h.params }
 // possible without a flag day.
 func (h *Hasher) Hash(password string) (string, error) {
 	if len(password) < MinPasswordLength {
-		return "", fmt.Errorf("authn: password must be at least %d characters", MinPasswordLength)
+		return "", fmt.Errorf("%w: at least %d characters are required",
+			ErrWeakPassword, MinPasswordLength)
 	}
 	if len(password) > MaxPasswordLength {
-		return "", fmt.Errorf("authn: password must be at most %d bytes", MaxPasswordLength)
+		return "", fmt.Errorf("%w: at most %d bytes are allowed",
+			ErrWeakPassword, MaxPasswordLength)
 	}
 	salt := make([]byte, h.params.SaltLength)
 	if _, err := rand.Read(salt); err != nil {

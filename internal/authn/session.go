@@ -448,6 +448,62 @@ func VerifyCSRF(sess Session, submitted string) error {
 	return nil
 }
 
+// LoginWithID issues a session for a user whose password was already proven.
+//
+// It exists for the second step of a multi-factor login: the password was verified when the
+// challenge was created, so re-verifying it here would mean asking for it twice. It is not
+// exported to the HTTP layer as a bypass — the only caller is the challenge completion path, which
+// cannot be reached without a valid single-use challenge.
+func (s *Service) LoginWithID(ctx context.Context, userID, ip, userAgent string) (LoginResult, error) {
+	user, err := s.UserByID(ctx, userID)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if user.Status != "active" {
+		return LoginResult{}, ErrAccountDisabled
+	}
+
+	var credVersion int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT credential_version FROM users WHERE id = $1`, userID).Scan(&credVersion); err != nil {
+		return LoginResult{}, fmt.Errorf("authn: read credential version: %w", err)
+	}
+
+	token, sess, err := s.createSession(ctx, userID, credVersion, ip, userAgent)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	return LoginResult{Token: token, Session: sess, User: user}, nil
+}
+
+// UserByID loads a user with their roles resolved.
+//
+// It is the same projection a session login produces, so an API key authenticated request and a
+// cookie authenticated request see exactly the same identity and the same permissions.
+func (s *Service) UserByID(ctx context.Context, userID string) (User, error) {
+	var (
+		u        User
+		verified *time.Time
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, email, COALESCE(display_name, ''), status, email_verified_at
+		FROM users WHERE id = $1`, userID).
+		Scan(&u.ID, &u.Email, &u.DisplayName, &u.Status, &verified)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrUnknownAccount
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("authn: load user: %w", err)
+	}
+	u.EmailVerified = verified != nil
+	roles, err := s.staffRoles(ctx, userID)
+	if err != nil {
+		return User{}, err
+	}
+	u.Roles = roles
+	return u, nil
+}
+
 // Revoke ends one session.
 func (s *Service) Revoke(ctx context.Context, token string) error {
 	_, err := s.pool.Exec(ctx, `

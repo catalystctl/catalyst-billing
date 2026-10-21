@@ -92,6 +92,24 @@ func (s *Server) loadSession(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+
+		// A bearer key first: an API client that sends both is identified by the key it
+		// configured, and a cookie it did not intend must not override it.
+		if presented := bearerToken(r); presented != "" {
+			if key, user, ok := s.apiKeyIdentity(r, presented); ok {
+				ctx := context.WithValue(r.Context(), ctxUser, user)
+				ctx = withAPIKey(ctx, key)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			// An invalid key is a hard 401, not an anonymous pass: a client that presented a
+			// credential must be told the credential is wrong, not treated as a browser with a
+			// stale cookie.
+			writeProblem(w, http.StatusUnauthorized, "invalid_api_key",
+				"the API key is invalid, revoked or expired")
+			return
+		}
+
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil || cookie.Value == "" {
 			next.ServeHTTP(w, r)
@@ -109,6 +127,33 @@ func (s *Server) loadSession(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, ctxUser, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// bearerToken returns the Authorization bearer value, if any.
+func bearerToken(r *http.Request) string {
+	header := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(header[len(prefix):])
+}
+
+// apiKeyIdentity resolves a bearer key into a user plus its scopes.
+//
+// The user is loaded and their roles resolved exactly as a session login would: the key never
+// carries permissions of its own. The scopes only narrow.
+func (s *Server) apiKeyIdentity(r *http.Request, presented string) (APIKeyIdentity, authn.User, bool) {
+	key, err := s.auth.Service.AuthenticateAPIKey(r.Context(), presented)
+	if err != nil {
+		return APIKeyIdentity{}, authn.User{}, false
+	}
+	user, err := s.auth.Service.UserByID(r.Context(), key.UserID)
+	if err != nil || user.Status != "active" {
+		// A key outliving its owner's disabled account would be a permanent backdoor.
+		return APIKeyIdentity{}, authn.User{}, false
+	}
+	return APIKeyIdentity{KeyID: key.ID, UserID: key.UserID, Scopes: key.Scopes}, user, true
 }
 
 // requireUser rejects an anonymous request.
@@ -152,6 +197,13 @@ func (s *Server) requirePermission(p authn.Permission, next http.HandlerFunc) ht
 			writeProblem(w, http.StatusForbidden, "forbidden", "you do not have access to this action")
 			return
 		}
+		// A key can only narrow its owner's permissions, never widen them. The owner's roles
+		// were checked above; this is the second half, and doing it here rather than in each
+		// handler is what makes it true for every route at once.
+		if key, ok := apiKeyFrom(r.Context()); ok && !key.Allows(string(p)) {
+			writeProblem(w, http.StatusForbidden, "forbidden", "you do not have access to this action")
+			return
+		}
 		next(w, r)
 	})
 }
@@ -164,6 +216,13 @@ func (s *Server) requirePermission(p authn.Permission, next http.HandlerFunc) ht
 // send it as a header from script.
 func (s *Server) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A request authenticated by an API key is exempt. CSRF exists because a browser attaches
+		// cookies automatically; a bearer header is not attached by any browser, so there is
+		// nothing for a cross-site form to forge.
+		if _, ok := apiKeyFrom(r.Context()); ok {
+			next(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
 			next(w, r)
@@ -360,6 +419,35 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 				"email or password is incorrect")
 		}
 		return
+	}
+
+	// A confirmed second factor turns this into the first half of a login: the password is
+	// right, but no session is issued until the code is presented. The challenge carries no
+	// authority beyond that.
+	if s.auth.Service != nil {
+		if hasMFA, merr := s.auth.Service.HasMFA(r.Context(), res.User.ID); merr == nil && hasMFA {
+			// The session the service just created is discarded: issuing it would defeat the
+			// second factor entirely.
+			if res.Session.ID != "" {
+				if derr := s.auth.Service.Revoke(r.Context(), res.Token); derr != nil {
+					s.cfg.Logger.ErrorContext(r.Context(), "could not discard the session for an MFA login",
+						"error", derr)
+				}
+			}
+			challenge, expires, cerr := s.auth.Service.StartMFAChallenge(r.Context(), res.User.ID)
+			if cerr != nil {
+				s.cfg.Logger.ErrorContext(r.Context(), "could not start an MFA challenge", "error", cerr)
+				writeProblem(w, http.StatusServiceUnavailable, "mfa_unavailable",
+					"the second factor could not be started; try again")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"mfa_required":    true,
+				"challenge_token": challenge,
+				"expires_at":      expires,
+			})
+			return
+		}
 	}
 
 	s.setSessionCookies(w, res.Token, res.Session)

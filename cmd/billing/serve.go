@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,6 +85,23 @@ func parseCIDRs(list string) ([]*net.IPNet, error) {
 		out = append(out, n)
 	}
 	return out, nil
+}
+
+// envIntOr reads an integer setting, falling back when it is absent or malformed.
+//
+// A malformed value falls back rather than failing startup: these are operational knobs, and a
+// typo in a port should not take the process down. The value is logged by the caller when it
+// matters.
+func envIntOr(key string, fallback int) int {
+	raw := envOr(key, "")
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return n
 }
 
 func envOr(key, fallback string) string {

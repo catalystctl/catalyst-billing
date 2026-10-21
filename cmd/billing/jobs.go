@@ -13,6 +13,7 @@ import (
 	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/fulfilment"
 	"github.com/catalyst/billing/internal/money"
+	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/provisioning"
 	"github.com/catalyst/billing/internal/renewal"
@@ -188,7 +189,56 @@ func buildJobs(pool *store.Pool, logger *slog.Logger) (*extensionCache, []jobSpe
 		},
 	})
 
+	// ---- notifications: drain the durable outbox ----------------------------
+	//
+	// This job is last for a reason: every other job in this list can enqueue a message, and a
+	// message that is queued and never drained is worse than no message at all, because the
+	// delivery record says it was accepted.
+	if !killSwitch("BILLING_DISABLE_NOTIFICATIONS") {
+		sender, err := notifySender(logger)
+		if err != nil {
+			logger.Error("notifications are disabled: the sender is misconfigured", "error", err)
+		} else {
+			queue := notify.NewQueue(pool)
+			jobs = append(jobs, jobSpec{
+				name:     "notifications",
+				interval: 15 * time.Second,
+				run: func(ctx context.Context) error {
+					res, err := queue.RunOnce(ctx, sender, 50)
+					if res.Sent > 0 || res.Failed > 0 {
+						logger.Info("notifications drained", "sent", res.Sent,
+							"failed", res.Failed, "attempted", res.Attempts)
+					}
+					return err
+				},
+			})
+		}
+	} else {
+		logger.Warn("notifications are disabled by kill switch")
+	}
+
 	return clients, jobs
+}
+
+// notifySender builds the configured sender.
+//
+// A missing SMTP host is not an error that stops the worker: it selects the log sender, which
+// writes the message to the log and still records the delivery. That makes a development
+// installation's reset flow observable end to end, and it makes the absence of a mail server a
+// visible choice rather than a silent one.
+func notifySender(logger *slog.Logger) (notify.Sender, error) {
+	host := envOr("BILLING_SMTP_HOST", "")
+	if host == "" {
+		logger.Warn("no BILLING_SMTP_HOST is set; notifications are written to the log")
+		return notify.LogSender{Logger: logger}, nil
+	}
+	return notify.SMTPSender{
+		Host:     host,
+		Port:     envIntOr("BILLING_SMTP_PORT", 587),
+		Username: envOr("BILLING_SMTP_USERNAME", ""),
+		Password: envOr("BILLING_SMTP_PASSWORD", ""),
+		From:     envOr("BILLING_SMTP_FROM", ""),
+	}, nil
 }
 
 // extensionCache keeps one client per configured extension for the life of the

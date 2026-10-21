@@ -91,6 +91,9 @@ var rolePermissions = map[Role][]Permission{
 		PermInvoiceReadAll,
 		PermServiceReadAll, PermServiceHold,
 		PermTicketReadSelf, PermTicketWriteSelf,
+		// A support agent may mint a read-only key for their own tooling. The key can only carry
+		// scopes the agent already holds, which is why this is safe to grant here.
+		PermAPIKeyManage,
 	},
 	RoleInfrastructure: {
 		PermServiceReadAll, PermServiceSuspend, PermServiceTerminate, PermServiceProvision,

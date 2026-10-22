@@ -47,6 +47,11 @@ func serveConfigFromEnv() serveConfig {
 		trustedProxies:  envOr("BILLING_TRUSTED_PROXIES", ""),
 		logFormat:       envOr("BILLING_LOG_FORMAT", "text"),
 		logLevel:        envOr("BILLING_LOG_LEVEL", "info"),
+		// The scripts (dev-ui.sh, browser-e2e.sh, browser-smoke.sh) export this to keep the
+		// background jobs out of the server process, so it has to be read here rather than only
+		// from the flag. Reading it only from the flag made those exports dead: harmless while
+		// they pass false, and silently wrong the day someone passes true.
+		embeddedWorker: killSwitch("BILLING_EMBEDDED_WORKER"),
 	}
 }
 
@@ -145,7 +150,7 @@ func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	cfg := serveConfigFromEnv()
 	fs.StringVar(&cfg.addr, "addr", cfg.addr, "listen address (host:port)")
-	fs.BoolVar(&cfg.embeddedWorker, "embedded-worker", false, "also run background jobs in this process")
+	fs.BoolVar(&cfg.embeddedWorker, "embedded-worker", cfg.embeddedWorker, "also run background jobs in this process (default: $BILLING_EMBEDDED_WORKER)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -212,8 +217,11 @@ func cmdServe(args []string) error {
 		return err
 	}
 	if !cfg.secureCookies {
+		// This fires only when BILLING_INSECURE_COOKIES is set, so the hint must say how to get
+		// *back* to Secure cookies. It used to advise setting the variable that was already set,
+		// which sent an operator in a circle.
 		logger.Warn("session cookies are not marked Secure; use this only on loopback",
-			"hint", "set BILLING_INSECURE_COOKIES=1 to silence")
+			"hint", "unset BILLING_INSECURE_COOKIES once the panel is served over TLS")
 	}
 
 	// Forwarding headers are only believed from these networks. Empty means the panel

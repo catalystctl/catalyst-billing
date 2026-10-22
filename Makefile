@@ -3,7 +3,7 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build clean openapi openapi-check client smoke e2e-ui web-build web-typecheck web-test
+.PHONY: help db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test
 
 help:
 	@echo "db-up      start the dedicated Postgres (compose.yaml, port 5442)"
@@ -13,6 +13,7 @@ help:
 	@echo "db-psql-app  psql as the runtime role (cannot DDL)"
 	@echo "migrate    apply pending migrations"
 	@echo "db-unlock  clear a test lock leaked by a killed test run"
+	@echo "env-check  verify .env.example documents every variable the code reads"
 	@echo "test       go test ./... against the real database"
 	@echo "test-race  same, with the race detector"
 	@echo "openapi    regenerate api/openapi.yaml from the router"
@@ -106,6 +107,11 @@ test-race:
 # route that is not served, fails the build.
 openapi:
 	go run ./cmd/openapigen
+
+# Fails when the binary reads an env var .env.example does not document. An undocumented
+# variable works for whoever wrote it and is undiscoverable for everyone else.
+env-check:
+	@node scripts/env-check.mjs
 
 openapi-check:
 	go run ./cmd/openapigen -check

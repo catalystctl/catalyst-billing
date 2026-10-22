@@ -417,6 +417,26 @@ CONFIG_PRODUCT_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
 
 # ---------------------------------------------------------------- the drive --
 
+# The record ids the all-routes pass needs.
+#
+# The 37 named screens below are opened by URL, so they need no ids. The route sweep opens
+# *every* route in the table, including the detail screens, and a detail screen is only
+# exercised honestly against a record that exists: "no such invoice" would pass the same
+# assertions as a working invoice page, and the pass would prove nothing. These are read back
+# from the rows seeded above rather than generated, because the id is the database's to
+# assign.
+INVOICE_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
+  -c "SELECT id FROM invoices WHERE number = '${INVOICE_NUMBER}'")" || fail "could not read the seeded invoice id"
+SERVICE_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
+  -c "SELECT id FROM services WHERE external_id = '${SERVICE_EXTERNAL_ID}'")" || fail "could not read the seeded service id"
+TICKET_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
+  -c "SELECT id FROM tickets WHERE subject = '${TICKET_SUBJECT}'")" || fail "could not read the seeded ticket id"
+PRODUCT_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
+  -c "SELECT id FROM products WHERE slug = 'e2e-product-${STAMP}'")" || fail "could not read the seeded product id"
+for pair in "invoice:$INVOICE_ID" "service:$SERVICE_ID" "ticket:$TICKET_ID" "product:$PRODUCT_ID"; do
+  [[ -n "${pair#*:}" ]] || fail "the seed produced no ${pair%%:*} id"
+done
+
 ARGS=(
   "--base=$BASE"
   "--staff=$STAFF_EMAIL"
@@ -443,6 +463,29 @@ ARGS=(
 [[ -n "$SHOTS" ]] && ARGS+=("--screenshots=$SHOTS")
 
 node scripts/e2e-ui.mjs "${ARGS[@]}" || fail "the browser test reported failures"
+
+# Every route in the table, including the ones the named-screen pass above does not know
+# about.
+#
+# The two passes ask different questions and both have to be asked. The named screens assert
+# what a screen *contains*; this one asserts that every entry in web/src/routes.ts can be
+# opened at all, which is the only way a route whose view module is missing, or whose guard
+# disagrees with the table, becomes a failing test rather than a link somebody clicks once.
+# It runs second because it is the cheaper assertion and because a failure here should not
+# hide a content failure above it.
+node scripts/e2e-routes.mjs \
+  "--base=$BASE" \
+  "--staff=$STAFF_EMAIL" \
+  "--staff-password=$STAFF_PASSWORD" \
+  "--customer=$CUSTOMER_EMAIL" \
+  "--customer-password=$CUSTOMER_PASSWORD" \
+  "--customer-id=$CUSTOMER_ID" \
+  "--invoice-id=$INVOICE_ID" \
+  "--service-id=$SERVICE_ID" \
+  "--ticket-id=$TICKET_ID" \
+  "--product-id=$PRODUCT_ID" \
+  "--product-slug=e2e-product-${STAMP}" \
+  || fail "the route sweep reported failures"
 
 echo
 echo "authenticated browser test passed against $BASE"

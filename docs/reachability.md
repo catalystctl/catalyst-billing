@@ -1,0 +1,230 @@
+# Reachability — what is served, what is reachable, and what is a dead end
+
+**Status: open, and repeatable.** The sweep is `scripts/reachability.sh`; `--check` fails on a
+finding that is not fixed or recorded below. The browser half is `scripts/e2e-routes.mjs`,
+run by `scripts/browser-e2e.sh`, which opens every route in `web/src/routes.ts` and fails if
+one of them is a dead end.
+
+This document is the record, not the audit. The audit is the script: it rebuilds the served
+route table from the router on every run and re-diffs it against the frontend, so the list
+below cannot go stale without the command failing.
+
+```
+scripts/reachability.sh            # the report
+scripts/reachability.sh --check    # exit 1 on a finding that is not fixed or recorded
+scripts/reachability.sh --json     # machine-readable
+bash scripts/browser-e2e.sh        # the named screens, then every route
+```
+
+## The method
+
+The panel has two route tables, written by different people in different languages, and
+nothing forces either to keep up with the other:
+
+* **what is served** — `internal/httpapi` registers routes as data (`Route` in
+  `internal/httpapi/routes.go`). `httpapi.DescribeRoutes()` projects that table without a
+  database, and it is the same projection `make openapi` uses, so "served" and "documented"
+  are already the same set.
+* **what is opened** — `web/src/routes.ts` is the SPA's route table, `web/src/ui/layout.ts` is
+  the navigation generated from it, and the views under `web/src/views/` call the API with
+  path literals.
+
+The sweep reads both sides and reports seven kinds of gap:
+
+| Check | The defect it finds |
+|---|---|
+| API surface with no screen | A feature that is served, tested and documented, and that no operator can reach. |
+| Write endpoint with no UI affordance | A mutation the panel never calls: a screen reads the group but offers no way to act. |
+| Frontend call with no served route | A button that 404s: a view calls an endpoint the server does not serve. |
+| Screen with no way in | A route no navigation entry, link or redirect points at, so only a URL reaches it. |
+| Navigation entry with no route | A menu entry for an undeclared route, which `hasRoute` silently drops. |
+| Permission gate this build never declares | A screen gated on a permission no role can hold, so it renders its refusal for everyone. |
+| Navigation permission this build never declares | A menu entry filtered by a misspelled permission, hidden from every role. |
+
+Matching is at **group granularity**. A route's *surface* is its static prefix
+(`/api/v1/staff/coupons/{id}/redemptions` → `/api/v1/staff/coupons`), and a view that reads
+the group counts as covering it. That is deliberate: a detail path is built from a row's id at
+click time, so judging by the full pattern would report every detail endpoint as invisible. The
+cost is that a sub-route can hide behind a sibling; the write check is the second net, because
+it resolves the method at the call site.
+
+## Findings
+
+47 findings across 314 served routes, 75 screens and 55 navigation entries. Every one is
+either fixed in this pass or recorded with the reason it is deliberate or belongs to another
+owner. The script is the authoritative list; this is the reading of it.
+
+### The purchase funnel is API-only — the largest gap in this report
+
+`POST /api/v1/portal/cart/items` has **no caller anywhere in the web app**. Three defects
+combine into one dead end:
+
+1. `/products/:slug` renders a public product page whose "Order this plan" button links to
+   `/login?next=/portal` — not to the product, and not to the cart. After signing in the
+   visitor lands on the portal dashboard with nothing remembered.
+2. A signed-in customer cannot browse the storefront at all: `app.ts` redirects every public
+   path to the session's home, and `/products` is public.
+3. `/cart` tells the customer to "pick a plan from the storefront and it appears here", which
+   no screen can do.
+
+The cart, checkout, order placement and payment all work — they are tested with a cart line
+the browser harness inserts with SQL. A real customer has no path from a product to that cart.
+**Recorded, not fixed here:** the fix spans `app.ts` (the public-path redirect),
+`routes.ts`/`layout.ts` (a store destination for customers) and the storefront product page.
+That is a product decision and three files owned elsewhere; it is reported to the orchestrator.
+
+### Fixed in this pass
+
+| Gap | The fix |
+|---|---|
+| `PUT /api/v1/staff/api-keys/{id}/ip-allowlist` had no UI: a key's CIDR allowlist was enforced by the server and could only be set with curl. | `web/src/views/api-keys.ts` now has a **Networks** action per live key. It reads the current rule, edits it as comma-separated CIDRs, and says plainly that a request from any other address is refused as if the key did not exist. Empty means no restriction. The sweep no longer reports the route. |
+
+### API surfaces with no screen (27)
+
+**Deliberate — no human is the audience:**
+
+| Surface | Why |
+|---|---|
+| `GET /healthz`, `GET /readyz`, `GET /metrics` | probes and a Prometheus scrape; the dashboard shows health, not the probe |
+| `POST /webhooks/{provider}`, `POST /api/v1/webhooks/mail/piping` | inbound callbacks, authenticated by signature; their outcome is on `/webhooks` and `/logs` |
+| `GET /` | the SPA shell itself, not an API |
+| `GET /api/v1/media/{id}` | an `<img src>`; the catalog screens render the images |
+| `GET /api/v1/me`, `GET /api/v1/me/invoices` | credential introspection for API keys; the panel has a session, not a key |
+| `GET/POST /oauth/authorize`, `POST /oauth/token` | OAuth2 for third-party clients; no human is in the panel |
+| `GET /oauth/social/{slug}/start`, `GET /oauth/social/{slug}/callback` | browser redirects; the sign-in screen follows the `start_url` the server returns |
+| `GET /api/v1/extensions/hooks` | the hook catalogue answers an extension asking what it may observe |
+| `GET /api/v1/catalog/category/{slug}` | the storefront filters in place with `?category=`; a category URL is not part of its design |
+| `GET /api/v1/staff/refunds/{id}` | the refund is read from its payment and rendered in the refund dialog |
+
+**Reached through a constructed path** (the diff cannot see it, the screen exists):
+
+| Surface | How the screen reaches it |
+|---|---|
+| `GET /api/v1/portal/tickets/meta` | `ticketsMetaPath()` in `views/tickets.ts` |
+| `GET /api/v1/staff/locales/keys` | `` `${ENDPOINT}/keys` `` in `views/locales.ts` |
+
+**Duplicates — a screen exists, under the other spelling:**
+
+| Surface | The one the panel uses |
+|---|---|
+| `GET /api/v1/staff/sessions`, `DELETE /api/v1/staff/sessions/{id}` | `/api/v1/staff/security/sessions…`, read by `/security` |
+| `POST /api/v1/staff/affiliates/{id}/payout` | `/payouts`, called by the payout dialog |
+| `POST /api/v1/staff/invoices/{id}/void-reason` | `POST /void` with the reason in the body |
+| `POST /api/v1/staff/tickets/{id}/attachments` | the ticket screen uploads through the portal path for both audiences |
+
+Retiring the duplicate session routes is a backend change, so it is recorded rather than
+done here.
+
+**Genuine gaps, recorded because the screen belongs to another owner:**
+
+| Surface | What an operator cannot do |
+|---|---|
+| `GET /api/v1/staff/upgrades` | see the pending-upgrade queue. `/upgrades` edits the graph (`catalog:write`); a holder of `service:read:all` sees nothing. |
+| `GET /api/v1/portal/affiliate` | a customer who is an affiliate cannot see their referrals or commission |
+| `GET /api/v1/staff/affiliates/payouts` | see the all-affiliates payout report; `/affiliates` reads one affiliate at a time |
+| `GET /api/v1/staff/credit-notes/{id}/pdf` | download the credit note they just issued from `/invoices/:id` |
+| `GET /api/v1/portal/credit-notes/{id}/pdf` | download the credit note they were sent |
+| `POST /api/v1/portal/impersonation/stop` | — see the impersonation row below |
+| `GET /api/v1/announcements` | — see the announcement row below |
+
+Two of these are worth naming as *inert features* rather than missing screens:
+
+* **Impersonation is API-only.** `POST /api/v1/staff/users/{id}/impersonate` and
+  `POST /api/v1/portal/impersonation/stop` are audited and tested; no screen starts one and no
+  banner offers to end one. The customer overview explains why an impersonated session cannot
+  act, for a session nobody can enter.
+* **The announcement feed is read by nothing.** `GET /api/v1/announcements` is documented as
+  "the storefront and dashboard feed", and the `announcements.enabled` setting is described as
+  "whether the announcement feed is shown to customers" — but no screen calls the endpoint and
+  no Go code reads the setting. An operator publishes a maintenance notice and nobody sees it.
+
+### Write endpoints with no UI affordance (17)
+
+| Surface | Verdict |
+|---|---|
+| `POST /api/v1/portal/cart/items` | **the headline gap** — see the purchase funnel above |
+| `POST /api/v1/portal/invoices/{id}/pay-with-credit` | a customer with credit cannot spend it on an invoice from the portal |
+| `POST /api/v1/staff/users/{id}/impersonate` | nothing starts an impersonation (audited, tested, unreachable) |
+| `POST /api/v1/portal/services/{id}/cancellation` | the portal cancels through the older `/cancel`; the newer request row the staff queue reads is API-only |
+| `POST /api/v1/portal/services/{id}/upgrade` | a customer cannot request an upgrade from the portal |
+| `PUT /api/v1/portal/services/{id}/config` | a customer cannot edit a service's config options |
+| `PUT /api/v1/portal/services/{id}/metadata` | a customer cannot edit the properties marked `customer_visible` |
+| `POST /api/v1/staff/services/{id}/hooks/{extension}/{action}` | an extension can contribute a service action; no screen renders it |
+| `POST /api/v1/portal/services/{id}/hooks/{extension}/{action}` | same, for the customer-facing action |
+| `PUT /api/v1/staff/invoices/{id}/client-note` | a client-visible note cannot be written from the panel |
+| `POST /api/v1/staff/invoices/{id}/proforma` | a proforma cannot be issued, although the document and its setting exist |
+| `PUT /api/v1/staff/catalog/servers/{id}` | a catalog server can be created and listed, not renamed |
+| `DELETE /api/v1/staff/catalog/servers/{id}` | a catalog server cannot be removed |
+| `DELETE /api/v1/portal/social-links/{id}` | a linked sign-in provider can be linked, not unlinked |
+| `POST /api/v1/staff/affiliates/{id}/payout` | duplicate of `/payouts` |
+| `POST /api/v1/staff/invoices/{id}/void-reason` | duplicate of `POST /void` |
+| `POST /api/v1/staff/tickets/{id}/attachments` | duplicate of the portal upload path |
+
+### Frontend calls with no served route (0)
+
+None. Every path a view requests is served — which is what `make openapi-check` plus the
+`every API path a view requests is one the server serves` test in `web/test/routes.test.mjs`
+keep true.
+
+### Screens with no way in (3)
+
+| Screen | Why it has no link |
+|---|---|
+| `/reset-password` | reached from the emailed reset link, which carries the token |
+| `/verify` | reached from the emailed verification link, which carries the token |
+| `/catalog/:id` | the retired catalog URL; kept so old links and bookmarks work, superseded by `/catalog-management/:id` |
+
+### Navigation entries with no route, permission gates, navigation permissions (0 each)
+
+None. A menu entry whose route is undeclared would be silently dropped by `hasRoute`; a gate
+on an undeclared permission would refuse every operator; a menu entry filtered by an
+undeclared permission would be hidden from every role. All three are now asserted statically
+in `web/test/routes.test.mjs` and in the sweep.
+
+## The browser half: every route must render
+
+The named-screen harness (`scripts/e2e-ui.mjs`) asserts 37 screens in depth — content,
+absences, a dialog that opens and closes. It cannot see a route nobody remembered to add to
+it. `scripts/e2e-routes.mjs` closes that:
+
+* it reads `web/src/routes.ts` (the same table the router and the navigation are generated
+  from) and visits **every** entry, with the seeded record ids substituted for `:params`;
+* three phases — public as a stranger, staff as an administrator, customer as the seeded
+  customer;
+* a route fails when it shows the router's "Page not found", shows "not available in this
+  build" (a missing chunk), redirects away from its own path, throws, logs a console error, or
+  renders nothing;
+* a record-level "not found" is tolerated only for routes whose record was not seeded — that
+  is an honest answer for an id that does not exist, and treating it as a dead route would
+  make the pass meaningless on an unseeded database.
+
+This turns the class of dead link that is invisible to a link check into a failing test: the
+link resolves, the route is declared, and the screen still cannot be opened.
+
+## Limitations
+
+* **Group granularity.** A route is "covered" when a view references its surface. A view that
+  reads `/api/v1/staff/catalog/products` covers every product sub-route; a new sub-route with
+  no call will not be flagged by the read check (the write check may catch it).
+* **Static analysis cannot see every path.** A path assembled at runtime from server data
+  (an attachment's `url`, an OAuth provider's `start_url`) is invisible to the diff; those are
+  recorded above with the reason.
+* **Method resolution is best-effort.** A call through a helper or a variable may not resolve
+  to a method; where the path literal exists the route is treated as covered. The
+  `write-without-ui` list is therefore the routes with *no* evidence, which is why it stays
+  short enough to review.
+* **The sweep needs Go; the static tests need only Node.** `web/test/routes.test.mjs` asserts
+  the invariants that do not need the served table (navigation, gates, documented paths). CI
+  should run `scripts/reachability.sh --check` for the rest.
+
+## Adding a screen or a route
+
+1. Add the route to `web/src/routes.ts` and the view under `web/src/views/`.
+2. Add the navigation entry to `web/src/ui/layout.ts` — `hasRoute` will not show a route the
+   table does not declare, and the sweep will report a screen with no way in.
+3. If the screen is reached only by a link (a detail page, an emailed token), make sure the
+   link is a literal the sweep can see, or record the route in `UNLINKED_ROUTES` in
+   `web/test/routes.test.mjs` with the reason.
+4. If the route is API-only, record it in `RECORDED` in `scripts/reachability.sh` with the
+   reason. `--check` fails otherwise, which is the point: the decision is made once, in the
+   diff, instead of being rediscovered by a user.

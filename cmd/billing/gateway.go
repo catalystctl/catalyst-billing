@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/extproto"
+	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/refunds"
 )
 
@@ -118,10 +119,31 @@ func (g *gatewayAdapter) Refund(ctx context.Context, p extproto.RefundParams) (e
 	return out, nil
 }
 
+// VerifyWebhook implements payments.WebhookVerifier.
+//
+// This is the only component that knows a provider's payload shape, which is why the core must
+// delegate to it rather than parse a delivery itself: Stripe signs `t=<ts>,v1=<sig>` over
+// "{timestamp}.{body}" and nests the payment under `data.object`, while the fixture gateway signs a
+// flat `{event_id, event_type, payment_id}` body with its own header scheme. A core-side verifier
+// can only ever implement one of those, and it is the wrong one for the gateway actually configured.
+func (g *gatewayAdapter) VerifyWebhook(ctx context.Context, raw []byte, headers map[string]string) (extproto.VerifyWebhookResult, error) {
+	client, err := g.clientOrLaunch(ctx)
+	if err != nil {
+		return extproto.VerifyWebhookResult{}, err
+	}
+	var out extproto.VerifyWebhookResult
+	params := extproto.VerifyWebhookParams{Headers: headers, Body: raw}
+	if err := client.Call(ctx, extproto.MethodGatewayVerifyWebhook, &params, &out); err != nil {
+		return extproto.VerifyWebhookResult{}, err
+	}
+	return out, nil
+}
+
 // The assertions are the contract: if either interface changes, this file fails to compile rather
 // than silently serving a gateway that cannot refund.
 var (
-	_ refunds.Gateway = (*gatewayAdapter)(nil)
+	_ refunds.Gateway          = (*gatewayAdapter)(nil)
+	_ payments.WebhookVerifier = (*gatewayAdapter)(nil)
 )
 
 // configuredGateway builds the adapter with the launch configuration the operator saved.

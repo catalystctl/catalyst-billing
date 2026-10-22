@@ -32,6 +32,8 @@ package storetest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -65,15 +67,39 @@ func BaseDSN() string {
 	return DefaultDSN
 }
 
-// packageName derives a stable database-safe suffix for the running test binary,
-// e.g. "billing.test" -> "billing".
+// packageName derives a stable, database-safe suffix for the running test binary.
+//
+// It is derived from the package's *directory*, not from the binary's name.
+//
+// The binary is named after the package, and two different packages can share a name:
+// `internal/billing` and `cmd/billing` are both `billing.test`. Keying the database on the binary
+// name therefore gave those two packages one database, and `go test ./...` runs them in parallel
+// — so both raced to CREATE it and the loser failed with a duplicate-key error from
+// `pg_database`, in a package that had done nothing wrong. The directory is unique, so the
+// database is too.
+//
+// A short hash of the full path is appended after truncation, so two long sibling paths that
+// sanitise and truncate to the same prefix still get different databases.
 func packageName() string {
-	base := filepath.Base(os.Args[0])
-	base = strings.TrimSuffix(base, ".test")
-	base = strings.TrimSuffix(base, ".exe")
+	dir, err := os.Getwd()
+	if err != nil {
+		// Fall back to the binary name: it is wrong in the colliding case but it is always
+		// available, and a test database with the wrong name still works when only one package
+		// runs.
+		dir = os.Args[0]
+	}
+	dir = filepath.ToSlash(dir)
+
+	// Keep the last two path elements: enough to be recognisable in psql, short enough for the
+	// 63-byte identifier limit once the base name is prepended.
+	parts := strings.Split(dir, "/")
+	if len(parts) > 2 {
+		parts = parts[len(parts)-2:]
+	}
+	rel := strings.Join(parts, "_")
 
 	var b strings.Builder
-	for _, r := range strings.ToLower(base) {
+	for _, r := range strings.ToLower(rel) {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 			b.WriteRune(r)
@@ -85,12 +111,17 @@ func packageName() string {
 	if name == "" {
 		name = "pkg"
 	}
-	// PostgreSQL identifiers are limited to 63 bytes; the suffix is appended to
-	// the configured database name, so keep this side short.
+	// The hash disambiguates paths that sanitise to the same prefix, which is exactly what a
+	// truncation would otherwise create.
+	sum := sha256.Sum256([]byte(dir))
+	suffix := hex.EncodeToString(sum[:2])
+
+	// PostgreSQL identifiers are limited to 63 bytes; the suffix is appended to the configured
+	// database name, so keep this side short.
 	if len(name) > 20 {
-		name = name[:20]
+		name = name[len(name)-20:]
 	}
-	return name
+	return name + "_" + suffix
 }
 
 // DSN returns the connection string for this package's database.
@@ -258,6 +289,13 @@ func ensureDatabase(ctx context.Context) error {
 	// The identifier is derived from a sanitised name, but quote it anyway.
 	stmt := "CREATE DATABASE " + pgx.Identifier{want}.Sanitize()
 	if _, err := conn.Exec(ctx, stmt); err != nil {
+		// Two test binaries starting at once can both see "absent" and both try to create, which
+		// raises a unique violation on pg_database. That is a race in the check above, not a
+		// failure of the run: the database now exists and is exactly what this process wanted, so
+		// a duplicate-name error is success.
+		if store.SQLState(err) == store.StateUniqueViolation {
+			return nil
+		}
 		return fmt.Errorf("create database %q (the test role needs CREATEDB): %w", want, err)
 	}
 	return nil

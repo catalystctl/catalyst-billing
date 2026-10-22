@@ -156,8 +156,21 @@ func purgeSteps() []purgeStep {
 		{"invoices", `customer_id` + customers},
 		{"order_items", `order_id IN (SELECT id FROM orders WHERE customer_id` + customers + `)`},
 		{"orders", `customer_id` + customers},
-		{"subscriptions", `customer_id` + customers},
+
+		// Services and the rows that name one. Everything referencing `services` has to go before it,
+		// and `services` before `subscriptions` (a service carries `subscription_id`): getting either
+		// order wrong makes the command fail on the first customer who has a running server, which is
+		// most of them. Tickets are keyed by customer rather than by user, because a ticket can
+		// outlive the login that opened it.
+		{"ticket_attachments", `message_id IN (SELECT id FROM ticket_messages WHERE ticket_id IN
+			(SELECT id FROM tickets WHERE customer_id` + customers + `))`},
+		{"ticket_messages", `ticket_id IN (SELECT id FROM tickets WHERE customer_id` + customers + `)`},
+		{"tickets", `customer_id` + customers},
+		{"service_cancellations", `service_id IN (SELECT id FROM services WHERE customer_id` + customers + `)`},
+		{"service_upgrades", `service_id IN (SELECT id FROM services WHERE customer_id` + customers + `)`},
+		{"service_configs", `service_id IN (SELECT id FROM services WHERE customer_id` + customers + `)`},
 		{"services", `customer_id` + customers},
+		{"subscriptions", `customer_id` + customers},
 		{"billing_profiles", `customer_id` + customers},
 		{"customer_accounts", `customer_id` + customers},
 		{"payments", `id` + payments},
@@ -177,10 +190,6 @@ func purgeSteps() []purgeStep {
 		// Support. Attachments hang off messages and messages off tickets, so the order matters:
 		// deleting a ticket first would be refused by the foreign key. Tickets are keyed by customer
 		// rather than by user, because a ticket can outlive the login that opened it.
-		{"ticket_attachments", `message_id IN (SELECT id FROM ticket_messages WHERE ticket_id IN
-			(SELECT id FROM tickets WHERE customer_id` + customers + `))`},
-		{"ticket_messages", `ticket_id IN (SELECT id FROM tickets WHERE customer_id` + customers + `)`},
-		{"tickets", `customer_id` + customers},
 		{"ticket_mail_logs", `to_address LIKE $1 OR from_address LIKE $1`},
 
 		// Cart. A cart item references a price version, so it goes before the catalog is touched.
@@ -191,10 +200,15 @@ func purgeSteps() []purgeStep {
 		// them: a coupon redemption names the invoice it discounted, and a commission names the
 		// order it was earned on.
 		{"coupon_redemptions", `customer_id` + customers},
-		{"service_cancellations", `service_id IN (SELECT id FROM services WHERE customer_id` + customers + `)`},
-		{"service_upgrades", `service_id IN (SELECT id FROM services WHERE customer_id` + customers + `)`},
-		{"service_configs", `service_id IN (SELECT id FROM services WHERE customer_id` + customers + `)`},
-		{"affiliate_referrals", `customer_id` + customers},
+		// The affiliate programme: everything names an affiliate, and an affiliate names a user, so
+		// the whole chain has to be removed before `users` is. `affiliate_payouts` also names the
+		// staff member who approved the payout, which is why it is matched on both columns.
+		{"affiliate_payouts", `affiliate_id IN (SELECT id FROM affiliates WHERE user_id` + users + `)
+			OR created_by` + users},
+		{"affiliate_balances", `affiliate_id IN (SELECT id FROM affiliates WHERE user_id` + users + `)`},
+		{"affiliate_recurring_commissions", `affiliate_id IN (SELECT id FROM affiliates WHERE user_id` + users + `)`},
+		{"affiliate_referrals", `customer_id` + customers + ` OR affiliate_id IN (SELECT id FROM affiliates WHERE user_id` + users + `)`},
+		{"affiliates", `user_id` + users},
 		{"notifications", `user_id` + users},
 		{"notification_preferences", `user_id` + users},
 

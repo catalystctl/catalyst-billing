@@ -190,19 +190,33 @@ func cmdServe(args []string) error {
 
 	inbox := payments.NewInbox(pool)
 
-	// The webhook endpoint needs a verifier. Without a configured gateway it
-	// refuses deliveries rather than accepting unverified events.
+	// The gateway adapter owns the lazily-launched extension process. It is built here, before the
+	// verifier, because the verifier needs it: verification is a provider-specific operation and the
+	// only component that knows a provider's payload shape is that provider's extension.
+	gateway := configuredGateway(ctx, pool, logger, cfg.gatewayProvider)
+
+	// The webhook endpoint needs a verifier. Without a configured gateway it refuses deliveries
+	// rather than accepting unverified events.
+	//
+	// It delegates to the extension's `gateway.verify_webhook`, which is the only implementation that
+	// can be correct for the gateway actually configured: Stripe signs `t=<ts>,v1=<sig>` over
+	// "{timestamp}.{body}" and nests the payment under `data.object`, while the fixture gateway signs
+	// a flat body with its own header. The core-side HMACSigner this replaced understood a third,
+	// fictional scheme — a separate `Stripe-Timestamp` header — so a real Stripe delivery failed with
+	// "missing signature headers" and nothing could ever settle.
 	var verifier payments.Verifier
-	if cfg.gatewayProvider != "" && cfg.signingSecret != "" {
-		verifier = payments.HMACSigner{
-			Secret:          []byte(cfg.signingSecret),
-			Header:          "Stripe-Signature",
-			TimestampHeader: "Stripe-Timestamp",
-			Tolerance:       5 * time.Minute,
-		}
+	if cfg.gatewayProvider != "" {
+		verifier = payments.ExtensionVerifier{Gateway: gateway}
 	} else {
 		logger.Warn("no webhook verifier configured; POST /webhooks/* will refuse deliveries",
-			"hint", "set BILLING_GATEWAY_PROVIDER and BILLING_WEBHOOK_SECRET")
+			"hint", "set BILLING_GATEWAY_PROVIDER (or configure a gateway in the panel)")
+	}
+	if cfg.signingSecret == "" && cfg.gatewayProvider != "" {
+		// The core no longer verifies the signature itself, but the extension still needs its
+		// signing secret, and it is resolved from the same configuration the extension is launched
+		// with. Saying so here turns a rejected delivery into a diagnosable one.
+		logger.Warn("no webhook signing secret is configured; deliveries will be rejected",
+			"hint", "set STRIPE_WEBHOOK_SECRET (or save the webhook secret on the integrations screen)")
 	}
 
 	// Authentication. A panel served over plain HTTP outside loopback would send
@@ -271,7 +285,7 @@ func cmdServe(args []string) error {
 		Cookies:        httpapi.CookieConfig{Secure: cfg.secureCookies},
 		SessionTTL:     authCfg.SessionLifetime,
 		TrustedProxies: nets,
-	}).WithPortal(portal.New(pool)).WithGateway(configuredGateway(ctx, pool, logger, cfg.gatewayProvider)).
+	}).WithPortal(portal.New(pool)).WithGateway(gateway).
 		WithCheckoutURLs(
 			envOr("BILLING_CHECKOUT_SUCCESS_URL", publicBaseURL()+"/checkout/complete"),
 			envOr("BILLING_CHECKOUT_CANCEL_URL", publicBaseURL()+"/checkout/cancelled"))

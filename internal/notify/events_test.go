@@ -766,7 +766,11 @@ func TestEventMailIsRenderedAndLinkIsAbsolute(t *testing.T) {
 	if strings.Contains(body, "{{") {
 		t.Fatalf("body still contains a placeholder: %q", body)
 	}
-	if !strings.Contains(body, "http://") || !strings.Contains(body, "/portal/invoices/7777") {
+	// An absolute link, over either scheme. Asserting on `http://` specifically was wrong: the
+	// deployment's public base URL decides the scheme, and a mail that links to an https origin is
+	// more correct than one that does not. What matters is that the link is absolute at all — a
+	// relative path in an email is unclickable, which is the defect this test exists for.
+	if !strings.Contains(body, "://") || !strings.Contains(body, "/portal/invoices/7777") {
 		t.Fatalf("the invoice link is not absolute: %q", body)
 	}
 

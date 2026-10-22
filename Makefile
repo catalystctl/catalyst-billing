@@ -3,10 +3,12 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help dev dev-stop dev-config dev-reset db-up db-ensure db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test
+.PHONY: help dev dev-stop dev-config dev-reset seed seed-reset db-up db-ensure db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test
 
 help:
-	@echo "dev        database + schema + fixtures + a staff account, then serve (Ctrl-C stops)"
+	@echo "dev        database + schema + fixtures + demo data + a staff account, then serve (Ctrl-C stops)"
+	@echo "seed       (re)build the demo dataset: customers, catalog, invoices, payments, tickets"
+	@echo "seed-reset wipe the demo dataset only, leaving anything you created by hand"
 	@echo "dev-reset  destroy the dev database and start over with 'make dev'"
 	@echo "dev-config seed the fixture gateway/provisioner and a dev staff account (idempotent)"
 	@echo "dev-stop   stop a dev server that was left running in the background"
@@ -108,8 +110,23 @@ extensions:
 #
 # Deliberately not part of `verify`: it starts a server and waits, which is a thing a person
 # does, not a thing CI does.
-dev: db-ensure migrate build extensions dev-config
+dev: db-ensure migrate build extensions dev-config seed
 	@bash scripts/dev.sh
+
+# A complete demo dataset: six customers, a catalog, subscriptions, services in every state,
+# invoices paid/open/overdue/void, payments, a refund, a credit note, dunning, tickets,
+# notifications, webhook deliveries and an audit trail. Idempotent: it purges what it created
+# (everything under @demo.test) and rebuilds it.
+#
+# Money is created through `billing admin`, not by INSERT, so the invoice numbers, the frozen
+# document snapshots and the subledger postings are the ones the product writes; the script
+# asserts the ledger still balances before reporting success.
+seed: build
+	@bash scripts/seed-demo.sh
+
+# Only the demo rows go, so a customer or invoice you created by hand survives.
+seed-reset:
+	@./bin/billing admin purge-test-data --pattern '%@demo.test' --yes --force
 
 # The fixture configuration on its own, for a database that is already running: the gateway and
 # provisioner are pointed at the conformance fixtures and a dev staff account is created. Safe

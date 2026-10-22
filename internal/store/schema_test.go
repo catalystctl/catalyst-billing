@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -810,6 +811,25 @@ func TestRuntimeRoleCannotDDL(t *testing.T) {
 	if appDSN == "" {
 		t.Skip("set BILLING_APP_TEST_DSN to test the runtime role's privileges")
 	}
+
+	// Point the runtime-role connection at the same database this package's other tests use.
+	//
+	// The configured DSN names the base database, but every test package works in its own
+	// migrated copy (storetest.DSN). Connecting to the base name instead means this test runs
+	// against a database nobody has migrated: it passed only while some earlier run happened to
+	// leave tables there, and it fails with "relation invoices does not exist" the moment that is
+	// no longer true. Taking the migrated database is also what makes the DDL assertions
+	// meaningful — a CREATE TABLE refusal in an empty schema proves nothing.
+	if target := storetest.DSN(); target != "" {
+		if base, err := url.Parse(appDSN); err == nil && base.Scheme != "" {
+			if tgt, err := url.Parse(target); err == nil && tgt.Path != "" {
+				base.Path = tgt.Path
+				appDSN = base.String()
+			}
+		}
+	}
+	// Ensure it exists and is migrated, with the owner role.
+	storetest.DB(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

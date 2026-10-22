@@ -16800,6 +16800,790 @@ paths:
             x-permission: log:read
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/marketplace:
+        get:
+            description: The configured index URL, the cached listing, and every verified extension. The listing is cached, so a page load does not become a fetch against the index host; `POST /refresh` is the on-demand path. `trust` states what a digest check proves, so the screen can say it once rather than leaving an operator to assume a green tick means the artifact is signed.
+            operationId: GetStaffMarketplace
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    cached:
+                                        type: boolean
+                                    configured:
+                                        description: False when no index URL is set. Rendered as a state, not as an empty marketplace.
+                                        type: boolean
+                                    failure_code:
+                                        description: Set when the last index fetch failed, so a broken index is visible rather than looking like an empty marketplace.
+                                        type: string
+                                    fetched_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    index:
+                                        properties:
+                                            extensions:
+                                                items:
+                                                    properties:
+                                                        description:
+                                                            type: string
+                                                        download_url:
+                                                            type: string
+                                                        homepage:
+                                                            type: string
+                                                        kind:
+                                                            enum:
+                                                                - gateway
+                                                                - provisioner
+                                                                - other
+                                                            type: string
+                                                        name:
+                                                            pattern: ^[a-z0-9][a-z0-9._-]{0,63}$
+                                                            type: string
+                                                        publisher:
+                                                            type: string
+                                                        sha256:
+                                                            pattern: ^[0-9a-f]{64}$
+                                                            type: string
+                                                        version:
+                                                            type: string
+                                                    required:
+                                                        - name
+                                                        - version
+                                                        - publisher
+                                                        - description
+                                                        - kind
+                                                        - download_url
+                                                        - sha256
+                                                    type: object
+                                                type: array
+                                            schema_version:
+                                                enum:
+                                                    - 1
+                                                type: integer
+                                        required:
+                                            - schema_version
+                                            - extensions
+                                        type: object
+                                    index_url:
+                                        type: string
+                                    install_dir:
+                                        description: Where a verified artifact is staged. Empty means the panel stores it only.
+                                        type: string
+                                    installed:
+                                        items:
+                                            properties:
+                                                description:
+                                                    type: string
+                                                installed_at:
+                                                    format: date-time
+                                                    type: string
+                                                kind:
+                                                    enum:
+                                                        - gateway
+                                                        - provisioner
+                                                        - other
+                                                    type: string
+                                                name:
+                                                    pattern: ^[a-z0-9][a-z0-9._-]{0,63}$
+                                                    type: string
+                                                pinned:
+                                                    description: The operator supplied the digest out of band, so the index could not have changed it.
+                                                    type: boolean
+                                                publisher:
+                                                    type: string
+                                                sha256:
+                                                    description: The digest that was verified against the downloaded bytes.
+                                                    pattern: ^[0-9a-f]{64}$
+                                                    type: string
+                                                size_bytes:
+                                                    format: int64
+                                                    type: integer
+                                                source_url:
+                                                    type: string
+                                                staged_path:
+                                                    description: Where a copy was written, when a staging directory is configured. Empty means the verified bytes are stored in the panel only.
+                                                    type: string
+                                                status:
+                                                    description: 'Always `verified`. Never `running`: the core loads extensions as separate processes from paths in its own environment and has no runtime registration.'
+                                                    enum:
+                                                        - verified
+                                                    type: string
+                                                version:
+                                                    type: string
+                                            required:
+                                                - name
+                                                - version
+                                                - sha256
+                                                - pinned
+                                                - size_bytes
+                                                - installed_at
+                                                - status
+                                            type: object
+                                        type: array
+                                    trust:
+                                        description: 'What a digest check proves: a digest from the index catches a corrupted transfer, not a compromised index, because whoever controls the index controls the digest. Pin the digest out of band to close that gap.'
+                                        type: string
+                                required:
+                                    - configured
+                                    - index_url
+                                    - install_dir
+                                    - index
+                                    - installed
+                                    - trust
+                                type: object
+                    description: The marketplace state
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold extension:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No database is configured
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The marketplace index and what is installed
+            x-permission: extension:manage
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/marketplace/install:
+        post:
+            description: 'Downloads the artifact with a bounded size, compares its SHA-256 with the index before anything is recorded, and stores the verified bytes with their digest. A mismatch refuses with `marketplace_digest_mismatch` and leaves nothing behind. `pinned_sha256` lets an operator supply the digest out of band; the install then requires the index and the artifact to match the pin, which is the only check a compromised index cannot forge. Nothing is executed and nothing is registered: the core loads extensions from paths in its own environment, so the result is `verified` with an `activation` instruction.'
+            operationId: PostStaffMarketplaceInstall
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                name:
+                                    pattern: ^[a-z0-9][a-z0-9._-]{0,63}$
+                                    type: string
+                                pinned_sha256:
+                                    description: The digest from the release announcement. Refused unless it matches both the index and the downloaded bytes.
+                                    pattern: ^[0-9a-fA-F]{64}$
+                                    type: string
+                                version:
+                                    description: Empty installs the highest version listed.
+                                    type: string
+                            required:
+                                - name
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    activation:
+                                        description: 'What an operator must do to make the core use it: place the artifact and set `BILLING_GATEWAY_EXTENSION` or `BILLING_PROVISIONER_EXTENSION` to its path.'
+                                        type: string
+                                    description:
+                                        type: string
+                                    kind:
+                                        enum:
+                                            - gateway
+                                            - provisioner
+                                            - other
+                                        type: string
+                                    name:
+                                        type: string
+                                    pinned:
+                                        type: boolean
+                                    publisher:
+                                        type: string
+                                    sha256:
+                                        pattern: ^[0-9a-f]{64}$
+                                        type: string
+                                    size_bytes:
+                                        format: int64
+                                        type: integer
+                                    staged_path:
+                                        type: string
+                                    status:
+                                        description: '`verified`: the artifact is checked and stored. The panel never reports `running`.'
+                                        enum:
+                                            - verified
+                                        type: string
+                                    trust:
+                                        type: string
+                                    verified_at:
+                                        format: date-time
+                                        type: string
+                                    version:
+                                        type: string
+                                required:
+                                    - name
+                                    - version
+                                    - sha256
+                                    - pinned
+                                    - verified_at
+                                    - size_bytes
+                                    - status
+                                    - activation
+                                    - trust
+                                type: object
+                    description: The verified extension
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold extension:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No extension with that name and version is in the index
+                "413":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The artifact is larger than the limit
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The digest did not match, the pin disagrees, the version is already installed with different bytes, or the artifact is empty
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The artifact or the index could not be fetched
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Download, verify and record an extension
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: extension:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/marketplace/installed/{name}/{version}/artifact:
+        get:
+            description: Returns exactly the bytes whose digest was checked, with the digest in `X-Content-SHA256`, so the operator deploys the artifact that was verified rather than a fresh download from an index that may have changed since.
+            operationId: GetStaffMarketplaceInstalledByNameByVersionArtifact
+            parameters:
+                - in: path
+                  name: name
+                  required: true
+                  schema:
+                    type: string
+                - in: path
+                  name: version
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The artifact
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold extension:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such installed extension
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Download the verified artifact
+            x-permission: extension:manage
+            x-rate-class: export
+            x-staff-only: true
+    /api/v1/staff/marketplace/refresh:
+        post:
+            description: 'The only route that ignores the index cache. The fetch is bounded in time and size, and the document is validated completely before anything is shown: an index with one bad entry is refused as a whole rather than rendered with the bad entry silently dropped.'
+            operationId: PostStaffMarketplaceRefresh
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    cached:
+                                        type: boolean
+                                    configured:
+                                        description: False when no index URL is set. Rendered as a state, not as an empty marketplace.
+                                        type: boolean
+                                    failure_code:
+                                        description: Set when the last index fetch failed, so a broken index is visible rather than looking like an empty marketplace.
+                                        type: string
+                                    fetched_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    index:
+                                        properties:
+                                            extensions:
+                                                items:
+                                                    properties:
+                                                        description:
+                                                            type: string
+                                                        download_url:
+                                                            type: string
+                                                        homepage:
+                                                            type: string
+                                                        kind:
+                                                            enum:
+                                                                - gateway
+                                                                - provisioner
+                                                                - other
+                                                            type: string
+                                                        name:
+                                                            pattern: ^[a-z0-9][a-z0-9._-]{0,63}$
+                                                            type: string
+                                                        publisher:
+                                                            type: string
+                                                        sha256:
+                                                            pattern: ^[0-9a-f]{64}$
+                                                            type: string
+                                                        version:
+                                                            type: string
+                                                    required:
+                                                        - name
+                                                        - version
+                                                        - publisher
+                                                        - description
+                                                        - kind
+                                                        - download_url
+                                                        - sha256
+                                                    type: object
+                                                type: array
+                                            schema_version:
+                                                enum:
+                                                    - 1
+                                                type: integer
+                                        required:
+                                            - schema_version
+                                            - extensions
+                                        type: object
+                                    index_url:
+                                        type: string
+                                    install_dir:
+                                        description: Where a verified artifact is staged. Empty means the panel stores it only.
+                                        type: string
+                                    installed:
+                                        items:
+                                            properties:
+                                                description:
+                                                    type: string
+                                                installed_at:
+                                                    format: date-time
+                                                    type: string
+                                                kind:
+                                                    enum:
+                                                        - gateway
+                                                        - provisioner
+                                                        - other
+                                                    type: string
+                                                name:
+                                                    pattern: ^[a-z0-9][a-z0-9._-]{0,63}$
+                                                    type: string
+                                                pinned:
+                                                    description: The operator supplied the digest out of band, so the index could not have changed it.
+                                                    type: boolean
+                                                publisher:
+                                                    type: string
+                                                sha256:
+                                                    description: The digest that was verified against the downloaded bytes.
+                                                    pattern: ^[0-9a-f]{64}$
+                                                    type: string
+                                                size_bytes:
+                                                    format: int64
+                                                    type: integer
+                                                source_url:
+                                                    type: string
+                                                staged_path:
+                                                    description: Where a copy was written, when a staging directory is configured. Empty means the verified bytes are stored in the panel only.
+                                                    type: string
+                                                status:
+                                                    description: 'Always `verified`. Never `running`: the core loads extensions as separate processes from paths in its own environment and has no runtime registration.'
+                                                    enum:
+                                                        - verified
+                                                    type: string
+                                                version:
+                                                    type: string
+                                            required:
+                                                - name
+                                                - version
+                                                - sha256
+                                                - pinned
+                                                - size_bytes
+                                                - installed_at
+                                                - status
+                                            type: object
+                                        type: array
+                                    trust:
+                                        description: 'What a digest check proves: a digest from the index catches a corrupted transfer, not a compromised index, because whoever controls the index controls the digest. Pin the digest out of band to close that gap.'
+                                        type: string
+                                required:
+                                    - configured
+                                    - index_url
+                                    - install_dir
+                                    - index
+                                    - installed
+                                    - trust
+                                type: object
+                    description: The marketplace state after the refresh
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold extension:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No index URL is configured
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The index could not be fetched or is not a valid index
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Fetch the marketplace index now
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: extension:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/marketplace/settings:
+        put:
+            description: 'Where the listing is fetched from and where a verified artifact is staged. `install_dir` empty means the verified bytes live in the panel only, which is still a real install: the artifact can be downloaded back byte for byte. A URL that is not http(s) is refused when it is saved rather than discovered when the fetch runs.'
+            operationId: PutStaffMarketplaceSettings
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                index_url:
+                                    type: string
+                                install_dir:
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    cached:
+                                        type: boolean
+                                    configured:
+                                        description: False when no index URL is set. Rendered as a state, not as an empty marketplace.
+                                        type: boolean
+                                    failure_code:
+                                        description: Set when the last index fetch failed, so a broken index is visible rather than looking like an empty marketplace.
+                                        type: string
+                                    fetched_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    index:
+                                        properties:
+                                            extensions:
+                                                items:
+                                                    properties:
+                                                        description:
+                                                            type: string
+                                                        download_url:
+                                                            type: string
+                                                        homepage:
+                                                            type: string
+                                                        kind:
+                                                            enum:
+                                                                - gateway
+                                                                - provisioner
+                                                                - other
+                                                            type: string
+                                                        name:
+                                                            pattern: ^[a-z0-9][a-z0-9._-]{0,63}$
+                                                            type: string
+                                                        publisher:
+                                                            type: string
+                                                        sha256:
+                                                            pattern: ^[0-9a-f]{64}$
+                                                            type: string
+                                                        version:
+                                                            type: string
+                                                    required:
+                                                        - name
+                                                        - version
+                                                        - publisher
+                                                        - description
+                                                        - kind
+                                                        - download_url
+                                                        - sha256
+                                                    type: object
+                                                type: array
+                                            schema_version:
+                                                enum:
+                                                    - 1
+                                                type: integer
+                                        required:
+                                            - schema_version
+                                            - extensions
+                                        type: object
+                                    index_url:
+                                        type: string
+                                    install_dir:
+                                        description: Where a verified artifact is staged. Empty means the panel stores it only.
+                                        type: string
+                                    installed:
+                                        items:
+                                            properties:
+                                                description:
+                                                    type: string
+                                                installed_at:
+                                                    format: date-time
+                                                    type: string
+                                                kind:
+                                                    enum:
+                                                        - gateway
+                                                        - provisioner
+                                                        - other
+                                                    type: string
+                                                name:
+                                                    pattern: ^[a-z0-9][a-z0-9._-]{0,63}$
+                                                    type: string
+                                                pinned:
+                                                    description: The operator supplied the digest out of band, so the index could not have changed it.
+                                                    type: boolean
+                                                publisher:
+                                                    type: string
+                                                sha256:
+                                                    description: The digest that was verified against the downloaded bytes.
+                                                    pattern: ^[0-9a-f]{64}$
+                                                    type: string
+                                                size_bytes:
+                                                    format: int64
+                                                    type: integer
+                                                source_url:
+                                                    type: string
+                                                staged_path:
+                                                    description: Where a copy was written, when a staging directory is configured. Empty means the verified bytes are stored in the panel only.
+                                                    type: string
+                                                status:
+                                                    description: 'Always `verified`. Never `running`: the core loads extensions as separate processes from paths in its own environment and has no runtime registration.'
+                                                    enum:
+                                                        - verified
+                                                    type: string
+                                                version:
+                                                    type: string
+                                            required:
+                                                - name
+                                                - version
+                                                - sha256
+                                                - pinned
+                                                - size_bytes
+                                                - installed_at
+                                                - status
+                                            type: object
+                                        type: array
+                                    trust:
+                                        description: 'What a digest check proves: a digest from the index catches a corrupted transfer, not a compromised index, because whoever controls the index controls the digest. Pin the digest out of band to close that gap.'
+                                        type: string
+                                required:
+                                    - configured
+                                    - index_url
+                                    - install_dir
+                                    - index
+                                    - installed
+                                    - trust
+                                type: object
+                    description: The marketplace state after the change
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request carries no setting to write
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold extension:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The index URL is not http(s)
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Configure the marketplace index and staging directory
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: extension:manage
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/notification-templates:
         get:
             description: 'Every event in the catalogue, in display order, whether or not it has a template row. An event with no row is reported with `seeded: false` so the omission is visible rather than the event silently missing from the screen. Requires notification:write: support answers "why did I get this", it does not decide what the mail says.'
@@ -23746,6 +24530,1352 @@ paths:
             summary: Inbound mail, including the messages that could not be attached
             x-permission: ticket:read:all
             x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/updates:
+        get:
+            description: 'One read, so the screen cannot render a mix of two moments. The check is served from the cache when it is fresh: a check on every page load would be a denial of service against the update server and against us. `apply` is a procedure, never an automated mode — the panel cannot replace its own binary, because this deployment has no signed release to verify and no supervisor for the process to ask for a restart.'
+            operationId: GetStaffUpdates
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    apply:
+                                        properties:
+                                            mode:
+                                                description: 'Always `operator`. There is no automated mode: the deployment is a plain binary with no signed release to verify and no supervisor for the panel to ask for a restart.'
+                                                enum:
+                                                    - operator
+                                                type: string
+                                            note:
+                                                type: string
+                                            steps:
+                                                description: The deployment procedure, in order.
+                                                items:
+                                                    type: string
+                                                type: array
+                                        required:
+                                            - mode
+                                            - steps
+                                            - note
+                                        type: object
+                                    approval:
+                                        description: The approved version, or null. Approval records a decision; it does not apply anything.
+                                        oneOf:
+                                            - properties:
+                                                approved_at:
+                                                    format: date-time
+                                                    type: string
+                                                approved_by:
+                                                    format: uuid
+                                                    type: string
+                                                note:
+                                                    type: string
+                                                version:
+                                                    description: The approved target version.
+                                                    type: string
+                                              required:
+                                                - version
+                                                - note
+                                                - approved_by
+                                                - approved_at
+                                              type: object
+                                            - type: "null"
+                                    approval_matches_check:
+                                        description: True when an approval exists, a newer version is available, and they are the same version. This is what "an update is available and approved" means precisely.
+                                        type: boolean
+                                    channel:
+                                        enum:
+                                            - stable
+                                            - beta
+                                        type: string
+                                    check:
+                                        properties:
+                                            cached:
+                                                description: True when this answer came from the cache rather than a fetch in this request.
+                                                type: boolean
+                                            channel:
+                                                enum:
+                                                    - stable
+                                                    - beta
+                                                type: string
+                                            checked_at:
+                                                format: date-time
+                                                type: string
+                                            configured:
+                                                description: 'False when `updates.check_url` is empty. Not an error: an installation with no update server configured is supported.'
+                                                type: boolean
+                                            detail:
+                                                type: string
+                                            download_url:
+                                                description: A link for a human to follow. The panel never downloads a release artifact.
+                                                type: string
+                                            expires_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            failure_code:
+                                                description: Empty for a successful check.
+                                                type: string
+                                            latest_version:
+                                                type: string
+                                            notes:
+                                                type: string
+                                            outcome:
+                                                description: '`unknown` is the honest answer for a build with no comparable version stamp. `unreachable` means the last check failed; `failure_code` says why.'
+                                                enum:
+                                                    - not_configured
+                                                    - up_to_date
+                                                    - available
+                                                    - ahead
+                                                    - unknown
+                                                    - unreachable
+                                                type: string
+                                            published_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            running_version:
+                                                description: The version this build was stamped with (`-ldflags "-X main.version=…"`). The default stamp is `dev`.
+                                                type: string
+                                            source_url:
+                                                description: The check URL the answer came from.
+                                                type: string
+                                        required:
+                                            - configured
+                                            - source_url
+                                            - channel
+                                            - running_version
+                                            - outcome
+                                            - checked_at
+                                            - cached
+                                        type: object
+                                    running_version:
+                                        type: string
+                                    server_time:
+                                        format: date-time
+                                        type: string
+                                    telemetry:
+                                        properties:
+                                            enabled:
+                                                description: '`updates.telemetry`. Off unless an operator turns it on.'
+                                                type: boolean
+                                            endpoint_configured:
+                                                type: boolean
+                                            endpoint_host:
+                                                description: The endpoint's host only. The URL is a credential and is never returned.
+                                                type: string
+                                            instance_id:
+                                                description: A random identifier for this installation, generated by the database. Not derived from any customer.
+                                                format: uuid
+                                                type: string
+                                            last_send:
+                                                oneOf:
+                                                    - properties:
+                                                        endpoint_host:
+                                                            type: string
+                                                        failure_code:
+                                                            type: string
+                                                        http_status:
+                                                            type: integer
+                                                        id:
+                                                            format: uuid
+                                                            type: string
+                                                        sent_at:
+                                                            format: date-time
+                                                            type: string
+                                                        status:
+                                                            enum:
+                                                                - sent
+                                                                - failed
+                                                            type: string
+                                                      required:
+                                                        - id
+                                                        - sent_at
+                                                        - status
+                                                        - endpoint_host
+                                                      type: object
+                                                    - type: "null"
+                                        required:
+                                            - enabled
+                                            - endpoint_configured
+                                            - instance_id
+                                        type: object
+                                required:
+                                    - running_version
+                                    - channel
+                                    - check
+                                    - approval_matches_check
+                                    - telemetry
+                                    - apply
+                                    - server_time
+                                type: object
+                    description: The updates state
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold update:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No database is configured
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The running version, the update check, the approval and the telemetry state
+            x-permission: update:manage
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/updates/approval:
+        delete:
+            description: 'Deletes the approval row and audits the withdrawal. There is no history table here: the audit log is where the history of approvals lives, and a second copy would be a second thing to keep true.'
+            operationId: DeleteStaffUpdatesApproval
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    apply:
+                                        properties:
+                                            mode:
+                                                description: 'Always `operator`. There is no automated mode: the deployment is a plain binary with no signed release to verify and no supervisor for the panel to ask for a restart.'
+                                                enum:
+                                                    - operator
+                                                type: string
+                                            note:
+                                                type: string
+                                            steps:
+                                                description: The deployment procedure, in order.
+                                                items:
+                                                    type: string
+                                                type: array
+                                        required:
+                                            - mode
+                                            - steps
+                                            - note
+                                        type: object
+                                    approval:
+                                        description: The approved version, or null. Approval records a decision; it does not apply anything.
+                                        oneOf:
+                                            - properties:
+                                                approved_at:
+                                                    format: date-time
+                                                    type: string
+                                                approved_by:
+                                                    format: uuid
+                                                    type: string
+                                                note:
+                                                    type: string
+                                                version:
+                                                    description: The approved target version.
+                                                    type: string
+                                              required:
+                                                - version
+                                                - note
+                                                - approved_by
+                                                - approved_at
+                                              type: object
+                                            - type: "null"
+                                    approval_matches_check:
+                                        description: True when an approval exists, a newer version is available, and they are the same version. This is what "an update is available and approved" means precisely.
+                                        type: boolean
+                                    channel:
+                                        enum:
+                                            - stable
+                                            - beta
+                                        type: string
+                                    check:
+                                        properties:
+                                            cached:
+                                                description: True when this answer came from the cache rather than a fetch in this request.
+                                                type: boolean
+                                            channel:
+                                                enum:
+                                                    - stable
+                                                    - beta
+                                                type: string
+                                            checked_at:
+                                                format: date-time
+                                                type: string
+                                            configured:
+                                                description: 'False when `updates.check_url` is empty. Not an error: an installation with no update server configured is supported.'
+                                                type: boolean
+                                            detail:
+                                                type: string
+                                            download_url:
+                                                description: A link for a human to follow. The panel never downloads a release artifact.
+                                                type: string
+                                            expires_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            failure_code:
+                                                description: Empty for a successful check.
+                                                type: string
+                                            latest_version:
+                                                type: string
+                                            notes:
+                                                type: string
+                                            outcome:
+                                                description: '`unknown` is the honest answer for a build with no comparable version stamp. `unreachable` means the last check failed; `failure_code` says why.'
+                                                enum:
+                                                    - not_configured
+                                                    - up_to_date
+                                                    - available
+                                                    - ahead
+                                                    - unknown
+                                                    - unreachable
+                                                type: string
+                                            published_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            running_version:
+                                                description: The version this build was stamped with (`-ldflags "-X main.version=…"`). The default stamp is `dev`.
+                                                type: string
+                                            source_url:
+                                                description: The check URL the answer came from.
+                                                type: string
+                                        required:
+                                            - configured
+                                            - source_url
+                                            - channel
+                                            - running_version
+                                            - outcome
+                                            - checked_at
+                                            - cached
+                                        type: object
+                                    running_version:
+                                        type: string
+                                    server_time:
+                                        format: date-time
+                                        type: string
+                                    telemetry:
+                                        properties:
+                                            enabled:
+                                                description: '`updates.telemetry`. Off unless an operator turns it on.'
+                                                type: boolean
+                                            endpoint_configured:
+                                                type: boolean
+                                            endpoint_host:
+                                                description: The endpoint's host only. The URL is a credential and is never returned.
+                                                type: string
+                                            instance_id:
+                                                description: A random identifier for this installation, generated by the database. Not derived from any customer.
+                                                format: uuid
+                                                type: string
+                                            last_send:
+                                                oneOf:
+                                                    - properties:
+                                                        endpoint_host:
+                                                            type: string
+                                                        failure_code:
+                                                            type: string
+                                                        http_status:
+                                                            type: integer
+                                                        id:
+                                                            format: uuid
+                                                            type: string
+                                                        sent_at:
+                                                            format: date-time
+                                                            type: string
+                                                        status:
+                                                            enum:
+                                                                - sent
+                                                                - failed
+                                                            type: string
+                                                      required:
+                                                        - id
+                                                        - sent_at
+                                                        - status
+                                                        - endpoint_host
+                                                      type: object
+                                                    - type: "null"
+                                        required:
+                                            - enabled
+                                            - endpoint_configured
+                                            - instance_id
+                                        type: object
+                                required:
+                                    - running_version
+                                    - channel
+                                    - check
+                                    - approval_matches_check
+                                    - telemetry
+                                    - apply
+                                    - server_time
+                                type: object
+                    description: The updates state without an approval
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold update:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Withdraw the approved version
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: update:manage
+            x-rate-class: mutation
+            x-staff-only: true
+        post:
+            description: 'Records which version an operator approved, and returns the state so the screen shows the decision immediately. It applies nothing: the deployment is a plain binary that this process cannot replace, so approving records the decision and `apply.steps` is the procedure. The version must parse as a semantic version and must be newer than the running build; a build stamped `dev` has nothing to compare with and is exempt from the second rule.'
+            operationId: PostStaffUpdatesApproval
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                note:
+                                    description: Why, in the operator's words. It is what an incident review reads later.
+                                    type: string
+                                version:
+                                    description: The target release, e.g. `1.5.0`.
+                                    type: string
+                            required:
+                                - version
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    apply:
+                                        properties:
+                                            mode:
+                                                description: 'Always `operator`. There is no automated mode: the deployment is a plain binary with no signed release to verify and no supervisor for the panel to ask for a restart.'
+                                                enum:
+                                                    - operator
+                                                type: string
+                                            note:
+                                                type: string
+                                            steps:
+                                                description: The deployment procedure, in order.
+                                                items:
+                                                    type: string
+                                                type: array
+                                        required:
+                                            - mode
+                                            - steps
+                                            - note
+                                        type: object
+                                    approval:
+                                        description: The approved version, or null. Approval records a decision; it does not apply anything.
+                                        oneOf:
+                                            - properties:
+                                                approved_at:
+                                                    format: date-time
+                                                    type: string
+                                                approved_by:
+                                                    format: uuid
+                                                    type: string
+                                                note:
+                                                    type: string
+                                                version:
+                                                    description: The approved target version.
+                                                    type: string
+                                              required:
+                                                - version
+                                                - note
+                                                - approved_by
+                                                - approved_at
+                                              type: object
+                                            - type: "null"
+                                    approval_matches_check:
+                                        description: True when an approval exists, a newer version is available, and they are the same version. This is what "an update is available and approved" means precisely.
+                                        type: boolean
+                                    channel:
+                                        enum:
+                                            - stable
+                                            - beta
+                                        type: string
+                                    check:
+                                        properties:
+                                            cached:
+                                                description: True when this answer came from the cache rather than a fetch in this request.
+                                                type: boolean
+                                            channel:
+                                                enum:
+                                                    - stable
+                                                    - beta
+                                                type: string
+                                            checked_at:
+                                                format: date-time
+                                                type: string
+                                            configured:
+                                                description: 'False when `updates.check_url` is empty. Not an error: an installation with no update server configured is supported.'
+                                                type: boolean
+                                            detail:
+                                                type: string
+                                            download_url:
+                                                description: A link for a human to follow. The panel never downloads a release artifact.
+                                                type: string
+                                            expires_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            failure_code:
+                                                description: Empty for a successful check.
+                                                type: string
+                                            latest_version:
+                                                type: string
+                                            notes:
+                                                type: string
+                                            outcome:
+                                                description: '`unknown` is the honest answer for a build with no comparable version stamp. `unreachable` means the last check failed; `failure_code` says why.'
+                                                enum:
+                                                    - not_configured
+                                                    - up_to_date
+                                                    - available
+                                                    - ahead
+                                                    - unknown
+                                                    - unreachable
+                                                type: string
+                                            published_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            running_version:
+                                                description: The version this build was stamped with (`-ldflags "-X main.version=…"`). The default stamp is `dev`.
+                                                type: string
+                                            source_url:
+                                                description: The check URL the answer came from.
+                                                type: string
+                                        required:
+                                            - configured
+                                            - source_url
+                                            - channel
+                                            - running_version
+                                            - outcome
+                                            - checked_at
+                                            - cached
+                                        type: object
+                                    running_version:
+                                        type: string
+                                    server_time:
+                                        format: date-time
+                                        type: string
+                                    telemetry:
+                                        properties:
+                                            enabled:
+                                                description: '`updates.telemetry`. Off unless an operator turns it on.'
+                                                type: boolean
+                                            endpoint_configured:
+                                                type: boolean
+                                            endpoint_host:
+                                                description: The endpoint's host only. The URL is a credential and is never returned.
+                                                type: string
+                                            instance_id:
+                                                description: A random identifier for this installation, generated by the database. Not derived from any customer.
+                                                format: uuid
+                                                type: string
+                                            last_send:
+                                                oneOf:
+                                                    - properties:
+                                                        endpoint_host:
+                                                            type: string
+                                                        failure_code:
+                                                            type: string
+                                                        http_status:
+                                                            type: integer
+                                                        id:
+                                                            format: uuid
+                                                            type: string
+                                                        sent_at:
+                                                            format: date-time
+                                                            type: string
+                                                        status:
+                                                            enum:
+                                                                - sent
+                                                                - failed
+                                                            type: string
+                                                      required:
+                                                        - id
+                                                        - sent_at
+                                                        - status
+                                                        - endpoint_host
+                                                      type: object
+                                                    - type: "null"
+                                        required:
+                                            - enabled
+                                            - endpoint_configured
+                                            - instance_id
+                                        type: object
+                                required:
+                                    - running_version
+                                    - channel
+                                    - check
+                                    - approval_matches_check
+                                    - telemetry
+                                    - apply
+                                    - server_time
+                                type: object
+                    description: The updates state with the approval
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold update:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The version does not parse, or is not newer than the running version
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Approve a target version
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: update:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/updates/check:
+        post:
+            description: Fetches `updates.check_url` with a bounded timeout and a bounded body, compares the published version against the running one, and stores the answer. This is the only route that ignores the cache; the screen read uses it. A failed fetch is cached with a shorter TTL and answered as 502 with a stable code, because an operator who asked for an answer and did not get one should be told.
+            operationId: PostStaffUpdatesCheck
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    cached:
+                                        description: True when this answer came from the cache rather than a fetch in this request.
+                                        type: boolean
+                                    channel:
+                                        enum:
+                                            - stable
+                                            - beta
+                                        type: string
+                                    checked_at:
+                                        format: date-time
+                                        type: string
+                                    configured:
+                                        description: 'False when `updates.check_url` is empty. Not an error: an installation with no update server configured is supported.'
+                                        type: boolean
+                                    detail:
+                                        type: string
+                                    download_url:
+                                        description: A link for a human to follow. The panel never downloads a release artifact.
+                                        type: string
+                                    expires_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    failure_code:
+                                        description: Empty for a successful check.
+                                        type: string
+                                    latest_version:
+                                        type: string
+                                    notes:
+                                        type: string
+                                    outcome:
+                                        description: '`unknown` is the honest answer for a build with no comparable version stamp. `unreachable` means the last check failed; `failure_code` says why.'
+                                        enum:
+                                            - not_configured
+                                            - up_to_date
+                                            - available
+                                            - ahead
+                                            - unknown
+                                            - unreachable
+                                        type: string
+                                    published_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    running_version:
+                                        description: The version this build was stamped with (`-ldflags "-X main.version=…"`). The default stamp is `dev`.
+                                        type: string
+                                    source_url:
+                                        description: The check URL the answer came from.
+                                        type: string
+                                required:
+                                    - configured
+                                    - source_url
+                                    - channel
+                                    - running_version
+                                    - outcome
+                                    - checked_at
+                                    - cached
+                                type: object
+                    description: The check result
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold update:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No check URL is configured
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The update server could not be reached, answered non-2xx, or returned a manifest that is not valid
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Check for a newer version, ignoring the cache
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: update:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/updates/settings:
+        put:
+            description: 'Writes `updates.check_url`, `updates.channel` and `updates.telemetry` through the settings store, so validation, defaults and the audit row are the same ones every other settings write gets. The telemetry endpoint is written to `update_config` rather than to `settings`, because it commonly carries an ingest token and the settings table''s read paths are shared with a generic settings page. Every field is optional: a request that omits one leaves it unchanged.'
+            operationId: PutStaffUpdatesSettings
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                channel:
+                                    enum:
+                                        - stable
+                                        - beta
+                                    type: string
+                                check_url:
+                                    description: An http(s) URL serving `{version, download_url, notes, published_at}`. Empty disables the check.
+                                    type: string
+                                telemetry:
+                                    description: Off by default. When on, the payload is a fixed set of counts and versions.
+                                    type: boolean
+                                telemetry_endpoint:
+                                    description: 'Where a payload is POSTed. A credential: it is never returned by a read path.'
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    apply:
+                                        properties:
+                                            mode:
+                                                description: 'Always `operator`. There is no automated mode: the deployment is a plain binary with no signed release to verify and no supervisor for the panel to ask for a restart.'
+                                                enum:
+                                                    - operator
+                                                type: string
+                                            note:
+                                                type: string
+                                            steps:
+                                                description: The deployment procedure, in order.
+                                                items:
+                                                    type: string
+                                                type: array
+                                        required:
+                                            - mode
+                                            - steps
+                                            - note
+                                        type: object
+                                    approval:
+                                        description: The approved version, or null. Approval records a decision; it does not apply anything.
+                                        oneOf:
+                                            - properties:
+                                                approved_at:
+                                                    format: date-time
+                                                    type: string
+                                                approved_by:
+                                                    format: uuid
+                                                    type: string
+                                                note:
+                                                    type: string
+                                                version:
+                                                    description: The approved target version.
+                                                    type: string
+                                              required:
+                                                - version
+                                                - note
+                                                - approved_by
+                                                - approved_at
+                                              type: object
+                                            - type: "null"
+                                    approval_matches_check:
+                                        description: True when an approval exists, a newer version is available, and they are the same version. This is what "an update is available and approved" means precisely.
+                                        type: boolean
+                                    channel:
+                                        enum:
+                                            - stable
+                                            - beta
+                                        type: string
+                                    check:
+                                        properties:
+                                            cached:
+                                                description: True when this answer came from the cache rather than a fetch in this request.
+                                                type: boolean
+                                            channel:
+                                                enum:
+                                                    - stable
+                                                    - beta
+                                                type: string
+                                            checked_at:
+                                                format: date-time
+                                                type: string
+                                            configured:
+                                                description: 'False when `updates.check_url` is empty. Not an error: an installation with no update server configured is supported.'
+                                                type: boolean
+                                            detail:
+                                                type: string
+                                            download_url:
+                                                description: A link for a human to follow. The panel never downloads a release artifact.
+                                                type: string
+                                            expires_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            failure_code:
+                                                description: Empty for a successful check.
+                                                type: string
+                                            latest_version:
+                                                type: string
+                                            notes:
+                                                type: string
+                                            outcome:
+                                                description: '`unknown` is the honest answer for a build with no comparable version stamp. `unreachable` means the last check failed; `failure_code` says why.'
+                                                enum:
+                                                    - not_configured
+                                                    - up_to_date
+                                                    - available
+                                                    - ahead
+                                                    - unknown
+                                                    - unreachable
+                                                type: string
+                                            published_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            running_version:
+                                                description: The version this build was stamped with (`-ldflags "-X main.version=…"`). The default stamp is `dev`.
+                                                type: string
+                                            source_url:
+                                                description: The check URL the answer came from.
+                                                type: string
+                                        required:
+                                            - configured
+                                            - source_url
+                                            - channel
+                                            - running_version
+                                            - outcome
+                                            - checked_at
+                                            - cached
+                                        type: object
+                                    running_version:
+                                        type: string
+                                    server_time:
+                                        format: date-time
+                                        type: string
+                                    telemetry:
+                                        properties:
+                                            enabled:
+                                                description: '`updates.telemetry`. Off unless an operator turns it on.'
+                                                type: boolean
+                                            endpoint_configured:
+                                                type: boolean
+                                            endpoint_host:
+                                                description: The endpoint's host only. The URL is a credential and is never returned.
+                                                type: string
+                                            instance_id:
+                                                description: A random identifier for this installation, generated by the database. Not derived from any customer.
+                                                format: uuid
+                                                type: string
+                                            last_send:
+                                                oneOf:
+                                                    - properties:
+                                                        endpoint_host:
+                                                            type: string
+                                                        failure_code:
+                                                            type: string
+                                                        http_status:
+                                                            type: integer
+                                                        id:
+                                                            format: uuid
+                                                            type: string
+                                                        sent_at:
+                                                            format: date-time
+                                                            type: string
+                                                        status:
+                                                            enum:
+                                                                - sent
+                                                                - failed
+                                                            type: string
+                                                      required:
+                                                        - id
+                                                        - sent_at
+                                                        - status
+                                                        - endpoint_host
+                                                      type: object
+                                                    - type: "null"
+                                        required:
+                                            - enabled
+                                            - endpoint_configured
+                                            - instance_id
+                                        type: object
+                                required:
+                                    - running_version
+                                    - channel
+                                    - check
+                                    - approval_matches_check
+                                    - telemetry
+                                    - apply
+                                    - server_time
+                                type: object
+                    description: The updates state after the change
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request carries no setting to write
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold update:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A URL is not http(s), or the channel is not a known value
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Configure the update check and telemetry
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: update:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/updates/telemetry:
+        get:
+            description: 'Builds the payload without sending it. When telemetry is off, `payload` is null and `payload_json` is empty: "off" means no payload exists, not that one is waiting. The document is a closed set of counts and versions — no customer identifier, name or address, no invoice or order contents, no hostname or public URL, no operator identity.'
+            operationId: GetStaffUpdatesTelemetry
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    delivery_possible:
+                                        description: False when no endpoint is configured.
+                                        type: boolean
+                                    enabled:
+                                        type: boolean
+                                    endpoint_host:
+                                        type: string
+                                    fields:
+                                        items:
+                                            type: string
+                                        type: array
+                                    last_send:
+                                        type:
+                                            - object
+                                            - "null"
+                                    payload:
+                                        oneOf:
+                                            - additionalProperties: false
+                                              description: A fixed set of counts and versions. No customer identifier, name or address; no invoice or order contents; no hostname, domain or public URL; no operator identity.
+                                              properties:
+                                                arch:
+                                                    type: string
+                                                channel:
+                                                    enum:
+                                                        - stable
+                                                        - beta
+                                                    type: string
+                                                counts:
+                                                    additionalProperties: false
+                                                    properties:
+                                                        customers:
+                                                            type: integer
+                                                        extensions_installed:
+                                                            type: integer
+                                                        invoices_open:
+                                                            type: integer
+                                                        invoices_paid_last_30d:
+                                                            type: integer
+                                                        services_active:
+                                                            type: integer
+                                                        services_suspended:
+                                                            type: integer
+                                                        tickets_open:
+                                                            type: integer
+                                                    required:
+                                                        - customers
+                                                        - services_active
+                                                        - services_suspended
+                                                        - invoices_open
+                                                        - invoices_paid_last_30d
+                                                        - tickets_open
+                                                        - extensions_installed
+                                                    type: object
+                                                database_schema_version:
+                                                    description: 'The highest applied migration version. A number, not a file name: a path is the kind of detail that should not leave the installation.'
+                                                    type: integer
+                                                generated_at:
+                                                    format: date-time
+                                                    type: string
+                                                go_version:
+                                                    type: string
+                                                instance_id:
+                                                    format: uuid
+                                                    type: string
+                                                os:
+                                                    type: string
+                                                panel_version:
+                                                    type: string
+                                                schema_version:
+                                                    enum:
+                                                        - 1
+                                                    type: integer
+                                              required:
+                                                - schema_version
+                                                - instance_id
+                                                - panel_version
+                                                - channel
+                                                - go_version
+                                                - os
+                                                - arch
+                                                - database_schema_version
+                                                - generated_at
+                                                - counts
+                                              type: object
+                                            - type: "null"
+                                    payload_json:
+                                        description: The exact bytes that would be sent, so an operator reads them without re-serialising.
+                                        type: string
+                                required:
+                                    - enabled
+                                    - payload
+                                    - payload_json
+                                    - delivery_possible
+                                    - fields
+                                type: object
+                    description: The preview
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold update:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Preview the telemetry payload
+            x-permission: update:manage
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/updates/telemetry/send:
+        post:
+            description: 'Delivers the payload and records the attempt, whether or not it succeeded, with the digest of the exact bytes sent. A delivery the receiver rejects is a 502: an operator who clicked send and got a 200 would reasonably conclude it arrived.'
+            operationId: PostStaffUpdatesTelemetrySend
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    endpoint_host:
+                                        type: string
+                                    failure_code:
+                                        type: string
+                                    http_status:
+                                        type: integer
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    payload_sha256:
+                                        pattern: ^[0-9a-f]{64}$
+                                        type: string
+                                    sent_at:
+                                        format: date-time
+                                        type: string
+                                    status:
+                                        enum:
+                                            - sent
+                                            - failed
+                                        type: string
+                                required:
+                                    - id
+                                    - sent_at
+                                    - status
+                                    - payload_sha256
+                                    - endpoint_host
+                                type: object
+                    description: The delivery result
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold update:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Telemetry is off, or no endpoint is configured
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The endpoint rejected the payload
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Send the telemetry payload now
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: update:manage
+            x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/upgrades:
         get:

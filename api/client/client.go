@@ -479,6 +479,18 @@ func (c *Client) DeleteStaffTaxratesById(ctx context.Context, id string, query u
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffUpdatesApproval calls DELETE /api/v1/staff/updates/approval.
+//
+// # Withdraw the approved version
+//
+// Permission: update:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) DeleteStaffUpdatesApproval(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/updates/approval"
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // Get calls GET /.
 //
 // The embedded application shell
@@ -1471,6 +1483,30 @@ func (c *Client) GetStaffLogsHttp(ctx context.Context, query url.Values, body an
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffMarketplace calls GET /api/v1/staff/marketplace.
+//
+// # The marketplace index and what is installed
+//
+// Permission: extension:manage. Staff only.
+func (c *Client) GetStaffMarketplace(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/marketplace"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffMarketplaceInstalledByNameByVersionArtifact calls GET /api/v1/staff/marketplace/installed/{name}/{version}/artifact.
+//
+// # Download the verified artifact
+//
+// Permission: extension:manage. Staff only.
+// name is the name path parameter.
+// version is the version path parameter.
+func (c *Client) GetStaffMarketplaceInstalledByNameByVersionArtifact(ctx context.Context, name string, version string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/marketplace/installed/{name}/{version}/artifact"
+	path = strings.ReplaceAll(path, "{name}", url.PathEscape(name))
+	path = strings.ReplaceAll(path, "{version}", url.PathEscape(version))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffNotificationtemplates calls GET /api/v1/staff/notification-templates.
 //
 // # List notification templates
@@ -1816,6 +1852,26 @@ func (c *Client) GetStaffTicketsMeta(ctx context.Context, query url.Values, body
 // Permission: ticket:read:all. Staff only.
 func (c *Client) GetStaffTicketsPiping(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/tickets/piping"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffUpdates calls GET /api/v1/staff/updates.
+//
+// # The running version, the update check, the approval and the telemetry state
+//
+// Permission: update:manage. Staff only.
+func (c *Client) GetStaffUpdates(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/updates"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffUpdatesTelemetry calls GET /api/v1/staff/updates/telemetry.
+//
+// # Preview the telemetry payload
+//
+// Permission: update:manage. Staff only.
+func (c *Client) GetStaffUpdatesTelemetry(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/updates/telemetry"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -2559,6 +2615,30 @@ func (c *Client) PostStaffInvoicesByIdVoidreason(ctx context.Context, id string,
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffMarketplaceInstall calls POST /api/v1/staff/marketplace/install.
+//
+// # Download, verify and record an extension
+//
+// Permission: extension:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffMarketplaceInstall(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/marketplace/install"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffMarketplaceRefresh calls POST /api/v1/staff/marketplace/refresh.
+//
+// # Fetch the marketplace index now
+//
+// Permission: extension:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffMarketplaceRefresh(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/marketplace/refresh"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffNotificationtemplatesByEventkeyReset calls POST /api/v1/staff/notification-templates/{event_key}/reset.
 //
 // # Restore a template's shipped wording
@@ -2825,6 +2905,42 @@ func (c *Client) PostStaffTicketsByIdClose(ctx context.Context, id string, query
 func (c *Client) PostStaffTicketsByIdReplies(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/tickets/{id}/replies"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffUpdatesApproval calls POST /api/v1/staff/updates/approval.
+//
+// # Approve a target version
+//
+// Permission: update:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffUpdatesApproval(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/updates/approval"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffUpdatesCheck calls POST /api/v1/staff/updates/check.
+//
+// # Check for a newer version, ignoring the cache
+//
+// Permission: update:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffUpdatesCheck(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/updates/check"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffUpdatesTelemetrySend calls POST /api/v1/staff/updates/telemetry/send.
+//
+// # Send the telemetry payload now
+//
+// Permission: update:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffUpdatesTelemetrySend(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/updates/telemetry/send"
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
@@ -3104,6 +3220,18 @@ func (c *Client) PutStaffInvoicesByIdClientnote(ctx context.Context, id string, 
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }
 
+// PutStaffMarketplaceSettings calls PUT /api/v1/staff/marketplace/settings.
+//
+// # Configure the marketplace index and staging directory
+//
+// Permission: extension:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PutStaffMarketplaceSettings(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/marketplace/settings"
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
 // PutStaffNotificationtemplatesByEventkey calls PUT /api/v1/staff/notification-templates/{event_key}.
 //
 // # Edit one notification template
@@ -3209,5 +3337,17 @@ func (c *Client) PutStaffSettings(ctx context.Context, query url.Values, body an
 func (c *Client) PutStaffTaxratesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/tax-rates/{id}"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffUpdatesSettings calls PUT /api/v1/staff/updates/settings.
+//
+// # Configure the update check and telemetry
+//
+// Permission: update:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PutStaffUpdatesSettings(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/updates/settings"
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }

@@ -409,6 +409,47 @@ func Truncate(ctx context.Context, conn *pgx.Conn) error {
 		WHERE id = 'default'`); err != nil {
 		return fmt.Errorf("restore billing policy: %w", err)
 	}
+
+	// Settings are configuration an operator edits at runtime, so they are not truncated --
+	// but a test that changes one must not leak it into the next. Deleting and re-seeding is
+	// the reset: it restores exactly the defaults the migration inserts, so a test always
+	// starts from the state a fresh installation has.
+	if _, err := conn.Exec(ctx, `DELETE FROM settings`); err != nil {
+		return fmt.Errorf("clear settings: %w", err)
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO settings (group_key, key, value) VALUES
+			('general',  'company_name',        'Catalyst Hosting'),
+			('general',  'system_email_address','no-reply@localhost'),
+			('general',  'tos',                 ''),
+			('general',  'registration_disabled','false'),
+			('general',  'pagination',          '25'),
+			('invoices', 'bill_to_text',        ''),
+			('invoices', 'notes_client_visible','true'),
+			('invoices', 'invoice_number_prefix','INV-'),
+			('invoices', 'invoice_number_padding','6'),
+			('invoices', 'credit_note_prefix',  'CN-'),
+			('invoices', 'credit_note_padding', '6'),
+			('invoices', 'due_days',            '7'),
+			('invoices', 'proforma',            'false'),
+			('credits',  'enabled',             'true'),
+			('credits',  'minimum_deposit_minor','500'),
+			('credits',  'maximum_deposit_minor','100000'),
+			('credits',  'maximum_credit_minor','1000000'),
+			('credits',  'auto_use',            'true'),
+			('tax',      'enabled',             'false'),
+			('tax',      'default_mode',        'exclusive'),
+			('tickets',  'disabled',            'false'),
+			('tickets',  'client_closing_disabled','false'),
+			('tickets',  'departments',         '["general","billing","technical"]'),
+			('tickets',  'autoclose_days',      '14'),
+			('cronjob',  'order_cancel_days',   '14'),
+			('cronjob',  'terminate_days',      '30'),
+			('mail',     'disable',             'false'),
+			('mail',     'must_verify',         'false'),
+			('announcements','enabled',         'true')`); err != nil {
+		return fmt.Errorf("restore settings: %w", err)
+	}
 	return nil
 }
 
@@ -463,10 +504,23 @@ var ReferenceTables = []string{
 	"ledger_accounts",
 	"billing_policies",
 	"retention_policies",
+	"currencies",
+	"settings",
 }
 
 // Tables lists the mutable application tables to truncate, children first.
+//
+// The harness refuses to run when a base table is in neither this list nor
+// ReferenceTables, so adding a migration that creates a table forces a decision here: is
+// this state a test must start from empty, or is it configuration a migration seeds? The
+// check exists because a forgotten table used to leak state between tests, which presents
+// as an impossible intermittent failure.
 var Tables = []string{
+	// Logs and diagnostics: no dependencies, no dependents.
+	"http_logs",
+	"error_logs",
+	"cron_runs",
+	"worker_heartbeat",
 	"audit_events",
 	"idempotency_keys",
 	"approvals",
@@ -477,6 +531,29 @@ var Tables = []string{
 	"email_verifications",
 	"password_resets",
 	"notification_deliveries",
+	"notifications",
+	"notification_preferences",
+	"notification_templates",
+	// Tickets: attachments hang off messages, messages off tickets.
+	"ticket_attachments",
+	"ticket_messages",
+	"ticket_mail_logs",
+	"tickets",
+	// Announcements.
+	"announcements",
+	// Commerce configuration. Coupon redemptions reference invoices, so they go first.
+	"coupon_redemptions",
+	"coupon_products",
+	"coupons",
+	"tax_rates",
+	"config_option_prices",
+	"config_options",
+	"service_configs",
+	"product_upgrades",
+	// Cart.
+	"cart_items",
+	"carts",
+	// Money and lifecycle records.
 	"credit_applications",
 	"credit_notes",
 	"billing_profiles",
@@ -498,6 +575,8 @@ var Tables = []string{
 	"payments",
 	"payment_attempts",
 	"gateway_events",
+	"service_upgrades",
+	"service_cancellations",
 	"service_operations",
 	"services",
 	"invoice_lines",

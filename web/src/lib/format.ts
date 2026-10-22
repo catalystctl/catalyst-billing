@@ -30,6 +30,82 @@ export function money(a: Amount | null | undefined): string {
   return formatMinor(a.minor, a.scale ?? 2);
 }
 
+/** Presentation rules for one currency, as `GET /api/v1/currencies` returns them.
+ *
+ *  The server owns this: a currency's symbol, position and grouping are configuration, and a
+ *  page that hard-coded "$" would be wrong the moment an installation sells in EUR. The
+ *  arithmetic never comes from here — only the presentation does. */
+export interface CurrencyFormat {
+  code: string;
+  symbol: string;
+  symbol_position: "prefix" | "suffix";
+  group_separator: string;
+  decimal_mark: string;
+  group_size: number;
+  scale: number;
+}
+
+/** A format for a code with no server-supplied row, so a page renders a correct number even
+ *  before the currency list has loaded. */
+export function plainCurrency(code: string, scale = 2): CurrencyFormat {
+  return { code, symbol: "", symbol_position: "prefix", group_separator: ",", decimal_mark: ".", group_size: 3, scale };
+}
+
+/** Groups the integer part of a digit string, honouring the currency's separators. */
+function groupWith(digits: string, format: CurrencyFormat): string {
+  const negative = digits.startsWith("-");
+  const body = negative ? digits.slice(1) : digits;
+  const dot = body.indexOf(".");
+  const whole = dot >= 0 ? body.slice(0, dot) : body;
+  const rest = dot >= 0 ? body.slice(dot) : "";
+  let out = "";
+  if (format.group_size <= 0 || !format.group_separator) {
+    out = whole;
+  } else {
+    for (let i = 0; i < whole.length; i += 1) {
+      if (i > 0 && (whole.length - i) % format.group_size === 0) out += format.group_separator;
+      out += whole[i];
+    }
+  }
+  const tail = format.decimal_mark === "." ? rest : rest.replace(".", format.decimal_mark);
+  return `${negative ? "-" : ""}${out}${tail}`;
+}
+
+/** Formats an amount with a currency's symbol, position and grouping.
+ *
+ *  `withCode` appends the ISO code, which is what a multi-currency invoice needs: a bare "$"
+ *  on an invoice that could be USD or CAD is ambiguous. */
+export function formatCurrency(amount: Amount | null | undefined, format?: CurrencyFormat, withCode = false): string {
+  if (!amount || typeof amount.minor !== "number") return "—";
+  const fmt = format ?? plainCurrency(amount.currency, amount.scale ?? 2);
+  const digits = groupWith(formatMinor(amount.minor, amount.scale ?? 2), fmt);
+  const negative = digits.startsWith("-");
+  const magnitude = negative ? digits.slice(1) : digits;
+  const signed = negative ? `-${magnitude}` : magnitude;
+  const withSymbol = fmt.symbol
+    ? fmt.symbol_position === "prefix"
+      ? `${fmt.symbol}${signed}`
+      : `${signed} ${fmt.symbol}`
+    : signed;
+  return withCode ? `${withSymbol} ${amount.currency}` : withSymbol;
+}
+
+/** Sums amounts that share a currency, refusing to mix. Returns null when they differ.
+ *
+ *  A total across two currencies is meaningless without an exchange rate, and this system
+ *  deliberately has none: a price is explicit per currency. Returning null forces the caller
+ *  to render one line per currency instead of a number that adds apples to oranges. */
+export function sumAmounts(amounts: Amount[]): Amount | null {
+  if (amounts.length === 0) return null;
+  const first = amounts[0]!;
+  let total = 0;
+  for (const amount of amounts) {
+    if (amount.currency !== first.currency) return null;
+    total += amount.minor;
+  }
+  return { minor: total, currency: first.currency, scale: first.scale };
+}
+
 /** The currency code, for the small label before an amount. */
 export function currencyOf(a: Amount | null | undefined): string {
   return a?.currency ?? "";

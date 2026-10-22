@@ -83,6 +83,14 @@ const PATHS = {
   rotate: '<path d="M20 8v5h-5"/><path d="M19.4 13a8 8 0 1 1-1.9-8.4L20 7"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.7-3.8-9S9.5 5.6 12 3z"/>',
   logoutBox: '<path d="M14 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"/><path d="M10 8 6 12l4 4M6 12h9"/>',
+  // Commerce and support icons. They exist so a navigation entry never renders a blank
+  // glyph: `icon()` looks its path up in a closed union, and a missing name is a type error
+  // rather than a silently empty square.
+  tag: '<path d="M11.5 3.5H20a.5.5 0 0 1 .5.5v8.5L11 22 2 13z"/><circle cx="16.5" cy="7.5" r="1.4"/>',
+  wallet: '<rect x="3" y="6" width="18" height="13" rx="2.2"/><path d="M3 10h18M16.5 14.5h2"/>',
+  message: '<path d="M4 5.5h16v10H8.5L4 19z"/>',
+  percent: '<path d="M6 18 18 6"/><circle cx="7.5" cy="7.5" r="2"/><circle cx="16.5" cy="16.5" r="2"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6 18 18M18 6l-1.4 1.4M7.4 16.6 6 18"/>',
 } as const;
 
 export type IconName = keyof typeof PATHS;

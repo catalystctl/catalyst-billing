@@ -18,8 +18,13 @@ const (
 	PermInvoicePaySelf    Permission = "invoice:pay:self"
 	PermServiceReadSelf   Permission = "service:read:self"
 	PermServiceCancelSelf Permission = "service:cancel:self"
-	PermTicketReadSelf    Permission = "ticket:read:self"
-	PermTicketWriteSelf   Permission = "ticket:write:self"
+	// PermServiceUpgradeSelf lets a customer start an upgrade or downgrade of their own
+	// service. It is deliberately distinct from the staff service:upgrade: the customer
+	// path is scoped to their own record in SQL and issues an invoice they must pay, while
+	// the staff path can move any service.
+	PermServiceUpgradeSelf Permission = "service:upgrade:self"
+	PermTicketReadSelf     Permission = "ticket:read:self"
+	PermTicketWriteSelf    Permission = "ticket:write:self"
 
 	// Staff permissions, split by the role that needs them.
 	PermCustomerReadAll  Permission = "customer:read:all"
@@ -52,6 +57,77 @@ const (
 	// Reading the catalog for invoicing is still invoice:read:all — pricing an invoice must
 	// not require the right to change a price.
 	PermCatalogWrite Permission = "catalog:write"
+
+	// --- commerce configuration -------------------------------------------------
+	//
+	// These are split by *what an operator decides*, not by which screen they appear on,
+	// for the same reason catalog:write is split from invoice:write:all: the person who
+	// runs a promotion is not necessarily the person who files tax, and neither of them is
+	// necessarily allowed to move money. A single "settings:write" for all of it would make
+	// every one of those decisions available to whoever needs any of them.
+
+	// PermCouponReadAll reads promotions, including expired and exhausted ones.
+	PermCouponReadAll Permission = "coupon:read:all"
+	// PermCouponWrite creates, edits and retires promotions. Retiring is an update (the
+	// `enabled` flag), never a delete: a used coupon is referenced by the invoices it
+	// discounted, and the invoice snapshot must stay explainable.
+	PermCouponWrite Permission = "coupon:write"
+	// PermTaxWrite edits the jurisdiction rate table. Tax rates are dated rows, so a change
+	// appends a new rate effective from a date rather than rewriting a filed period.
+	PermTaxWrite Permission = "tax:write"
+	// PermCurrencyWrite configures which currencies are offered, their display format and
+	// which one is the default. It does not create exchange rates: prices are explicit.
+	PermCurrencyWrite Permission = "currency:write"
+	// PermConfigWrite edits configurable product options (RAM, CPU, add-ons) and the price
+	// of each choice. It changes what a *subscription* renews at, which is why it is not
+	// folded into catalog:write.
+	PermConfigWrite Permission = "config:write"
+
+	// --- support ---------------------------------------------------------------
+	//
+	// A support agent reads every ticket and writes replies. They cannot read invoices
+	// beyond what they already could, so a ticket is not a way to see a customer's money.
+
+	PermTicketReadAll  Permission = "ticket:read:all"
+	PermTicketWriteAll Permission = "ticket:write:all"
+
+	// --- communication and credit ----------------------------------------------
+
+	// PermNotificationWrite edits message templates and their channel toggles. A template
+	// is the text a customer receives, so editing one is a customer-facing change.
+	PermNotificationWrite Permission = "notification:write"
+	// PermCreditWrite grants customer credit without an invoice behind it. It is separate
+	// from payment:refund because a grant is not a refund of money the provider took.
+	PermCreditWrite Permission = "credit:write"
+
+	// --- service lifecycle -----------------------------------------------------
+
+	// PermServiceUpgrade moves a service to a different product or option selection and
+	// issues the prorated invoice. It is separate from service:provision because it changes
+	// what the customer is billed, not just what is running.
+	PermServiceUpgrade Permission = "service:upgrade"
+
+	// --- platform integrations -------------------------------------------------
+
+	// PermGatewayWrite configures a payment gateway: its credentials, its enabled state and
+	// whether it is offered at checkout. It is separate from extension:manage because it
+	// carries provider secrets.
+	PermGatewayWrite Permission = "gateway:write"
+	// PermServerWrite configures a provisioning server (Pterodactyl, cPanel, …) and tests
+	// its connection. It carries infrastructure credentials.
+	PermServerWrite Permission = "server:write"
+
+	// --- observability ---------------------------------------------------------
+
+	// PermLogRead reads the email, error and HTTP log viewers and cron run history. Those
+	// logs contain customer addresses and request paths, so they are not public to every
+	// staff member by default.
+	PermLogRead Permission = "log:read"
+
+	// --- growth ----------------------------------------------------------------
+
+	// PermAnnouncementWrite publishes storefront and dashboard announcements.
+	PermAnnouncementWrite Permission = "announcement:write"
 )
 
 // Role is a named bundle of permissions.
@@ -78,17 +154,28 @@ var rolePermissions = map[Role][]Permission{
 		PermInvoiceReadAll, PermInvoiceWriteAll, PermInvoiceVoid,
 		PermPaymentRefund, PermPaymentReconcile,
 		PermServiceReadAll, PermServiceSuspend, PermServiceTerminate, PermServiceProvision,
-		PermServiceHold,
+		PermServiceHold, PermServiceUpgrade,
 		PermExtensionManage, PermSettingsWrite, PermStaffManage,
 		PermAuditRead, PermReportRead, PermAPIKeyManage,
 		PermCatalogWrite,
+		PermCouponReadAll, PermCouponWrite, PermTaxWrite, PermCurrencyWrite, PermConfigWrite,
+		PermTicketReadAll, PermTicketWriteAll,
+		PermNotificationWrite, PermCreditWrite,
+		PermGatewayWrite, PermServerWrite,
+		PermLogRead, PermAnnouncementWrite,
 	},
 	RoleBilling: {
 		PermCustomerReadAll, PermCustomerWriteAll,
 		PermInvoiceReadAll, PermInvoiceWriteAll, PermInvoiceVoid,
 		PermPaymentRefund, PermPaymentReconcile,
-		PermServiceReadAll,
+		PermServiceReadAll, PermServiceUpgrade,
 		PermReportRead,
+		// A billing clerk runs the commercial side: promotions, tax, currencies and the
+		// credit a customer is owed. They do not configure a gateway's credentials — that is
+		// an administrator's job — and they do not read infrastructure logs.
+		PermCouponReadAll, PermCouponWrite, PermTaxWrite, PermCurrencyWrite, PermConfigWrite,
+		PermCreditWrite, PermNotificationWrite,
+		PermTicketReadAll, PermTicketWriteAll,
 	},
 	// Support can place and clear a hold, which is exactly the "stop, do not touch this"
 	// instruction a first-line agent needs while a dispute is open. Support cannot suspend,
@@ -98,13 +185,17 @@ var rolePermissions = map[Role][]Permission{
 		PermInvoiceReadAll,
 		PermServiceReadAll, PermServiceHold,
 		PermTicketReadSelf, PermTicketWriteSelf,
+		PermTicketReadAll, PermTicketWriteAll,
+		PermLogRead,
 		// A support agent may mint a read-only key for their own tooling. The key can only carry
 		// scopes the agent already holds, which is why this is safe to grant here.
 		PermAPIKeyManage,
 	},
 	RoleInfrastructure: {
 		PermServiceReadAll, PermServiceSuspend, PermServiceTerminate, PermServiceProvision,
+		PermServiceUpgrade,
 		PermCustomerReadAll,
+		PermServerWrite,
 		PermAuditRead,
 	},
 }
@@ -114,7 +205,7 @@ var rolePermissions = map[Role][]Permission{
 var customerPermissions = []Permission{
 	PermCustomerReadSelf, PermCustomerWriteSelf,
 	PermInvoiceReadSelf, PermInvoicePaySelf,
-	PermServiceReadSelf, PermServiceCancelSelf,
+	PermServiceReadSelf, PermServiceCancelSelf, PermServiceUpgradeSelf,
 	PermTicketReadSelf, PermTicketWriteSelf,
 }
 

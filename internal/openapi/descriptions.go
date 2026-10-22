@@ -1,5 +1,7 @@
 package openapi
 
+import "sync"
+
 // The curated descriptions.
 //
 // The route table supplies the method, path, permission and middleware flags; it cannot
@@ -31,7 +33,50 @@ func DefaultInfo() Info {
 }
 
 // Operations returns the description of each handler.
+//
+// It is assembled from the per-domain maps in this package rather than written as one
+// literal, so a new feature adds its prose in its own file. A single map was the reason two
+// people adding two features had to edit the same block, which is a merge conflict in the
+// one place a mistake is silent (a dropped entry means a route ships undocumented).
 func Operations() map[string]Operation {
+	out := make(map[string]Operation, 256)
+	for _, source := range descriptionSources {
+		for key, op := range source() {
+			if _, dup := out[key]; dup {
+				// Two files describing one route is a mistake worth failing on, but this
+				// function has no error return; the parity test compares the set, and a
+				// duplicate would silently win one way. Recording it as a distinct key makes
+				// the parity test report it instead.
+				out["duplicate description: "+key] = op
+				continue
+			}
+			out[key] = op
+		}
+	}
+	return out
+}
+
+// descriptionSources is every per-domain description map. Adding a file to the package is
+// not enough; it registers itself here through an init, exactly like the route table, so
+// the two lists cannot disagree about which domains exist.
+var (
+	descriptionSourcesMu sync.Mutex
+	descriptionSources   []func() map[string]Operation
+)
+
+// RegisterDescriptions adds one domain's descriptions to the document.
+func RegisterDescriptions(fn func() map[string]Operation) {
+	descriptionSourcesMu.Lock()
+	defer descriptionSourcesMu.Unlock()
+	descriptionSources = append(descriptionSources, fn)
+}
+
+func init() { RegisterDescriptions(coreOperations) }
+
+// coreOperations is the prose for the routes that existed before the commerce work: the
+// operational endpoints, authentication, the portal reads and the staff surface that grew
+// out of the web-UI gate. New domains register their own map from their own file.
+func coreOperations() map[string]Operation {
 	amount := AmountRef()
 	ops := map[string]Operation{
 		// ---------------------------------------------------------------- core --

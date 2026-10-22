@@ -35,7 +35,10 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
   if (isStaff) {
     groups.push({
       label: "Overview",
-      items: [{ label: "Dashboard", href: "/", icon: "home", permission: "report:read", exact: true }],
+      items: [
+        { label: "Dashboard", href: "/", icon: "home", permission: "report:read", exact: true },
+        { label: "Announcements", href: "/announcements", icon: "radio", permission: "announcement:write" },
+      ],
     });
     groups.push({
       label: "Revenue",
@@ -44,15 +47,31 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
         { label: "Invoices", href: "/invoices", icon: "invoice", permission: "invoice:read:all" },
         { label: "Orders", href: "/orders", icon: "bag", permission: "invoice:read:all" },
         { label: "Payments", href: "/payments", icon: "card", permission: "payment:reconcile" },
-        { label: "Catalog", href: "/catalog-management", icon: "box", permission: "invoice:read:all" },
+        { label: "Coupons", href: "/coupons", icon: "tag", permission: "coupon:read:all" },
+        { label: "Credit", href: "/credits", icon: "wallet", permission: "credit:write" },
       ],
     });
     groups.push({
       label: "Operations",
       items: [
         { label: "Services", href: "/services", icon: "server", permission: "service:read:all" },
+        { label: "Cancellations", href: "/cancellations", icon: "logout", permission: "service:read:all" },
         { label: "Queue", href: "/operations", icon: "activity", permission: "service:read:all" },
         { label: "Webhooks", href: "/webhooks", icon: "radio", permission: "payment:reconcile" },
+      ],
+    });
+    groups.push({
+      label: "Support",
+      items: [{ label: "Tickets", href: "/support", icon: "message", permission: "ticket:read:all" }],
+    });
+    groups.push({
+      label: "Configuration",
+      items: [
+        { label: "Catalog", href: "/catalog-management", icon: "box", permission: "invoice:read:all" },
+        { label: "Config options", href: "/config-options", icon: "sliders", permission: "config:write" },
+        { label: "Tax rates", href: "/tax-rates", icon: "percent", permission: "tax:write" },
+        { label: "Currencies", href: "/currencies", icon: "globe", permission: "currency:write" },
+        { label: "System settings", href: "/settings/system", icon: "settings", permission: "settings:write" },
       ],
     });
     groups.push({
@@ -60,6 +79,7 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
       items: [
         { label: "Approvals", href: "/approvals", icon: "checkCircle", permission: "audit:read" },
         { label: "Audit log", href: "/audit", icon: "shield", permission: "audit:read" },
+        { label: "Logs", href: "/logs", icon: "terminal", permission: "log:read" },
         { label: "API keys", href: "/api-keys", icon: "key", permission: "apikey:manage" },
       ],
     });
@@ -70,13 +90,25 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
         { label: "Overview", href: "/portal", icon: "home", exact: true },
         { label: "Invoices", href: "/portal/invoices", icon: "invoice" },
         { label: "Services", href: "/portal/services", icon: "server" },
+        { label: "Credit", href: "/portal/credits", icon: "wallet" },
+        { label: "Tickets", href: "/tickets", icon: "message" },
         { label: "Billing details", href: "/portal/profile", icon: "building" },
       ],
     });
   }
+  // "Account" is a real section for both audiences now. It used to be added for every
+  // session, which meant a customer saw a Settings link that the route guard bounced back
+  // to /portal. Customers get their own security and notification screens, and staff keep
+  // the personal settings page.
   groups.push({
     label: "Account",
-    items: [{ label: "Settings", href: "/settings", icon: "sliders" }],
+    items: isStaff
+      ? [{ label: "Settings", href: "/settings", icon: "sliders" }]
+      : [
+          { label: "Security", href: "/portal/security", icon: "shield" },
+          { label: "Notifications", href: "/portal/notifications", icon: "radio" },
+          { label: "Payment methods", href: "/portal/payment-methods", icon: "card" },
+        ],
   });
 
   return groups

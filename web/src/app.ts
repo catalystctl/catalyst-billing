@@ -7,95 +7,20 @@
 import { Api, connectEvents, type EventStream, type LiveEvent } from "./lib/api";
 import { fill } from "./lib/dom";
 import { icon } from "./lib/icons";
-import { createRouter, route, type Route, type RouteMatch } from "./lib/router";
+import { createRouter, type RouteMatch } from "./lib/router";
 import { homeFor, loadSession } from "./lib/session";
 import { initTheme, toggleTheme, type Theme } from "./lib/theme";
 import type { AuthCtx, Crumb, Ctx, PageMeta, Session } from "./lib/types";
+import { SEGMENT_LABELS, isCustomerPath, isPublicPath, routes } from "./routes";
 import { confirmDialog, formDialog } from "./ui/dialog";
 import { createShell, openPalette, type Shell } from "./ui/layout";
 import { skeletonPage } from "./ui/kit";
 import { createToaster } from "./ui/toast";
 
-// Paths a signed-out visitor may load. "/" is deliberately included: it is the storefront for a
-// visitor and the dashboard for staff, and which one you get is decided by the session, not by
-// the URL. A storefront behind a login is not a storefront.
-const PUBLIC_PATHS = new Set(["/", "/login", "/forgot-password", "/reset-password", "/verify", "/products"]);
-
-const routes: Route[] = [
-  route("/", () => import("./views/dashboard")),
-  route("/login", () => import("./views/login")),
-  route("/forgot-password", () => import("./views/forgot-password")),
-  route("/reset-password", () => import("./views/reset-password")),
-  route("/verify", () => import("./views/verify")),
-
-  // Public storefront. /products/:slug is a product page; / is the index (see above).
-  route("/products", () => import("./views/storefront")),
-  route("/products/:slug", () => import("./views/storefront-product")),
-
-  // /catalog and /catalog/:id were the read-only catalog screens. They are gone, but the URL
-  // was linked from services, orders and the old nav, so it redirects instead of 404ing.
-  route("/catalog", () => import("./views/catalog-admin")),
-  route("/catalog/:id", () => import("./views/catalog-admin-product")),
-  route("/catalog-management", () => import("./views/catalog-admin")),
-  route("/catalog-management/:id", () => import("./views/catalog-admin-product")),
-
-  route("/customers", () => import("./views/customers")),
-  route("/customers/:id", () => import("./views/customer")),
-  route("/customers/:id/portal", () => import("./views/customer-portal-view")),
-
-  route("/invoices", () => import("./views/invoices")),
-  route("/invoices/new", () => import("./views/invoice-new")),
-  route("/invoices/:id", () => import("./views/invoice")),
-
-  route("/services", () => import("./views/services")),
-  route("/services/:id", () => import("./views/service")),
-
-  route("/orders", () => import("./views/orders")),
-  route("/orders/new", () => import("./views/order-new")),
-  route("/orders/:id", () => import("./views/order")),
-
-  route("/payments", () => import("./views/payments")),
-  route("/payments/:id", () => import("./views/payment")),
-
-  route("/operations", () => import("./views/operations")),
-  route("/operations/:id", () => import("./views/operation")),
-  route("/webhooks", () => import("./views/webhooks")),
-
-
-  route("/approvals", () => import("./views/approvals")),
-  route("/audit", () => import("./views/audit")),
-  route("/api-keys", () => import("./views/api-keys")),
-  route("/settings", () => import("./views/settings")),
-
-  route("/portal", () => import("./views/portal")),
-  route("/portal/invoices", () => import("./views/portal-invoices")),
-  route("/portal/invoices/:id", () => import("./views/portal-invoice")),
-  route("/portal/services", () => import("./views/portal-services")),
-  route("/portal/services/:id", () => import("./views/portal-service")),
-  route("/portal/profile", () => import("./views/portal-profile")),
-];
-
-const SEGMENT_LABELS: Record<string, string> = {
-  customers: "Customers",
-  invoices: "Invoices",
-  services: "Services",
-  orders: "Orders",
-  payments: "Payments",
-  operations: "Queue",
-  webhooks: "Webhooks",
-  catalog: "Catalog",
-  approvals: "Approvals",
-  audit: "Audit log",
-  "api-keys": "API keys",
-  settings: "Settings",
-  portal: "Portal",
-  profile: "Billing details",
-  new: "New",
-  login: "Sign in",
-  "forgot-password": "Reset password",
-  "reset-password": "Choose a password",
-  verify: "Verify email",
-};
+// The route table, the public-path set and the customer-path predicate live in ./routes so
+// that adding a screen is not an edit to this file. This file owns the things a page must
+// not: the session, the shell, the router, the live feed, and the boundary between
+// signed-out, customer and staff.
 
 export async function bootstrap(root: HTMLElement): Promise<void> {
   let theme: Theme = initTheme();
@@ -152,7 +77,7 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
     if (!session) {
       // The storefront is public; anything else asks for a session and remembers where you
       // were going.
-      if (isPublic(path)) {
+      if (isPublicPath(path)) {
         await renderPublic(path, match);
         return;
       }
@@ -171,7 +96,7 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
 
     // The other public pages (sign-in, reset, the product index) are meaningless once you are
     // signed in, so they send you home.
-    if (path !== "/" && isPublic(path)) {
+    if (path !== "/" && isPublicPath(path)) {
       router.navigate(homeFor(session), { replace: true });
       return;
     }
@@ -181,8 +106,13 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       return;
     }
 
-    if (match.path !== "/portal" && !match.path.startsWith("/portal/") && !session.user.is_staff) {
-      router.navigate("/portal", { replace: true });
+    // A customer may reach the portal and the account screens they own; everything else is
+    // staff-only. This used to be "anything outside /portal redirects to /portal", which is
+    // why a customer saw an "Account settings" link in the navigation and was bounced by
+    // clicking it. The predicate now lives in ./routes, so the guard and the navigation are
+    // built from one list and cannot disagree.
+    if (!session.user.is_staff && !isCustomerPath(match.path)) {
+      router.navigate(homeFor(session), { replace: true });
       return;
     }
 
@@ -407,14 +337,6 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
 }
 
 // ------------------------------------------------------------------ helpers --
-
-// A public path is exact, except the storefront's product pages, which are public as a
-// subtree. Written as a prefix test rather than a second set so /products/anything cannot
-// accidentally fall through to the signed-in branch and bounce a visitor to a login screen.
-function isPublic(path: string): boolean {
-  if (PUBLIC_PATHS.has(path)) return true;
-  return path === "/products" || path.startsWith("/products/");
-}
 
 function titleForSegment(segment: string): string {
   if (SEGMENT_LABELS[segment]) return SEGMENT_LABELS[segment]!;

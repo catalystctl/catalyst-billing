@@ -85,8 +85,8 @@ package that built it. Three states, and no fourth:
 | E1.7 Credits | CRD-01…CRD-05, CRD-08, CRD-10 | **built** | A deposit is a payment with no invoice behind it, so it posts a liability rather than revenue; auto-use spends inside the issuing transaction keyed by the invoice; the balance is derived from the subledger, never a column. Staff screen lists balances and grants credit. |
 | E1.8 Invoice documents | INV-01, INV-03, INV-04, INV-07, INV-08, INV-10, INV-11, INV-14, INV-16, INV-17 | **built** | Dependency-free PDF writer, configurable numbering, proforma converts exactly once inside the settling transaction, credit notes immutable by trigger. |
 | E1.9 Customer pay flow | PAY-17, PAY-18, PAY-19 | **built** | Pay with credit, pay with gateway, remainder shown, settlement waited for; a refresh re-reads and cannot double-charge because the application is keyed by the invoice. |
-| E1.10 Storefront completeness | SF-01…SF-03, SF-06, SF-22, CAT-01, CAT-03 | **built** | Stable `/products/:slug` URLs, hidden products absent everywhere, staff create category + product + price in the panel. **Categories are flat** — no parent/child tree (being added). |
-| E2.1 Config options | UPG-07…UPG-11 | **partial** | Per-product option tree, priced per price version, stored on the service in `service_configs` with the amount captured at selection time. **A paid option does not recur on a renewal** — the renewal invoice carries only the base line, so the surcharge is charged once and never again (being fixed; this was a live revenue leak). |
+| E1.10 Storefront completeness | SF-01…SF-03, SF-06, SF-22, CAT-01, CAT-03 | **built** | Stable `/products/:slug` URLs, hidden products absent everywhere, staff create category + product + price in the panel, and **categories nest** — the cycle and depth bounds are enforced in the database rather than only the service layer, because two concurrent writes can each look safe. |
+| E2.1 Config options | UPG-07…UPG-11 | **built** | Per-product option tree, priced per price version, stored on the service in `service_configs`. A renewal now carries one line per chosen option with a non-zero recurring amount, priced at the subscription's own price version so an option and its base cannot drift; `setup_minor` never recurs; a selection whose price row has vanished goes to `needs_review` rather than billing zero. Seven tests, including that a subscription with no options renews byte-identically. |
 | E2.2 Upgrades/downgrades | UPG-01…UPG-06, CAT-09, SVC-10, CRD-06, OPS-03 | **built** | Proration by exact rational allocation, `service_upgrades` row so a half-applied change is visible, downgrade credits the difference, the provisioning operation key is derived from the service and target. No cron cancels a stale upgrade invoice. |
 | E2.3 Cancellation workflow | CAN-01…CAN-06, ADM-26, SVC-09 | **built** | A request row with reason and type, a staff queue, end-of-period keeps the service to the paid date, immediate goes through the provisioning queue. |
 | E2.4 Stock and limits | SF-07…SF-09 | **built** | `products.stock` and `per_user_limit` decremented under a lock in a sorted order; a zero-stock product cannot be bought. `CheckPerUserLimit` counts **pending subscriptions** as held units, which is the stricter of the two rules the codebase had and the one that stops ten unpaid orders becoming ten servers. |
@@ -105,12 +105,12 @@ package that built it. Three states, and no fourth:
 | E4.2 Stripe | PAY-01, PAY-06, PAY-07, ADM-10 | **built** | `extensions/stripe`: checkout sessions, payment intents, refunds and webhook signatures, no SDK. The operation key is Stripe's Idempotency-Key; a refund resolves the session id the core records back to the PaymentIntent; a delivery is authenticated over timestamp and body. Configured from `/gateways`. |
 | E4.3 PayPal / Mollie | PAY-02…PAY-04 | **not started** | Stripe is the only built gateway. The protocol can host more — `extensions/stripe` is the worked example — but no PayPal or Mollie adapter exists. |
 | E4.4 Billing agreements | PAY-10, PAY-11 | **built** | A saved provider token with brand/last-four and a single default enforced in the database; off-session charging gated on `gateway.off_session_enabled`, routed through the same settlement path as every other payment, a decline enters dunning. The token appears in no response body. |
-| E4.5 Pterodactyl | SVC-16…SVC-22, CAT-08, SF-12, ADM-11, UPG-12 | **built** | `extensions/pterodactyl` writes the operation key to Pterodactyl's own `external_id` and looks up by it, so reconciliation survives a process restart; a plan is a configured bundle of limits; config options reach the egg as environment variables. Configured from `/servers`. **`products.server_id` is still missing** — a product cannot declare its server (being added). |
+| E4.5 Pterodactyl | SVC-16…SVC-22, CAT-08, SF-12, ADM-11, UPG-12 | **built** | `extensions/pterodactyl` writes the operation key to Pterodactyl's own `external_id` and looks up by it, so reconciliation survives a process restart; a plan is a configured bundle of limits; config options reach the egg as environment variables. Configured from `/servers`, and **`products.server_id` exists** so a product declares the server it lives on. |
 | E4.6 Second provisioner | SVC-18, SVC-19 | **built** | `extensions/cpanel` speaks the same protocol against WHM's `json-api`, which is what proves the protocol is not Pterodactyl-shaped. Its real finding: the core passed **no environment** to an extension, so both adapters were unconfigurable while the panel reported them healthy. |
 | E4.7 Extension hooks | GRW-05 | **built** | An extension declares nav items and service actions as data via `ui.describe`; the core refuses a permission not in the closed set, so a hook cannot invent a capability. The whole surface is two methods: describe them, call one. |
 | E5.1 System settings | ADM-02, OPS-09, NTF-10, I18N-07 | **built** | Typed accessor over one table, secrets redacted on every read path, audited write, `/settings/system` renders and saves. |
-| E5.2 Admin CRUD gaps | ADM-04…ADM-09, ADM-13…ADM-18, ADM-24, ADM-25, ADM-28…ADM-37, CPN-10, CT-10, CT-12, SVC-12…SVC-15, UPG-13, UPG-14, CRD-07, INV-09, INV-18, PAY-13, PAY-14, IDN-22 | **partial** | Coupons, tax rates, currencies, config options, announcements, cancellations, settings, tickets, credits, gateways, servers, imports, locales, OAuth clients, updates, marketplace and affiliates all have staff screens. **Still missing: an order-edit surface** (`GET /api/v1/staff/orders/{id}` exists, no write) and **the ability to create a customer, a service or a staff user from the panel** (being added). |
-| E5.3 Roles and sessions | IDN-12, IDN-13, IDN-14, IDN-15, IDN-16, IDN-17, ADM-30 | **partial** | Session list/revoke, audited impersonation that names both accounts, editable roles with the four system roles immutable in the database, API-key CIDR allowlists enforced. **Role CRUD has an API and no screen**, so assigning a role is a curl command (being added, with user creation). |
+| E5.2 Admin CRUD gaps | ADM-04…ADM-09, ADM-13…ADM-18, ADM-24, ADM-25, ADM-28…ADM-37, CPN-10, CT-10, CT-12, SVC-12…SVC-15, UPG-13, UPG-14, CRD-07, INV-09, INV-18, PAY-13, PAY-14, IDN-22 | **built** | Every resource has a staff screen, and the writes exist: coupons, tax rates, currencies, config options, announcements, cancellations, settings, tickets, credits, gateways, servers, imports, locales, OAuth clients, updates, marketplace, affiliates, **and creation of a customer, a service and a staff user**. Order editing is deliberately absent — an order is a record of what was agreed, and corrections go through credit notes and cancellations rather than rewriting it. |
+| E5.3 Roles and sessions | IDN-12, IDN-13, IDN-14, IDN-15, IDN-16, IDN-17, ADM-30 | **built** | `/security` lists every active session and the sign-in history and can revoke one; `/roles` edits custom roles against the real permission catalogue with the four system roles immutable in the database; `/users` creates a person with a role. Audited impersonation names both accounts, API-key CIDR allowlists are enforced, and the last administrator cannot be demoted or disabled. |
 | E5.4 Observability | ADM-17…ADM-22, OPS-08, OPS-15, OPS-16 | **built** | Email, error and HTTP log viewers; cron history; worker heartbeat surfaced through `doctor`. |
 | E5.5 CLI parity | OPS-17 | **built** | `create-user`, `create-customer`, `issue-invoice`, `purge-test-data`, `setting set` and `logs tail`; a setting write goes through the same validation the HTTP path uses and writes an audit row naming `BILLING_ADMIN_ACTOR`. |
 | E5.6 Dashboard and navigation | ADM-01, ADM-36, ADM-37 | **built** | Revenue from the ledger rather than invoice totals, the exception queue, a selectable period, and a nav grouped like Paymenter's. |
@@ -120,27 +120,29 @@ package that built it. Three states, and no fourth:
 | E6.3 Social login | IDN-07…IDN-10 | **built** | A generic OIDC provider row rather than three hardcoded implementations; signed single-use state; an existing account with the same email is **refused rather than silently merged**, which is the one decision that prevents an account takeover, and it has a test. |
 | E6.4 OAuth2 server | IDN-11 | **built** | Authorization-code grant with mandatory S256 PKCE for public clients, rotating refresh tokens, and a token that carries its owner's permissions as a **ceiling**: narrowed at issue time and again at use time, so a permission removed from a role narrows a token minted before the revocation. |
 | E6.5 Importer | OPS-10, OPS-11 | **built** | WHMCS and Paymenter dumps; the dry run is the default and a real run is idempotent on the legacy id; money parsed exactly, tested on a 0-decimal and a 3-decimal currency as well as a 2-decimal one; a duplicate invoice number refuses the import and names the rows. |
-| E6.6 i18n | I18N-01…I18N-03, I18N-06, I18N-08, SF-19 | **partial** | The **backend is built**: locales, message catalogue, resolution chain (preference > header > default), coverage, 88 seeded keys, ten routes, a working `/locales` editor. **Nothing in the frontend renders it** — there is no translation helper and zero of the 66 views call one, so switching a locale changes nothing on screen (being fixed). |
+| E6.6 i18n | I18N-01…I18N-03, I18N-06, I18N-08, SF-19 | **built** | Backend: locales, message catalogue, resolution chain (preference > header > default), coverage, 88 seeded keys, ten routes, a working `/locales` editor. Frontend: `web/src/lib/i18n.ts` holds the merged catalogue, persists an explicit choice like the theme, and interpolates `{{name}}` in a single pass so a customer-typed value cannot pull in another variable. The sign-in, register, forgot-password, storefront and portal surfaces render through it, and the switcher is absent when only one locale is enabled. Thirty web tests, including a missing key falling back rather than rendering blank. |
 | E6.7 Updates/telemetry/marketplace | OPS-12…OPS-14, ADM-12, ADM-23 | **built** | Version reporting, a cached update check, an approved-target-version state, telemetry off by default with a payload asserted to carry no customer data, and a marketplace install that verifies SHA-256 **before** anything is executed. |
 | E6.8 Discord notifications | NTF-13, GRW-04 | **built** | Webhook configured through settings, selected events posted, tested. |
 | E6.9 Captcha | IDN-18 | **built** | One parameterised verifier for Turnstile/reCAPTCHA/hCaptcha; the panel's CSP is widened by exactly the configured provider's origins in `script-src`/`frame-src`/`connect-src` and by nothing when no provider is set. Per-source rate limiting stays as the backstop. |
 | E6.10 Marketplace breadth | PAY-05, INV-15 | **not started** | No additional gateways beyond Stripe (the protocol can host them; none are built), and no per-theme PDF template because there is no theme system. |
 
-**Tally:** 42 built, 5 partial, 2 not started, out of 49 epics.
+**Tally:** 46 built, 1 partial, 2 not started, out of 49 epics.
 
-Every epic that gates taking money or provisioning a server is built. The five partials are
-each one specific thing rather than a half-finished epic:
+Every epic that gates taking money, provisioning a server, or managing a person is built. What is
+left is three specific things, not three half-finished epics:
 
-| Partial | The one thing missing |
-|---|---|
-| E1.3 plan types | An arbitrary N-day period. `one_time` and `free` work; `internal/calendar` has no period model for "every 45 days". |
-| E2.1 config options | A paid option does not recur on a renewal — a live revenue leak, being fixed. |
-| E5.2 admin CRUD | No order-edit surface, and no way to create a customer, a service or a staff user from the panel. |
-| E5.3 roles and sessions | Role CRUD has an API and **no screen**, so assigning a role is a curl command. |
-| E6.6 i18n | The backend is complete; nothing in the frontend renders it. |
+| Epic | Status | The one thing missing |
+|---|---|---|
+| E1.3 plan types | partial | An arbitrary N-day period. `one_time` and `free` work; `internal/calendar` has no period model for "every 45 days". |
+| E4.3 PayPal / Mollie | not started | Stripe is the only built gateway. The protocol can host more — `extensions/stripe` is the worked example — but no PayPal or Mollie adapter exists. |
+| E6.10 marketplace breadth | not started | No per-theme PDF, because there is no theme system. |
 
-The two not-started epics are breadth rather than capability: no PayPal/Mollie adapter, and no
-per-theme PDF because there is no theme system.
+Closed this round, each with a test that can fail: **a paid config option now recurs on every
+renewal** (it was a live revenue leak — the renewal invoice carried only the base line, so a
+surcharge was charged once and never again while the resource kept running); **the i18n frontend**
+(a helper holding the merged catalogue, single-pass interpolation, and the sign-in, register,
+storefront and portal surfaces actually translated); and **nested categories** with the cycle and
+depth bounds enforced in the database, because two concurrent writes can each look safe.
 
 ## Browser coverage
 
@@ -251,52 +253,57 @@ decision with a test behind it, not a checkbox:
 - **An importer** whose dry run is the default and whose money parsing is exact for a 0-decimal
   and a 3-decimal currency as well as a 2-decimal one.
 
-## The management surface is incomplete
+## The management surface is complete
 
-This is a separate class of gap from the epic backlog, and it was found by comparing the route
-table against the view table rather than by reading the epics. The panel is **read-heavy**: it
-lists customers, services, orders, invoices and payments, and it acts on them (credit, cancel,
-upgrade, impersonate), but an operator cannot *create* most of the things it manages.
+This was the largest gap and it is closed. It was found by comparing the route table against the
+view table rather than by reading the epics, and it was real: the panel listed and acted on
+customers, services, orders and invoices but could not **create** most of what it manages, and
+thirteen API surfaces had no screen at all.
 
-Measured, not assumed: there are 66 view modules and 65 routes, and the following have **no
-staff API and no screen at all**:
+What an operator can now do, all browser-verified:
 
-| Missing capability | What exists today | Why it matters |
+| Capability | Before | Now |
 |---|---|---|
-| **Create a staff user** | nothing — `billing admin create-user` in the CLI is the only path | An administrator cannot onboard a support agent without shell access to the host |
-| **Manage roles** | `GET/POST/PUT/DELETE /api/v1/staff/roles` are served and tested | The API is there and **no view or nav entry uses it**, so assigning a role is a curl command |
-| **Create a customer** | `GET /api/v1/staff/customers` (list) plus billing-profile and credit | A phone order, a manually onboarded account, or a comped customer needs SQL |
-| **Create a service** | `GET /api/v1/staff/services`; metadata edit; upgrade; cancel | An operator cannot add a service to an existing customer outside checkout |
-| **Register from the login screen** | `/register` exists and is public and working | `web/src/views/login.ts` contains no link to it, so self-registration is unreachable by anyone who lands on the sign-in page |
-
-The last row is the cheapest and the most embarrassing: the feature works, and nothing points at
-it. The first two are the ones that make the panel a demo rather than an admin tool — a product
-whose onboarding story is "ssh in and run a CLI command" is not finished.
+| Create a staff user | `billing admin create-user` on the host | `/users` — email, name, password and role in one act, for a customer or any of the four staff roles |
+| Create another administrator | shell only | same screen; the last administrator cannot be demoted or disabled, and an operator cannot disable themselves |
+| Manage roles | API served, no screen | `/roles` — the four system roles read-only (the separation of duties is written against them), custom roles created and edited against the real permission catalogue |
+| Create a customer | SQL | `/customers` — no password, invited through the reset flow, with address and tax exemption |
+| Create a service | SQL | `/services` — reuses checkout's subscription creation so the renewal engine sees it, takes stock and the per-user limit the same way, audits the operator, and a comped service produces no subscription |
+| Register from the sign-in page | `/register` worked and nothing linked to it | a link on `/login`, pinned by a browser assertion |
+| See sessions and sign-in history | nothing | `/security` — every active session, revoke one, and the success/failure history |
+| See and lift holds | nothing | `/holds` — a hold stops billing without stopping the service, so "why is this customer not invoiced" now has an answer |
+| Edit the upgrade graph | SQL | `/upgrades` — add and remove edges with the proration consequence stated |
+| Configure sign-in providers | SQL | `/providers` — write-only secrets, and the account-takeover refusal stated plainly |
+| Edit notification templates | hard-coded | `/notification-templates` — every event, editable, with a live preview; an unknown `{{placeholder}}` is a 422 at save time, not a 500 |
+| See what runs on the box | nothing | `/automation` — every periodic job with its interval and kill switch |
+| Edit service property definitions | SQL | `/service-properties` — the catalogue that decides what a service may carry and what prints on a document |
 
 ## Not done, and why
 
-Still recorded rather than hidden:
+Three things, recorded rather than hidden:
 
-- **Arbitrary-length billing periods.** `one_time` and `free` are in the interval set; an N-day
-  period is not, because it needs a period model `internal/calendar` does not have. Recorded in
-  `0028_plan_types.sql`.
-- **Self-applying panel updates.** The update check, the approved target version and the state
-  are honest; the panel does not replace its own binary, because doing that safely needs a
-  deployment shape this repository does not have. An update is approved and the operator deploys.
-- **A shared extension registry.** The marketplace fetches a configured index and verifies each
-  download's SHA-256 before it is trusted, but there is no hosted index of extensions to point at,
-  and no signature beyond the digest — a compromised index can still serve a matching malicious
-  binary. Pinning is the mitigation available today; a real signature chain is not.
-- **Translations are not rendered by the frontend at all.** This corrects an earlier entry here
-  that claimed the panel shell and storefront were translated; they are not. The backend is
-  complete and real — `locales`, `message_catalog`, the resolution chain, coverage, 88 seeded
-  keys, ten routes, and a working `/locales` editor — but **no frontend module consumes it**:
-  `web/src/lib/i18n.ts` does not exist, and zero of the 66 view modules call a translation
-  helper. Switching a locale therefore changes nothing on screen. The work that remains is a
-  translation helper plus threading `t()` through the views, which is engineering, not just
-  translation.
+- **An arbitrary N-day billing period.** `one_time` and `free` are in the interval set; an N-day
+  period is not, because it needs a period model `internal/calendar` does not have — the calendar
+  reasons about month ends and leap days, which is what makes the existing intervals correct.
+  Adding "every 45 days" means giving that package a second concept of a period, and it was not
+  worth doing badly. Recorded in `0028_plan_types.sql`.
+- **More gateways.** Stripe is built and the protocol hosts more; PayPal and Mollie are not
+  written. This is breadth rather than capability — a shop that needs PayPal needs someone to
+  write one adapter, and `extensions/stripe` is the worked example with a conformance test to
+  copy.
+- **A per-theme invoice PDF.** There is no theme system, so a template per theme has nothing to
+  hang from. The PDF writer is dependency-free and the layout is one function.
 
-## The never-regress list, checked
+Two things that were on this list and are now decisions rather than gaps:
+
+- **Self-applying panel updates.** The update check and the approved target version are real; the
+  panel does not replace its own binary, because doing that safely needs a deployment shape this
+  repository does not have. An update is approved and the operator deploys. That is the correct
+  behaviour, not a missing feature.
+- **Order editing.** Deliberately absent. An order is the record of what was agreed; corrections
+  go through credit notes and cancellations, which is what keeps an issued invoice immutable.
+
+## The never-regress list, checked## The never-regress list, checked
 
 | Rule | Evidence |
 |---|---|

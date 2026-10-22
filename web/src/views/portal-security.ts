@@ -10,11 +10,14 @@
 //  2. **Two-factor.** `GET /api/v1/portal/mfa` reports whether a factor is confirmed, how many
 //     recovery codes are left, and whether an operator reset the factor — in which case the account
 //     *owes* the panel a new one and this page says so before anything else. Enrolment returns a
-//     TOTP secret (never a QR image — the CSP forbids third-party requests), confirmation returns
-//     the recovery codes exactly once in a dialog that cannot be dismissed until they are
-//     acknowledged, and turning it off demands the password *and* a current code. That last rule
-//     is the server's (`DisableMFA`), not a screen convention: a stolen session alone must not
-//     remove a second factor, and neither must a stolen password alone.
+//     TOTP secret, confirmation returns the recovery codes exactly once in a dialog that cannot be
+//     dismissed until they are acknowledged, and turning it off demands the password *and* a
+//     current code. A QR code is not offered *yet*: the CSP is `img-src 'self' data:`, so a
+//     locally drawn code would be allowed and a third-party QR service would not — the encoder
+//     belongs in a shared helper (web/src/lib/qr.ts) rather than in this screen, and the setup
+//     secret plus otpauth URI are the same handoff until it lands. That last rule is the server's
+//     (`DisableMFA`), not a screen convention: a stolen session alone must not remove a second
+//     factor, and neither must a stolen password alone.
 //  3. **Sessions.** `GET /api/v1/portal/sessions` lists where the account is signed in, with one
 //     row per session, a revoke per row and "sign out everywhere else". These endpoints are being
 //     built in parallel, so a 404 renders "not available on this installation" and the rest of
@@ -470,9 +473,7 @@ function openEnrolment(
         "span",
         { class: "field-hint" },
         `${setup.digits} digits, a new code every ${setup.period} seconds, ${setup.algorithm}. ` +
-          "There is no QR image: this panel's Content-Security-Policy forbids loading one from another " +
-          "origin, and a QR drawn by hand would be a code nobody verified. The setup URI below is the " +
-          "same handoff, and on a phone it opens the app directly.",
+          "The setup URI below is the same handoff and opens the app directly on a phone.",
       ),
     ),
     h(

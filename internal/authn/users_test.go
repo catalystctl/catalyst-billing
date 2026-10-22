@@ -11,6 +11,7 @@ import (
 
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/store"
+	"github.com/jackc/pgx/v5"
 )
 
 // Staff user administration, at the domain level.
@@ -447,6 +448,18 @@ func TestDeleteUserWithoutHistoryWorks(t *testing.T) {
 	if _, err := f.svc.UserByIDRecord(ctx, rec.ID); !errors.Is(err, authn.ErrUserNotFound) {
 		t.Fatalf("the account still exists: %v", err)
 	}
+
+	// The billing identity created for the account goes with it. It holds nothing but an
+	// address, and leaving it behind would put a customer nobody can reach into the customer
+	// list — which is the state an operator would then have to clean up by hand.
+	var orphans int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM customers WHERE lower(email) = 'typo@example.test'`).Scan(&orphans); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if orphans != 0 {
+		t.Fatalf("%d billing record(s) survived the account, want none", orphans)
+	}
 }
 
 // Setting a password from the screen sets the password, ends every session the account had,
@@ -643,3 +656,341 @@ func TestChangingEmailClearsVerification(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// ------------------------------------------------- staff billing identity --
+
+// The migration that backfills existing staff, executed exactly as the migrator would run it.
+//
+// It runs the *embedded file*, not a copy of its statements: a test that pasted its own SQL
+// would keep passing after somebody edited the migration, which is the drift this is meant to
+// catch. The file is a BEGIN/COMMIT script, so it needs the simple protocol — the extended one
+// refuses more than one statement per Exec.
+func runStaffBillingBackfill(t *testing.T, f *identityFixture) {
+	t.Helper()
+	migrations, err := store.LoadMigrations()
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	var body string
+	for _, mig := range migrations {
+		if mig.Version == 56 {
+			body = mig.SQL
+		}
+	}
+	if body == "" {
+		t.Fatal("migration 0056 is not embedded, so there is nothing to backfill with")
+	}
+	if _, err := f.pool.Exec(context.Background(), body, pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatalf("run migration 0056: %v", err)
+	}
+}
+
+// grant writes a staff role straight to the table, the way the CLI bootstrap does.
+func (f *identityFixture) grant(t *testing.T, userID, role string) {
+	t.Helper()
+	if _, err := f.pool.Exec(context.Background(),
+		`INSERT INTO staff_roles (user_id, role) VALUES ($1, $2)`, userID, role); err != nil {
+		t.Fatalf("grant %s to %s: %v", role, userID, err)
+	}
+}
+
+// billingIdentityOf reads the billing records a login owns.
+func billingIdentityOf(t *testing.T, f *identityFixture, userID string) []struct{ ID, Email, Role string } {
+	t.Helper()
+	rows, err := f.pool.Query(context.Background(), `
+		SELECT c.id::text, c.email, ca.role
+		FROM customer_accounts ca
+		JOIN customers c ON c.id = ca.customer_id
+		WHERE ca.user_id = $1
+		ORDER BY ca.created_at`, userID)
+	if err != nil {
+		t.Fatalf("read billing identity: %v", err)
+	}
+	defer rows.Close()
+
+	var out []struct{ ID, Email, Role string }
+	for rows.Next() {
+		var row struct{ ID, Email, Role string }
+		if err := rows.Scan(&row.ID, &row.Email, &row.Role); err != nil {
+			t.Fatalf("scan billing identity: %v", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read billing identity: %v", err)
+	}
+	return out
+}
+
+// A staff account owns a billing account from the moment it exists, and it is its own: the
+// record carries the account's address, nothing marks it as an operator's, and the two calls
+// the `/users` screen reads both report it.
+func TestCreatedStaffUserGetsABillingIdentity(t *testing.T) {
+	f := newIdentityFixture(t)
+	ctx := context.Background()
+
+	rec := createAs(t, f, "agent@example.test", "support")
+	if rec.CustomerID == "" {
+		t.Fatal("the created staff account has no billing identity, so it cannot buy anything")
+	}
+
+	owned := billingIdentityOf(t, f, rec.ID)
+	if len(owned) != 1 {
+		t.Fatalf("the staff account owns %d billing records, want exactly 1", len(owned))
+	}
+	if owned[0].ID != rec.CustomerID {
+		t.Fatalf("customer_id = %q, want the linked record %q", rec.CustomerID, owned[0].ID)
+	}
+	if owned[0].Email != "agent@example.test" {
+		t.Fatalf("the billing record's address is %q, want the account's own", owned[0].Email)
+	}
+	if owned[0].Role != "owner" {
+		t.Fatalf("link role = %q, want owner", owned[0].Role)
+	}
+
+	loaded, err := f.svc.UserByIDRecord(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if loaded.CustomerID != owned[0].ID {
+		t.Fatalf("the record the screen loads reports customer_id %q, want %q",
+			loaded.CustomerID, owned[0].ID)
+	}
+	listed, _, err := f.svc.ListUsers(ctx, authn.UserFilter{Query: "agent"}, 50, "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 1 || listed[0].CustomerID != owned[0].ID {
+		t.Fatalf("the list reports %+v, want the account with its billing record", listed)
+	}
+}
+
+// The same rule for a customer-only account: one path, not a staff special case. A login
+// without a billing identity is a login that cannot buy, whichever kind it is.
+func TestCreatedCustomerAlsoGetsABillingIdentity(t *testing.T) {
+	f := newIdentityFixture(t)
+
+	rec := createAs(t, f, "buyer@example.test", "")
+	owned := billingIdentityOf(t, f, rec.ID)
+	if len(owned) != 1 {
+		t.Fatalf("the customer account owns %d billing records, want exactly 1", len(owned))
+	}
+	if owned[0].Email != "buyer@example.test" || owned[0].Role != "owner" {
+		t.Fatalf("billing identity = %+v, want the account's own address as owner", owned[0])
+	}
+}
+
+// An address an operator imported as a customer months ago is *adopted*, not duplicated: one
+// address is one billing account, and refusing to attach a login to it would leave that
+// customer with a record they can never reach.
+func TestBillingIdentityAdoptsAnImportedCustomerRecord(t *testing.T) {
+	f := newIdentityFixture(t)
+	ctx := context.Background()
+
+	var imported string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO customers (email, name) VALUES ('imported@example.test', 'Imported Ltd')
+		RETURNING id`).Scan(&imported); err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+
+	rec := createAs(t, f, "imported@example.test", "support")
+	if rec.CustomerID != imported {
+		t.Fatalf("customer_id = %q, want the imported record %q", rec.CustomerID, imported)
+	}
+
+	var records int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM customers WHERE lower(email) = 'imported@example.test'`).Scan(&records); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if records != 1 {
+		t.Fatalf("%d billing records exist for one address, want 1", records)
+	}
+}
+
+// **The escalation this feature must not introduce.** An address that is already another
+// login's billing account is never shared: a second link would let the new account read that
+// customer's invoices through the customer-scoped path, which is scoped by exactly that link.
+// The refusal is a named error, and the failed create leaves nothing behind.
+func TestBillingIdentityRefusesAnotherLoginsRecord(t *testing.T) {
+	f := newIdentityFixture(t)
+	ctx := context.Background()
+
+	var customerID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO customers (email, name) VALUES ('shared@example.test', 'The Owner')
+		RETURNING id`).Scan(&customerID); err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	owner := f.user(t, "owner@example.test")
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO customer_accounts (user_id, customer_id, role) VALUES ($1, $2, 'owner')`,
+		owner, customerID); err != nil {
+		t.Fatalf("link owner: %v", err)
+	}
+
+	_, err := f.svc.CreateUser(ctx, authn.CreateUserRequest{
+		Email:         "shared@example.test",
+		DisplayName:   "Not The Owner",
+		Password:      "a sufficiently long password",
+		Role:          "support",
+		EmailVerified: true,
+	}, nil)
+	if !errors.Is(err, authn.ErrBillingAddressTaken) {
+		t.Fatalf("creating a login at another account's billing address: got %v, want ErrBillingAddressTaken", err)
+	}
+
+	var logins, links int
+	if err := f.pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM users WHERE lower(email) = 'shared@example.test'),
+		       (SELECT count(*) FROM customer_accounts WHERE customer_id = $1)`,
+		customerID).Scan(&logins, &links); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if logins != 0 {
+		t.Fatalf("%d login(s) exist after a refused create, want none", logins)
+	}
+	if links != 1 {
+		t.Fatalf("%d login(s) own the billing record, want only the original one", links)
+	}
+}
+
+// The accounts that predate this feature get the identity they never had: the CLI bootstrap,
+// the older build, and the imported customer whose record was waiting for a login. The two
+// cases the migration must *not* touch — an address another login already owns, and a
+// customer-only account (out of scope: the create path covers new ones) — are asserted too,
+// because "backfill everyone" would have been the easy and wrong version.
+func TestMigrationBackfillsExistingStaff(t *testing.T) {
+	f := newIdentityFixture(t)
+	ctx := context.Background()
+
+	// A staff account written straight to the tables, the way `billing admin create-user` does.
+	plain := f.user(t, "legacy-agent@example.test")
+	f.grant(t, plain, "support")
+
+	// A staff account whose address an import already turned into a billing record nobody
+	// could sign in with: adopted, not duplicated.
+	imported := f.user(t, "imported-agent@example.test")
+	f.grant(t, imported, "billing")
+	var importedID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO customers (email, name) VALUES ('imported-agent@example.test', 'Imported')
+		RETURNING id`).Scan(&importedID); err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+
+	// A staff account whose address is already another login's billing account: left alone.
+	collides := f.user(t, "shared-agent@example.test")
+	f.grant(t, collides, "infrastructure")
+	var sharedID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO customers (email, name) VALUES ('shared-agent@example.test', 'Somebody Else')
+		RETURNING id`).Scan(&sharedID); err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	owner := f.user(t, "owner@example.test")
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO customer_accounts (user_id, customer_id, role) VALUES ($1, $2, 'owner')`,
+		owner, sharedID); err != nil {
+		t.Fatalf("link owner: %v", err)
+	}
+
+	// A customer-only login with no identity. The migration is about staff: a customer's
+	// identity is created with the account, and reusing this file to invent billing records for
+	// every old login would be a wider change than the one being made.
+	shopper := f.user(t, "shopper@example.test")
+
+	runStaffBillingBackfill(t, f)
+
+	if got := billingIdentityOf(t, f, plain); len(got) != 1 || got[0].Email != "legacy-agent@example.test" {
+		t.Fatalf("a legacy staff account was not given its own billing record: %+v", got)
+	}
+	if got := billingIdentityOf(t, f, imported); len(got) != 1 || got[0].ID != importedID {
+		t.Fatalf("the imported record was not adopted: %+v", got)
+	}
+	if got := billingIdentityOf(t, f, collides); len(got) != 0 {
+		t.Fatalf("a staff account was linked to another login's billing record: %+v", got)
+	}
+	if got := billingIdentityOf(t, f, owner); len(got) != 1 || got[0].ID != sharedID {
+		t.Fatalf("the original owner lost their billing record: %+v", got)
+	}
+	if got := billingIdentityOf(t, f, shopper); len(got) != 0 {
+		t.Fatalf("a customer-only account was backfilled by the staff migration: %+v", got)
+	}
+
+	// The file is idempotent, which is what makes it safe to run against a database that
+	// already has it — including the one this test just migrated.
+	runStaffBillingBackfill(t, f)
+	for _, id := range []string{plain, imported, collides, owner, shopper} {
+		if got := billingIdentityOf(t, f, id); len(got) > 1 {
+			t.Fatalf("a second run duplicated the billing identity of %s: %+v", id, got)
+		}
+	}
+}
+
+// The other half of the delete rule: a billing record an *operator* created is never deleted
+// with a login. It carries a name, an address and possibly attribution that outlive the login,
+// so the refusal stands and points at disabling instead — the behaviour every account had
+// before the identity became automatic.
+func TestDeleteUserKeepsABillingRecordAnOperatorCreated(t *testing.T) {
+	f := newIdentityFixture(t)
+	ctx := context.Background()
+
+	var imported string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO customers (email, name) VALUES ('imported@example.test', 'Imported Ltd')
+		RETURNING id`).Scan(&imported); err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	rec := createAs(t, f, "imported@example.test", "support")
+	admin := createAs(t, f, "admin@example.test", "administrator")
+
+	err := f.svc.DeleteUser(ctx, rec.ID, admin.ID, nil)
+	if !errors.Is(err, authn.ErrUserHasHistory) {
+		t.Fatalf("deleting an account whose billing record an operator created: got %v, want ErrUserHasHistory", err)
+	}
+	var name string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT name FROM customers WHERE id = $1`, imported).Scan(&name); err != nil {
+		t.Fatalf("the imported record was deleted: %v", err)
+	}
+	if name != "Imported Ltd" {
+		t.Fatalf("the imported record's name is %q, want it untouched", name)
+	}
+}
+
+// A login whose billing record already holds a service cannot be deleted, because the record is
+// what the service hangs off: the foreign key refuses it and the refusal says so rather than
+// cascading a service away. A zero-total purchase produces exactly this state — a service and no
+// invoice — so it is not a hypothetical.
+func TestDeleteUserWithABilledServiceIsRefused(t *testing.T) {
+	f := newIdentityFixture(t)
+	ctx := context.Background()
+
+	rec := createAs(t, f, "holder@example.test", "support")
+	admin := createAs(t, f, "admin@example.test", "administrator")
+
+	var productID string
+	if err := f.pool.QueryRow(ctx,
+		`INSERT INTO products (slug, name) VALUES ('delete-guard', 'Guard') RETURNING id`).
+		Scan(&productID); err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO services (customer_id, product_id, status, generation)
+		VALUES ($1, $2, 'active', 1)`, rec.CustomerID, productID); err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+
+	err := f.svc.DeleteUser(ctx, rec.ID, admin.ID, nil)
+	if !errors.Is(err, authn.ErrUserHasHistory) {
+		t.Fatalf("deleting an account whose billing record holds a service: got %v, want ErrUserHasHistory", err)
+	}
+	if !strings.Contains(err.Error(), "billing record") {
+		t.Fatalf("the refusal does not say what holds the account: %v", err)
+	}
+	if _, err := f.svc.UserByIDRecord(ctx, rec.ID); err != nil {
+		t.Fatalf("the account was removed despite the refusal: %v", err)
+	}
+}

@@ -38,7 +38,7 @@ func userAdminOperations() map[string]Operation {
 				"description": "The staff role name, empty for a customer-only account. One of administrator, billing, " +
 					"support, infrastructure, or a custom role."},
 			"is_staff":    map[string]any{"type": "boolean", "description": "True when `role` is set."},
-			"customer_id": map[string]any{"type": []string{"string", "null"}, "format": "uuid", "description": "The billing record this login owns, or null."},
+			"customer_id": map[string]any{"type": []string{"string", "null"}, "format": "uuid", "description": "The billing record this login owns. Every account created here has one — a staff member buys and holds services like any customer — so null means the account predates migration 0056 and was not backfilled, which happens only when the address is already another login's billing record."},
 			"created_at":  map[string]any{"type": "string", "format": "date-time"},
 			"last_sign_in_at": map[string]any{"type": []string{"string", "null"}, "format": "date-time",
 				"description": "The last successful sign-in, from the authentication trail rather than from the live " +
@@ -100,17 +100,21 @@ func userAdminOperations() map[string]Operation {
 			Description: "Requires `staff:manage`. The account and its role are written in one transaction: a staff " +
 				"account with no role can sign in and do nothing, which is a worse outcome than a failed create.\n\n" +
 				"An empty `role` creates a customer-only account, which is the same screen and the same call: a " +
-				"support agent onboarding somebody who rang up is not a different job from onboarding an agent. When " +
-				"the address already has a customer record with no login attached, the new account is linked to it; " +
-				"the response's `customer_id` says whether that happened. A customer record is never created here — " +
-				"billing records belong to the customers surface.\n\n" +
+				"support agent onboarding somebody who rang up is not a different job from onboarding an agent.\n\n" +
+				"The account is also given its **billing identity** in the same transaction, staff included, so it can " +
+				"buy and hold a service without an operator linking two records by hand; `customer_id` in the response " +
+				"is that record. An address that already has a billing record with no login attached is adopted rather " +
+				"than duplicated — one address is one billing account. An address whose billing record already belongs " +
+				"to another login is refused with the same 409 `email_taken`: two logins on one billing account would " +
+				"expose that customer's invoices through the customer-scoped endpoints, so it is never shared. The link " +
+				"grants nothing else — a staff member's reach is still decided by their role.\n\n" +
 				"The password is hashed with the same validator registration uses, so a short one is 422 " +
 				"`weak_password` with the same message. No response contains a password.",
 			RequestSchema: createRequest,
 			Responses: []Response{
 				{Status: 201, Description: "The account", Schema: user},
 				{Status: 400, Description: "An invalid address, display name, or role name", Schema: ProblemRef()},
-				{Status: 409, Description: "That address already has an account (`email_taken`)", Schema: ProblemRef()},
+				{Status: 409, Description: "That address already has an account, or is already another login's billing record (`email_taken`)", Schema: ProblemRef()},
 				{Status: 422, Description: "The password is outside the accepted length (`weak_password`)", Schema: ProblemRef()},
 			},
 		},
@@ -143,6 +147,10 @@ func userAdminOperations() map[string]Operation {
 				"Those references are NO ACTION in the schema, so an account with a history cannot be deleted at all. The " +
 				"account's own authentication history is the exception: it is a login trail with a retention policy rather " +
 				"than an append-only record, and it is removed with the account.\n\n" +
+				"The billing identity created with the account is removed with it too, because it holds nothing but an " +
+				"address. A billing record an operator or an import created is never deleted here — it carries a name, an " +
+				"address and possibly attribution that outlive the login. A record that already holds a service, an " +
+				"order or an invoice refuses the delete outright.\n\n" +
 				"The refusal is named rather than a foreign-key error: 409 `user_has_history` says what holds the " +
 				"account, and 409 `last_administrator` and `self_lockout` cover the two cases where deleting would " +
 				"end the panel's own access. Disabling is the operation an operator almost always wants, and it " +

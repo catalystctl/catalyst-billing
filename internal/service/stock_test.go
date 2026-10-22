@@ -230,6 +230,57 @@ func TestPerUserLimitIgnoresTerminatedServices(t *testing.T) {
 	}
 }
 
+// A subscription that has not yet produced a service still occupies a slot.
+//
+// This is the rule the checkout path derived independently and the one that won: without it a
+// customer can place ten unpaid orders for the same product and take delivery of ten services
+// the moment the last payment settles, which is exactly what the limit exists to prevent.
+// Counting only services looks correct in a unit test that never places an unpaid order.
+func TestPerUserLimitCountsUnpaidSubscriptions(t *testing.T) {
+	f := newFixture(t, 1000, "monthly")
+	ctx := context.Background()
+
+	const limit = 1
+	productID := seedProduct(t, f.pool, "one-per-customer", nil, intPtr(limit), "separated")
+
+	// A price version and a pending subscription: the state an order leaves behind between
+	// placement and payment. No service row exists yet, because nothing has been provisioned.
+	var priceVersionID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO price_versions (product_id, version, currency, amount_minor, interval,
+			anchor_day, anchor_timezone)
+		VALUES ($1, 1, 'USD', 1000, 'monthly', 1, 'UTC') RETURNING id`, productID).Scan(&priceVersionID); err != nil {
+		t.Fatalf("price version: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO subscriptions (customer_id, price_version_id, status, interval,
+			anchor_day, timezone, current_period_start, current_period_end, next_billing_at)
+		VALUES ($1, $2, 'pending', 'monthly', 1, 'UTC', now(), now() + interval '1 month',
+		        now() + interval '1 month')`, f.customerID, priceVersionID); err != nil {
+		t.Fatalf("pending subscription: %v", err)
+	}
+
+	// No service exists, so a rule that counted only services would allow this.
+	err := f.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return service.CheckPerUserLimit(ctx, tx, productID, f.customerID, 1)
+	})
+	if !errors.Is(err, service.ErrPerUserLimit) {
+		t.Fatalf("a pending subscription did not occupy a slot: %v, want ErrPerUserLimit", err)
+	}
+
+	// Once it is cancelled the slot is free again, because a cancelled subscription will never
+	// produce a service.
+	if _, err := f.pool.Exec(ctx, `
+		UPDATE subscriptions SET status = 'cancelled' WHERE customer_id = $1`, f.customerID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if err := f.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		return service.CheckPerUserLimit(ctx, tx, productID, f.customerID, 1)
+	}); err != nil {
+		t.Fatalf("a cancelled subscription still occupied a slot: %v", err)
+	}
+}
+
 // CheckPurchaseAllowed enforces all three rules the migration added.
 func TestCheckPurchaseAllowedCoversQuantityAndStock(t *testing.T) {
 	f := newFixture(t, 1000, "monthly")

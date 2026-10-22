@@ -119,10 +119,18 @@ func RestoreStock(ctx context.Context, tx pgx.Tx, productID string, n int) error
 
 // CheckPerUserLimit refuses the (limit+1)th unit of a product for one customer.
 //
-// `products.per_user_limit` counts *live* services: a terminated service no longer occupies a
-// slot, which is what makes "you may have 3 of these" a policy a customer can act on rather
-// than a lifetime cap. n is how many more the caller is about to create, so a quantity of 2
-// against a limit of 3 with one existing is refused rather than half-fulfilled.
+// `products.per_user_limit` counts *held* units: a live service, or a subscription that will
+// produce one. Counting only services was the original rule, and it was wrong in a way that
+// matters — a customer could place ten unpaid orders for the same product, pay them all at
+// once, and take delivery of ten services the moment the last payment settled. The limit exists
+// to prevent exactly that, so a pending subscription has to occupy a slot. This is the stricter
+// of the two rules the codebase had, and it is the one that won: the checkout path derived it
+// independently, and adopting it here means the two cannot disagree.
+//
+// A terminated service no longer occupies a slot, which is what makes "you may have 3 of these"
+// a policy a customer can act on rather than a lifetime cap. n is how many more the caller is
+// about to create, so a quantity of 2 against a limit of 3 with one existing is refused rather
+// than half-fulfilled.
 func CheckPerUserLimit(ctx context.Context, tx pgx.Tx, productID, customerID string, n int) error {
 	if n <= 0 {
 		return fmt.Errorf("%w: a quantity must be positive, got %d", ErrInvalidInput, n)
@@ -140,12 +148,21 @@ func CheckPerUserLimit(ctx context.Context, tx pgx.Tx, productID, customerID str
 		return nil
 	}
 
+	// Both halves are counted in one statement so they are read at the same instant. Two
+	// statements could see a subscription created between them and undercount, which is the
+	// failure this rule exists to prevent.
 	var held int
 	if err := tx.QueryRow(ctx, `
-		SELECT count(*) FROM services
-		WHERE product_id = $1 AND customer_id = $2
-		  AND status NOT IN ('terminated')`, productID, customerID).Scan(&held); err != nil {
-		return fmt.Errorf("service: count customer services: %w", err)
+		SELECT
+		  (SELECT count(*) FROM subscriptions s
+		    JOIN price_versions pv ON pv.id = s.price_version_id
+		    WHERE s.customer_id = $2 AND pv.product_id = $1
+		      AND s.status IN ('pending', 'active', 'past_due'))
+		+ (SELECT count(*) FROM services sv
+		    WHERE sv.customer_id = $2 AND sv.product_id = $1
+		      AND sv.subscription_id IS NULL AND sv.status <> 'terminated')`,
+		productID, customerID).Scan(&held); err != nil {
+		return fmt.Errorf("service: count held units: %w", err)
 	}
 	if held+n > *limit {
 		return fmt.Errorf("%w: %d of %d already held, %d more requested",

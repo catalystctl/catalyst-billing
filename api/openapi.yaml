@@ -26735,6 +26735,1386 @@ paths:
             x-permission: settings:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/tax-import/import:
+        post:
+            description: 'Fetches, diffs and applies in one transaction, then returns the run and the report of what was actually applied. Each imported rate records its provenance: `origin: import`, the URL it came from and when it was fetched. A rate that changed is appended, not rewritten: the rate it replaces is closed at the new row''s start, because a rate that has taken effect is the evidence an issued invoice points at. A manual rate is replaced only when `overwrite_manual` is true; otherwise it is reported as `protected`.'
+            operationId: PostStaffTaximportImport
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                overwrite_manual:
+                                    description: 'Replace a rate an operator typed. Omitted means no: the row is reported as `protected` and left exactly as it was. The scheduled refresh never sets it.'
+                                    type: boolean
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    preview:
+                                        properties:
+                                            changes:
+                                                items:
+                                                    properties:
+                                                        code:
+                                                            description: Stable rejection code; empty for an applied row.
+                                                            type: string
+                                                        current:
+                                                            description: The open rate this change would replace, with its own provenance.
+                                                            properties:
+                                                                effective_from:
+                                                                    format: date-time
+                                                                    type: string
+                                                                fetched_at:
+                                                                    format: date-time
+                                                                    type:
+                                                                        - string
+                                                                        - "null"
+                                                                id:
+                                                                    format: uuid
+                                                                    type: string
+                                                                inclusive:
+                                                                    type: boolean
+                                                                origin:
+                                                                    enum:
+                                                                        - manual
+                                                                        - import
+                                                                    type: string
+                                                                rate:
+                                                                    type: string
+                                                                source:
+                                                                    type: string
+                                                            type: object
+                                                        jurisdiction:
+                                                            description: '`DE/standard`, `US-CA/standard` or `all/standard`.'
+                                                            type: string
+                                                        line:
+                                                            description: The row's line in the document.
+                                                            type: integer
+                                                        outcome:
+                                                            description: '`protected` is the manual-rate guard working: the source disagrees, and the rate a human typed was left alone.'
+                                                            enum:
+                                                                - create
+                                                                - update
+                                                                - unchanged
+                                                                - protected
+                                                                - rejected
+                                                            type: string
+                                                        proposed:
+                                                            properties:
+                                                                country_code:
+                                                                    type: string
+                                                                effective_from:
+                                                                    format: date-time
+                                                                    type: string
+                                                                inclusive:
+                                                                    type: boolean
+                                                                line:
+                                                                    type: integer
+                                                                name:
+                                                                    type: string
+                                                                rate:
+                                                                    description: As the document spelled it; canonicalised on write.
+                                                                    type: string
+                                                                region_code:
+                                                                    type: string
+                                                                tax_class:
+                                                                    type: string
+                                                            required:
+                                                                - country_code
+                                                                - tax_class
+                                                                - rate
+                                                            type: object
+                                                        reason:
+                                                            description: Why a row was protected or rejected.
+                                                            type: string
+                                                    required:
+                                                        - line
+                                                        - jurisdiction
+                                                        - outcome
+                                                        - proposed
+                                                    type: object
+                                                type: array
+                                            creates:
+                                                type: integer
+                                            fetched_at:
+                                                format: date-time
+                                                type: string
+                                            format:
+                                                enum:
+                                                    - json
+                                                    - csv
+                                                type: string
+                                            protected:
+                                                type: integer
+                                            rejected:
+                                                type: integer
+                                            rejections:
+                                                items:
+                                                    properties:
+                                                        code:
+                                                            type: string
+                                                        detail:
+                                                            type: string
+                                                        key:
+                                                            type: string
+                                                        line:
+                                                            type: integer
+                                                    required:
+                                                        - line
+                                                        - code
+                                                        - detail
+                                                    type: object
+                                                type: array
+                                            rows:
+                                                type: integer
+                                            source_url:
+                                                type: string
+                                            unchanged:
+                                                type: integer
+                                            updates:
+                                                type: integer
+                                        required:
+                                            - source_url
+                                            - format
+                                            - fetched_at
+                                            - rows
+                                            - changes
+                                            - rejections
+                                        type: object
+                                    run:
+                                        properties:
+                                            actor_id:
+                                                format: uuid
+                                                type: string
+                                            counts:
+                                                properties:
+                                                    created:
+                                                        type: integer
+                                                    protected:
+                                                        type: integer
+                                                    rejected:
+                                                        type: integer
+                                                    rows:
+                                                        type: integer
+                                                    unchanged:
+                                                        type: integer
+                                                    updated:
+                                                        type: integer
+                                                required:
+                                                    - rows
+                                                    - created
+                                                    - updated
+                                                    - unchanged
+                                                    - protected
+                                                    - rejected
+                                                type: object
+                                            detail:
+                                                type: string
+                                            fetched_at:
+                                                format: date-time
+                                                type: string
+                                            finished_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            format:
+                                                enum:
+                                                    - json
+                                                    - csv
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            outcome:
+                                                enum:
+                                                    - running
+                                                    - ok
+                                                    - failed
+                                                type: string
+                                            report:
+                                                properties:
+                                                    changes:
+                                                        items:
+                                                            properties:
+                                                                code:
+                                                                    description: Stable rejection code; empty for an applied row.
+                                                                    type: string
+                                                                current:
+                                                                    description: The open rate this change would replace, with its own provenance.
+                                                                    properties:
+                                                                        effective_from:
+                                                                            format: date-time
+                                                                            type: string
+                                                                        fetched_at:
+                                                                            format: date-time
+                                                                            type:
+                                                                                - string
+                                                                                - "null"
+                                                                        id:
+                                                                            format: uuid
+                                                                            type: string
+                                                                        inclusive:
+                                                                            type: boolean
+                                                                        origin:
+                                                                            enum:
+                                                                                - manual
+                                                                                - import
+                                                                            type: string
+                                                                        rate:
+                                                                            type: string
+                                                                        source:
+                                                                            type: string
+                                                                    type: object
+                                                                jurisdiction:
+                                                                    description: '`DE/standard`, `US-CA/standard` or `all/standard`.'
+                                                                    type: string
+                                                                line:
+                                                                    description: The row's line in the document.
+                                                                    type: integer
+                                                                outcome:
+                                                                    description: '`protected` is the manual-rate guard working: the source disagrees, and the rate a human typed was left alone.'
+                                                                    enum:
+                                                                        - create
+                                                                        - update
+                                                                        - unchanged
+                                                                        - protected
+                                                                        - rejected
+                                                                    type: string
+                                                                proposed:
+                                                                    properties:
+                                                                        country_code:
+                                                                            type: string
+                                                                        effective_from:
+                                                                            format: date-time
+                                                                            type: string
+                                                                        inclusive:
+                                                                            type: boolean
+                                                                        line:
+                                                                            type: integer
+                                                                        name:
+                                                                            type: string
+                                                                        rate:
+                                                                            description: As the document spelled it; canonicalised on write.
+                                                                            type: string
+                                                                        region_code:
+                                                                            type: string
+                                                                        tax_class:
+                                                                            type: string
+                                                                    required:
+                                                                        - country_code
+                                                                        - tax_class
+                                                                        - rate
+                                                                    type: object
+                                                                reason:
+                                                                    description: Why a row was protected or rejected.
+                                                                    type: string
+                                                            required:
+                                                                - line
+                                                                - jurisdiction
+                                                                - outcome
+                                                                - proposed
+                                                            type: object
+                                                        type: array
+                                                    creates:
+                                                        type: integer
+                                                    fetched_at:
+                                                        format: date-time
+                                                        type: string
+                                                    format:
+                                                        enum:
+                                                            - json
+                                                            - csv
+                                                        type: string
+                                                    protected:
+                                                        type: integer
+                                                    rejected:
+                                                        type: integer
+                                                    rejections:
+                                                        items:
+                                                            properties:
+                                                                code:
+                                                                    type: string
+                                                                detail:
+                                                                    type: string
+                                                                key:
+                                                                    type: string
+                                                                line:
+                                                                    type: integer
+                                                            required:
+                                                                - line
+                                                                - code
+                                                                - detail
+                                                            type: object
+                                                        type: array
+                                                    rows:
+                                                        type: integer
+                                                    source_url:
+                                                        type: string
+                                                    unchanged:
+                                                        type: integer
+                                                    updates:
+                                                        type: integer
+                                                required:
+                                                    - source_url
+                                                    - format
+                                                    - fetched_at
+                                                    - rows
+                                                    - changes
+                                                    - rejections
+                                                type: object
+                                            source_url:
+                                                type: string
+                                            started_at:
+                                                format: date-time
+                                                type: string
+                                            trigger:
+                                                enum:
+                                                    - manual
+                                                    - scheduled
+                                                type: string
+                                        required:
+                                            - id
+                                            - source_url
+                                            - format
+                                            - trigger
+                                            - outcome
+                                            - counts
+                                        type: object
+                                required:
+                                    - run
+                                    - preview
+                                type: object
+                    description: The run and its report
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No source is configured, or it is switched off
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The document cannot be read
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The source could not be fetched
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Import the source into the rate table
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: tax:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tax-import/preview:
+        post:
+            description: 'Fetches the configured source and diffs it against the open rates, writing nothing. Every row is reported: `create`, `update`, `unchanged`, `protected` (a rate a human typed, or one an operator disabled) or `rejected` with a stable code. A refused row is not a failed preview. The preview is not a promise — the import re-fetches and re-diffs inside its transaction — but it is the same code, so it cannot tell a nicer story than the import.'
+            operationId: PostStaffTaximportPreview
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                overwrite_manual:
+                                    description: 'Replace a rate an operator typed. Omitted means no: the row is reported as `protected` and left exactly as it was. The scheduled refresh never sets it.'
+                                    type: boolean
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    preview:
+                                        properties:
+                                            changes:
+                                                items:
+                                                    properties:
+                                                        code:
+                                                            description: Stable rejection code; empty for an applied row.
+                                                            type: string
+                                                        current:
+                                                            description: The open rate this change would replace, with its own provenance.
+                                                            properties:
+                                                                effective_from:
+                                                                    format: date-time
+                                                                    type: string
+                                                                fetched_at:
+                                                                    format: date-time
+                                                                    type:
+                                                                        - string
+                                                                        - "null"
+                                                                id:
+                                                                    format: uuid
+                                                                    type: string
+                                                                inclusive:
+                                                                    type: boolean
+                                                                origin:
+                                                                    enum:
+                                                                        - manual
+                                                                        - import
+                                                                    type: string
+                                                                rate:
+                                                                    type: string
+                                                                source:
+                                                                    type: string
+                                                            type: object
+                                                        jurisdiction:
+                                                            description: '`DE/standard`, `US-CA/standard` or `all/standard`.'
+                                                            type: string
+                                                        line:
+                                                            description: The row's line in the document.
+                                                            type: integer
+                                                        outcome:
+                                                            description: '`protected` is the manual-rate guard working: the source disagrees, and the rate a human typed was left alone.'
+                                                            enum:
+                                                                - create
+                                                                - update
+                                                                - unchanged
+                                                                - protected
+                                                                - rejected
+                                                            type: string
+                                                        proposed:
+                                                            properties:
+                                                                country_code:
+                                                                    type: string
+                                                                effective_from:
+                                                                    format: date-time
+                                                                    type: string
+                                                                inclusive:
+                                                                    type: boolean
+                                                                line:
+                                                                    type: integer
+                                                                name:
+                                                                    type: string
+                                                                rate:
+                                                                    description: As the document spelled it; canonicalised on write.
+                                                                    type: string
+                                                                region_code:
+                                                                    type: string
+                                                                tax_class:
+                                                                    type: string
+                                                            required:
+                                                                - country_code
+                                                                - tax_class
+                                                                - rate
+                                                            type: object
+                                                        reason:
+                                                            description: Why a row was protected or rejected.
+                                                            type: string
+                                                    required:
+                                                        - line
+                                                        - jurisdiction
+                                                        - outcome
+                                                        - proposed
+                                                    type: object
+                                                type: array
+                                            creates:
+                                                type: integer
+                                            fetched_at:
+                                                format: date-time
+                                                type: string
+                                            format:
+                                                enum:
+                                                    - json
+                                                    - csv
+                                                type: string
+                                            protected:
+                                                type: integer
+                                            rejected:
+                                                type: integer
+                                            rejections:
+                                                items:
+                                                    properties:
+                                                        code:
+                                                            type: string
+                                                        detail:
+                                                            type: string
+                                                        key:
+                                                            type: string
+                                                        line:
+                                                            type: integer
+                                                    required:
+                                                        - line
+                                                        - code
+                                                        - detail
+                                                    type: object
+                                                type: array
+                                            rows:
+                                                type: integer
+                                            source_url:
+                                                type: string
+                                            unchanged:
+                                                type: integer
+                                            updates:
+                                                type: integer
+                                        required:
+                                            - source_url
+                                            - format
+                                            - fetched_at
+                                            - rows
+                                            - changes
+                                            - rejections
+                                        type: object
+                                type: object
+                    description: The preview
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No source is configured, or it is switched off
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The document cannot be read
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The source could not be fetched
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Preview what an import would change
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: tax:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tax-import/provenance:
+        get:
+            description: 'One entry per rate row, keyed by id, carrying `origin` (`manual` or `import`), the source URL and the fetch time. A manual rate has an empty source and no fetch time: an operator typed it, no document said it.'
+            operationId: GetStaffTaximportProvenance
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                fetched_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                origin:
+                                                    enum:
+                                                        - manual
+                                                        - import
+                                                    type: string
+                                                rate_id:
+                                                    format: uuid
+                                                    type: string
+                                                source:
+                                                    type: string
+                                            required:
+                                                - rate_id
+                                                - origin
+                                                - source
+                                            type: object
+                                        type: array
+                                required:
+                                    - data
+                                type: object
+                    description: The provenance
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Where every tax rate came from
+            x-permission: tax:write
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/tax-import/runs:
+        get:
+            description: Newest first, with the full per-row report. A failed fetch is recorded as a `failed` run with its reason, so "the refresh did nothing" and "the refresh could not read the source" are distinguishable.
+            operationId: GetStaffTaximportRuns
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                actor_id:
+                                                    format: uuid
+                                                    type: string
+                                                counts:
+                                                    properties:
+                                                        created:
+                                                            type: integer
+                                                        protected:
+                                                            type: integer
+                                                        rejected:
+                                                            type: integer
+                                                        rows:
+                                                            type: integer
+                                                        unchanged:
+                                                            type: integer
+                                                        updated:
+                                                            type: integer
+                                                    required:
+                                                        - rows
+                                                        - created
+                                                        - updated
+                                                        - unchanged
+                                                        - protected
+                                                        - rejected
+                                                    type: object
+                                                detail:
+                                                    type: string
+                                                fetched_at:
+                                                    format: date-time
+                                                    type: string
+                                                finished_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                format:
+                                                    enum:
+                                                        - json
+                                                        - csv
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                outcome:
+                                                    enum:
+                                                        - running
+                                                        - ok
+                                                        - failed
+                                                    type: string
+                                                report:
+                                                    properties:
+                                                        changes:
+                                                            items:
+                                                                properties:
+                                                                    code:
+                                                                        description: Stable rejection code; empty for an applied row.
+                                                                        type: string
+                                                                    current:
+                                                                        description: The open rate this change would replace, with its own provenance.
+                                                                        properties:
+                                                                            effective_from:
+                                                                                format: date-time
+                                                                                type: string
+                                                                            fetched_at:
+                                                                                format: date-time
+                                                                                type:
+                                                                                    - string
+                                                                                    - "null"
+                                                                            id:
+                                                                                format: uuid
+                                                                                type: string
+                                                                            inclusive:
+                                                                                type: boolean
+                                                                            origin:
+                                                                                enum:
+                                                                                    - manual
+                                                                                    - import
+                                                                                type: string
+                                                                            rate:
+                                                                                type: string
+                                                                            source:
+                                                                                type: string
+                                                                        type: object
+                                                                    jurisdiction:
+                                                                        description: '`DE/standard`, `US-CA/standard` or `all/standard`.'
+                                                                        type: string
+                                                                    line:
+                                                                        description: The row's line in the document.
+                                                                        type: integer
+                                                                    outcome:
+                                                                        description: '`protected` is the manual-rate guard working: the source disagrees, and the rate a human typed was left alone.'
+                                                                        enum:
+                                                                            - create
+                                                                            - update
+                                                                            - unchanged
+                                                                            - protected
+                                                                            - rejected
+                                                                        type: string
+                                                                    proposed:
+                                                                        properties:
+                                                                            country_code:
+                                                                                type: string
+                                                                            effective_from:
+                                                                                format: date-time
+                                                                                type: string
+                                                                            inclusive:
+                                                                                type: boolean
+                                                                            line:
+                                                                                type: integer
+                                                                            name:
+                                                                                type: string
+                                                                            rate:
+                                                                                description: As the document spelled it; canonicalised on write.
+                                                                                type: string
+                                                                            region_code:
+                                                                                type: string
+                                                                            tax_class:
+                                                                                type: string
+                                                                        required:
+                                                                            - country_code
+                                                                            - tax_class
+                                                                            - rate
+                                                                        type: object
+                                                                    reason:
+                                                                        description: Why a row was protected or rejected.
+                                                                        type: string
+                                                                required:
+                                                                    - line
+                                                                    - jurisdiction
+                                                                    - outcome
+                                                                    - proposed
+                                                                type: object
+                                                            type: array
+                                                        creates:
+                                                            type: integer
+                                                        fetched_at:
+                                                            format: date-time
+                                                            type: string
+                                                        format:
+                                                            enum:
+                                                                - json
+                                                                - csv
+                                                            type: string
+                                                        protected:
+                                                            type: integer
+                                                        rejected:
+                                                            type: integer
+                                                        rejections:
+                                                            items:
+                                                                properties:
+                                                                    code:
+                                                                        type: string
+                                                                    detail:
+                                                                        type: string
+                                                                    key:
+                                                                        type: string
+                                                                    line:
+                                                                        type: integer
+                                                                required:
+                                                                    - line
+                                                                    - code
+                                                                    - detail
+                                                                type: object
+                                                            type: array
+                                                        rows:
+                                                            type: integer
+                                                        source_url:
+                                                            type: string
+                                                        unchanged:
+                                                            type: integer
+                                                        updates:
+                                                            type: integer
+                                                    required:
+                                                        - source_url
+                                                        - format
+                                                        - fetched_at
+                                                        - rows
+                                                        - changes
+                                                        - rejections
+                                                    type: object
+                                                source_url:
+                                                    type: string
+                                                started_at:
+                                                    format: date-time
+                                                    type: string
+                                                trigger:
+                                                    enum:
+                                                        - manual
+                                                        - scheduled
+                                                    type: string
+                                            required:
+                                                - id
+                                                - source_url
+                                                - format
+                                                - trigger
+                                                - outcome
+                                                - counts
+                                            type: object
+                                        type: array
+                                required:
+                                    - data
+                                type: object
+                    description: The runs
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Recent tax-rate imports
+            x-permission: tax:write
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/tax-import/source:
+        get:
+            description: '`configured: false` is the normal state of a fresh installation and is not an error. `last_run` is the most recent import, so the screen can say when the table was last refreshed and whether that refresh failed.'
+            operationId: GetStaffTaximportSource
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    configured:
+                                        type: boolean
+                                    last_run:
+                                        properties:
+                                            actor_id:
+                                                format: uuid
+                                                type: string
+                                            counts:
+                                                properties:
+                                                    created:
+                                                        type: integer
+                                                    protected:
+                                                        type: integer
+                                                    rejected:
+                                                        type: integer
+                                                    rows:
+                                                        type: integer
+                                                    unchanged:
+                                                        type: integer
+                                                    updated:
+                                                        type: integer
+                                                required:
+                                                    - rows
+                                                    - created
+                                                    - updated
+                                                    - unchanged
+                                                    - protected
+                                                    - rejected
+                                                type: object
+                                            detail:
+                                                type: string
+                                            fetched_at:
+                                                format: date-time
+                                                type: string
+                                            finished_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            format:
+                                                enum:
+                                                    - json
+                                                    - csv
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            outcome:
+                                                enum:
+                                                    - running
+                                                    - ok
+                                                    - failed
+                                                type: string
+                                            report:
+                                                properties:
+                                                    changes:
+                                                        items:
+                                                            properties:
+                                                                code:
+                                                                    description: Stable rejection code; empty for an applied row.
+                                                                    type: string
+                                                                current:
+                                                                    description: The open rate this change would replace, with its own provenance.
+                                                                    properties:
+                                                                        effective_from:
+                                                                            format: date-time
+                                                                            type: string
+                                                                        fetched_at:
+                                                                            format: date-time
+                                                                            type:
+                                                                                - string
+                                                                                - "null"
+                                                                        id:
+                                                                            format: uuid
+                                                                            type: string
+                                                                        inclusive:
+                                                                            type: boolean
+                                                                        origin:
+                                                                            enum:
+                                                                                - manual
+                                                                                - import
+                                                                            type: string
+                                                                        rate:
+                                                                            type: string
+                                                                        source:
+                                                                            type: string
+                                                                    type: object
+                                                                jurisdiction:
+                                                                    description: '`DE/standard`, `US-CA/standard` or `all/standard`.'
+                                                                    type: string
+                                                                line:
+                                                                    description: The row's line in the document.
+                                                                    type: integer
+                                                                outcome:
+                                                                    description: '`protected` is the manual-rate guard working: the source disagrees, and the rate a human typed was left alone.'
+                                                                    enum:
+                                                                        - create
+                                                                        - update
+                                                                        - unchanged
+                                                                        - protected
+                                                                        - rejected
+                                                                    type: string
+                                                                proposed:
+                                                                    properties:
+                                                                        country_code:
+                                                                            type: string
+                                                                        effective_from:
+                                                                            format: date-time
+                                                                            type: string
+                                                                        inclusive:
+                                                                            type: boolean
+                                                                        line:
+                                                                            type: integer
+                                                                        name:
+                                                                            type: string
+                                                                        rate:
+                                                                            description: As the document spelled it; canonicalised on write.
+                                                                            type: string
+                                                                        region_code:
+                                                                            type: string
+                                                                        tax_class:
+                                                                            type: string
+                                                                    required:
+                                                                        - country_code
+                                                                        - tax_class
+                                                                        - rate
+                                                                    type: object
+                                                                reason:
+                                                                    description: Why a row was protected or rejected.
+                                                                    type: string
+                                                            required:
+                                                                - line
+                                                                - jurisdiction
+                                                                - outcome
+                                                                - proposed
+                                                            type: object
+                                                        type: array
+                                                    creates:
+                                                        type: integer
+                                                    fetched_at:
+                                                        format: date-time
+                                                        type: string
+                                                    format:
+                                                        enum:
+                                                            - json
+                                                            - csv
+                                                        type: string
+                                                    protected:
+                                                        type: integer
+                                                    rejected:
+                                                        type: integer
+                                                    rejections:
+                                                        items:
+                                                            properties:
+                                                                code:
+                                                                    type: string
+                                                                detail:
+                                                                    type: string
+                                                                key:
+                                                                    type: string
+                                                                line:
+                                                                    type: integer
+                                                            required:
+                                                                - line
+                                                                - code
+                                                                - detail
+                                                            type: object
+                                                        type: array
+                                                    rows:
+                                                        type: integer
+                                                    source_url:
+                                                        type: string
+                                                    unchanged:
+                                                        type: integer
+                                                    updates:
+                                                        type: integer
+                                                required:
+                                                    - source_url
+                                                    - format
+                                                    - fetched_at
+                                                    - rows
+                                                    - changes
+                                                    - rejections
+                                                type: object
+                                            source_url:
+                                                type: string
+                                            started_at:
+                                                format: date-time
+                                                type: string
+                                            trigger:
+                                                enum:
+                                                    - manual
+                                                    - scheduled
+                                                type: string
+                                        required:
+                                            - id
+                                            - source_url
+                                            - format
+                                            - trigger
+                                            - outcome
+                                            - counts
+                                        type: object
+                                    source:
+                                        properties:
+                                            enabled:
+                                                description: A disabled source is never fetched, by a person or by the worker.
+                                                type: boolean
+                                            format:
+                                                enum:
+                                                    - json
+                                                    - csv
+                                                type: string
+                                            refresh_interval_hours:
+                                                description: How often the scheduled refresh re-fetches. The worker's own tick is fixed.
+                                                maximum: 8760
+                                                minimum: 1
+                                                type: integer
+                                            updated_at:
+                                                format: date-time
+                                                type: string
+                                            url:
+                                                description: http or https only; no credentials in the URL.
+                                                type: string
+                                        required:
+                                            - url
+                                            - format
+                                            - enabled
+                                            - refresh_interval_hours
+                                        type: object
+                                required:
+                                    - configured
+                                type: object
+                    description: The source and the most recent run
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The configured tax-rate source
+            x-permission: tax:write
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: 'One source per installation: this replaces the previous one. Only `http` and `https` are accepted and a URL carrying credentials is refused, because the panel fetches it with its own network identity and a credential in a URL ends up in a log and a run report. Rates already imported keep the URL they were fetched from, so repointing the source does not rewrite their provenance.'
+            operationId: PutStaffTaximportSource
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                enabled:
+                                    type: boolean
+                                format:
+                                    enum:
+                                        - json
+                                        - csv
+                                    type: string
+                                refresh_interval_hours:
+                                    maximum: 8760
+                                    minimum: 1
+                                    type: integer
+                                url:
+                                    type: string
+                            required:
+                                - url
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    configured:
+                                        type: boolean
+                                    source:
+                                        properties:
+                                            enabled:
+                                                description: A disabled source is never fetched, by a person or by the worker.
+                                                type: boolean
+                                            format:
+                                                enum:
+                                                    - json
+                                                    - csv
+                                                type: string
+                                            refresh_interval_hours:
+                                                description: How often the scheduled refresh re-fetches. The worker's own tick is fixed.
+                                                maximum: 8760
+                                                minimum: 1
+                                                type: integer
+                                            updated_at:
+                                                format: date-time
+                                                type: string
+                                            url:
+                                                description: http or https only; no credentials in the URL.
+                                                type: string
+                                        required:
+                                            - url
+                                            - format
+                                            - enabled
+                                            - refresh_interval_hours
+                                        type: object
+                                type: object
+                    description: The saved source
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The URL, format or interval is not acceptable
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Configure the tax-rate source
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: tax:write
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/tax-rates:
         get:
             description: 'Every rate, current and historic, newest effective date first. Rates are dated rows: a rate change appends a new row instead of rewriting a filed period. `all` as a country code is the wildcard fallback.'

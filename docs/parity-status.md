@@ -128,6 +128,25 @@ package that built it. Three states, and no fourth:
 
 **Tally:** 46 built, 1 partial, 2 not started, out of 49 epics.
 
+What this round added, all browser-driven rather than asserted: a customer can **buy** a product
+end to end (the funnel was API-only — see below); an operator can set a customer's password, reset
+their second factor and close their account; credit can be **taken away**, as an append-only entry
+with a reason the customer can read; an order line can carry a **negotiated price** without touching
+the catalog; an affiliate can be suspended, deleted, or given a custom rate; a phone call can become
+a **ticket**, with custom fields that can be required to *close* and not only to create; ticket
+uploads work for both audiences; tax rates can be **imported** from a source, previewed, and kept
+with provenance; a staff login **owns a billing account** automatically; an **offline payment** can
+be recorded so a bank transfer marks an invoice paid; invoices, customers and services export as
+**streaming CSV** with exact money; and **MFA is findable** — enrolment with a locally drawn QR,
+recovery codes shown once, and a disable that demands the password *and* a code.
+
+The single most serious thing found this round is recorded in `docs/reachability.md`: the purchase
+funnel did not exist. Every endpoint worked, and nothing in the frontend ever added an item to a
+cart, so a customer could not buy anything and every order was an operator typing it in. It was
+found by diffing the served route table against the view table — the method that has now found this
+class of defect three times — and `scripts/reachability.sh --check` makes it a test rather than a
+report.
+
 Every epic that gates taking money, provisioning a server, or managing a person is built. What is
 left is three specific things, not three half-finished epics:
 

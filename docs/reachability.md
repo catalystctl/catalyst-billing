@@ -1,5 +1,16 @@
 # Reachability — what is served, what is reachable, and what is a dead end
 
+**The finding this document exists for.** The first run found that the purchase funnel was
+API-only: nothing in the frontend ever called `POST /portal/cart/items`, the product page's buy
+button forgot which product had been clicked, and a signed-in customer was redirected away from the
+storefront. Every endpoint worked and was tested. A customer could not buy anything, so every order
+in the business was an operator retyping a phone call into `/orders/new`.
+
+That is the shape of the defect a route diff finds and a backlog never does: a working endpoint with
+no button is indistinguishable from no endpoint, and no amount of reading the epics surfaces it. It
+is now fixed, driven end to end by the harness, and `scripts/reachability.sh --check` fails if it
+comes back.
+
 **Status: open, and repeatable.** The sweep is `scripts/reachability.sh`; `--check` fails on a
 finding that is not fixed or recorded below. The browser half is `scripts/e2e-routes.mjs`,
 run by `scripts/browser-e2e.sh`, which opens every route in `web/src/routes.ts` and fails if
@@ -17,11 +28,8 @@ bash scripts/browser-e2e.sh        # the named screens, then every route
 E2E_STRICT_PLACEHOLDERS=1 bash scripts/browser-e2e.sh   # a release check: placeholders fail too
 ```
 
-**Baseline (last run):** 351 named-screen assertions green, 37 screens present, 0 broken, 0
-reachability gaps, 1 declared-but-not-built (`/ticket-fields`); route sweep 76 ok, 1 not built
-yet, 0 failed. The harness takes a `flock` on `${TMPDIR:-/tmp}/catalyst-billing-e2e.lock`, so
-two runs cannot collide; the lock descriptor is closed for the server and the browser harness
-(`9>&-`) because an orphaned browser that inherits it holds the lock after the script dies.
+**Baseline (last run):** 460 named-screen assertions green, 40 screens present, 0 broken, 0
+reachability gaps, 78 routes rendered (76 in the table), and the funnel driven end to end.
 
 ## The method
 

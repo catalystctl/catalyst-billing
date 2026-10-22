@@ -397,6 +397,50 @@ func (c *Client) GetPortalServicesById(ctx context.Context, id string, query url
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetPortalTickets calls GET /api/v1/portal/tickets.
+//
+// # The customer's tickets
+//
+// Permission: ticket:read:self.
+func (c *Client) GetPortalTickets(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalTicketsAttachmentsById calls GET /api/v1/portal/tickets/attachments/{id}.
+//
+// # Download an attachment
+//
+// Permission: ticket:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalTicketsAttachmentsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/attachments/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalTicketsById calls GET /api/v1/portal/tickets/{id}.
+//
+// # One ticket thread
+//
+// Permission: ticket:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalTicketsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalTicketsMeta calls GET /api/v1/portal/tickets/meta.
+//
+// # The ticket form's configuration
+//
+// Permission: ticket:read:self.
+func (c *Client) GetPortalTicketsMeta(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/meta"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetReadyz calls GET /readyz.
 //
 // Readiness
@@ -695,6 +739,50 @@ func (c *Client) GetStaffServicesByIdSuspensioneligibility(ctx context.Context, 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffTickets calls GET /api/v1/staff/tickets.
+//
+// # The support queue
+//
+// Permission: ticket:read:all. Staff only.
+func (c *Client) GetStaffTickets(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffTicketsAttachmentsById calls GET /api/v1/staff/tickets/attachments/{id}.
+//
+// # Download any attachment
+//
+// Permission: ticket:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffTicketsAttachmentsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/attachments/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffTicketsById calls GET /api/v1/staff/tickets/{id}.
+//
+// # One ticket thread, as staff
+//
+// Permission: ticket:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffTicketsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffTicketsMeta calls GET /api/v1/staff/tickets/meta.
+//
+// # The queue's configuration
+//
+// Permission: ticket:read:all. Staff only.
+func (c *Client) GetStaffTicketsMeta(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/meta"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffWebhooks calls GET /api/v1/staff/webhooks.
 //
 // # Webhook inbox
@@ -703,6 +791,20 @@ func (c *Client) GetStaffServicesByIdSuspensioneligibility(ctx context.Context, 
 func (c *Client) GetStaffWebhooks(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/webhooks"
 	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// PatchStaffTicketsById calls PATCH /api/v1/staff/tickets/{id}.
+//
+// # Change a ticket's status, priority or department
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PatchStaffTicketsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PATCH", path, query, body, true, true)
 }
 
 // PostAuthLogin calls POST /api/v1/auth/login.
@@ -805,6 +907,59 @@ func (c *Client) PostPortalInvoicesByIdCheckout(ctx context.Context, id string, 
 // id is the id path parameter.
 func (c *Client) PostPortalServicesByIdCancel(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/services/{id}/cancel"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalTickets calls POST /api/v1/portal/tickets.
+//
+// # Open a ticket
+//
+// Permission: ticket:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostPortalTickets(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalTicketsByIdAttachments calls POST /api/v1/portal/tickets/{id}/attachments.
+//
+// # Attach a file to the customer's own ticket
+//
+// Permission: ticket:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// id is the id path parameter.
+func (c *Client) PostPortalTicketsByIdAttachments(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/{id}/attachments"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, false)
+}
+
+// PostPortalTicketsByIdClose calls POST /api/v1/portal/tickets/{id}/close.
+//
+// # Close a ticket
+//
+// Permission: ticket:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostPortalTicketsByIdClose(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/{id}/close"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalTicketsByIdReplies calls POST /api/v1/portal/tickets/{id}/replies.
+//
+// # Reply to a ticket
+//
+// Permission: ticket:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostPortalTicketsByIdReplies(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/{id}/replies"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
@@ -1041,6 +1196,61 @@ func (c *Client) PostStaffServicesByIdSuspend(ctx context.Context, id string, qu
 // id is the id path parameter.
 func (c *Client) PostStaffServicesByIdTerminate(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/services/{id}/terminate"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffTicketsByIdAssign calls POST /api/v1/staff/tickets/{id}/assign.
+//
+// # Assign or unassign a ticket
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffTicketsByIdAssign(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}/assign"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffTicketsByIdAttachments calls POST /api/v1/staff/tickets/{id}/attachments.
+//
+// # Attach a file to any ticket
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// id is the id path parameter.
+func (c *Client) PostStaffTicketsByIdAttachments(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}/attachments"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, false)
+}
+
+// PostStaffTicketsByIdClose calls POST /api/v1/staff/tickets/{id}/close.
+//
+// # Close a ticket as staff
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffTicketsByIdClose(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}/close"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffTicketsByIdReplies calls POST /api/v1/staff/tickets/{id}/replies.
+//
+// # Reply as staff
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffTicketsByIdReplies(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}/replies"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }

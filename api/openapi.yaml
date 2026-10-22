@@ -1288,6 +1288,1009 @@ paths:
                 required: true
             x-permission: service:cancel:self
             x-rate-class: mutation
+    /api/v1/portal/tickets:
+        get:
+            description: 'Scoped in SQL: the customer is resolved from the session and the query filters on it, so substituting another customer''s ticket identifier returns not_found, identical to an id that never existed. `status` filters to open, replied or closed; `all` (the default) does not filter.'
+            operationId: GetPortalTickets
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    next_cursor:
+                                        type: string
+                                    tickets:
+                                        items:
+                                            properties:
+                                                assigned_to:
+                                                    format: uuid
+                                                    type: string
+                                                closed_at:
+                                                    format: date-time
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                department:
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                last_message:
+                                                    properties:
+                                                        body:
+                                                            type: string
+                                                        from_staff:
+                                                            type: boolean
+                                                    type: object
+                                                last_reply_at:
+                                                    format: date-time
+                                                    type: string
+                                                message_count:
+                                                    type: integer
+                                                number:
+                                                    example: TKT-000042
+                                                    type: string
+                                                priority:
+                                                    enum:
+                                                        - low
+                                                        - normal
+                                                        - high
+                                                    type: string
+                                                service_id:
+                                                    format: uuid
+                                                    type: string
+                                                status:
+                                                    enum:
+                                                        - open
+                                                        - replied
+                                                        - closed
+                                                    type: string
+                                                subject:
+                                                    maxLength: 200
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - id
+                                                - number
+                                                - subject
+                                                - status
+                                                - priority
+                                                - department
+                                            type: object
+                                        type: array
+                                type: object
+                    description: A page of tickets
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The customer's tickets
+            x-permission: ticket:read:self
+            x-rate-class: read
+        post:
+            description: The customer is the session's, never the body's. Refused with 403 tickets_disabled when the operator has switched support off. A service_id must be one of the caller's own services; anything else is not_found. The ticket number is allocated from the same sequence invoices use, under the `ticket` scope.
+            operationId: PostPortalTickets
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                department:
+                                    description: One of the configured departments from GET /api/v1/portal/tickets/meta.
+                                    type: string
+                                message:
+                                    properties:
+                                        body:
+                                            type: string
+                                        message_id:
+                                            description: An email Message-ID, for a piped ticket. A duplicate is ignored.
+                                            type: string
+                                    required:
+                                        - body
+                                    type: object
+                                priority:
+                                    default: normal
+                                    enum:
+                                        - low
+                                        - normal
+                                        - high
+                                    type: string
+                                service_id:
+                                    description: The caller's own service the ticket is about, when it is about one.
+                                    format: uuid
+                                    type: string
+                                subject:
+                                    maxLength: 200
+                                    type: string
+                            required:
+                                - subject
+                                - message
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    messages:
+                                        items:
+                                            properties:
+                                                attachments:
+                                                    items:
+                                                        properties:
+                                                            byte_size:
+                                                                maximum: 10485760
+                                                                type: integer
+                                                            content_type:
+                                                                type: string
+                                                            created_at:
+                                                                format: date-time
+                                                                type: string
+                                                            digest:
+                                                                type: string
+                                                            filename:
+                                                                type: string
+                                                            id:
+                                                                format: uuid
+                                                                type: string
+                                                            url:
+                                                                type: string
+                                                        required:
+                                                            - id
+                                                            - filename
+                                                            - content_type
+                                                            - byte_size
+                                                            - url
+                                                        type: object
+                                                    type: array
+                                                author:
+                                                    properties:
+                                                        id:
+                                                            format: uuid
+                                                            type: string
+                                                        name:
+                                                            type: string
+                                                    type: object
+                                                body:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                from_staff:
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                message_id:
+                                                    description: The email Message-ID a piped reply carried, when any.
+                                                    type: string
+                                                ticket_id:
+                                                    format: uuid
+                                                    type: string
+                                            required:
+                                                - id
+                                                - ticket_id
+                                                - body
+                                                - from_staff
+                                            type: object
+                                        type: array
+                                    ticket:
+                                        properties:
+                                            assigned_to:
+                                                format: uuid
+                                                type: string
+                                            closed_at:
+                                                format: date-time
+                                                type: string
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            department:
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            last_message:
+                                                properties:
+                                                    body:
+                                                        type: string
+                                                    from_staff:
+                                                        type: boolean
+                                                type: object
+                                            last_reply_at:
+                                                format: date-time
+                                                type: string
+                                            message_count:
+                                                type: integer
+                                            number:
+                                                example: TKT-000042
+                                                type: string
+                                            priority:
+                                                enum:
+                                                    - low
+                                                    - normal
+                                                    - high
+                                                type: string
+                                            service_id:
+                                                format: uuid
+                                                type: string
+                                            status:
+                                                enum:
+                                                    - open
+                                                    - replied
+                                                    - closed
+                                                type: string
+                                            subject:
+                                                maxLength: 200
+                                                type: string
+                                            updated_at:
+                                                format: date-time
+                                                type: string
+                                        required:
+                                            - id
+                                            - number
+                                            - subject
+                                            - status
+                                            - priority
+                                            - department
+                                        type: object
+                                required:
+                                    - ticket
+                                    - messages
+                                type: object
+                    description: A duplicate email delivery; the existing thread with duplicate=true
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Invalid subject, department, priority or body
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Tickets are disabled
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A concurrent delivery of the same message id won the race; retry to read it
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Open a ticket
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:self
+            x-rate-class: mutation
+    /api/v1/portal/tickets/{id}:
+        get:
+            description: 'The ticket and every message with its attachments'' metadata. Another customer''s ticket is not_found, never forbidden: a 403 would confirm that the identifier exists.'
+            operationId: GetPortalTicketsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    messages:
+                                        items:
+                                            properties:
+                                                attachments:
+                                                    items:
+                                                        properties:
+                                                            byte_size:
+                                                                maximum: 10485760
+                                                                type: integer
+                                                            content_type:
+                                                                type: string
+                                                            created_at:
+                                                                format: date-time
+                                                                type: string
+                                                            digest:
+                                                                type: string
+                                                            filename:
+                                                                type: string
+                                                            id:
+                                                                format: uuid
+                                                                type: string
+                                                            url:
+                                                                type: string
+                                                        required:
+                                                            - id
+                                                            - filename
+                                                            - content_type
+                                                            - byte_size
+                                                            - url
+                                                        type: object
+                                                    type: array
+                                                author:
+                                                    properties:
+                                                        id:
+                                                            format: uuid
+                                                            type: string
+                                                        name:
+                                                            type: string
+                                                    type: object
+                                                body:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                from_staff:
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                message_id:
+                                                    description: The email Message-ID a piped reply carried, when any.
+                                                    type: string
+                                                ticket_id:
+                                                    format: uuid
+                                                    type: string
+                                            required:
+                                                - id
+                                                - ticket_id
+                                                - body
+                                                - from_staff
+                                            type: object
+                                        type: array
+                                    ticket:
+                                        properties:
+                                            assigned_to:
+                                                format: uuid
+                                                type: string
+                                            closed_at:
+                                                format: date-time
+                                                type: string
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            department:
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            last_message:
+                                                properties:
+                                                    body:
+                                                        type: string
+                                                    from_staff:
+                                                        type: boolean
+                                                type: object
+                                            last_reply_at:
+                                                format: date-time
+                                                type: string
+                                            message_count:
+                                                type: integer
+                                            number:
+                                                example: TKT-000042
+                                                type: string
+                                            priority:
+                                                enum:
+                                                    - low
+                                                    - normal
+                                                    - high
+                                                type: string
+                                            service_id:
+                                                format: uuid
+                                                type: string
+                                            status:
+                                                enum:
+                                                    - open
+                                                    - replied
+                                                    - closed
+                                                type: string
+                                            subject:
+                                                maxLength: 200
+                                                type: string
+                                            updated_at:
+                                                format: date-time
+                                                type: string
+                                        required:
+                                            - id
+                                            - number
+                                            - subject
+                                            - status
+                                            - priority
+                                            - department
+                                        type: object
+                                required:
+                                    - ticket
+                                    - messages
+                                type: object
+                    description: The thread
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket, or it belongs to someone else
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: One ticket thread
+            x-permission: ticket:read:self
+            x-rate-class: read
+    /api/v1/portal/tickets/{id}/attachments:
+        post:
+            description: The body is the file itself, with the name in `?filename=` and the type in Content-Type; `?message_id=` selects the message (the newest when omitted). Capped at 10 MB, checked against Content-Length before the body is read and again while reading, so an oversized upload is refused with 413 attachment_too_large rather than buffered. Identical bytes attached to one message collapse to one row by digest. This route deliberately does not use the idempotency wrapper, which buffers bodies at 1 MB and would refuse a valid 9 MB file with the wrong code.
+            operationId: PostPortalTicketsByIdAttachments
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    byte_size:
+                                        maximum: 10485760
+                                        type: integer
+                                    content_type:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    digest:
+                                        type: string
+                                    filename:
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    url:
+                                        type: string
+                                required:
+                                    - id
+                                    - filename
+                                    - content_type
+                                    - byte_size
+                                    - url
+                                type: object
+                    description: The stored attachment
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No filename, or an empty body
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket, or it belongs to someone else
+                "413":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Larger than 10 MB
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Attach a file to the customer's own ticket
+            x-csrf-required: true
+            x-permission: ticket:write:self
+            x-rate-class: mutation
+    /api/v1/portal/tickets/{id}/close:
+        post:
+            description: Closes the caller's own ticket. Refused with 403 client_closing_disabled when the operator has reserved closing to staff.
+            operationId: PostPortalTicketsByIdClose
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    assigned_to:
+                                        format: uuid
+                                        type: string
+                                    closed_at:
+                                        format: date-time
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    department:
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    last_message:
+                                        properties:
+                                            body:
+                                                type: string
+                                            from_staff:
+                                                type: boolean
+                                        type: object
+                                    last_reply_at:
+                                        format: date-time
+                                        type: string
+                                    message_count:
+                                        type: integer
+                                    number:
+                                        example: TKT-000042
+                                        type: string
+                                    priority:
+                                        enum:
+                                            - low
+                                            - normal
+                                            - high
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - open
+                                            - replied
+                                            - closed
+                                        type: string
+                                    subject:
+                                        maxLength: 200
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - number
+                                    - subject
+                                    - status
+                                    - priority
+                                    - department
+                                type: object
+                    description: The closed ticket
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Customers may not close tickets
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket, or it belongs to someone else
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Close a ticket
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:self
+            x-rate-class: mutation
+    /api/v1/portal/tickets/{id}/replies:
+        post:
+            description: 'Appends a customer message and reopens the ticket. A duplicate `message_id` (a redelivered email) is not an error: the stored message is returned with duplicate=true and the thread is unchanged.'
+            operationId: PostPortalTicketsByIdReplies
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                body:
+                                    type: string
+                                message_id:
+                                    description: An email Message-ID. A duplicate is ignored and the stored message is returned with duplicate=true.
+                                    type: string
+                            required:
+                                - body
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    attachments:
+                                        items:
+                                            properties:
+                                                byte_size:
+                                                    maximum: 10485760
+                                                    type: integer
+                                                content_type:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                digest:
+                                                    type: string
+                                                filename:
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                url:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - filename
+                                                - content_type
+                                                - byte_size
+                                                - url
+                                            type: object
+                                        type: array
+                                    author:
+                                        properties:
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            name:
+                                                type: string
+                                        type: object
+                                    body:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    from_staff:
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    message_id:
+                                        description: The email Message-ID a piped reply carried, when any.
+                                        type: string
+                                    ticket_id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - id
+                                    - ticket_id
+                                    - body
+                                    - from_staff
+                                type: object
+                    description: A duplicate delivery; the stored message
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket, or it belongs to someone else
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Reply to a ticket
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:self
+            x-rate-class: mutation
+    /api/v1/portal/tickets/attachments/{id}:
+        get:
+            description: 'Served only to the customer who owns the ticket. The stored content type is normalised on upload (anything a browser would treat as a document becomes application/octet-stream); the response carries X-Content-Type-Options: nosniff, Content-Disposition: attachment, a sandboxing Content-Security-Policy and Cache-Control: private, no-store. Another customer''s attachment is 404.'
+            operationId: GetPortalTicketsAttachmentsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The file bytes
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such attachment, or it belongs to someone else
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Download an attachment
+            x-permission: ticket:read:self
+            x-rate-class: read
+    /api/v1/portal/tickets/meta:
+        get:
+            description: The departments the operator configured (from the settings table, with code-side defaults so a missing row does not break the screen), the fixed priority and status lists, whether tickets are disabled, whether customers may close their own, and the attachment cap in bytes.
+            operationId: GetPortalTicketsMeta
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    client_closing_disabled:
+                                        type: boolean
+                                    departments:
+                                        items:
+                                            type: string
+                                        type: array
+                                    enabled:
+                                        type: boolean
+                                    max_attachment_bytes:
+                                        type: integer
+                                    max_subject_length:
+                                        type: integer
+                                    priorities:
+                                        items:
+                                            type: string
+                                        type: array
+                                    statuses:
+                                        items:
+                                            type: string
+                                        type: array
+                                type: object
+                    description: The ticket configuration
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The ticket form's configuration
+            x-permission: ticket:read:self
+            x-rate-class: read
     /api/v1/staff/api-keys:
         get:
             description: 'Never returns a key value: only the prefix, the scopes and the metadata.'
@@ -4328,6 +5331,1069 @@ paths:
                 required: true
             x-permission: service:terminate
             x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tickets:
+        get:
+            description: 'Every ticket, newest first, unscoped because a queue that shows one customer is not a queue. Filters: `status`, `priority`, `department`, `assignee` (a staff user id, or `unassigned`), and `q` (at least two characters, searched against the subject and the customer''s email and name). Each row carries the customer and the last message, so the queue renders without a second request.'
+            operationId: GetStaffTickets
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    next_cursor:
+                                        type: string
+                                    tickets:
+                                        items:
+                                            properties:
+                                                assigned_to:
+                                                    format: uuid
+                                                    type: string
+                                                closed_at:
+                                                    format: date-time
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                department:
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                last_message:
+                                                    properties:
+                                                        body:
+                                                            type: string
+                                                        from_staff:
+                                                            type: boolean
+                                                    type: object
+                                                last_reply_at:
+                                                    format: date-time
+                                                    type: string
+                                                message_count:
+                                                    type: integer
+                                                number:
+                                                    example: TKT-000042
+                                                    type: string
+                                                priority:
+                                                    enum:
+                                                        - low
+                                                        - normal
+                                                        - high
+                                                    type: string
+                                                service_id:
+                                                    format: uuid
+                                                    type: string
+                                                status:
+                                                    enum:
+                                                        - open
+                                                        - replied
+                                                        - closed
+                                                    type: string
+                                                subject:
+                                                    maxLength: 200
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - id
+                                                - number
+                                                - subject
+                                                - status
+                                                - priority
+                                                - department
+                                            type: object
+                                        type: array
+                                type: object
+                    description: A page of tickets
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An unknown filter value
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The support queue
+            x-permission: ticket:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/tickets/{id}:
+        get:
+            description: The same thread the customer sees, plus the customer record and the assignee's name.
+            operationId: GetStaffTicketsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    messages:
+                                        items:
+                                            properties:
+                                                attachments:
+                                                    items:
+                                                        properties:
+                                                            byte_size:
+                                                                maximum: 10485760
+                                                                type: integer
+                                                            content_type:
+                                                                type: string
+                                                            created_at:
+                                                                format: date-time
+                                                                type: string
+                                                            digest:
+                                                                type: string
+                                                            filename:
+                                                                type: string
+                                                            id:
+                                                                format: uuid
+                                                                type: string
+                                                            url:
+                                                                type: string
+                                                        required:
+                                                            - id
+                                                            - filename
+                                                            - content_type
+                                                            - byte_size
+                                                            - url
+                                                        type: object
+                                                    type: array
+                                                author:
+                                                    properties:
+                                                        id:
+                                                            format: uuid
+                                                            type: string
+                                                        name:
+                                                            type: string
+                                                    type: object
+                                                body:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                from_staff:
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                message_id:
+                                                    description: The email Message-ID a piped reply carried, when any.
+                                                    type: string
+                                                ticket_id:
+                                                    format: uuid
+                                                    type: string
+                                            required:
+                                                - id
+                                                - ticket_id
+                                                - body
+                                                - from_staff
+                                            type: object
+                                        type: array
+                                    ticket:
+                                        properties:
+                                            assigned_to:
+                                                format: uuid
+                                                type: string
+                                            closed_at:
+                                                format: date-time
+                                                type: string
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            department:
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            last_message:
+                                                properties:
+                                                    body:
+                                                        type: string
+                                                    from_staff:
+                                                        type: boolean
+                                                type: object
+                                            last_reply_at:
+                                                format: date-time
+                                                type: string
+                                            message_count:
+                                                type: integer
+                                            number:
+                                                example: TKT-000042
+                                                type: string
+                                            priority:
+                                                enum:
+                                                    - low
+                                                    - normal
+                                                    - high
+                                                type: string
+                                            service_id:
+                                                format: uuid
+                                                type: string
+                                            status:
+                                                enum:
+                                                    - open
+                                                    - replied
+                                                    - closed
+                                                type: string
+                                            subject:
+                                                maxLength: 200
+                                                type: string
+                                            updated_at:
+                                                format: date-time
+                                                type: string
+                                        required:
+                                            - id
+                                            - number
+                                            - subject
+                                            - status
+                                            - priority
+                                            - department
+                                        type: object
+                                required:
+                                    - ticket
+                                    - messages
+                                type: object
+                    description: The thread
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: One ticket thread, as staff
+            x-permission: ticket:read:all
+            x-rate-class: read
+            x-staff-only: true
+        patch:
+            description: Every field is optional and an omitted field is left alone; sending none of them is a 400. Setting the status to `closed` stamps closed_at; any other status clears it.
+            operationId: PatchStaffTicketsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                department:
+                                    type: string
+                                priority:
+                                    enum:
+                                        - low
+                                        - normal
+                                        - high
+                                    type: string
+                                status:
+                                    enum:
+                                        - open
+                                        - replied
+                                        - closed
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    assigned_to:
+                                        format: uuid
+                                        type: string
+                                    closed_at:
+                                        format: date-time
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    department:
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    last_message:
+                                        properties:
+                                            body:
+                                                type: string
+                                            from_staff:
+                                                type: boolean
+                                        type: object
+                                    last_reply_at:
+                                        format: date-time
+                                        type: string
+                                    message_count:
+                                        type: integer
+                                    number:
+                                        example: TKT-000042
+                                        type: string
+                                    priority:
+                                        enum:
+                                            - low
+                                            - normal
+                                            - high
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - open
+                                            - replied
+                                            - closed
+                                        type: string
+                                    subject:
+                                        maxLength: 200
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - number
+                                    - subject
+                                    - status
+                                    - priority
+                                    - department
+                                type: object
+                    description: The updated ticket
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No fields, or an unknown value
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Change a ticket's status, priority or department
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tickets/{id}/assign:
+        post:
+            description: '`{"assignee": "<user id>"}` assigns; `{"assignee": ""}` unassigns. The assignee must hold a staff role — a ticket is assigned to an operator, not to a customer login.'
+            operationId: PostStaffTicketsByIdAssign
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                assignee:
+                                    description: A staff user id, or empty to unassign.
+                                    type: string
+                            required:
+                                - assignee
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    assigned_to:
+                                        format: uuid
+                                        type: string
+                                    closed_at:
+                                        format: date-time
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    department:
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    last_message:
+                                        properties:
+                                            body:
+                                                type: string
+                                            from_staff:
+                                                type: boolean
+                                        type: object
+                                    last_reply_at:
+                                        format: date-time
+                                        type: string
+                                    message_count:
+                                        type: integer
+                                    number:
+                                        example: TKT-000042
+                                        type: string
+                                    priority:
+                                        enum:
+                                            - low
+                                            - normal
+                                            - high
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - open
+                                            - replied
+                                            - closed
+                                        type: string
+                                    subject:
+                                        maxLength: 200
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - number
+                                    - subject
+                                    - status
+                                    - priority
+                                    - department
+                                type: object
+                    description: The updated ticket
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The assignee is not staff
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Assign or unassign a ticket
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tickets/{id}/attachments:
+        post:
+            description: Same shape and cap as the customer upload; requires ticket:write:all.
+            operationId: PostStaffTicketsByIdAttachments
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    byte_size:
+                                        maximum: 10485760
+                                        type: integer
+                                    content_type:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    digest:
+                                        type: string
+                                    filename:
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    url:
+                                        type: string
+                                required:
+                                    - id
+                                    - filename
+                                    - content_type
+                                    - byte_size
+                                    - url
+                                type: object
+                    description: The stored attachment
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket
+                "413":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Larger than 10 MB
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Attach a file to any ticket
+            x-csrf-required: true
+            x-permission: ticket:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tickets/{id}/close:
+        post:
+            description: Closes any ticket. Not affected by the client_closing_disabled setting, which is about customers.
+            operationId: PostStaffTicketsByIdClose
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    assigned_to:
+                                        format: uuid
+                                        type: string
+                                    closed_at:
+                                        format: date-time
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    department:
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    last_message:
+                                        properties:
+                                            body:
+                                                type: string
+                                            from_staff:
+                                                type: boolean
+                                        type: object
+                                    last_reply_at:
+                                        format: date-time
+                                        type: string
+                                    message_count:
+                                        type: integer
+                                    number:
+                                        example: TKT-000042
+                                        type: string
+                                    priority:
+                                        enum:
+                                            - low
+                                            - normal
+                                            - high
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - open
+                                            - replied
+                                            - closed
+                                        type: string
+                                    subject:
+                                        maxLength: 200
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - number
+                                    - subject
+                                    - status
+                                    - priority
+                                    - department
+                                type: object
+                    description: The closed ticket
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Close a ticket as staff
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tickets/{id}/replies:
+        post:
+            description: Appends a staff message and sets the ticket to `replied`. A duplicate `message_id` is ignored, exactly as on the customer path.
+            operationId: PostStaffTicketsByIdReplies
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                body:
+                                    type: string
+                                message_id:
+                                    description: An email Message-ID. A duplicate is ignored and the stored message is returned with duplicate=true.
+                                    type: string
+                            required:
+                                - body
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    attachments:
+                                        items:
+                                            properties:
+                                                byte_size:
+                                                    maximum: 10485760
+                                                    type: integer
+                                                content_type:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                digest:
+                                                    type: string
+                                                filename:
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                url:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - filename
+                                                - content_type
+                                                - byte_size
+                                                - url
+                                            type: object
+                                        type: array
+                                    author:
+                                        properties:
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            name:
+                                                type: string
+                                        type: object
+                                    body:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    from_staff:
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    message_id:
+                                        description: The email Message-ID a piped reply carried, when any.
+                                        type: string
+                                    ticket_id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - id
+                                    - ticket_id
+                                    - body
+                                    - from_staff
+                                type: object
+                    description: The new message
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Reply as staff
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tickets/attachments/{id}:
+        get:
+            description: Same headers as the customer download; requires ticket:read:all and a staff role.
+            operationId: GetStaffTicketsAttachmentsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The file bytes
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such attachment
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Download any attachment
+            x-permission: ticket:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/tickets/meta:
+        get:
+            description: The departments, priorities, statuses and the auto-close threshold, with code-side defaults so a missing settings row does not break the filter bar.
+            operationId: GetStaffTicketsMeta
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    autoclose_days:
+                                        type: integer
+                                    client_closing_disabled:
+                                        type: boolean
+                                    departments:
+                                        items:
+                                            type: string
+                                        type: array
+                                    enabled:
+                                        type: boolean
+                                    max_attachment_bytes:
+                                        type: integer
+                                    max_subject_length:
+                                        type: integer
+                                    priorities:
+                                        items:
+                                            type: string
+                                        type: array
+                                    statuses:
+                                        items:
+                                            type: string
+                                        type: array
+                                type: object
+                    description: The ticket configuration
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The queue's configuration
+            x-permission: ticket:read:all
+            x-rate-class: read
             x-staff-only: true
     /api/v1/staff/webhooks:
         get:

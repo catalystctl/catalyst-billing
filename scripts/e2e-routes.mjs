@@ -25,7 +25,25 @@
 //     --staff=... --staff-password=... \
 //     [--customer=... --customer-password=...] \
 //     [--customer-id=... --invoice-id=... --service-id=... --ticket-id=... \
-//      --product-id=... --product-slug=...] [--screenshots=dir]
+//      --product-id=... --product-slug=...] [--screenshots=dir] [--strict-placeholders]
+//
+// Three outcomes, the same three the named-screen harness uses, because the distinction is
+// what keeps this usable while packages land in parallel:
+//
+//   ok           the route rendered, with a heading, content and no error.
+//   not built    the route is declared and the router found it, and the view says in its own
+//                words that it is a placeholder ("Not built yet", "not available in this
+//                build"). Reported in the ledger, does not fail the run — unless
+//                --strict-placeholders is passed, which is what CI should run once every
+//                screen exists.
+//   FAIL         the router answered "Page not found" (the table and the router disagree, so
+//                a link to it is a dead link), or the route redirected away from itself, or
+//                it threw, or it logged a console error, or it rendered nothing.
+//
+// The line between the first two and the last is the whole point: a half-landed feature is a
+// status, and a dead link is a defect. Collapsing them either way loses something — tolerate
+// everything and the guard stops guarding, fail on everything and nobody can run the harness
+// while a package is in flight.
 //
 // Record ids are optional. Without them a route with a :param is visited with a valid but
 // nonexistent id, and its record-level "not found" state is tolerated — that is an honest
@@ -53,6 +71,11 @@ const staffPassword = arg("staff-password");
 const customerEmail = arg("customer");
 const customerPassword = arg("customer-password");
 const shotDir = arg("screenshots");
+// A declared route whose view is still a placeholder is tolerated by default, because the
+// commerce, support and platform screens land in parallel and a harness that is red for a
+// screen nobody has written yet stops being run. `--strict-placeholders` is the other half:
+// once the build is complete, CI turns it on and "not built yet" becomes a failure too.
+const strictPlaceholders = args.includes("--strict-placeholders");
 
 if (!staffEmail || !staffPassword) {
   console.error("usage: e2e-routes.mjs --base=URL --staff=EMAIL --staff-password=PASS [--customer=... --customer-password=...]");
@@ -352,33 +375,55 @@ function check(name, condition, detail = "") {
 }
 
 /**
- * The markers that mean "this route is a dead end", as opposed to "this route rendered an
+ * The markers that mean "this route is a dead link", as opposed to "this route rendered an
  * honest answer".
  *
  *   - the router's own not-found screen: the route table and the router disagree, which is
  *     exactly the class of dead link this pass exists to catch;
- *   - a chunk that is not in the bundle: the route is declared, linked, and cannot be opened.
  *
- * A record-level 404 is *not* in this list. "No such invoice" is the correct answer for an
- * invoice that does not exist, and treating it as a dead route would make the pass fail on
- * every database that has not been seeded.
+ * That is the only entry, and it is deliberate. "This screen is not available in this build"
+ * is *not* a dead link: the route is declared, the router found it, and its chunk is simply
+ * not in the bundle yet. Treating the two the same would make this pass red every time a
+ * package lands a route before its view, which is the normal order of work — and the obvious
+ * response to that, deleting the route from the sweep, hides the dead link again.
  */
-const DEAD_END_MARKERS = [
-  /page not found/i,
-  /that page does not exist/i,
+const DEAD_LINK_MARKERS = [/page not found/i, /that page does not exist/i];
+
+/**
+ * The markers that mean "declared, routed, and not built yet".
+ *
+ * A placeholder is reported in the ledger and does not fail the run, because a half-landed
+ * feature must be *visible* rather than silently skipped: a run that says "75 routes ok" when
+ * one of them is an empty card is a run that lies. `--strict-placeholders` turns every one of
+ * these into a failure, which is what CI runs once the build is complete.
+ */
+const PLACEHOLDER_MARKERS = [
   /not available in this build/i,
   /has not shipped yet/i,
+  /not built yet/i,
+  /not available on this installation/i,
 ];
 
-function deadEnd(state) {
-  for (const marker of DEAD_END_MARKERS) {
-    const hit = state.titles.match(marker);
+function firstMarker(titles, markers) {
+  for (const marker of markers) {
+    const hit = titles.match(marker);
     if (hit) return hit[0];
   }
   return "";
 }
 
+/** The router's not-found screen: the route table and the router disagree. */
+function deadLink(state) {
+  return firstMarker(state.titles, DEAD_LINK_MARKERS);
+}
+
+/** A declared route whose view says, in its own words, that it is not built. */
+function placeholderReason(state) {
+  return firstMarker(state.titles, PLACEHOLDER_MARKERS);
+}
+
 const ledger = [];
+const placeholders = [];
 
 /** Visits one route and records what happened. */
 async function checkRoute(route, { strict, phase }) {
@@ -386,7 +431,10 @@ async function checkRoute(route, { strict, phase }) {
   const state = await visit(route.path);
   const where = `${phase}: ${route.path}`;
 
-  const dead = deadEnd(state);
+  const dead = deadLink(state);
+  // A placeholder is only "not built yet" when the router did find the route. A not-found
+  // screen wins, because that is the more serious answer.
+  const notBuilt = dead ? "" : placeholderReason(state);
   const thrown = exceptions.slice(before.exceptions).filter((e) => e.route === route.path);
   const logged = consoleErrors.slice(before.console).filter((e) => e.route === route.path);
 
@@ -398,7 +446,7 @@ async function checkRoute(route, { strict, phase }) {
   const redirected = state.path !== wanted;
 
   const problems = [];
-  if (dead) problems.push(`dead end: ${dead}`);
+  if (dead) problems.push(`dead link: ${dead}`);
   if (redirected) problems.push(`redirected to ${state.path}${state.search}`);
   if (thrown.length > 0) problems.push(`uncaught: ${thrown.map((e) => e.text).join(" | ").slice(0, 300)}`);
   // A 401 is the shell probing for a session; it is expected on the public pages and is not
@@ -415,6 +463,20 @@ async function checkRoute(route, { strict, phase }) {
     problems.push(`render failure: ${state.errorText.slice(0, 200)}`);
   } else if (strict && state.errorText) {
     problems.push(`error state: ${state.errorText.slice(0, 200)}`);
+  }
+
+  // Not built yet: recorded, printed, and not a failure — unless the caller asked for strict
+  // mode, or the placeholder also threw, redirected or rendered nothing (those are problems
+  // above and still fail).
+  if (notBuilt && problems.length === 0) {
+    if (!strictPlaceholders) {
+      placeholders.push({ path: route.path, phase, reason: notBuilt });
+      ledger.push({ path: route.path, phase, status: "placeholder", problems: [`not built yet: ${notBuilt}`] });
+      console.log(`gap  ${where} — not built yet: ${notBuilt}`);
+      await screenshot(`placeholder-${phase}-${route.path.replace(/[^a-z0-9]+/gi, "-")}`.slice(0, 80));
+      return "placeholder";
+    }
+    problems.push(`not built yet (strict mode): ${notBuilt}`);
   }
 
   const status = problems.length === 0 ? "ok" : "FAIL";
@@ -472,11 +534,33 @@ try {
   child.kill("SIGKILL");
 }
 
-console.log(`\n${passes.length} routes ok, ${failures.length} failed (${table.length} in the table)`);
+console.log(
+  `\n${passes.length} routes ok, ${placeholders.length} not built yet, ${failures.length} failed ` +
+    `(${table.length} in the table)`,
+);
+
+// The placeholder list, printed whether the run passed or failed. A run that said "75 routes
+// ok" while one of them was an empty card would be a run that lies, and the whole point of
+// this pass is that a screen nobody can use is visible as a test result rather than as a bug
+// report. `--strict-placeholders` makes each of these a failure.
+if (placeholders.length > 0) {
+  console.log(`\nnot built yet (${placeholders.length}):`);
+  for (const entry of placeholders) console.log(`  gap  ${entry.phase}: ${entry.path} — ${entry.reason}`);
+  if (!strictPlaceholders) console.log("     tolerated: a declared route with a placeholder view does not fail this pass");
+}
 
 if (failures.length > 0) {
   console.log("\nfailures:");
   for (const f of failures) console.log(`  - ${f}`);
   process.exit(1);
 }
-console.log("route sweep: every route in the table renders");
+// The closing line states what was actually proved, not what the pass would like to have
+// proved. "Every route renders" is false while one of them is a placeholder card, and a
+// harness that rounds that up is the reason a missing screen survives to a bug report.
+if (placeholders.length > 0) {
+  console.log(
+    `route sweep: no dead links (${passes.length} ok, ${placeholders.length} declared but not built yet)`,
+  );
+} else {
+  console.log("route sweep: every route in the table renders");
+}

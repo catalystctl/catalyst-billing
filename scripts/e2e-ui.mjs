@@ -346,6 +346,10 @@ const MISSING_MARKERS = [
   // A real screen whose endpoint this build does not serve, e.g. config options or logs.
   /not available on this installation/i,
   /has not shipped yet/i,
+  // A declared route whose view is a placeholder card. Without this the screen counts as
+  // `present` and the ledger says "0 gaps" while the operator sees an empty card — which is
+  // how /ticket-fields stayed invisible for as long as it did.
+  /not built yet/i,
 ];
 
 const screenLedger = [];
@@ -881,6 +885,10 @@ try {
     { name: "notification-templates", path: "/notification-templates", expect: ["Notification templates"] },
     { name: "automation", path: "/automation", expect: ["Automation"] },
     { name: "service-properties", path: "/service-properties", expect: ["Service properties"] },
+    // Declared, routed and in the navigation, and its view is still a placeholder. Listed so
+    // the ledger reports it as a gap rather than leaving it to be discovered: a screen that is
+    // in the menu and not built is the state the route sweep reports as "not built yet".
+    { name: "ticket-fields", path: "/ticket-fields", expect: ["Ticket fields"] },
     { name: "users", path: "/users", expect: ["Users"] },
     { name: "roles", path: "/roles", expect: ["Roles"] },
   ]) {

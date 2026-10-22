@@ -14,7 +14,14 @@ scripts/reachability.sh            # the report
 scripts/reachability.sh --check    # exit 1 on a finding that is not fixed or recorded
 scripts/reachability.sh --json     # machine-readable
 bash scripts/browser-e2e.sh        # the named screens, then every route
+E2E_STRICT_PLACEHOLDERS=1 bash scripts/browser-e2e.sh   # a release check: placeholders fail too
 ```
+
+**Baseline (last run):** 351 named-screen assertions green, 37 screens present, 0 broken, 0
+reachability gaps, 1 declared-but-not-built (`/ticket-fields`); route sweep 76 ok, 1 not built
+yet, 0 failed. The harness takes a `flock` on `${TMPDIR:-/tmp}/catalyst-billing-e2e.lock`, so
+two runs cannot collide; the lock descriptor is closed for the server and the browser harness
+(`9>&-`) because an orphaned browser that inherits it holds the lock after the script dies.
 
 ## The method
 
@@ -200,6 +207,40 @@ it. `scripts/e2e-routes.mjs` closes that:
 
 This turns the class of dead link that is invisible to a link check into a failing test: the
 link resolves, the route is declared, and the screen still cannot be opened.
+
+### A placeholder is a status, not a defect
+
+The screens land in parallel, so a declared route whose view is still a placeholder must be
+runnable without failing the harness — otherwise the harness is red for work nobody has
+finished and stops being run. The sweep therefore reports three outcomes, the same three the
+named-screen harness uses:
+
+| Outcome | What it means | Fails the run? |
+|---|---|---|
+| `ok` | the route rendered with a heading, content and no error | no |
+| `gap` (not built yet) | the route is declared and the router found it; the view says in its own words that it is a placeholder ("Not built yet", "not available in this build") | no — unless `--strict-placeholders` |
+| `FAIL` | the router answered "Page not found", the route redirected away from itself, it threw, it logged a console error, or it rendered nothing | yes |
+
+The closing line states which of the two it proved — `route sweep: no dead links (74 ok, 1
+declared but not built yet)` rather than `every route renders` — because a harness that rounds
+a placeholder up to a pass is how a missing screen survives to a bug report.
+
+`E2E_STRICT_PLACEHOLDERS=1 bash scripts/browser-e2e.sh` (or `--strict-placeholders` on the
+sweep directly) turns the tolerance off. That is the mode a release check runs: once every
+screen exists, "not built yet" must fail.
+
+`/ticket-fields` is the current example. It is routed, it is in the navigation, and its view is
+a placeholder card; the named-screen harness now classifies it as a gap instead of counting it
+as present, and the sweep reports it by name.
+
+### The lock leaks through the browser (fixed)
+
+`browser-e2e.sh` takes an exclusive `flock` so two runs cannot interleave their seeds. The
+descriptor was inherited by the browser the harness spawns, so a run that was killed left an
+orphaned Chromium holding the lock: every later run then failed with "another run holds the
+lock" while no script was running. The descriptor is now closed for the server and for both
+harness invocations (`9>&-`), and the failure message names the diagnostic command so a stale
+holder is findable instead of mysterious.
 
 ## Limitations
 

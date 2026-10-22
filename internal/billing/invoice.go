@@ -57,6 +57,16 @@ type Line struct {
 	QuantityMilli int64
 	UnitPrice     money.Amount
 	TaxRate       string
+
+	// ProductID names what this line sells, when it sells a product. Fulfilment provisions
+	// from the invoice's order when there is one; a manual invoice has no order, so this is
+	// the only thing that tells it a service is owed. Nil for a line that provisions nothing
+	// ("one hour of support", a prorated difference).
+	ProductID *string
+	// PriceVersionID records which price was used, so the provision plan and region are
+	// reproducible. Nil for a negotiated price on a standard product: the plan is then read
+	// from the product's current version while the amount charged stays as typed.
+	PriceVersionID *string
 }
 
 // LineResult is the priced, taxed outcome for one line.
@@ -68,6 +78,10 @@ type LineResult struct {
 	Tax           money.Amount
 	Total         money.Amount
 	TaxRate       string
+	// Carried through pricing so the insert can record what the line sells. Pricing does not
+	// change them: they are provenance, not money.
+	ProductID      *string
+	PriceVersionID *string
 }
 
 // Totals is the money summary of an invoice.
@@ -305,11 +319,13 @@ func (s *Issuer) CreateDraft(ctx context.Context, tx pgx.Tx, req IssueRequest) (
 	for i, l := range results {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO invoice_lines (invoice_id, position, description, quantity,
-				unit_minor, net_minor, tax_rate, tax_minor, total_minor)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+				unit_minor, net_minor, tax_rate, tax_minor, total_minor,
+				product_id, price_version_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 			invoiceID, i+1, l.Description,
 			floatQuantity(l.QuantityMilli), l.UnitMinor,
 			l.Net.Minor(), l.TaxRate, l.Tax.Minor(), l.Total.Minor(),
+			l.ProductID, l.PriceVersionID,
 		); err != nil {
 			return "", Totals{}, Snapshot{}, fmt.Errorf("billing: insert invoice line %d: %w", i, err)
 		}

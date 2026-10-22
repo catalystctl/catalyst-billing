@@ -88,11 +88,29 @@ DOM="$("$CHROME" "${CHROME_FLAGS[@]}" --dump-dom "$BASE/login" 2>/dev/null)" \
 [[ "$DOM" == *"Sign in"* ]] || fail "the sign-in panel has no heading"
 ok "the module ran and rendered the sign-in panel"
 
-# The anonymous root must land on the sign-in screen rather than an empty shell.
+# The anonymous root is the public storefront, not a login wall. A storefront behind a login is
+# not a storefront, so this asserts the opposite of what it used to: "/" must render for a
+# visitor with no session.
 ROOT_DOM="$("$CHROME" "${CHROME_FLAGS[@]}" --virtual-time-budget=4000 --dump-dom "$BASE/" 2>/dev/null)" \
   || fail "chromium could not load /"
-[[ "$ROOT_DOM" == *'class="auth-panel"'* ]] || fail "/ did not redirect an anonymous visitor to the sign-in screen"
-ok "an anonymous visitor is sent to the sign-in screen"
+[[ "$ROOT_DOM" == *'class="store-page"'* || "$ROOT_DOM" == *'class="store-hero"'* ]] \
+  || fail "/ did not render the public storefront for an anonymous visitor"
+[[ "$ROOT_DOM" != *'class="auth-panel"'* ]] || fail "/ sent an anonymous visitor to a login wall instead of the storefront"
+ok "an anonymous visitor sees the public storefront at /"
+
+# A product page is public too: a storefront that requires a session to view a product is the
+# same login wall one click later.
+PRODUCT_DOM="$("$CHROME" "${CHROME_FLAGS[@]}" --virtual-time-budget=4000 --dump-dom "$BASE/products/anything" 2>/dev/null)" \
+  || fail "chromium could not load a product page"
+[[ "$PRODUCT_DOM" == *'class="store-page"'* ]] \
+  || fail "a product page did not render for an anonymous visitor"
+ok "a product page renders without a session"
+
+# The sign-in screen still works when asked for directly.
+LOGIN_DOM="$("$CHROME" "${CHROME_FLAGS[@]}" --virtual-time-budget=4000 --dump-dom "$BASE/login" 2>/dev/null)" \
+  || fail "chromium could not load /login"
+[[ "$LOGIN_DOM" == *'class="auth-panel"'* ]] || fail "/login did not render the sign-in panel"
+ok "the sign-in screen renders at /login"
 
 # A client-side route must survive a reload by serving the shell, and the router must render
 # its not-found screen rather than a blank page.

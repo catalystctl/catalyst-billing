@@ -2,4 +2,132 @@
  *
  * Shared components live in components.css and pages.css; this file exists so a screen can
  * have a shape of its own without editing a file another screen also owns.
+ *
+ * Only three shapes are genuinely new here: a filter bar that keeps its labels inline, a
+ * truncating cell for a provider error string (which can be a whole paragraph), and the hold
+ * row, which is a list item with a control on the right rather than a table.
  */
+
+/* ---------------------------------------------------------------- filters -- */
+
+.svc-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+.svc-filters .field {
+  gap: 4px;
+  min-width: 150px;
+}
+
+.svc-filters .field-label {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.svc-filters .input,
+.svc-filters .select {
+  height: 30px;
+}
+
+/* ----------------------------------------------------------------- cells -- */
+
+/* A provider error can be a paragraph; the row keeps its height and the full text stays in
+   the title attribute, so nothing is lost and no column is widened by one bad message. */
+.svc-truncate {
+  display: inline-block;
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* ----------------------------------------------------------------- holds -- */
+
+.svc-holds {
+  display: flex;
+  flex-direction: column;
+}
+
+.svc-hold {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.svc-hold:last-child {
+  border-bottom: 0;
+}
+
+.svc-hold-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.svc-hold-reason {
+  font-size: var(--text-sm);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.svc-hold-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.svc-hold-side {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: none;
+}
+
+/* ------------------------------------------------------------ danger zone -- */
+
+.svc-danger {
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--line));
+}
+
+.svc-danger .card-title {
+  color: var(--danger);
+}
+
+@media (max-width: 780px) {
+  .svc-filters .field {
+    min-width: 0;
+    flex: 1 1 140px;
+  }
+
+  .svc-hold {
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+
+  .svc-hold-side {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .svc-truncate {
+    max-width: 100%;
+  }
+}

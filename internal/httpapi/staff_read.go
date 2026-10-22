@@ -58,9 +58,6 @@ func registerStaffReads(r *router) {
 	r.staffGet("/api/v1/staff/operations", authn.PermServiceReadAll, r.s.handleStaffOperations)
 	r.staffGet("/api/v1/staff/webhooks", authn.PermPaymentReconcile, r.s.handleStaffWebhooks)
 
-	// Catalog.
-	r.staffGet("/api/v1/staff/catalog/products", authn.PermInvoiceReadAll, r.s.handleStaffProducts)
-	r.staffGet("/api/v1/staff/catalog/products/{id}", authn.PermInvoiceReadAll, r.s.handleStaffProduct)
 }
 
 // pageParams parses the pagination query, writing a response on failure.

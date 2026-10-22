@@ -57,11 +57,32 @@ func (a *Applier) ApplySettledPayment(ctx context.Context, tx pgx.Tx, p payments
 	// Provisioning is enqueued only when this payment actually settled the
 	// invoice. A partial payment moves money but buys nothing yet.
 	if res.InvoicePaid {
+		if err := a.activateSubscription(ctx, tx, p.InvoiceID); err != nil {
+			return payments.ApplyResult{}, err
+		}
 		if err := a.enqueueProvisioning(ctx, tx, p.InvoiceID); err != nil {
 			return payments.ApplyResult{}, err
 		}
 	}
 	return out, nil
+}
+
+// activateSubscription starts the renewal schedule of a subscription that a paid
+// order created.
+//
+// Orders are written with a 'pending' subscription on purpose: an unpaid order must
+// never renew. The renewal scanner only looks at 'active' and 'past_due', so without
+// this transition a customer would pay once and never be billed again. It is
+// conditional on 'pending' so a replayed payment cannot resurrect a cancelled
+// subscription.
+func (a *Applier) activateSubscription(ctx context.Context, tx pgx.Tx, invoiceID string) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE subscriptions SET status = 'active', version = version + 1
+		WHERE status = 'pending'
+		  AND id = (SELECT subscription_id FROM invoices WHERE id = $1)`, invoiceID); err != nil {
+		return fmt.Errorf("fulfilment: activate subscription: %w", err)
+	}
+	return nil
 }
 
 // enqueueProvisioning creates the service and its create-operation for every
@@ -71,48 +92,26 @@ func (a *Applier) ApplySettledPayment(ctx context.Context, tx pgx.Tx, p payments
 // id, so a replayed payment finds the existing operation instead of creating a
 // second service.
 func (a *Applier) enqueueProvisioning(ctx context.Context, tx pgx.Tx, invoiceID string) error {
-	rows, err := tx.Query(ctx, `
-		SELECT oi.id, o.customer_id, oi.price_version_id, p.id AS product_id,
-		       COALESCE(pv.provision_plan, ''), COALESCE(pv.provision_region, ''),
-		       i.subscription_id
-		FROM invoices i
-		JOIN orders o ON o.id = i.order_id
-		JOIN order_items oi ON oi.order_id = o.id
-		JOIN price_versions pv ON pv.id = oi.price_version_id
-		JOIN products p ON p.id = pv.product_id
-		WHERE i.id = $1
-		ORDER BY oi.position`, invoiceID)
+	// Two sources of "what does this invoice sell", in priority order.
+	//
+	// An invoice raised by a checkout has an order, and the order items are authoritative: they
+	// carry the price version the customer actually bought. A manual invoice has no order at
+	// all — an operator wrote it for a bank transfer — so the product it sells is recorded on
+	// the invoice line instead. Without this second query a manual invoice would take the
+	// customer's money and provision nothing, which is the defect this exists to fix.
+	//
+	// The order path is tried first and, when it returns rows, the line path is skipped
+	// entirely. Falling through on "no rows" rather than merging the two is deliberate: an
+	// invoice must never create the same service twice because both paths matched.
+	items, err := a.provisioningItemsFromOrder(ctx, tx, invoiceID)
 	if err != nil {
-		return fmt.Errorf("fulfilment: load order items: %w", err)
+		return err
 	}
-
-	type item struct {
-		ID         string
-		CustomerID string
-		PriceID    string
-		ProductID  string
-		PlanID     string
-		Region     string
-		// SubscriptionID links the service to its billing schedule. Without it,
-		// dunning cannot find which invoice funds the service, so automated
-		// suspension never happens.
-		SubscriptionID *string
-	}
-	var items []item
-	for rows.Next() {
-		var it item
-		if err := rows.Scan(&it.ID, &it.CustomerID, &it.PriceID, &it.ProductID,
-			&it.PlanID, &it.Region, &it.SubscriptionID); err != nil {
-			rows.Close()
-			return fmt.Errorf("fulfilment: scan order item: %w", err)
+	if len(items) == 0 {
+		if items, err = a.provisioningItemsFromLines(ctx, tx, invoiceID); err != nil {
+			return err
 		}
-		items = append(items, it)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("fulfilment: read order items: %w", err)
-	}
-	rows.Close()
 
 	for _, it := range items {
 		key := "create:" + it.ID
@@ -155,6 +154,96 @@ func (a *Applier) enqueueProvisioning(ctx context.Context, tx pgx.Tx, invoiceID 
 		}
 	}
 	return nil
+}
+
+// provisioningItem is one thing to provision, from either source.
+type provisioningItem struct {
+	// ID is the order item id or the invoice line id. It is the idempotency anchor: the
+	// operation key is "create:" + ID, so a replayed payment finds the existing operation.
+	ID         string
+	CustomerID string
+	ProductID  string
+	PlanID     string
+	Region     string
+	// SubscriptionID links the service to its billing schedule. Without it, dunning cannot
+	// find which invoice funds the service, so automated suspension never happens.
+	SubscriptionID *string
+}
+
+// provisioningItemsFromOrder reads what a checkout invoice sells.
+func (a *Applier) provisioningItemsFromOrder(ctx context.Context, tx pgx.Tx, invoiceID string) ([]provisioningItem, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT oi.id, o.customer_id, p.id AS product_id,
+		       COALESCE(pv.provision_plan, ''), COALESCE(pv.provision_region, ''),
+		       i.subscription_id
+		FROM invoices i
+		JOIN orders o ON o.id = i.order_id
+		JOIN order_items oi ON oi.order_id = o.id
+		JOIN price_versions pv ON pv.id = oi.price_version_id
+		JOIN products p ON p.id = pv.product_id
+		WHERE i.id = $1
+		ORDER BY oi.position`, invoiceID)
+	if err != nil {
+		return nil, fmt.Errorf("fulfilment: load order items: %w", err)
+	}
+	defer rows.Close()
+	var items []provisioningItem
+	for rows.Next() {
+		var it provisioningItem
+		if err := rows.Scan(&it.ID, &it.CustomerID, &it.ProductID,
+			&it.PlanID, &it.Region, &it.SubscriptionID); err != nil {
+			return nil, fmt.Errorf("fulfilment: scan order item: %w", err)
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fulfilment: read order items: %w", err)
+	}
+	return items, nil
+}
+
+// provisioningItemsFromLines reads what a manual invoice sells.
+//
+// The plan and region come from the line's price version when it has one, and otherwise from
+// the product's current (highest) version. That fallback is what lets an operator sell a
+// standard product at a negotiated price: the amount charged is whatever they typed, while the
+// provisioning target is still a real plan rather than an empty string.
+func (a *Applier) provisioningItemsFromLines(ctx context.Context, tx pgx.Tx, invoiceID string) ([]provisioningItem, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT il.id, i.customer_id, il.product_id,
+		       COALESCE(pv.provision_plan, cur.provision_plan, ''),
+		       COALESCE(pv.provision_region, cur.provision_region, ''),
+		       i.subscription_id
+		  FROM invoice_lines il
+		  JOIN invoices i ON i.id = il.invoice_id
+		  JOIN products p ON p.id = il.product_id
+		  LEFT JOIN price_versions pv ON pv.id = il.price_version_id
+		  LEFT JOIN LATERAL (
+		        SELECT provision_plan, provision_region
+		          FROM price_versions
+		         WHERE product_id = il.product_id
+		         ORDER BY version DESC
+		         LIMIT 1
+		  ) cur ON true
+		 WHERE il.invoice_id = $1 AND il.product_id IS NOT NULL
+		 ORDER BY il.position`, invoiceID)
+	if err != nil {
+		return nil, fmt.Errorf("fulfilment: load invoice line products: %w", err)
+	}
+	defer rows.Close()
+	var items []provisioningItem
+	for rows.Next() {
+		var it provisioningItem
+		if err := rows.Scan(&it.ID, &it.CustomerID, &it.ProductID,
+			&it.PlanID, &it.Region, &it.SubscriptionID); err != nil {
+			return nil, fmt.Errorf("fulfilment: scan invoice line product: %w", err)
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fulfilment: read invoice line products: %w", err)
+	}
+	return items, nil
 }
 
 func currencyOf(code string) (money.Currency, error) {

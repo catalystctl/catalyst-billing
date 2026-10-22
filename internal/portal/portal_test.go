@@ -401,6 +401,79 @@ func TestStaffWithoutCustomerGetsNotFound(t *testing.T) {
 	}
 }
 
+// A staff member who is themselves the billing account is resolved without a
+// customer_accounts row. The link table attaches a *customer login* to an account; the
+// operator is already authenticated as the account, so requiring a second identity row is
+// asking them to link an account to an account.
+func TestStaffIsTheirOwnBillingAccountWithoutALink(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+
+	hash, err := authn.NewHasher(fastParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := hash.Hash("a long enough password")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var userID, customerID string
+	if err := w.pool.QueryRow(ctx, `
+		INSERT INTO users (email, password_hash) VALUES ('owner@example.test', $1) RETURNING id`, h).
+		Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.pool.QueryRow(ctx, `
+		INSERT INTO customers (email, name) VALUES ('owner@example.test', 'Owner') RETURNING id`).
+		Scan(&customerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.pool.Exec(ctx,
+		`INSERT INTO staff_roles (user_id, role) VALUES ($1, 'administrator')`, userID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := w.manager.CustomerIDFor(ctx, userID)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != customerID {
+		t.Fatalf("customer = %s, want %s", got, customerID)
+	}
+}
+
+// The fallback is staff-only. A customer's email may be unverified, so an email match is
+// not proof of ownership: without the explicit link the answer is still "not found".
+func TestCustomerWithoutLinkIsNotResolvedByEmail(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+
+	hash, err := authn.NewHasher(fastParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := hash.Hash("a long enough password")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var userID string
+	if err := w.pool.QueryRow(ctx, `
+		INSERT INTO users (email, password_hash) VALUES ('stranger@example.test', $1) RETURNING id`, h).
+		Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.pool.Exec(ctx,
+		`INSERT INTO customers (email, name) VALUES ('stranger@example.test', 'Stranger')`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := w.manager.CustomerIDFor(ctx, userID); !errors.Is(err, portal.ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
+	}
+}
+
 // The JSON contract must use empty arrays so a client can iterate without checks.
 func TestEmptyCollectionsAreNotNil(t *testing.T) {
 	w := newWorld(t)

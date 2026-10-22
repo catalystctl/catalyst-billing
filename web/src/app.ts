@@ -16,7 +16,10 @@ import { createShell, openPalette, type Shell } from "./ui/layout";
 import { skeletonPage } from "./ui/kit";
 import { createToaster } from "./ui/toast";
 
-const PUBLIC_PATHS = new Set(["/login", "/forgot-password", "/reset-password", "/verify"]);
+// Paths a signed-out visitor may load. "/" is deliberately included: it is the storefront for a
+// visitor and the dashboard for staff, and which one you get is decided by the session, not by
+// the URL. A storefront behind a login is not a storefront.
+const PUBLIC_PATHS = new Set(["/", "/login", "/forgot-password", "/reset-password", "/verify", "/products"]);
 
 const routes: Route[] = [
   route("/", () => import("./views/dashboard")),
@@ -25,8 +28,20 @@ const routes: Route[] = [
   route("/reset-password", () => import("./views/reset-password")),
   route("/verify", () => import("./views/verify")),
 
+  // Public storefront. /products/:slug is a product page; / is the index (see above).
+  route("/products", () => import("./views/storefront")),
+  route("/products/:slug", () => import("./views/storefront-product")),
+
+  // /catalog and /catalog/:id were the read-only catalog screens. They are gone, but the URL
+  // was linked from services, orders and the old nav, so it redirects instead of 404ing.
+  route("/catalog", () => import("./views/catalog-admin")),
+  route("/catalog/:id", () => import("./views/catalog-admin-product")),
+  route("/catalog-management", () => import("./views/catalog-admin")),
+  route("/catalog-management/:id", () => import("./views/catalog-admin-product")),
+
   route("/customers", () => import("./views/customers")),
   route("/customers/:id", () => import("./views/customer")),
+  route("/customers/:id/portal", () => import("./views/customer-portal-view")),
 
   route("/invoices", () => import("./views/invoices")),
   route("/invoices/new", () => import("./views/invoice-new")),
@@ -36,6 +51,7 @@ const routes: Route[] = [
   route("/services/:id", () => import("./views/service")),
 
   route("/orders", () => import("./views/orders")),
+  route("/orders/new", () => import("./views/order-new")),
   route("/orders/:id", () => import("./views/order")),
 
   route("/payments", () => import("./views/payments")),
@@ -45,8 +61,6 @@ const routes: Route[] = [
   route("/operations/:id", () => import("./views/operation")),
   route("/webhooks", () => import("./views/webhooks")),
 
-  route("/catalog", () => import("./views/catalog")),
-  route("/catalog/:id", () => import("./views/product")),
 
   route("/approvals", () => import("./views/approvals")),
   route("/audit", () => import("./views/audit")),
@@ -136,6 +150,8 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
     disposePage();
 
     if (!session) {
+      // The storefront is public; anything else asks for a session and remembers where you
+      // were going.
       if (isPublic(path)) {
         await renderPublic(path, match);
         return;
@@ -144,7 +160,18 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       return;
     }
 
-    if (isPublic(path)) {
+    // "/" means two things. A signed-in staff member gets the dashboard, so it must fall
+    // through to the authenticated render below rather than being treated as a public page —
+    // redirecting here would loop. A signed-in customer gets the portal, because a storefront
+    // is not where their invoices are.
+    if (path === "/" && !session.user.is_staff) {
+      router.navigate("/portal", { replace: true });
+      return;
+    }
+
+    // The other public pages (sign-in, reset, the product index) are meaningless once you are
+    // signed in, so they send you home.
+    if (path !== "/" && isPublic(path)) {
       router.navigate(homeFor(session), { replace: true });
       return;
     }
@@ -212,12 +239,21 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
   async function renderPublic(path: string, match: RouteMatch | null): Promise<void> {
     root.replaceChildren(skeletonPage());
     shell = null;
-    const routeMatch = match ?? { route: routes[0]!, params: {}, path, query: new URLSearchParams(window.location.search) };
+    // "/" is the storefront for a visitor even though the route table maps it to the staff
+    // dashboard, because the dashboard needs a session and a visitor has none. Picking the
+    // module here rather than adding a second route keeps one URL with two audiences.
+    const storefront = routes.find((r) => r.pattern === "/products")!;
+    const resolved =
+      path === "/"
+        ? { route: storefront, params: {}, path, query: new URLSearchParams(window.location.search) }
+        : match;
+    const routeMatch = resolved ?? { route: routes[0]!, params: {}, path, query: new URLSearchParams(window.location.search) };
     const mod = (await routeMatch.route.load()) as { default: (ctx: AuthCtx) => Node | Promise<Node>; meta?: PageMeta };
     document.title = `${mod.meta?.title ?? "Sign in"} · Catalyst Billing`;
     const ctx: AuthCtx = {
       api,
       query: new URLSearchParams(window.location.search),
+      params: routeMatch.params,
       navigate: (p, o) => router.navigate(p, o),
       onSignedIn: async (next) => {
         session = next;
@@ -372,8 +408,12 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
 
 // ------------------------------------------------------------------ helpers --
 
+// A public path is exact, except the storefront's product pages, which are public as a
+// subtree. Written as a prefix test rather than a second set so /products/anything cannot
+// accidentally fall through to the signed-in branch and bounce a visitor to a login screen.
 function isPublic(path: string): boolean {
-  return PUBLIC_PATHS.has(path);
+  if (PUBLIC_PATHS.has(path)) return true;
+  return path === "/products" || path.startsWith("/products/");
 }
 
 function titleForSegment(segment: string): string {

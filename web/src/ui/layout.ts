@@ -44,7 +44,7 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
         { label: "Invoices", href: "/invoices", icon: "invoice", permission: "invoice:read:all" },
         { label: "Orders", href: "/orders", icon: "bag", permission: "invoice:read:all" },
         { label: "Payments", href: "/payments", icon: "card", permission: "payment:reconcile" },
-        { label: "Catalog", href: "/catalog", icon: "box", permission: "invoice:read:all" },
+        { label: "Catalog", href: "/catalog-management", icon: "box", permission: "invoice:read:all" },
       ],
     });
     groups.push({

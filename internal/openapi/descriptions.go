@@ -241,6 +241,38 @@ func Operations() map[string]Operation {
 			Summary:   "A customer's billing details",
 			Responses: []Response{{Status: 200, Description: "The profile"}},
 		},
+		"GET /api/v1/staff/customers/{id}/portal": {
+			Summary:     "A customer's portal overview, as they see it",
+			Description: "The same payload the customer's own /api/v1/portal/overview returns, resolved for the customer in the path. Read-only: it cannot pay, cancel or change anything. Every view is audited.",
+			Responses: []Response{
+				{Status: 200, Description: "The portal overview"},
+				{Status: 404, Description: "No such customer", Schema: ProblemRef()},
+			},
+		},
+		"GET /api/v1/staff/customers/{id}/portal/invoices": {
+			Summary:     "A customer's invoices, as they see them",
+			Description: "The customer-scoped invoice list. Read-only and audited.",
+			Responses: []Response{
+				{Status: 200, Description: "The invoice list"},
+				{Status: 404, Description: "No such customer", Schema: ProblemRef()},
+			},
+		},
+		"GET /api/v1/staff/customers/{id}/portal/services": {
+			Summary:     "A customer's services, as they see them",
+			Description: "The customer-scoped service list. Read-only and audited.",
+			Responses: []Response{
+				{Status: 200, Description: "The service list"},
+				{Status: 404, Description: "No such customer", Schema: ProblemRef()},
+			},
+		},
+		"GET /api/v1/staff/customers/{id}/portal/billing-profile": {
+			Summary:     "A customer's billing profile, as they see it",
+			Description: "The billing details the customer entered, resolved for the customer in the path. Read-only and audited.",
+			Responses: []Response{
+				{Status: 200, Description: "The profile"},
+				{Status: 404, Description: "No such customer", Schema: ProblemRef()},
+			},
+		},
 		"PUT /api/v1/staff/customers/{id}/billing-profile": {
 			Summary:     "Update a customer's billing details",
 			Description: "Applied to the next invoice only; an issued invoice's snapshot is frozen by a database trigger.",
@@ -292,6 +324,28 @@ func Operations() map[string]Operation {
 			Description: "Shows the price snapshot each line was sold at and the invoice the order produced.",
 			Responses:   []Response{{Status: 200, Description: "The order"}},
 		},
+		"POST /api/v1/staff/orders": {
+			Summary: "Buy a product for a billing account",
+			Description: "Prices one catalog price version and writes the order, its items, a pending subscription and an issued " +
+				"invoice in one transaction. `customer_id` may be omitted, in which case the acting staff member's own billing " +
+				"account is used and created from their login if it does not exist; no `customer_accounts` link is required " +
+				"because that table attaches a customer login to an account. The price is read from the catalog, never from the " +
+				"body, so a caller cannot choose what to charge.",
+			RequestSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"price_version_id"},
+				"properties": map[string]any{
+					"customer_id":      map[string]any{"type": "string", "format": "uuid", "description": "Billing account; omit to bill yourself."},
+					"price_version_id": map[string]any{"type": "string", "format": "uuid"},
+					"quantity":         map[string]any{"type": "integer", "minimum": 1, "maximum": 1000, "default": 1},
+				},
+			},
+			Responses: []Response{
+				{Status: 201, Description: "The order and its invoice"},
+				{Status: 400, Description: "The quantity or the price is not sellable", Schema: ProblemRef()},
+				{Status: 404, Description: "No such price or customer", Schema: ProblemRef()},
+			},
+		},
 		"GET /api/v1/staff/payments": {
 			Summary:   "Payment history",
 			Responses: []Response{{Status: 200, Description: "A page of payments"}},
@@ -316,13 +370,115 @@ func Operations() map[string]Operation {
 			Responses: []Response{{Status: 200, Description: "A page of events"}},
 		},
 		"GET /api/v1/staff/catalog/products": {
-			Summary:   "Catalog with price versions",
-			Responses: []Response{{Status: 200, Description: "The products"}},
+			Summary:     "Catalog with price versions",
+			Description: "Every product including hidden ones, each with its price versions newest first. Requires invoice:read:all: pricing an invoice must not require the right to change a price.",
+			Responses:   []Response{{Status: 200, Description: "The products"}},
 		},
 		"GET /api/v1/staff/catalog/products/{id}": {
 			Summary:     "One product",
 			Description: "`active_subscriptions` explains why a price version cannot be deleted.",
 			Responses:   []Response{{Status: 200, Description: "The product"}},
+		},
+		"GET /api/v1/staff/catalog/categories": {
+			Summary:     "Categories",
+			Description: "Categories with a product count, ordered by sort_order then name.",
+			Responses:   []Response{{Status: 200, Description: "The categories"}},
+		},
+
+		// ------------------------------------------------------- catalog writes --
+		"POST /api/v1/staff/catalog/categories": {
+			Summary:     "Create a category",
+			Description: "Requires catalog:write. The slug must be lowercase letters, digits and single hyphens.",
+			Responses: []Response{
+				{Status: 201, Description: "The category"},
+				{Status: 409, Description: "The slug is already in use", Schema: ProblemRef()},
+				{Status: 422, Description: "Invalid input", Schema: ProblemRef()},
+			},
+		},
+		"PUT /api/v1/staff/catalog/categories/{id}": {
+			Summary:     "Edit a category",
+			Description: "A category is not referenced by an invoice, so its slug may change.",
+			Responses: []Response{
+				{Status: 200, Description: "The category"},
+				{Status: 404, Description: "No such category", Schema: ProblemRef()},
+				{Status: 409, Description: "The slug is already in use", Schema: ProblemRef()},
+			},
+		},
+		"DELETE /api/v1/staff/catalog/categories/{id}": {
+			Summary:     "Delete a category",
+			Description: "Refused while any product still uses it: deleting would silently ungroup those products.",
+			Responses: []Response{
+				{Status: 204, Description: "Deleted"},
+				{Status: 409, Description: "Products still use it", Schema: ProblemRef()},
+			},
+		},
+		"POST /api/v1/staff/catalog/products": {
+			Summary:     "Create a product",
+			Description: "A product starts with no price. Metadata (name, description, logo, category, visibility) is editable; a price is not, so it is added with a separate call.",
+			Responses: []Response{
+				{Status: 201, Description: "The product"},
+				{Status: 409, Description: "The slug is already in use", Schema: ProblemRef()},
+				{Status: 422, Description: "Invalid input", Schema: ProblemRef()},
+			},
+		},
+		"PUT /api/v1/staff/catalog/products/{id}": {
+			Summary:     "Edit a product",
+			Description: "Metadata only. There is no price field here on purpose: an issued invoice records the price version it priced from, so changing a price in place would rewrite a document the customer already has.",
+			Responses: []Response{
+				{Status: 200, Description: "The product"},
+				{Status: 404, Description: "No such product", Schema: ProblemRef()},
+				{Status: 409, Description: "The slug is already in use", Schema: ProblemRef()},
+			},
+		},
+		"DELETE /api/v1/staff/catalog/products/{id}": {
+			Summary:     "Delete a product",
+			Description: "Refused while any service or order item references it. Hiding a product is the supported way to stop selling it.",
+			Responses: []Response{
+				{Status: 204, Description: "Deleted"},
+				{Status: 409, Description: "Services or orders reference it", Schema: ProblemRef()},
+			},
+		},
+		"POST /api/v1/staff/catalog/products/{id}/prices": {
+			Summary:     "Append a price version",
+			Description: "The version number is allocated inside the insert, so two concurrent appends cannot both claim version N. An existing version is never modified.",
+			Responses: []Response{
+				{Status: 201, Description: "The new price version"},
+				{Status: 422, Description: "Invalid price", Schema: ProblemRef()},
+			},
+		},
+		"POST /api/v1/staff/catalog/images": {
+			Summary:     "Upload a product logo",
+			Description: "A raw body whose Content-Type is the image type (image/png, image/jpeg, image/webp or image/svg+xml), up to 256 KiB. Identical bytes collapse to one row by digest, which is what lets the media endpoint serve an immutable cache header.",
+			Responses: []Response{
+				{Status: 201, Description: "The stored image"},
+				{Status: 413, Description: "Larger than 256 KiB", Schema: ProblemRef()},
+				{Status: 415, Description: "Unsupported image type", Schema: ProblemRef()},
+			},
+		},
+
+		// ------------------------------------------------------------ storefront --
+		"GET /api/v1/catalog": {
+			Summary:     "The public catalog",
+			Description: "Unauthenticated and cacheable for 60 seconds. Returns only published products in visible categories that have at least one price; a hidden product is indistinguishable from a missing one. Omits provision targets, active-subscription counts and every internal id.",
+			Responses: []Response{
+				{Status: 200, Description: "Categories and their published products"},
+			},
+		},
+		"GET /api/v1/catalog/{slug}": {
+			Summary:     "One public product",
+			Description: "Same visibility rules as the index: hidden, in a hidden category, or unpriced all answer 404.",
+			Responses: []Response{
+				{Status: 200, Description: "The product"},
+				{Status: 404, Description: "Not published", Schema: ProblemRef()},
+			},
+		},
+		"GET /api/v1/media/{id}": {
+			Summary:     "A stored logo",
+			Description: "Public, because an <img> on the storefront has no session. Served with nosniff and an immutable cache. SVG is the one format that can carry a script, so it is served with a sandboxing Content-Security-Policy rather than as a document.",
+			Responses: []Response{
+				{Status: 200, Description: "The image bytes"},
+				{Status: 404, Description: "No such image", Schema: ProblemRef()},
+			},
 		},
 
 		// -------------------------------------------------------- staff writes --

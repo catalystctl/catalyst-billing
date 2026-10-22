@@ -68,7 +68,6 @@ export function openDialog(opts: OpenOptions): DialogHandle {
   const overlay = h("div", { class: "overlay" }, dialog);
 
   const close = () => {
-    if (opts.locked?.()) return;
     overlay.remove();
     document.removeEventListener("keydown", onKey, true);
     document.body.style.overflow = "";
@@ -77,10 +76,17 @@ export function openDialog(opts: OpenOptions): DialogHandle {
     opts.onClose?.();
   };
 
+  // `locked` guards the ways a *user* can dismiss the dialog while an action is in flight:
+  // Escape and a backdrop click. It deliberately does not guard close() itself, because the
+  // owner calls close() precisely when the action has finished — gating that on the same
+  // predicate made every form dialog stay open after a successful submit, since the submit
+  // button is still disabled at the moment close() is called.
+  const dismissable = () => !opts.locked?.();
+
   const onKey = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
       event.stopPropagation();
-      close();
+      if (dismissable()) close();
       return;
     }
     if (event.key !== "Tab") return;
@@ -102,9 +108,11 @@ export function openDialog(opts: OpenOptions): DialogHandle {
     }
   };
 
-  closeBtn.addEventListener("click", close);
+  closeBtn.addEventListener("click", () => {
+    if (dismissable()) close();
+  });
   overlay.addEventListener("mousedown", (event) => {
-    if (event.target === overlay) close();
+    if (event.target === overlay && dismissable()) close();
   });
   document.addEventListener("keydown", onKey, true);
   document.body.style.overflow = "hidden";
@@ -176,16 +184,37 @@ export function confirmDialog(opts: ConfirmOptions): Promise<boolean> {
   });
 }
 
+/** Wires a dialog's footer submit button to a form that lives in its body.
+ *
+ *  A dialog's footer is a sibling of the body, not a child of the <form>, so a submit button
+ *  placed there is associated with nothing and clicking it does nothing at all. The `form`
+ *  attribute is the standard way to associate a control with a form elsewhere in the document.
+ *  Every custom dialog in the panel needs this, and forgetting it produces a button that looks
+ *  enabled, does not submit, and reports no error — which is why it is a helper rather than a
+ *  line each page copies. */
+export function bindForm(form: HTMLFormElement, submit: HTMLElement): void {
+  if (!form.id) {
+    form.id = `dialog-form-${Math.random().toString(36).slice(2, 9)}`;
+  }
+  submit.setAttribute("form", form.id);
+}
+
 export function formDialog(opts: FormDialogOptions): Promise<void> {
   return new Promise((resolve) => {
+    const formId = `dialog-form-${Math.random().toString(36).slice(2, 9)}`;
     const submit = btn(opts.submitLabel ?? "Save", {
       variant: opts.danger ? "danger-solid" : "primary",
       type: "submit",
     });
+    // The footer is a sibling of the body, not a child of the <form>, so a submit button
+    // placed there is not associated with the form and clicking it does nothing at all.
+    // The `form` attribute is the standard way to associate a control that lives outside
+    // its form; without it every dialog's primary button was inert.
+    submit.setAttribute("form", formId);
     const cancel = btn(opts.cancelLabel ?? "Cancel", { variant: "ghost" });
     const errorHost = h("div");
 
-    const form = h("form", { class: "stack", novalidate: true }, opts.body);
+    const form = h("form", { class: "stack", novalidate: true, id: formId }, opts.body);
     const handle = openDialog({
       title: opts.title,
       subtitle: opts.subtitle,

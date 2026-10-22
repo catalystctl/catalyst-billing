@@ -28,6 +28,7 @@ import (
 
 	"github.com/catalyst/billing/internal/approvals"
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/catalog"
 	"github.com/catalyst/billing/internal/dunning"
 	"github.com/catalyst/billing/internal/events"
 	"github.com/catalyst/billing/internal/notify"
@@ -114,6 +115,9 @@ type Server struct {
 	// staff is the operator read surface, constructed on first use.
 	staff   *staff.Service
 	staffMu sync.Mutex
+	// productCatalog is the product catalog, constructed on first use like staff.
+	productCatalog *catalog.Store
+	catalogMu      sync.Mutex
 	// dunning evaluates suspension eligibility; nil when not configured.
 	dunning *dunning.Engine
 	// checkoutSuccessURL and checkoutCancelURL are where the gateway returns the customer.

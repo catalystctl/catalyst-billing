@@ -156,7 +156,10 @@
   --shadow-focus: 0 0 0 2px var(--surface), 0 0 0 4px var(--line-accent);
 
   --skeleton: linear-gradient(90deg, #eef1f5 0%, #f7f8fa 40%, #eef1f5 80%);
-  --overlay: rgba(15, 21, 35, 0.38);
+  /* A light theme still needs a real scrim: at 0.38 the page behind a dialog stays legible
+   * enough to read, which makes the dialog look like a floating panel rather than a modal
+   * that owns the screen. */
+  --overlay: rgba(15, 21, 35, 0.55);
   --scrollbar: #cdd4e0;
 }
 

@@ -508,5 +508,7 @@ var Tables = []string{
 	"orders",
 	"price_versions",
 	"products",
+	"categories",
+	"product_images",
 	"customers",
 }

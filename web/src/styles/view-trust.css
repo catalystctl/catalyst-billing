@@ -2,4 +2,306 @@
  *
  * Shared components live in components.css and pages.css; this file exists so a screen can
  * have a shape of its own without editing a file another screen also owns.
+ *
+ * Three screens share it — approvals, the audit log and API keys — because they are the
+ * trust surface: who may do what, what was done, and what credential did it. The shapes are
+ * deliberately small: a filter bar, the permission legend on the approvals banner, the
+ * expanded audit row, and the one-time key block.
  */
+
+/* ---------------------------------------------------------------- filters -- */
+
+
+.trust-filters .field-label {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.trust-filters .input,
+.trust-filters .select {
+  height: 30px;
+}
+
+.trust-filters-end {
+  margin-left: auto;
+  padding-bottom: 2px;
+}
+
+/* The `hidden` attribute is a user-agent `display: none`, and an author rule that sets
+   `display` beats the user-agent origin. `.btn` is `inline-flex` and `.field-error` is
+   `flex`, so both would stay visible when a page hides them with `hidden`. The filter bar
+   toggles them without re-rendering the field, so the two cases are stated here. */
+.trust-filters-end .btn[hidden],
+.field-error[hidden] {
+  display: none;
+}
+
+/* --------------------------------------------------------------- approvals -- */
+
+/* The permission legend on the banner. One row per action: what it is, the permission its
+   approver must hold, and whether this operator holds it. */
+.trust-perms {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.trust-perm {
+  display: grid;
+  grid-template-columns: minmax(104px, max-content) minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--text-xs);
+}
+
+.trust-perm-action {
+  color: var(--text);
+  font-weight: 550;
+}
+
+/* A reason can be a paragraph; the row keeps its height and the full text stays in the
+   title attribute. */
+.trust-truncate {
+  display: inline-block;
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* --------------------------------------------------------------- audit log -- */
+
+/* The created cell is the expand control. It is a real button so it is keyboard reachable
+   and announces its state; the chevron is the only affordance added to the cell. */
+.trust-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+}
+
+.trust-toggle svg {
+  color: var(--text-faint);
+  transition: transform var(--dur-1) var(--ease);
+  flex: none;
+}
+
+.trust-toggle:hover svg {
+  color: var(--text);
+}
+
+.trust-toggle.is-open svg {
+  transform: rotate(90deg);
+}
+
+/* The expanded row is part of the table (it inherits the column count) but reads as a
+   panel, not as another record: no hover, an inset background, no fixed height. */
+.table tbody tr.trust-detail,
+.table tbody tr.trust-detail:hover {
+  background: var(--surface-inset);
+}
+
+.table tbody tr.trust-detail > td {
+  height: auto;
+  padding: var(--s-3) var(--s-4) var(--s-4);
+}
+
+.trust-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+.trust-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.trust-detail-meta .mono {
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+/* One field of a before/after diff: its name, then the two columns the .audit-change grid
+   already draws. The labels are text, not colour alone: red and green are a hint, not the
+   only thing that says which side is which. */
+.trust-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.trust-diff-key {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+
+/* A before/after value can be a nested object; the cell scrolls rather than stretching the
+   row to the height of a whole record. */
+.trust-diff .audit-before,
+.trust-diff .audit-after {
+  max-height: 200px;
+  overflow: auto;
+}
+
+.trust-diff-label {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.65;
+  margin-bottom: 2px;
+}
+
+/* The target cell: type and id on one line, the whole thing a link when the type has a
+   screen to open. */
+.trust-target {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- api keys -- */
+
+.trust-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* The permission picker inside the create dialog: every chip is a button that appends the
+   scope, so nobody has to remember the spelling of "invoice:read:all". */
+.trust-scope-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: var(--s-2);
+  max-height: 148px;
+  overflow-y: auto;
+}
+
+.trust-scope-pick:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.trust-help summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+
+.trust-help summary:hover {
+  color: var(--text);
+}
+
+/* The one-time key. It is selectable as a whole, wraps rather than scrolling, and never
+   shrinks into a tooltip: this is the only time the value exists in a browser. */
+.trust-key-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.trust-key {
+  display: block;
+  padding: var(--s-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-inset);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  user-select: all;
+  color: var(--text);
+}
+
+.trust-key-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-2);
+}
+
+/* ---------------------------------------------------------------- mobile -- */
+
+@media (max-width: 780px) {
+  /* The card layout labels every cell from its column; the detail row has no column, so it
+     is a plain block that follows its record. */
+  .table-wrap--cards .table tbody tr.trust-detail > td {
+    display: block;
+    text-align: left;
+  }
+
+  .table-wrap--cards .table tbody tr.trust-detail > td::before {
+    display: none;
+  }
+
+  .trust-filters .field,
+  .trust-filters .field.trust-field-wide {
+    min-width: 100%;
+  }
+
+  .trust-filters-end {
+    margin-left: 0;
+    padding-bottom: 0;
+  }
+
+  .trust-perm {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .trust-perm .mono {
+    grid-column: 1 / -1;
+  }
+}
+
+/* The audit filter bar is seven controls plus a clear button. As a plain flex row they pack
+ * unevenly and the two date fields land on a second line by accident; a grid makes the
+ * grouping deliberate and keeps the date range together on its own row. */
+.trust-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: var(--s-3);
+  align-items: end;
+}
+
+.trust-filters .field.trust-field-wide {
+  min-width: 0;
+}
+
+.trust-filters-end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  min-height: 30px;
+}
+
+/* The hint under an id field is what tells an operator a uuid is expected; without a
+ * reserved line it shifts the control out of alignment with its neighbours. */
+.trust-filters .field-hint,
+.trust-filters .field-error {
+  min-height: 14px;
+}
+
+@media (max-width: 720px) {
+  .trust-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .trust-filters-end {
+    justify-content: flex-start;
+  }
+}

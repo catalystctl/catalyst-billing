@@ -107,6 +107,29 @@ func (m *Manager) CustomerIDFor(ctx context.Context, userID string) (string, err
 	err := m.pool.QueryRow(ctx, `
 		SELECT customer_id FROM customer_accounts WHERE user_id = $1
 		ORDER BY created_at LIMIT 1`, userID).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("portal: resolve customer: %w", err)
+	}
+
+	// A staff member may be the billing account themselves. `customer_accounts` links a
+	// customer *login* to a billing account; a staff user is already authenticated as the
+	// operator, so requiring a second identity row to be billed is asking them to link an
+	// account to an account. Match on the verified identity instead.
+	//
+	// The fallback is deliberately staff-only. For a customer, an email match is not proof
+	// of ownership (the address may be unverified, and registration is not built yet), so a
+	// customer still needs the explicit link.
+	err = m.pool.QueryRow(ctx, `
+		SELECT c.id
+		FROM users u
+		JOIN customers c ON lower(c.email) = lower(u.email)
+		WHERE u.id = $1
+		  AND EXISTS (SELECT 1 FROM staff_roles sr WHERE sr.user_id = u.id)
+		ORDER BY c.created_at
+		LIMIT 1`, userID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}
@@ -117,11 +140,7 @@ func (m *Manager) CustomerIDFor(ctx context.Context, userID string) (string, err
 }
 
 // Overview builds the customer landing page.
-func (m *Manager) Overview(ctx context.Context, userID string) (Overview, error) {
-	customerID, err := m.CustomerIDFor(ctx, userID)
-	if err != nil {
-		return Overview{}, err
-	}
+func (m *Manager) OverviewForCustomer(ctx context.Context, customerID string) (Overview, error) {
 
 	out := Overview{
 		Customer:       Customer{ID: customerID},
@@ -134,7 +153,7 @@ func (m *Manager) Overview(ctx context.Context, userID string) (Overview, error)
 		return Overview{}, fmt.Errorf("portal: load customer: %w", err)
 	}
 
-	invoices, err := m.Invoices(ctx, userID)
+	invoices, err := m.InvoicesForCustomer(ctx, customerID)
 	if err != nil {
 		return Overview{}, err
 	}
@@ -147,21 +166,26 @@ func (m *Manager) Overview(ctx context.Context, userID string) (Overview, error)
 		}
 	}
 
-	if out.Balance, err = m.Balance(ctx, userID); err != nil {
+	if out.Balance, err = m.BalanceForCustomer(ctx, customerID); err != nil {
 		return Overview{}, err
 	}
-	if out.Upcoming, err = m.Services(ctx, userID); err != nil {
+	if out.Upcoming, err = m.ServicesForCustomer(ctx, customerID); err != nil {
 		return Overview{}, err
 	}
 	return out, nil
 }
 
-// Invoices lists the customer's invoices, newest first.
-func (m *Manager) Invoices(ctx context.Context, userID string) ([]Invoice, error) {
+func (m *Manager) Overview(ctx context.Context, userID string) (Overview, error) {
 	customerID, err := m.CustomerIDFor(ctx, userID)
 	if err != nil {
-		return nil, err
+		return Overview{}, err
 	}
+	return m.OverviewForCustomer(ctx, customerID)
+}
+
+
+// Invoices lists the customer's invoices, newest first.
+func (m *Manager) InvoicesForCustomer(ctx context.Context, customerID string) ([]Invoice, error) {
 	rows, err := m.pool.Query(ctx, `
 		SELECT id, COALESCE(number, ''), status, currency, total_minor, amount_paid_minor,
 		       issued_at, due_at
@@ -204,6 +228,15 @@ func (m *Manager) Invoices(ctx context.Context, userID string) ([]Invoice, error
 	}
 	return out, rows.Err()
 }
+
+func (m *Manager) Invoices(ctx context.Context, userID string) ([]Invoice, error) {
+	customerID, err := m.CustomerIDFor(ctx, userID)
+	if err != nil {
+		return []Invoice{}, err
+	}
+	return m.InvoicesForCustomer(ctx, customerID)
+}
+
 
 // Invoice fetches one invoice, scoped to the customer.
 //
@@ -254,11 +287,7 @@ func (m *Manager) Invoice(ctx context.Context, userID, invoiceID string) (Invoic
 // Outstanding comes from the open invoices; credit comes from the subledger's
 // customer-credit account. Both are derived, so neither can drift from the records
 // they summarise.
-func (m *Manager) Balance(ctx context.Context, userID string) (Balance, error) {
-	customerID, err := m.CustomerIDFor(ctx, userID)
-	if err != nil {
-		return Balance{}, err
-	}
+func (m *Manager) BalanceForCustomer(ctx context.Context, customerID string) (Balance, error) {
 	out := Balance{Outstanding: []money.Amount{}, Credit: []money.Amount{}}
 
 	rows, err := m.pool.Query(ctx, `
@@ -321,12 +350,17 @@ func (m *Manager) Balance(ctx context.Context, userID string) (Balance, error) {
 	return out, credRows.Err()
 }
 
-// Services lists the customer's services with the actions they may take.
-func (m *Manager) Services(ctx context.Context, userID string) ([]Service, error) {
+func (m *Manager) Balance(ctx context.Context, userID string) (Balance, error) {
 	customerID, err := m.CustomerIDFor(ctx, userID)
 	if err != nil {
-		return nil, err
+		return Balance{}, err
 	}
+	return m.BalanceForCustomer(ctx, customerID)
+}
+
+
+// Services lists the customer's services with the actions they may take.
+func (m *Manager) ServicesForCustomer(ctx context.Context, customerID string) ([]Service, error) {
 	rows, err := m.pool.Query(ctx, `
 		SELECT s.id, p.name, s.status, sub.next_billing_at, sub.cancel_at_period_end
 		FROM services s
@@ -355,6 +389,15 @@ func (m *Manager) Services(ctx context.Context, userID string) ([]Service, error
 	}
 	return out, rows.Err()
 }
+
+func (m *Manager) Services(ctx context.Context, userID string) ([]Service, error) {
+	customerID, err := m.CustomerIDFor(ctx, userID)
+	if err != nil {
+		return []Service{}, err
+	}
+	return m.ServicesForCustomer(ctx, customerID)
+}
+
 
 // Service fetches one service, scoped to the customer.
 func (m *Manager) Service(ctx context.Context, userID, serviceID string) (Service, error) {

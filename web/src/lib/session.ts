@@ -5,7 +5,7 @@ import type { Session, SessionUser } from "./types";
 
 interface MeResponse {
   user: SessionUser;
-  permissions: string[];
+  permissions: string[] | null;
   csrf_token: string;
   expires_at: string;
 }
@@ -16,8 +16,11 @@ export async function loadSession(api: Api): Promise<Session | null> {
     const me = await api.get<MeResponse>("/api/v1/auth/me", { cache: false });
     api.setCSRFToken(me.csrf_token);
     return {
-      user: me.user,
-      permissions: new Set(me.permissions),
+      // The server marshals an absent list as null, not [], for a customer with no staff
+      // roles. Normalising here means no page has to remember that `roles` can be null —
+      // and one that forgets crashes the shell before the first screen renders.
+      user: { ...me.user, roles: me.user.roles ?? [] },
+      permissions: new Set(me.permissions ?? []),
       csrfToken: me.csrf_token,
       expiresAt: me.expires_at,
     };

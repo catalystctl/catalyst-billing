@@ -30,7 +30,7 @@ const result = await build({
 
 if (result.errors.length > 0) process.exit(1);
 
-const proc = spawnSync(process.execPath, ["--test", "test/frontend.test.mjs"], {
+const proc = spawnSync(process.execPath, ["--test", "test/frontend.test.mjs", "test/routes.test.mjs"], {
   cwd: root,
   stdio: "inherit",
 });

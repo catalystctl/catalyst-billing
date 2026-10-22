@@ -12,6 +12,7 @@ export interface SessionUser {
   email: string;
   display_name: string;
   email_verified: boolean;
+  /** Always an array in the client: loadSession normalises the server's null. */
   roles: string[];
   is_staff: boolean;
 }
@@ -87,6 +88,8 @@ export interface Ctx {
 export interface AuthCtx {
   readonly api: Api;
   readonly query: URLSearchParams;
+  /** Path parameters, so a public page like /products/:slug can read its slug. */
+  readonly params: Record<string, string>;
   navigate(path: string, options?: { replace?: boolean }): void;
   onSignedIn(session: Session): void;
   toast(title: string, options?: ToastOptions): void;

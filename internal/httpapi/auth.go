@@ -494,19 +494,34 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 			perms = append(perms, string(p))
 		}
 	}
+	// Both lists are arrays on the wire even when empty. A nil slice marshals to JSON null,
+	// and a client that iterates the list — `roles.length`, `roles.join(", ")` — throws before
+	// it renders anything. The client is fixed to tolerate null as well, but the contract is
+	// "a list", and a contract that is sometimes null is one every caller has to special-case.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user": map[string]any{
 			"id":             user.ID,
 			"email":          user.Email,
 			"display_name":   user.DisplayName,
 			"email_verified": user.EmailVerified,
-			"roles":          user.Roles,
+			"roles":          nonNilRoles(user.Roles),
 			"is_staff":       user.IsStaff(),
 		},
 		"permissions": perms,
 		"csrf_token":  sess.CSRFToken,
 		"expires_at":  sess.ExpiresAt,
 	})
+}
+
+// nonNilRoles makes "no staff role" encode as [] rather than null.
+//
+// One helper, used by every response that carries a role list, so the two endpoints that
+// report an identity cannot drift into disagreeing about the shape of an empty list.
+func nonNilRoles(roles []string) []string {
+	if roles == nil {
+		return []string{}
+	}
+	return roles
 }
 
 // clientIP extracts the caller's address for throttling and audit.

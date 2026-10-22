@@ -571,6 +571,17 @@ type invoiceLineRequest struct {
 	// total with the configured pricer, so a client cannot choose what to charge.
 	UnitAmount int64  `json:"unit_amount_minor"`
 	Currency   string `json:"currency"`
+	// ProductID makes the line sell a product. When the invoice is paid, fulfilment provisions
+	// one service per such line — this is what makes a manual invoice deliver something, since
+	// it has no order behind it to describe what was bought.
+	//
+	// Omit it for a line that provisions nothing: support time, a prorated difference, a
+	// late fee. Most lines are that.
+	ProductID string `json:"product_id,omitempty"`
+	// PriceVersionID pins which price was used, so the provision plan and region are
+	// reproducible. Optional: with no version, fulfilment reads the plan from the product's
+	// current version while the amount charged stays exactly what was typed.
+	PriceVersionID string `json:"price_version_id,omitempty"`
 }
 
 // createInvoiceRequest is the body of a manual invoice.
@@ -642,11 +653,26 @@ func (s *Server) handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 	err = s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
 		lines := make([]billing.Line, 0, len(req.Lines))
 		for _, line := range req.Lines {
+			var productID, versionID *string
+			if line.ProductID != "" {
+				if !portal.ValidID(line.ProductID) {
+					return staffNotFound{}
+				}
+				productID = &line.ProductID
+			}
+			if line.PriceVersionID != "" {
+				if !portal.ValidID(line.PriceVersionID) {
+					return staffNotFound{}
+				}
+				versionID = &line.PriceVersionID
+			}
 			lines = append(lines, billing.Line{
 				Description: line.Description,
 				// Quantity is expressed in thousandths, which is the pricer's unit.
-				QuantityMilli: int64(line.Quantity) * 1000,
-				UnitPrice:     money.New(line.UnitAmount, cur),
+				QuantityMilli:  int64(line.Quantity) * 1000,
+				UnitPrice:      money.New(line.UnitAmount, cur),
+				ProductID:      productID,
+				PriceVersionID: versionID,
 			})
 		}
 

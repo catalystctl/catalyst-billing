@@ -8,7 +8,7 @@ This repository currently implements the **vertical slice plus the reliability
 layer** described in the product plan: exact money, an immutable invoice
 document, an idempotent payment path, a renewal engine, provisioning with
 fencing and reconciliation, dunning with auditable suspension decisions, and an
-extension protocol. The customer and operator **web UI is not built yet**.
+extension protocol, and the operator panel and customer portal that drive it.
 
 ---
 
@@ -219,6 +219,11 @@ make test-race     # same, with the race detector
   an unclassified table is exactly how state leaks between tests.
 - `internal/e2e` drives the whole slice: real compiled extensions over the real
   protocol, a real database, real webhooks.
+- The **frontend** has its own tests, and they all execute something real:
+  `cd web && npm test` pins the money formatter, the amount parser, the status→tone
+  map and the route matcher; `make e2e-ui` seeds a customer, an invoice, a service
+  and a portal login, then drives every screen in headless Chromium and fails on a
+  console error, an error state, or a screen that renders a heading but no content.
 - `make db-unlock` clears a lock leaked by a killed run; the harness reports the
   holder rather than terminating healthy backends heuristically.
 
@@ -332,6 +337,11 @@ executes under the CSP, a client-side route survives a reload, a hashed asset is
 immutable, an unknown API path stays `problem+json`, and an injected inline script is
 refused. `make verify` runs it.
 
+`scripts/browser-e2e.sh` goes further and drives the product: it seeds a staff account, a
+customer, an invoice, a catalog product, a service and a portal login, then signs in
+through the form and visits every screen. See [`web/README.md`](web/README.md) for the
+frontend's contract and the rules a new screen must follow.
+
 ### Definition of ready for the web UI — status
 
 1. Every screen in the plan's §9 navigation has a documented endpoint, and that endpoint
@@ -362,21 +372,39 @@ Stated here rather than discovered later:
   and can be exceeded by one window at a boundary. It bounds load; it is not a quota.
 - **Refund reconciliation is a poll**, every two minutes, over unresolved refunds. It asks
   the provider rather than retrying, so it is safe, but it is not push.
-- **The frontend is partly built.** The foundation is complete and used: a hash-based
-  router, layout, table and form kit, typed API client, formatting and icons (~2,900 lines
-  of TypeScript, typechecked and bundled with esbuild, embedded in the binary). Real
-  screens exist for sign-in, password reset, email verification, the dashboard, refunds
-  and billing details.
+- **There is a public storefront.** `/` serves the catalog to an anonymous visitor and the
+  dashboard to staff; `/products/:slug` is a product page. It reads one public endpoint and
+  never sees a hidden product, a hidden category, or an unpriced one — that filtering is in
+  SQL, not in the client. A purchase is a staff action (`/orders/new`, `POST
+  /api/v1/staff/orders`): an order belongs to a billing account, so a guest checkout would be
+  a second, unowned path into the ledger. A staff member who is themselves the billing
+  account is resolved by identity and needs no `customer_accounts` link; a customer still
+  needs the explicit link, because an unverified email is not proof of ownership.
+  `docs/paymenter-parity.md` records the full backlog this leaves, item by item.
+- **The frontend is complete but deliberately small.** No framework, no runtime
+  dependency: TypeScript bundled by esbuild into one 268 KiB module (76 KiB gzipped) and
+  one 87 KiB stylesheet (15 KiB gzipped), embedded in the binary and served with a content
+  hash. All views are implemented: the public storefront and product pages, the operator
+  dashboard, customers, invoices (list, create, document), services, the operation queue,
+  webhooks, payments, orders (list, detail and creation), catalog management, approvals, the
+  audit log, API keys and account settings, plus the customer portal and its billing details.
 
-  **26 of 34 views are stubs** — a heading and nothing else. `scripts/browser-e2e.sh`
-  prints the count on every run so a green build is not mistaken for a finished product:
+  Two consequences of that choice are worth stating. The CSP has no `unsafe-inline` for
+  scripts or styles, so there is no inline style anywhere and the only `innerHTML` is a
+  closed union of icon literals — a page cannot inject markup even by accident. And the
+  client never does money arithmetic in floating point: amounts are `{minor, currency,
+  scale}` from the API and are rendered by inserting the decimal point into a string, the
+  same rule the server uses.
 
-  ```
-  note: 26 of 34 views are still stubs (heading only, no data)
-  ```
-
-  Every endpoint those screens need is implemented and documented; the remaining work is
-  view code, not server work.
+  `make e2e-ui` drives every screen in headless Chromium against a seeded database. It
+  fails on an uncaught exception, an unexpected console error, an error state on a screen
+  that should have data, a screen that renders a heading but no content, a table that
+  overflows a 390px viewport, and a customer reaching a staff route.
+- **The UI cannot do everything the API can.** There is no product or price editor (the
+  catalog is created by the checkout flow and prices are immutable, so the screen is
+  read-only by design), no customer creation form (a customer is created by the admin CLI
+  or by checkout), and no extension installation. Each is a deliberate absence rather than
+  a gap: the screen says so instead of offering a control that would fail.
 - **`pg_trgm` is optional.** The customer search index tries it and falls back to a
   `lower(name)` prefix index, so a deployment that cannot install the extension still
   migrates. Which one is in force is visible in `\d customers`.
@@ -419,6 +447,14 @@ Safe to build the UI without, and listed so nobody assumes otherwise:
   gate: DDL, endpoint contracts, rules, errors and the tests that prove each one. Every
   task in it is now implemented; the document is kept as the record of *why* each rule
   exists.
+- [`docs/paymenter-parity.md`](docs/paymenter-parity.md) — the complete Paymenter parity
+  backlog: every feature in Paymenter's source (27 admin resources, ~26 client pages,
+  52 models, 77 settings keys, 4 gateways, 8 server modules, 3 extensions), mapped to what
+  Catalyst has today, with 277 numbered items, a phase order, the decisions that block
+  them, and the definition of parity.
+- [`web/README.md`](web/README.md) — the frontend: how it is built, the eight rules a
+  screen must follow (no inline styles, no `fetch`, no float money), the `ctx` a page is
+  given, the component kit, and the CSS vocabulary.
 - [`api/openapi.yaml`](api/openapi.yaml) — the API document. Generated from the route
   table by `make openapi`; `make openapi-check` fails when it drifts.
 - [`api/client`](api/client) — the typed client generated from that document.
@@ -452,7 +488,7 @@ internal/httpapi/       HTTP surface: route table, middleware, handlers
 internal/extproto/      extension protocol, client, supervisor
 api/openapi.yaml        the generated API document
 api/client/             the generated typed client
-web/                    the embedded frontend shell
+web/                    the embedded frontend: TypeScript sources, dist/, and its README
 extensions/             conformance fixtures
 scripts/                browser smoke test
 ```

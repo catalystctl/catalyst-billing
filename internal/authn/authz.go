@@ -46,6 +46,12 @@ const (
 	PermAuditRead        Permission = "audit:read"
 	PermReportRead       Permission = "report:read"
 	PermAPIKeyManage     Permission = "apikey:manage"
+	// PermCatalogWrite gates the catalog: categories, products, their metadata, logos and
+	// new price versions. It is separate from invoice:write:all because the two are different
+	// jobs: a billing clerk issues documents, a catalog manager decides what is for sale.
+	// Reading the catalog for invoicing is still invoice:read:all — pricing an invoice must
+	// not require the right to change a price.
+	PermCatalogWrite Permission = "catalog:write"
 )
 
 // Role is a named bundle of permissions.
@@ -75,6 +81,7 @@ var rolePermissions = map[Role][]Permission{
 		PermServiceHold,
 		PermExtensionManage, PermSettingsWrite, PermStaffManage,
 		PermAuditRead, PermReportRead, PermAPIKeyManage,
+		PermCatalogWrite,
 	},
 	RoleBilling: {
 		PermCustomerReadAll, PermCustomerWriteAll,

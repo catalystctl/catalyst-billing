@@ -441,7 +441,7 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 			"email":          res.User.Email,
 			"display_name":   res.User.DisplayName,
 			"email_verified": res.User.EmailVerified,
-			"roles":          res.User.Roles,
+			"roles":          nonNilRoles(res.User.Roles),
 			"is_staff":       res.User.IsStaff(),
 		},
 		"csrf_token": res.Session.CSRFToken,

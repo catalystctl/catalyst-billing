@@ -60,6 +60,15 @@
   background: var(--accent-press);
 }
 
+/* An amount inside a filled button must use the button's own foreground. The default
+ * .money-code colour is the muted body colour, which is designed for a light surface and
+ * becomes unreadable on a saturated accent. */
+.btn--primary .money-code,
+.btn--danger-solid .money-code {
+  color: inherit;
+  opacity: 0.72;
+}
+
 .btn--ghost {
   --btn-bg: transparent;
   --btn-line: transparent;
@@ -864,7 +873,7 @@
   place-items: center;
   padding: var(--s-4);
   background: var(--overlay);
-  backdrop-filter: blur(3px);
+  backdrop-filter: blur(4px) saturate(0.9);
   animation: fade-in var(--dur-2) var(--ease);
 }
 
@@ -1567,8 +1576,12 @@
 
 .meta-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  /* `minmax(0, 1fr)` rather than `minmax(150px, 1fr)`: a 36-character UUID in one cell must
+   * wrap inside its column, not widen the column and squeeze its neighbour to three
+   * characters per line. */
+  grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
   gap: var(--s-3) var(--s-4);
+  align-items: start;
 }
 
 .meta {
@@ -1587,7 +1600,9 @@
 .meta-value {
   font-size: var(--text-base);
   color: var(--text);
+  /* An id is one unbreakable token; without this it overflows or forces the grid wider. */
   overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .kv {
@@ -1623,6 +1638,10 @@
   gap: 4px;
   color: var(--text-faint);
   font-size: var(--text-xs);
+  /* The label is two characters; letting it wrap turns "id" into a vertical smudge beside a
+   * long identifier. */
+  white-space: nowrap;
+  flex: none;
 }
 
 .copy:hover {
@@ -1755,4 +1774,16 @@
 }
 [data-progress="10"] .progress-fill {
   width: 100%;
+}
+
+/* The palette's own input is the focus target of the whole overlay: a second focus ring
+ * around it would read as a nested control rather than the search field. */
+.palette-input input:focus,
+.palette-input input:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+
+.palette:focus-visible {
+  box-shadow: var(--shadow-3);
 }

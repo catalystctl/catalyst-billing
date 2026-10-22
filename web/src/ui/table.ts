@@ -47,6 +47,8 @@ export interface TableOptions<T> {
   limit?: number;
   /** Called with each page of rows, for a page that keeps a count or a summary. */
   onLoaded?: (rows: T[], page: Page<T>) => void;
+  /** Extra class on the table element, for a screen that needs its own column widths. */
+  class?: string;
 }
 
 export interface Table<T> {
@@ -69,7 +71,7 @@ export function createTable<T>(ctx: Ctx, options: TableOptions<T>): Table<T> {
 
   const tbody = h("tbody");
   const thead = h("thead");
-  const table = h("table", { class: "table" }, thead, tbody);
+  const table = h("table", { class: options.class ? `table ${options.class}` : "table" }, thead, tbody);
   const wrap = h("div", { class: "table-wrap table-wrap--cards" }, table);
   const footHost = h("div");
   const card = h("section", { class: "card" }, wrap, footHost);

@@ -419,3 +419,52 @@ func TestGuardedRoutesFailClosedWithoutAuth(t *testing.T) {
 		}
 	}
 }
+
+// A customer with no staff role must get an empty roles list, not JSON null.
+//
+// The wire shape matters because it is what a client iterates. `roles: null` in Go's encoder
+// means a nil slice, and a UI that does `user.roles.length` or `roles.join(", ")` throws
+// before the first screen renders. The bug this pins was exactly that: the shell crashed on
+// the portal for every non-staff user, and no Go test noticed because none of them looked at
+// the encoding of an empty list.
+func TestMeEncodesEmptyRolesAsAList(t *testing.T) {
+	env := newAuthEnv(t)
+	env.createUser(t, "customer@example.test", "customer password 1", "")
+	cookie, _ := env.login(t, "customer@example.test", "customer password 1")
+
+	rec := env.get(t, "/api/v1/auth/me", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("me: status %d", rec.Code)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	var user map[string]json.RawMessage
+	if err := json.Unmarshal(raw["user"], &user); err != nil {
+		t.Fatal(err)
+	}
+
+	roles, ok := user["roles"]
+	if !ok {
+		t.Fatal("the user object has no roles key")
+	}
+	if string(roles) == "null" {
+		t.Fatal("roles is null; a client cannot iterate it")
+	}
+	var list []string
+	if err := json.Unmarshal(roles, &list); err != nil {
+		t.Fatalf("roles is not a JSON array: %s", roles)
+	}
+	if len(list) != 0 {
+		t.Fatalf("roles = %v, want empty", list)
+	}
+
+	perms, ok := raw["permissions"]
+	if !ok {
+		t.Fatal("the response has no permissions key")
+	}
+	if string(perms) == "null" {
+		t.Fatal("permissions is null; a client cannot iterate it")
+	}
+}

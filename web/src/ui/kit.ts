@@ -438,6 +438,41 @@ export function tabs(
   return nav;
 }
 
+/** A two-segment bar: how much of an invoice is settled, and how much is not.
+ *
+ *  A single "percent paid" bar is technically correct and reads as broken when it is empty —
+ *  a customer looking at an unpaid invoice sees a grey line and has to check the legend to
+ *  learn that nothing has gone wrong. Two segments answer the question the bar is asked.
+ *
+ *  The width comes from a data attribute and a stylesheet rule, never an inline style: the CSP
+ *  has no 'unsafe-inline' for style attributes. */
+export function balanceBar(paid: number, total: number, opts?: { dueTone?: "warning" | "danger" }): HTMLElement {
+  const ratio = total > 0 ? Math.max(0, Math.min(1, paid / total)) : 0;
+  const bucket = Math.max(0, Math.min(10, Math.round(ratio * 10)));
+  const percent = Math.round(ratio * 100);
+  const dueTone = opts?.dueTone === "danger" ? " balance-due--danger" : "";
+  // When nothing is paid the bar is one uninterrupted "outstanding" segment, not a full
+  // green bar: at a 0% width the flex remainder would otherwise paint the whole track as
+  // unpaid *and* leave the paid segment invisible, which is right, but the two children
+  // still read as a 0/100 split with a stray 1px gap.
+  const segments =
+    bucket === 0
+      ? [h("div", { class: `balance-due${dueTone}` })]
+      : bucket === 10
+        ? [h("div", { class: "balance-paid" })]
+        : [h("div", { class: "balance-paid" }), h("div", { class: `balance-due${dueTone}` })];
+  return h(
+    "div",
+    {
+      class: "balance-bar",
+      "data-progress": String(bucket),
+      role: "img",
+      "aria-label": `${percent}% of the total is paid`,
+    },
+    ...segments,
+  );
+}
+
 export function progressBar(value: number, tone?: "success" | "warning" | "danger"): HTMLElement {
   // The width comes from a data attribute and a stylesheet rule, never an inline style:
   // the CSP has no 'unsafe-inline' for style attributes.
@@ -512,6 +547,10 @@ export function emptyState(opts: EmptyOptions): HTMLElement {
 export function errorState(err: unknown, retry?: () => void): HTMLElement {
   const apiErr = err instanceof ApiError ? err : null;
   const message = apiErr?.detail || (err instanceof Error ? err.message : "The request failed.");
+  // A 403 or a 404 is an answer, not a transient failure: the same request will produce the
+  // same answer, so offering "try again" is a button that cannot work. Only a failure that
+  // could plausibly succeed next time gets one.
+  const retryable = apiErr === null || apiErr.retryable || apiErr.status === 0 || apiErr.status >= 500;
   return h(
     "div",
     { class: "error-state" },
@@ -519,7 +558,7 @@ export function errorState(err: unknown, retry?: () => void): HTMLElement {
     h("p", { class: "empty-title" }, "That did not work"),
     h("p", { class: "empty-body" }, message),
     apiErr ? h("code", { class: "error-code" }, `${apiErr.status} ${apiErr.code}`) : null,
-    retry ? h("div", { class: "empty-actions" }, btn("Try again", { icon: "refresh", size: "sm", onclick: retry })) : null,
+    retry && retryable ? h("div", { class: "empty-actions" }, btn("Try again", { icon: "refresh", size: "sm", onclick: retry })) : null,
   );
 }
 

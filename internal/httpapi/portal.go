@@ -76,6 +76,15 @@ func (s *Server) handlePortalOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	writeJSON(w, http.StatusOK, portalOverviewJSON(overview))
+}
+
+// portalOverviewJSON is the one description of a customer's portal landing page.
+//
+// Shared by the customer's own endpoint and the staff read-only view: two functions that build
+// the same object would drift, and the whole point of the staff view is that an operator sees
+// what the customer sees.
+func portalOverviewJSON(overview portal.Overview) map[string]any {
 	outstanding := make([]map[string]any, 0, len(overview.Balance.Outstanding))
 	for _, a := range overview.Balance.Outstanding {
 		outstanding = append(outstanding, amountJSON(a))
@@ -97,7 +106,7 @@ func (s *Server) handlePortalOverview(w http.ResponseWriter, r *http.Request) {
 		recent = append(recent, invoiceJSON(inv))
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	return map[string]any{
 		"customer": map[string]any{
 			"id":    overview.Customer.ID,
 			"name":  overview.Customer.Name,
@@ -110,7 +119,7 @@ func (s *Server) handlePortalOverview(w http.ResponseWriter, r *http.Request) {
 		"services":        services,
 		"open_invoices":   open,
 		"recent_invoices": recent,
-	})
+	}
 }
 
 // handlePortalInvoices lists the customer's invoices.

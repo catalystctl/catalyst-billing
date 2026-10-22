@@ -30,6 +30,26 @@ npm run typecheck    # tsc --noEmit
 `make build` (Go) embeds whatever is in `web/dist`, so a frontend change must be rebuilt
 before the binary is rebuilt.
 
+## Testing
+
+```sh
+cd web && npm test        # money, parsing, status tones, routing (node --test)
+make e2e-ui               # every screen, in headless Chromium, against a seeded database
+```
+
+`make e2e-ui` is the one that matters. It signs in through the form, clicks the rail,
+opens a record, opens the palette and a dialog, switches the theme, shrinks to 390px, then
+signs in as a customer and visits the portal. It fails on an uncaught exception, an
+unexpected console error, an error state on a screen that should have data, a screen that
+renders no content, a table that overflows a phone, `[object Object]` in rendered text, and
+a customer reaching a staff route. Set `E2E_SCREENSHOTS=dir` to keep a PNG of each screen.
+
+For a one-off look at what the browser is complaining about:
+
+```sh
+node scripts/cdp-console.mjs http://127.0.0.1:8791/invoices --wait=3000 --shot=/tmp/x.png
+```
+
 ## Hard rules
 
 1. **No inline styles.** The Content-Security-Policy is `style-src 'self'` with no
@@ -50,6 +70,15 @@ before the binary is rebuilt.
 7. **No dead ends.** A page that shows a record links to the records it references.
 8. **Mobile is a layout, not a squeeze.** Mark the identifying column `primary: true` in a
    table; the CSS turns the row into a card below 780px and labels every other cell.
+9. **Never interpolate a node into a template literal.** `` `Paid ${moneyEl(x)}` `` renders
+   `Paid [object HTMLSpanElement]`. Pass it as a child. The e2e test now fails on this.
+10. **Never set `display` on a table cell outside a media query.** `.hide-sm { display:
+    initial }` resolves to `inline` and silently destroys the table layout; inside the query
+    `display: none` is the only value needed.
+11. **A value you did not read from a handler is a guess.** The Go handlers are the schema;
+    the wire has `null` where you expect `[]` and `int64` where you expect an object
+    (invoice line amounts are raw minor units, not `{minor, scale}`). Normalise at the edge
+    (`loadSession` does it for `roles`) so no page has to remember.
 
 ## A page module
 

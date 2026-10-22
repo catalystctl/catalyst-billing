@@ -1,5 +1,180 @@
-/* View-specific styles: portal.
+/* View-specific styles: portal and account settings.
  *
  * Shared components live in components.css and pages.css; this file exists so a screen can
- * have a shape of its own without editing a file another screen also owns.
+ * have a shape of its own without editing a file another screen also owns. The portal hero,
+ * the balance block, the service row and the settings nav are already in pages.css — only the
+ * shapes this work added are here.
  */
+
+/* ------------------------------------------------------------ portal rows -- */
+
+.portal-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.portal-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.portal-row:last-child {
+  border-bottom: 0;
+}
+
+.portal-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.portal-row-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-weight: 550;
+  min-width: 0;
+}
+
+.portal-row-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.portal-row-dot {
+  color: var(--text-faint);
+}
+
+.portal-row-side {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-left: auto;
+}
+
+.portal-row-amount {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+
+.portal-row-label {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* An overdue due date is the one number on the list that should read as a warning. */
+.portal-due--overdue {
+  color: var(--warning);
+}
+
+/* -------------------------------------------------------- portal balance -- */
+
+.portal-balance-amounts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.portal-balance-none {
+  font-size: var(--text-lg);
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.portal-balance-sub {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+
+@media (max-width: 640px) {
+  .portal-balance-amounts {
+    align-items: flex-start;
+  }
+}
+
+/* --------------------------------------------------------------- settings -- */
+
+/* A sticky index on the left, one column of sections on the right. pages.css owns
+ * .settings-nav / .settings-link; this is the grid they sit in. */
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(170px, 210px) minmax(0, 1fr);
+  gap: var(--s-5);
+  align-items: start;
+}
+
+.settings-section {
+  /* The topbar is sticky, so an anchor jump must stop below it, not underneath it. */
+  scroll-margin-top: calc(var(--topbar-h) + var(--s-4));
+}
+
+.settings-secret {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.settings-secret-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+.settings-secret-value {
+  flex: 1;
+  min-width: 0;
+  /* A setup secret is one unbroken base32 word; wrap it rather than scroll it away. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  letter-spacing: 0.06em;
+}
+
+.settings-recovery {
+  margin: 0;
+  /* Two columns of codes keep a ten-code list on one screen without a scrollbar. */
+  column-count: 2;
+  column-gap: var(--s-5);
+  white-space: pre-wrap;
+}
+
+@media (max-width: 900px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-nav {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-recovery {
+    column-count: 1;
+  }
+}

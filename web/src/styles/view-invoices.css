@@ -2,4 +2,368 @@
  *
  * Shared components live in components.css and pages.css; this file exists so a screen can
  * have a shape of its own without editing a file another screen also owns.
+ *
+ * Everything here is a class or a data attribute — never an inline style, because the CSP
+ * has no 'unsafe-inline' for style attributes.
  */
+
+/* -------------------------------------------------------------- list page -- */
+
+/* The summary strip is a reading of the loaded page, not a book total. It sits directly
+ * above the filters so the caveat and the numbers are read together. */
+.inv-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.inv-summary-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--s-2);
+}
+
+.inv-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.inv-summary-label {
+  font-size: var(--text-xs);
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+
+.inv-summary-value {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.inv-summary-value .money {
+  font-size: var(--text-lg);
+}
+
+.inv-summary-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+/* The filter card and the customer card host a dropdown. A card clips its content by
+ * default, which would cut the results off at the card's edge, so these two opt out. */
+.inv-filters,
+.inv-customer-card {
+  overflow: visible;
+}
+
+.inv-filters .card-body {
+  padding: var(--s-3) var(--s-4);
+}
+
+.inv-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--s-3);
+  align-items: start;
+}
+
+/* ---------------------------------------------------------- create invoice -- */
+
+/* The customer picker: a search box, its own results, and the chosen party. The results are
+ * absolutely positioned over the content below so opening them does not push the form down
+ * and move the button the operator is about to click. */
+.inv-picker {
+  position: relative;
+}
+
+.inv-picker-results {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% - 4px);
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  box-shadow: var(--shadow-2);
+  background: var(--surface);
+}
+
+/* The picker's rows are buttons: reset the browser's centring so the flex layout is the
+ * only thing that positions the text. */
+.inv-picker-results .search-hit,
+.search-results .search-hit {
+  width: 100%;
+  text-align: left;
+}
+
+.inv-picker-state {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+}
+
+.inv-picked {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+.inv-picked .row {
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+/* The line editor's grid comes from pages.css (.line-head/.line-row/.line-total). This is
+ * only the wrapper that keeps the header and rows on the same track widths. */
+.inv-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.inv-lines .line-head .num {
+  text-align: right;
+}
+
+.inv-prose p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.inv-prose strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------- detail page -- */
+
+/* The document's line table scrolls inside the document instead of being clipped. */
+.inv-doc-lines {
+  overflow-x: auto;
+}
+
+.inv-doc-lines .doc-lines {
+  min-width: 520px;
+}
+
+/* A second table inside a card that already has one (payments + allocations). */
+.inv-subsection {
+  border-top: 1px solid var(--line);
+}
+
+.inv-subsection .card-head {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.inv-subsection .card-title {
+  font-size: var(--text-sm);
+}
+
+/* Journal transactions: one block per posting, with the entries table underneath. */
+.inv-journal {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.inv-journal-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-xs);
+  flex-wrap: wrap;
+}
+
+.inv-journal-kind {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* The journal table is dense on purpose: an operator scans accounts and amounts, so the
+ * 44px row height the list tables use is wasted space here. */
+.inv-journal .table thead th {
+  position: static;
+  background: var(--surface);
+}
+
+.inv-journal .table tbody td {
+  height: auto;
+  padding: 6px var(--s-3);
+}
+
+.inv-journal .table tfoot td {
+  padding: 6px var(--s-3);
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 0;
+  font-weight: 600;
+}
+
+.inv-journal .table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* The frozen snapshot: closed by default (it is evidence, not the primary reading) and
+ * scrollable, because a snapshot with many lines is tall. */
+.inv-snapshot summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 550;
+  color: var(--text-dim);
+  padding: var(--s-1) 0;
+}
+
+.inv-snapshot summary:hover {
+  color: var(--text);
+}
+
+.inv-snapshot[open] summary {
+  margin-bottom: var(--s-2);
+}
+
+.inv-json {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0 0 var(--s-2);
+  font-size: var(--text-xs);
+  white-space: pre;
+  tab-size: 2;
+}
+
+@media (max-width: 780px) {
+  .inv-summary-items {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inv-picker-results {
+    position: static;
+    max-height: none;
+    box-shadow: none;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    margin-top: var(--s-2);
+  }
+
+  .inv-picked {
+    flex-wrap: wrap;
+  }
+
+  .inv-picked .row {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * A line can name the product it sells.
+ *
+ * The line editor grew from four controls to six: a product and a plan, because a manual
+ * invoice is how an operator sells something that must be provisioned. The description keeps
+ * the most room — it is the part a human reads on the invoice — and the picker gets enough
+ * width to show a product name without truncating it to "Man…".
+ *
+ * Both new fields sit on their own row: they are about *what* is being sold, while the three
+ * above are about *how much*. Mixing them into one row made a form that was read left to right
+ * as one thought when it is really two.
+ * ------------------------------------------------------------------------- */
+
+/* A line is one logical row of six controls, not two rows of three. Putting the pickers
+ * underneath left the trash icon and the line total stranded on the first row beside a
+ * half-width plan select — the eye reads the row as unfinished. One row, six columns, with the
+ * description taking whatever is left. */
+.line-row {
+  grid-template-columns: minmax(0, 1fr) 52px 92px minmax(0, 1.05fr) minmax(0, 0.8fr) 84px 28px;
+  align-items: end;
+  gap: var(--s-2);
+}
+
+.line-row .line-product,
+.line-row .line-version {
+  grid-column: auto;
+}
+
+/* Every control now has a column header, so the in-row labels stay hidden on wide screens and
+ * reappear only when the card layout stacks the fields on a phone. */
+.line-row .line-product .field-label,
+.line-row .line-version .field-label {
+  display: none;
+}
+
+/* The header row must match the body columns, or the labels drift off their controls. */
+.line-head {
+  grid-template-columns: minmax(0, 1fr) 52px 92px minmax(0, 1.05fr) minmax(0, 0.8fr) 84px 28px;
+  align-items: end;
+  padding-bottom: 2px;
+}
+
+
+
+/* The product picker is the one control whose value changes the meaning of the line, so it is
+ * wider than a normal select and never shrinks to an ellipsis. */
+.line-row .line-product .select {
+  min-width: 0;
+}
+
+.line-row .line-version .select {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+@media (max-width: 900px) {
+  /* Below this width seven columns stop being readable, so a line becomes a small card: the
+   * description spans the width and the rest flow underneath, each with its own label because
+   * the header row is gone. */
+  .line-head {
+    display: none;
+  }
+  .line-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: var(--s-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    align-items: start;
+  }
+  .line-row .field--desc {
+    grid-column: span 2;
+  }
+  .line-row .line-product,
+  .line-row .line-version {
+    grid-column: span 2;
+  }
+  .line-row .field-label {
+    display: block;
+  }
+  .line-row .line-total {
+    justify-content: flex-start;
+  }
+}

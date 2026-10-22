@@ -315,8 +315,15 @@ hr {
   flex: 1 1 auto;
 }
 
+/* Responsive visibility.
+ *
+ * These deliberately do not set `display` outside the media query. A `display: initial` on a
+ * <td> resolves to `inline`, which silently destroys the table layout — the cells stop being
+ * table cells and the column widths collapse. Inside the query, `display: none` is the only
+ * value needed, and the browser's own `table-cell` is what comes back when the query stops
+ * matching. */
 .hide-sm {
-  display: initial;
+  /* no display here on purpose; see above */
 }
 
 .only-sm {
@@ -328,7 +335,7 @@ hr {
     display: none !important;
   }
   .only-sm {
-    display: initial;
+    display: revert;
   }
 }
 

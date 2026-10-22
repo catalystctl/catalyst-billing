@@ -122,8 +122,12 @@ client-check: openapi-check
 smoke: build
 	bash scripts/browser-smoke.sh
 
-# The authenticated browser test. Separate from `smoke` because it creates an account and needs a
-# seeded database, while `smoke` must run against any server.
+# The authenticated browser test. Separate from `smoke` because it creates accounts and needs a
+# writable database, while `smoke` must run against any server. It seeds a customer, an invoice,
+# a service and a portal login, then drives every screen through scripts/e2e-ui.mjs and fails on
+# a console error, an error state, or a screen that renders no content.
+#
+# Set E2E_SCREENSHOTS=dir to keep a PNG of each screen.
 e2e-ui: build
 	bash scripts/browser-e2e.sh
 

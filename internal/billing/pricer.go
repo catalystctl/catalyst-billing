@@ -90,13 +90,15 @@ func (p FixedTaxPricer) Price(_ context.Context, lines []Line, cur money.Currenc
 		}
 
 		results = append(results, LineResult{
-			Description:   l.Description,
-			QuantityMilli: l.QuantityMilli,
-			UnitMinor:     l.UnitPrice.Minor(),
-			Net:           net,
-			Tax:           tax,
-			Total:         total,
-			TaxRate:       p.Rate.String(),
+			Description:    l.Description,
+			QuantityMilli:  l.QuantityMilli,
+			UnitMinor:      l.UnitPrice.Minor(),
+			Net:            net,
+			Tax:            tax,
+			Total:          total,
+			TaxRate:        p.Rate.String(),
+			ProductID:      l.ProductID,
+			PriceVersionID: l.PriceVersionID,
 		})
 
 		if subtotal, err = subtotal.Add(net); err != nil {

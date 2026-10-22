@@ -1036,15 +1036,38 @@
   border-radius: var(--r-full);
   overflow: hidden;
   background: var(--surface-3);
+  gap: 1px;
 }
 
 .balance-paid {
   background: var(--success);
+  width: 0;
+  transition: width var(--dur-3) var(--ease);
 }
 
+/* The unpaid segment takes the rest, so the bar is full at any ratio and never reads as an
+ * empty track. When it is the only segment it is the whole bar, hence the radius. */
 .balance-due {
   background: var(--warning);
+  flex: 1 1 auto;
+  border-radius: var(--r-full);
 }
+
+.balance-due--danger {
+  background: var(--danger);
+}
+
+.balance-bar[data-progress="0"] .balance-paid { width: 0%; }
+.balance-bar[data-progress="1"] .balance-paid { width: 10%; }
+.balance-bar[data-progress="2"] .balance-paid { width: 20%; }
+.balance-bar[data-progress="3"] .balance-paid { width: 30%; }
+.balance-bar[data-progress="4"] .balance-paid { width: 40%; }
+.balance-bar[data-progress="5"] .balance-paid { width: 50%; }
+.balance-bar[data-progress="6"] .balance-paid { width: 60%; }
+.balance-bar[data-progress="7"] .balance-paid { width: 70%; }
+.balance-bar[data-progress="8"] .balance-paid { width: 80%; }
+.balance-bar[data-progress="9"] .balance-paid { width: 90%; }
+.balance-bar[data-progress="10"] .balance-paid { width: 100%; }
 
 .legend {
   display: flex;

@@ -566,6 +566,10 @@ var Tables = []string{
 	// Cart.
 	"cart_items",
 	"carts",
+	// Growth: commissions reference orders, so they go before the order tables.
+	"affiliate_referrals",
+	"affiliate_balances",
+	"affiliates",
 	// Money and lifecycle records.
 	"credit_applications",
 	"credit_notes",

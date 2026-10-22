@@ -46,15 +46,15 @@ const (
 // Event keys a caller may pass to Notify. The set is closed so a typo in a call site is a
 // value that can never be selected rather than a silent post.
 const (
-	EventInvoicePaid     = "invoice_paid"
-	EventInvoiceIssued   = "invoice_issued"
-	EventOrderPaid       = "order_paid"
-	EventServiceCreated  = "service_created"
-	EventServiceSuspended = "service_suspended"
-	EventServiceTerminated = "service_terminated"
-	EventTicketOpened    = "ticket_opened"
-	EventRefundIssued    = "refund_issued"
-	EventCustomerCreated = "customer_created"
+	EventInvoicePaid         = "invoice_paid"
+	EventInvoiceIssued       = "invoice_issued"
+	EventOrderPaid           = "order_paid"
+	EventServiceCreated      = "service_created"
+	EventServiceSuspended    = "service_suspended"
+	EventServiceTerminated   = "service_terminated"
+	EventTicketOpened        = "ticket_opened"
+	EventRefundIssued        = "refund_issued"
+	EventCustomerCreated     = "customer_created"
 	EventAffiliateCommission = "affiliate_commission"
 )
 
@@ -257,7 +257,7 @@ func eventColour(event string) int {
 
 // discordMessage is the webhook body.
 type discordMessage struct {
-	Username string        `json:"username,omitempty"`
+	Username string         `json:"username,omitempty"`
 	Embeds   []discordEmbed `json:"embeds"`
 }
 

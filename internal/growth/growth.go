@@ -131,12 +131,12 @@ type Referral struct {
 
 // PayoutLine is one affiliate's outstanding balance in one currency.
 type PayoutLine struct {
-	AffiliateID string
-	Code        string
-	UserID      string
-	Email       string
-	Currency    string
-	Owed        money.Amount
+	AffiliateID  string
+	Code         string
+	UserID       string
+	Email        string
+	Currency     string
+	Owed         money.Amount
 	LifetimePaid money.Amount
 	// PendingCommissions is the number of commission rows that make up Owed.
 	PendingCommissions int

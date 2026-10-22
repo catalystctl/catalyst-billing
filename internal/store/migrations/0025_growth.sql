@@ -1,4 +1,4 @@
--- 0024_growth.sql
+-- 0025_growth.sql
 --
 -- The growth extensions: affiliate attribution, commission on a paid order, and the
 -- configuration for Discord notifications.

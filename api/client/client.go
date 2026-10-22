@@ -1067,6 +1067,15 @@ func (c *Client) PostAuthMfaVerify(ctx context.Context, query url.Values, body a
 	return c.do(ctx, "POST", path, query, body, false, false)
 }
 
+// PostAuthPasswordChange calls POST /api/v1/auth/password/change.
+//
+// Change your own password
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+func (c *Client) PostAuthPasswordChange(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/password/change"
+	return c.do(ctx, "POST", path, query, body, true, false)
+}
+
 // PostAuthPasswordresetComplete calls POST /api/v1/auth/password-reset/complete.
 //
 // Complete a password reset
@@ -1080,6 +1089,14 @@ func (c *Client) PostAuthPasswordresetComplete(ctx context.Context, query url.Va
 // Request a password reset
 func (c *Client) PostAuthPasswordresetRequest(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/auth/password-reset/request"
+	return c.do(ctx, "POST", path, query, body, false, false)
+}
+
+// PostAuthRegister calls POST /api/v1/auth/register.
+//
+// Create a customer account
+func (c *Client) PostAuthRegister(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/register"
 	return c.do(ctx, "POST", path, query, body, false, false)
 }
 
@@ -1126,6 +1143,18 @@ func (c *Client) PostPortalCartItems(ctx context.Context, query url.Values, body
 func (c *Client) PostPortalInvoicesByIdCheckout(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/invoices/{id}/checkout"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalOrders calls POST /api/v1/portal/orders.
+//
+// # Buy products as the signed-in customer
+//
+// Permission: invoice:pay:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostPortalOrders(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/orders"
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 

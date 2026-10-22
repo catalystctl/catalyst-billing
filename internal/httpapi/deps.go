@@ -140,7 +140,13 @@ func (s *Server) actorFor(r *http.Request) audit.Actor {
 		return audit.Actor{ID: key.UserID, Kind: audit.ActorAPIKey}
 	}
 	if user, ok := userFrom(r.Context()); ok {
-		return audit.Actor{ID: user.ID, Kind: audit.ActorUser}
+		actor := audit.Actor{ID: user.ID, Kind: audit.ActorUser}
+		// Carry the operator behind an impersonated session, so an action taken while acting as a
+		// customer is attributable to the human who took it as well as to the account it was taken on.
+		if sess, ok := sessionFrom(r.Context()); ok {
+			actor.ImpersonatedBy = sess.ImpersonatedBy
+		}
+		return actor
 	}
 	return audit.Actor{Kind: audit.ActorSystem}
 }

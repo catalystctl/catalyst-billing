@@ -31,6 +31,14 @@ type Session struct {
 	// is derived from the session's secret, so it can be handed to the browser
 	// without storing anything extra.
 	CSRFToken string
+	// ImpersonatedBy is the operator's user id when this session was created by an administrator
+	// acting as this user, and empty for an ordinary session.
+	//
+	// It is on the session rather than on the user because impersonation is a property of *this
+	// login*, not of the account: the same customer has ordinary sessions and impersonated ones,
+	// and only the latter may be attributed to an operator. Every audit row written during the
+	// session names both, which is what makes "who did this" answerable after the fact.
+	ImpersonatedBy string
 }
 
 // User is the authenticated identity.
@@ -410,13 +418,13 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Session, User
 	)
 	err := s.pool.QueryRow(ctx, `
 		SELECT s.id, s.user_id, s.created_at, s.expires_at, s.credential_version,
-		       s.revoked_at, s.csrf_secret,
+		       s.revoked_at, s.csrf_secret, COALESCE(s.impersonated_by::text, ''),
 		       u.email, u.display_name, u.status, u.credential_version, u.email_verified_at
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1`, HashToken(token)).
 		Scan(&sess.ID, &sess.UserID, &sess.CreatedAt, &sess.ExpiresAt, &credVer,
-			&revokedAt, &csrfSecret,
+			&revokedAt, &csrfSecret, &sess.ImpersonatedBy,
 			&user.Email, &user.DisplayName, &user.Status, &user.CredentialVersion, &verified)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, User{}, ErrNoSession

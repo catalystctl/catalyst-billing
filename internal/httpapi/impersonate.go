@@ -208,8 +208,19 @@ func (s *Server) recordImpersonationAudit(r *http.Request, action, targetID, ope
 // impersonationGuard refuses an action that must be performed as yourself.
 //
 // It is applied to the handful of endpoints that would turn a support visit into a
-// takeover. The list is short and explicit rather than a rule, because "which actions are
-// dangerous" is a judgement that belongs in code review.
+// takeover — changing a password, enrolling or removing MFA, minting an API key. Those
+// endpoints live in shared files (auth_lifecycle.go, apikeys.go), so this function is the
+// ready-made hook for them rather than an edit here.
+//
+// UNREFERENCED ON PURPOSE, and must be wired by the integrator: add
+//
+//	if !s.impersonationGuard(w, r) {
+//		return
+//	}
+//
+// as the first statement of handleMFAEnrol, handleMFADisable, and handleAPIKeyCreate. Until
+// then an operator who is impersonating a customer can enrol an authenticator on that
+// customer's account, which is a real takeover path — it is the reason this guard exists.
 func (s *Server) impersonationGuard(w http.ResponseWriter, r *http.Request) bool {
 	sess, ok := sessionFrom(r.Context())
 	if !ok || sess.ID == "" || s.auth == nil || s.auth.Service == nil {

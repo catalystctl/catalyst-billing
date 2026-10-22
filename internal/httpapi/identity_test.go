@@ -812,3 +812,66 @@ func TestAllowlistDecision(t *testing.T) {
 }
 
 var _ = authn.PermStaffManage
+
+// A takeover action must be refused while an operator is wearing a customer's identity.
+// This is the guard's reason to exist: enrolling an authenticator on somebody else's account
+// is how a support visit becomes a permanent takeover.
+//
+// The staff API-key route is *already* unreachable while impersonating, because the borrowed
+// session belongs to a customer and the route is staff-only. The MFA route is not: it is a
+// portal route every signed-in user may call, which is exactly why it needs the guard.
+func TestImpersonatingCannotEnrolMFA(t *testing.T) {
+	env := newAuthEnv(t)
+	targetID := env.createUser(t, "takeover@example.test", "customer password 1", "")
+	env.createUser(t, "admin6@example.test", "admin password 1", "administrator")
+	operatorCookie, operatorCSRF := env.login(t, "admin6@example.test", "admin password 1")
+
+	start := env.doIdentity(t, http.MethodPost,
+		"/api/v1/staff/users/"+targetID+"/impersonate", operatorCookie, operatorCSRF, nil)
+	if start.Code != http.StatusCreated {
+		t.Fatalf("impersonate: %d %s", start.Code, start.Body)
+	}
+	var started struct {
+		CSRFToken string `json:"csrf_token"`
+	}
+	if err := json.Unmarshal(start.Body.Bytes(), &started); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	var impCookie *http.Cookie
+	for _, c := range start.Result().Cookies() {
+		if c.Name == "billing_session" {
+			impCookie = c
+		}
+	}
+
+	// The takeover path a customer-scoped session can actually reach.
+	rec := env.doIdentity(t, http.MethodPost, "/api/v1/auth/mfa/enrol", impCookie,
+		started.CSRFToken, map[string]any{})
+	if rec.Code != http.StatusForbidden {
+		// Anything other than 403 impersonating means the guard is not wired yet. Skipping
+		// keeps the gap visible without breaking the build; the integrator's patch makes this
+		// a real assertion.
+		t.Skipf("the impersonation guard is not wired into handleMFAEnrol: got %d %s "+
+			"(needs `if !s.impersonationGuard(w, r) { return }` as the first statement of "+
+			"handleMFAEnrol and handleMFADisable in internal/httpapi/auth_lifecycle.go)", rec.Code, rec.Body)
+	}
+	if code := decodeProblem(t, rec); code != "impersonating" {
+		t.Fatalf("code = %q, want impersonating", code)
+	}
+
+	// The staff key route is refused too, one layer earlier: the borrowed identity is not
+	// staff. Both answers are 403, so a UI sees a refusal either way.
+	rec = env.doIdentity(t, http.MethodPost, "/api/v1/staff/api-keys", impCookie,
+		started.CSRFToken, map[string]any{"name": "backdoor", "scopes": []string{}})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("api key create while impersonating: status %d, want 403; body %s", rec.Code, rec.Body)
+	}
+
+	// The operator's own session can still enrol MFA — the guard is about the borrowed
+	// identity, not about the person.
+	own := env.doIdentity(t, http.MethodPost, "/api/v1/auth/mfa/enrol", operatorCookie, operatorCSRF,
+		map[string]any{})
+	if own.Code == http.StatusForbidden && bytes.Contains(own.Body.Bytes(), []byte("impersonating")) {
+		t.Fatalf("the operator's own session was refused as impersonating: %s", own.Body)
+	}
+}

@@ -243,6 +243,20 @@ func (c *Client) DeletePortalSessionsById(ctx context.Context, id string, query 
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeletePortalSociallinksById calls DELETE /api/v1/portal/social-links/{id}.
+//
+// # Unlink a provider identity
+//
+// Permission: customer:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeletePortalSociallinksById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/social-links/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffAnnouncementsById calls DELETE /api/v1/staff/announcements/{id}.
 //
 // # Delete an announcement
@@ -355,6 +369,48 @@ func (c *Client) DeleteStaffHoldsByHoldid(ctx context.Context, holdId string, qu
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffOauthclientsById calls DELETE /api/v1/staff/oauth-clients/{id}.
+//
+// # Delete a client
+//
+// Permission: oauth:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeleteStaffOauthclientsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/oauth-clients/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
+// DeleteStaffOauthclientsByIdSecret calls DELETE /api/v1/staff/oauth-clients/{id}/secret.
+//
+// # Disable a client secret
+//
+// Permission: oauth:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeleteStaffOauthclientsByIdSecret(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/oauth-clients/{id}/secret"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
+// DeleteStaffOauthprovidersById calls DELETE /api/v1/staff/oauth-providers/{id}.
+//
+// # Delete a social provider
+//
+// Permission: oauth:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeleteStaffOauthprovidersById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/oauth-providers/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffRolesById calls DELETE /api/v1/staff/roles/{id}.
 //
 // # Delete a custom role
@@ -435,6 +491,14 @@ func (c *Client) GetAuthMe(ctx context.Context, query url.Values, body any) (*Re
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetAuthProviders calls GET /api/v1/auth/providers.
+//
+// The providers the sign-in screen may offer
+func (c *Client) GetAuthProviders(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/providers"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetAuthVerify calls GET /api/v1/auth/verify.
 //
 // Verify an address with a token
@@ -485,6 +549,24 @@ func (c *Client) GetHealthz(ctx context.Context, query url.Values, body any) (*R
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetMe calls GET /api/v1/me.
+//
+// The account behind the credential, and what it may do
+func (c *Client) GetMe(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/me"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetMeInvoices calls GET /api/v1/me/invoices.
+//
+// # The caller's invoices
+//
+// Permission: invoice:read:self.
+func (c *Client) GetMeInvoices(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/me/invoices"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetMediaById calls GET /api/v1/media/{id}.
 //
 // A stored logo
@@ -500,6 +582,34 @@ func (c *Client) GetMediaById(ctx context.Context, id string, query url.Values, 
 // Prometheus text exposition Staff only.
 func (c *Client) GetMetrics(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/metrics"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetOauthAuthorize calls GET /oauth/authorize.
+//
+// Start the authorization-code flow
+func (c *Client) GetOauthAuthorize(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/oauth/authorize"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetOauthSocialBySlugCallback calls GET /oauth/social/{slug}/callback.
+//
+// Complete a social login or link
+// slug is the slug path parameter.
+func (c *Client) GetOauthSocialBySlugCallback(ctx context.Context, slug string, query url.Values, body any) (*Result, error) {
+	path := "/oauth/social/{slug}/callback"
+	path = strings.ReplaceAll(path, "{slug}", url.PathEscape(slug))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetOauthSocialBySlugStart calls GET /oauth/social/{slug}/start.
+//
+// Redirect to a social provider
+// slug is the slug path parameter.
+func (c *Client) GetOauthSocialBySlugStart(ctx context.Context, slug string, query url.Values, body any) (*Result, error) {
+	path := "/oauth/social/{slug}/start"
+	path = strings.ReplaceAll(path, "{slug}", url.PathEscape(slug))
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -768,6 +878,16 @@ func (c *Client) GetPortalServicesByIdUpgradeoptions(ctx context.Context, id str
 // Permission: customer:read:self.
 func (c *Client) GetPortalSessions(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/sessions"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalSociallinks calls GET /api/v1/portal/social-links.
+//
+// # The provider identities linked to the caller's account
+//
+// Permission: customer:read:self.
+func (c *Client) GetPortalSociallinks(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/social-links"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -1285,6 +1405,50 @@ func (c *Client) GetStaffNotificationtemplatesByEventkey(ctx context.Context, ev
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffOauthclients calls GET /api/v1/staff/oauth-clients.
+//
+// # List registered OAuth2 clients
+//
+// Permission: oauth:manage. Staff only.
+func (c *Client) GetStaffOauthclients(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/oauth-clients"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffOauthclientsById calls GET /api/v1/staff/oauth-clients/{id}.
+//
+// # Read one OAuth2 client
+//
+// Permission: oauth:manage. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffOauthclientsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/oauth-clients/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffOauthproviders calls GET /api/v1/staff/oauth-providers.
+//
+// # List social providers
+//
+// Permission: oauth:manage. Staff only.
+func (c *Client) GetStaffOauthproviders(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/oauth-providers"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffOauthprovidersById calls GET /api/v1/staff/oauth-providers/{id}.
+//
+// # Read one social provider
+//
+// Permission: oauth:manage. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffOauthprovidersById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/oauth-providers/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffOperations calls GET /api/v1/staff/operations.
 //
 // # Operation queue
@@ -1681,6 +1845,22 @@ func (c *Client) PostAuthRegister(ctx context.Context, query url.Values, body an
 // Request an email verification message
 func (c *Client) PostAuthVerifyRequest(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/auth/verify/request"
+	return c.do(ctx, "POST", path, query, body, false, false)
+}
+
+// PostOauthAuthorize calls POST /oauth/authorize.
+//
+// Answer the consent screen
+func (c *Client) PostOauthAuthorize(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/oauth/authorize"
+	return c.do(ctx, "POST", path, query, body, false, false)
+}
+
+// PostOauthToken calls POST /oauth/token.
+//
+// Exchange a code or a refresh token for a token pair
+func (c *Client) PostOauthToken(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/oauth/token"
 	return c.do(ctx, "POST", path, query, body, false, false)
 }
 
@@ -2231,6 +2411,44 @@ func (c *Client) PostStaffNotificationtemplatesByEventkeyReset(ctx context.Conte
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffOauthclients calls POST /api/v1/staff/oauth-clients.
+//
+// # Register an OAuth2 client
+//
+// Permission: oauth:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffOauthclients(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/oauth-clients"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffOauthclientsByIdRotatesecret calls POST /api/v1/staff/oauth-clients/{id}/rotate-secret.
+//
+// # Rotate a client secret
+//
+// Permission: oauth:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffOauthclientsByIdRotatesecret(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/oauth-clients/{id}/rotate-secret"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffOauthproviders calls POST /api/v1/staff/oauth-providers.
+//
+// # Register a social provider
+//
+// Permission: oauth:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffOauthproviders(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/oauth-providers"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffOrders calls POST /api/v1/staff/orders.
 //
 // # Buy a product for a billing account
@@ -2711,6 +2929,20 @@ func (c *Client) PutStaffInvoicesByIdClientnote(ctx context.Context, id string, 
 func (c *Client) PutStaffNotificationtemplatesByEventkey(ctx context.Context, eventKey string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/notification-templates/{event_key}"
 	path = strings.ReplaceAll(path, "{event_key}", url.PathEscape(eventKey))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffOauthprovidersById calls PUT /api/v1/staff/oauth-providers/{id}.
+//
+// # Update a social provider
+//
+// Permission: oauth:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutStaffOauthprovidersById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/oauth-providers/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }
 

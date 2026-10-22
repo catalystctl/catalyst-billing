@@ -820,10 +820,21 @@ func TestRuntimeRoleCannotDDL(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, `CREATE TABLE should_not_exist (id int)`); err == nil {
+	// The attempt runs inside a transaction that is always rolled back. Without that, a run where
+	// the privilege is wrongly granted leaves the table behind, and every later test in the
+	// database then fails the table-classification check — so one regression turns into a suite
+	// that cannot start, and the original cause is buried under the noise.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	_, createErr := tx.Exec(ctx, `CREATE TABLE should_not_exist (id int)`)
+	_ = tx.Rollback(ctx)
+	if createErr == nil {
 		t.Fatal("runtime role was able to CREATE TABLE")
-	} else if store.SQLState(err) != store.StateInsufficientPrivilege {
-		t.Fatalf("create table: got state %q, want %s", store.SQLState(err), store.StateInsufficientPrivilege)
+	}
+	if store.SQLState(createErr) != store.StateInsufficientPrivilege {
+		t.Fatalf("create table: got state %q, want %s", store.SQLState(createErr), store.StateInsufficientPrivilege)
 	}
 	if _, err := pool.Exec(ctx, `DROP TABLE invoices`); err == nil {
 		t.Fatal("runtime role was able to DROP TABLE")

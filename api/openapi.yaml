@@ -632,6 +632,39 @@ paths:
             summary: Change your own password
             x-csrf-required: true
             x-rate-class: mutation
+    /api/v1/auth/providers:
+        get:
+            description: Public, because the sign-in screen is public. Only enabled providers are listed, so a half-configured provider is not a broken button; with none configured the list is empty and the screen renders no buttons at all.
+            operationId: GetAuthProviders
+            responses:
+                2XX:
+                    description: '`{data: [{slug, name, start_url, link_url}]}`'
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: The providers the sign-in screen may offer
+            x-rate-class: ""
     /api/v1/auth/register:
         post:
             description: |-
@@ -1001,6 +1034,103 @@ paths:
                 - bearerKey: []
             summary: Server-sent stream of committed changes
             x-rate-class: ""
+    /api/v1/me:
+        get:
+            description: 'The first call a third party makes. It reports the account and the credential kind: a session, an API key, or an OAuth token with the client it belongs to and the scopes it was narrowed to. `permissions` is resolved from the account''s roles *now*, so a client can see that its token has been narrowed rather than discovering it through a 403.'
+            operationId: GetMe
+            responses:
+                2XX:
+                    description: The identity and its effective permissions
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No credential
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The account behind the credential, and what it may do
+            x-rate-class: read
+    /api/v1/me/invoices:
+        get:
+            description: 'The documented read a third party actually makes: the same portal query a session uses, behind the same `invoice:read:self` permission, reached with an OAuth token. The customer is resolved from the credential, never from the request, so another customer''s invoices are not addressable at all.'
+            operationId: GetMeInvoices
+            responses:
+                2XX:
+                    description: The caller's invoices
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The token does not carry `invoice:read:self`, or the owner no longer holds it
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The caller's invoices
+            x-permission: invoice:read:self
+            x-rate-class: read
     /api/v1/media/{id}:
         get:
             description: Public, because an <img> on the storefront has no session. Served with nosniff and an immutable cache. SVG is the one format that can carry a script, so it is served with a sandboxing Content-Security-Policy rather than as a document.
@@ -5592,6 +5722,114 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Sign out everywhere else
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
+    /api/v1/portal/social-links:
+        get:
+            description: 'Scoped to the session in SQL: another customer''s links are not addressable. The subject is the provider''s opaque id, included so a support report can be matched to a row.'
+            operationId: GetPortalSociallinks
+            responses:
+                2XX:
+                    description: The caller's links
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The provider identities linked to the caller's account
+            x-permission: customer:read:self
+            x-rate-class: read
+    /api/v1/portal/social-links/{id}:
+        delete:
+            description: Ownership is part of the `WHERE` clause, so somebody else's link is indistinguishable from one that does not exist and answers 404.
+            operationId: DeletePortalSociallinksById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Unlinked
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such link
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Unlink a provider identity
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -14750,6 +14988,1085 @@ paths:
             x-permission: notification:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/oauth-clients:
+        get:
+            description: Never contains a secret. `has_secret` says whether one is configured, which is the only thing a screen needs to show.
+            operationId: GetStaffOauthclients
+            responses:
+                2XX:
+                    description: The clients
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List registered OAuth2 clients
+            x-permission: oauth:manage
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: 'Redirect URIs must be absolute, http(s), fragment-free and exact; a wildcard is refused. The allowed scopes must be permission names this build declares. A confidential client''s secret is returned in this response and nowhere else, with `shown_once: true`; a public client has no secret at all and must use PKCE.'
+            operationId: PostStaffOauthclients
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                allowed_scopes:
+                                    items:
+                                        type: string
+                                    type: array
+                                confidential:
+                                    description: Defaults to false. A client that can keep a secret has to say so.
+                                    type: boolean
+                                name:
+                                    type: string
+                                redirect_uris:
+                                    items:
+                                        format: uri
+                                        type: string
+                                    type: array
+                            required:
+                                - name
+                                - redirect_uris
+                                - allowed_scopes
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    allowed_scopes:
+                                        description: The ceiling of permissions this client may ever request.
+                                        items:
+                                            type: string
+                                        type: array
+                                    client_id:
+                                        description: Public identifier used in the authorization request.
+                                        type: string
+                                    confidential:
+                                        description: True when the client holds a secret. A public client authenticates with PKCE alone.
+                                        type: boolean
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    has_secret:
+                                        description: Whether a secret is configured. The value itself is never returned.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    name:
+                                        type: string
+                                    redirect_uris:
+                                        description: Exact URIs. There is no prefix match and no wildcard.
+                                        items:
+                                            format: uri
+                                            type: string
+                                        type: array
+                                    secret:
+                                        description: The credential, returned exactly once. Only a SHA-256 digest is stored, so there is no endpoint that reveals it again.
+                                        type: string
+                                    secret_rotated_at:
+                                        format: date-time
+                                        nullable: true
+                                        type: string
+                                    shown_once:
+                                        description: Always true when `secret` is present. A UI must not omit the warning.
+                                        type: boolean
+                                required:
+                                    - id
+                                    - client_id
+                                    - name
+                                    - confidential
+                                    - has_secret
+                                    - redirect_uris
+                                    - allowed_scopes
+                                    - enabled
+                                type: object
+                    description: The client, plus its secret exactly once
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`invalid_client_request`'
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Register an OAuth2 client
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: oauth:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/oauth-clients/{id}:
+        delete:
+            description: Every code, grant, token and consent it owns is deleted with it. The audit row is the only trace that survives.
+            operationId: DeleteStaffOauthclientsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such client
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete a client
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: oauth:manage
+            x-rate-class: mutation
+            x-staff-only: true
+        get:
+            description: The registered redirect URIs, the allowed scopes and whether a secret is configured.
+            operationId: GetStaffOauthclientsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    allowed_scopes:
+                                        description: The ceiling of permissions this client may ever request.
+                                        items:
+                                            type: string
+                                        type: array
+                                    client_id:
+                                        description: Public identifier used in the authorization request.
+                                        type: string
+                                    confidential:
+                                        description: True when the client holds a secret. A public client authenticates with PKCE alone.
+                                        type: boolean
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    has_secret:
+                                        description: Whether a secret is configured. The value itself is never returned.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    name:
+                                        type: string
+                                    redirect_uris:
+                                        description: Exact URIs. There is no prefix match and no wildcard.
+                                        items:
+                                            format: uri
+                                            type: string
+                                        type: array
+                                    secret_rotated_at:
+                                        format: date-time
+                                        nullable: true
+                                        type: string
+                                required:
+                                    - id
+                                    - client_id
+                                    - name
+                                    - confidential
+                                    - has_secret
+                                    - redirect_uris
+                                    - allowed_scopes
+                                    - enabled
+                                type: object
+                    description: The client
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such client
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Read one OAuth2 client
+            x-permission: oauth:manage
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/oauth-clients/{id}/rotate-secret:
+        post:
+            description: 'Replaces the secret and returns the new one once. Outstanding tokens are not revoked: the secret authenticates the client at the token endpoint, while an issued token is the user''s grant. Revoke the grant or delete the client for that.'
+            operationId: PostStaffOauthclientsByIdRotatesecret
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    allowed_scopes:
+                                        description: The ceiling of permissions this client may ever request.
+                                        items:
+                                            type: string
+                                        type: array
+                                    client_id:
+                                        description: Public identifier used in the authorization request.
+                                        type: string
+                                    confidential:
+                                        description: True when the client holds a secret. A public client authenticates with PKCE alone.
+                                        type: boolean
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    has_secret:
+                                        description: Whether a secret is configured. The value itself is never returned.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    name:
+                                        type: string
+                                    redirect_uris:
+                                        description: Exact URIs. There is no prefix match and no wildcard.
+                                        items:
+                                            format: uri
+                                            type: string
+                                        type: array
+                                    secret:
+                                        description: The credential, returned exactly once. Only a SHA-256 digest is stored, so there is no endpoint that reveals it again.
+                                        type: string
+                                    secret_rotated_at:
+                                        format: date-time
+                                        nullable: true
+                                        type: string
+                                    shown_once:
+                                        description: Always true when `secret` is present. A UI must not omit the warning.
+                                        type: boolean
+                                required:
+                                    - id
+                                    - client_id
+                                    - name
+                                    - confidential
+                                    - has_secret
+                                    - redirect_uris
+                                    - allowed_scopes
+                                    - enabled
+                                type: object
+                    description: The client, plus the new secret exactly once
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such client
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Rotate a client secret
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: oauth:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/oauth-clients/{id}/secret:
+        delete:
+            description: 'Destroys the secret and turns the client into a public one, which then has to use PKCE. The credential is removed rather than kept-but-ignored: a secret that exists but is not checked is the worst of both worlds.'
+            operationId: DeleteStaffOauthclientsByIdSecret
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    allowed_scopes:
+                                        description: The ceiling of permissions this client may ever request.
+                                        items:
+                                            type: string
+                                        type: array
+                                    client_id:
+                                        description: Public identifier used in the authorization request.
+                                        type: string
+                                    confidential:
+                                        description: True when the client holds a secret. A public client authenticates with PKCE alone.
+                                        type: boolean
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    has_secret:
+                                        description: Whether a secret is configured. The value itself is never returned.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    name:
+                                        type: string
+                                    redirect_uris:
+                                        description: Exact URIs. There is no prefix match and no wildcard.
+                                        items:
+                                            format: uri
+                                            type: string
+                                        type: array
+                                    secret_rotated_at:
+                                        format: date-time
+                                        nullable: true
+                                        type: string
+                                required:
+                                    - id
+                                    - client_id
+                                    - name
+                                    - confidential
+                                    - has_secret
+                                    - redirect_uris
+                                    - allowed_scopes
+                                    - enabled
+                                type: object
+                    description: The client, now public
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such client
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Disable a client secret
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: oauth:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/oauth-providers:
+        get:
+            description: The client secret is never returned; `has_secret` says whether one is configured.
+            operationId: GetStaffOauthproviders
+            responses:
+                2XX:
+                    description: The providers
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List social providers
+            x-permission: oauth:manage
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: 'Google, GitHub and Discord are rows here, not implementations: the endpoints, the scopes and which claim carries the subject and the email are configuration. When the three endpoints are omitted they are discovered from `<issuer_url>/.well-known/openid-configuration`, so for a provider that publishes discovery the issuer URL is the whole configuration. A provider is created disabled.'
+            operationId: PostStaffOauthproviders
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                authorization_endpoint:
+                                    format: uri
+                                    type: string
+                                client_id:
+                                    type: string
+                                client_secret:
+                                    format: password
+                                    type: string
+                                email_claim:
+                                    description: Defaults to `email`.
+                                    type: string
+                                email_verified_claim:
+                                    description: When set, linking requires the claim to be true.
+                                    type: string
+                                enabled:
+                                    type: boolean
+                                issuer_url:
+                                    format: uri
+                                    type: string
+                                name:
+                                    type: string
+                                scopes:
+                                    items:
+                                        type: string
+                                    type: array
+                                slug:
+                                    pattern: ^[a-z0-9][a-z0-9_-]{1,31}$
+                                    type: string
+                                subject_claim:
+                                    description: Defaults to `sub`. A dotted path is allowed.
+                                    type: string
+                                token_endpoint:
+                                    format: uri
+                                    type: string
+                                userinfo_endpoint:
+                                    format: uri
+                                    type: string
+                            required:
+                                - slug
+                                - issuer_url
+                                - client_id
+                                - client_secret
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    authorization_endpoint:
+                                        format: uri
+                                        type: string
+                                    client_id:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    email_claim:
+                                        type: string
+                                    email_verified_claim:
+                                        nullable: true
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    has_secret:
+                                        description: Whether a client secret is configured. It is never returned.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    issuer_url:
+                                        description: The OIDC issuer. When the endpoints are omitted they are discovered from `<issuer>/.well-known/openid-configuration`.
+                                        format: uri
+                                        type: string
+                                    name:
+                                        type: string
+                                    scopes:
+                                        items:
+                                            type: string
+                                        type: array
+                                    slug:
+                                        description: Used in `/oauth/social/{slug}/start`.
+                                        type: string
+                                    subject_claim:
+                                        description: Which userinfo claim is the subject. A dotted path is allowed, e.g. `user.id`.
+                                        type: string
+                                    token_endpoint:
+                                        format: uri
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                    userinfo_endpoint:
+                                        format: uri
+                                        type: string
+                                required:
+                                    - id
+                                    - slug
+                                    - name
+                                    - issuer_url
+                                    - client_id
+                                    - has_secret
+                                    - scopes
+                                    - enabled
+                                type: object
+                    description: The provider
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`invalid_provider`'
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`provider_unreachable`: OIDC discovery failed'
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Register a social provider
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: oauth:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/oauth-providers/{id}:
+        delete:
+            description: Every identity linked through it is deleted with it, so a sign-in method that is removed really stops existing.
+            operationId: DeleteStaffOauthprovidersById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such provider
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete a social provider
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: oauth:manage
+            x-rate-class: mutation
+            x-staff-only: true
+        get:
+            description: The endpoints, scopes and claim mapping, with the secret redacted to `has_secret`.
+            operationId: GetStaffOauthprovidersById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    authorization_endpoint:
+                                        format: uri
+                                        type: string
+                                    client_id:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    email_claim:
+                                        type: string
+                                    email_verified_claim:
+                                        nullable: true
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    has_secret:
+                                        description: Whether a client secret is configured. It is never returned.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    issuer_url:
+                                        description: The OIDC issuer. When the endpoints are omitted they are discovered from `<issuer>/.well-known/openid-configuration`.
+                                        format: uri
+                                        type: string
+                                    name:
+                                        type: string
+                                    scopes:
+                                        items:
+                                            type: string
+                                        type: array
+                                    slug:
+                                        description: Used in `/oauth/social/{slug}/start`.
+                                        type: string
+                                    subject_claim:
+                                        description: Which userinfo claim is the subject. A dotted path is allowed, e.g. `user.id`.
+                                        type: string
+                                    token_endpoint:
+                                        format: uri
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                    userinfo_endpoint:
+                                        format: uri
+                                        type: string
+                                required:
+                                    - id
+                                    - slug
+                                    - name
+                                    - issuer_url
+                                    - client_id
+                                    - has_secret
+                                    - scopes
+                                    - enabled
+                                type: object
+                    description: The provider
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such provider
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Read one social provider
+            x-permission: oauth:manage
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: A full replacement, except that an empty `client_secret` keeps the stored one — submitting the edit form unchanged must not wipe a credential.
+            operationId: PutStaffOauthprovidersById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    authorization_endpoint:
+                                        format: uri
+                                        type: string
+                                    client_id:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    email_claim:
+                                        type: string
+                                    email_verified_claim:
+                                        nullable: true
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    has_secret:
+                                        description: Whether a client secret is configured. It is never returned.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    issuer_url:
+                                        description: The OIDC issuer. When the endpoints are omitted they are discovered from `<issuer>/.well-known/openid-configuration`.
+                                        format: uri
+                                        type: string
+                                    name:
+                                        type: string
+                                    scopes:
+                                        items:
+                                            type: string
+                                        type: array
+                                    slug:
+                                        description: Used in `/oauth/social/{slug}/start`.
+                                        type: string
+                                    subject_claim:
+                                        description: Which userinfo claim is the subject. A dotted path is allowed, e.g. `user.id`.
+                                        type: string
+                                    token_endpoint:
+                                        format: uri
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                    userinfo_endpoint:
+                                        format: uri
+                                        type: string
+                                required:
+                                    - id
+                                    - slug
+                                    - name
+                                    - issuer_url
+                                    - client_id
+                                    - has_secret
+                                    - scopes
+                                    - enabled
+                                type: object
+                    description: The provider
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`invalid_provider`'
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such provider
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Update a social provider
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: oauth:manage
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/operations:
         get:
             description: '`lease_expires_at` tells the operator whether to wait for a reaper or intervene.'
@@ -20165,6 +21482,232 @@ paths:
             summary: Prometheus text exposition
             x-rate-class: read
             x-staff-only: true
+    /oauth/authorize:
+        get:
+            description: 'The browser destination a third party redirects a person to. With no session the person is sent to `/login?next=…` and brought back to exactly this URL. The client and `redirect_uri` are validated **before** anything else, because every later error is reported by redirecting: an unvalidated redirect is how a code is delivered to an attacker. `code_challenge_method` must be `S256`, and a public client must present a challenge. When the person has already consented to these scopes for this client the code is issued immediately; otherwise a small script-free consent page is rendered.'
+            operationId: GetOauthAuthorize
+            responses:
+                2XX:
+                    description: The consent screen (HTML)
+                "302":
+                    description: Redirect to the client with `code` and `state`, or to `/login`
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The client or redirect URI could not be validated
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: Start the authorization-code flow
+            x-rate-class: read
+        post:
+            description: Form-encoded. Carries the original request's parameters back plus `decision` (`approve` or `deny`) and the session's CSRF token as a hidden field, because this is a plain HTML form rather than a scripted request. A refusal redirects with `error=access_denied`.
+            operationId: PostOauthAuthorize
+            responses:
+                "302":
+                    description: Redirect to the client with `code`, or with `error=access_denied`
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No session
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The CSRF token is missing or invalid
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: Answer the consent screen
+            x-rate-class: mutation
+    /oauth/social/{slug}/callback:
+        get:
+            description: 'Verifies and burns the state, exchanges the code at the provider, then resolves the identity. An existing link signs that account in — unless it has MFA enrolled, which a social sign-in would skip. An email that matches an existing account is **refused** with `account_exists`: the person is sent to the sign-in screen to sign in and link. Nothing is ever created or merged by this endpoint.'
+            operationId: GetOauthSocialBySlugCallback
+            parameters:
+                - in: path
+                  name: slug
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "302":
+                    description: A session and a redirect to `/`, or a redirect to `/login?social_error=…`
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The provider returned no code
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such provider
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: Complete a social login or link
+            x-rate-class: read
+    /oauth/social/{slug}/start:
+        get:
+            description: Issues a signed, single-use `state` (HMAC-SHA256, key in the database, nonce consumed by a row) and redirects to the provider's authorization endpoint. `?link=1` switches to the link flow, which needs a session and is recorded inside the signed state so a callback cannot claim to be a link when it was started as a sign-in.
+            operationId: GetOauthSocialBySlugStart
+            parameters:
+                - in: path
+                  name: slug
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "302":
+                    description: Redirect to the provider
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such provider, or it is disabled
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: Redirect to a social provider
+            x-rate-class: read
+    /oauth/token:
+        post:
+            description: '`application/x-www-form-urlencoded`, client-authenticated with HTTP Basic or form credentials. Grant types: `authorization_code` (with `code_verifier` for a public client) and `refresh_token`. The response carries `access_token`, `token_type`, `expires_in`, `refresh_token` and `scope`, and is `Cache-Control: no-store`. A failure is `application/problem+json` whose `error` member is the same stable string as `code`, so both a standard OAuth2 client and this panel''s client can read it. The refresh token rotates on every use, so a replayed one is `invalid_grant`.'
+            operationId: PostOauthToken
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                client_id:
+                                    type: string
+                                client_secret:
+                                    type: string
+                                code:
+                                    type: string
+                                code_verifier:
+                                    description: 43–128 characters, RFC 7636.
+                                    type: string
+                                grant_type:
+                                    enum:
+                                        - authorization_code
+                                        - refresh_token
+                                    type: string
+                                redirect_uri:
+                                    type: string
+                                refresh_token:
+                                    type: string
+                                scope:
+                                    description: Optional on a refresh; may only narrow.
+                                    type: string
+                            required:
+                                - grant_type
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: A token pair
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`invalid_request`, `invalid_grant`, `invalid_scope` or `unsupported_grant_type`'
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`invalid_client`'
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Too many token requests from this address
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: Exchange a code or a refresh token for a token pair
+            x-rate-class: mutation
     /readyz:
         get:
             description: 'Reports that this instance can serve traffic: the database is reachable and the schema is current.'

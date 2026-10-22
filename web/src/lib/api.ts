@@ -185,7 +185,32 @@ export class Api {
 
     if (response.status === 204) return undefined as T;
 
-    const contentType = response.headers.get("Content-Type") ?? "";
+    /**
+ * True when a 401 means the session itself is gone, rather than a credential the user just typed.
+ *
+ * A 401 is not one thing. The credential endpoints legitimately answer 401 for a *wrong secret*
+ * while the session is perfectly healthy: disabling two-factor with a mistyped code, confirming an
+ * enrolment, changing a password with the wrong current one. Treating every 401 as "session
+ * expired" signed the user out mid-dialog and discarded the enrolment secret they were half way
+ * through typing — the flow looked broken when the server was answering correctly.
+ *
+ * This is an allowlist, not a denylist of the credential codes. A new credential endpoint added
+ * later gets the safe behaviour by default; the alternative would silently sign people out every
+ * time someone adds one.
+ */
+function isSessionDead(code: string | undefined): boolean {
+  return (
+    code === "unauthenticated" ||
+    code === "authentication_required" ||
+    code === "operator_session_ended" ||
+    // No code at all means the response was not our problem+json (a proxy 401, say), which we
+    // cannot interpret as a credential failure, so it keeps the old behaviour.
+    code === undefined ||
+    code === ""
+  );
+}
+
+const contentType = response.headers.get("Content-Type") ?? "";
     const isJSON = contentType.includes("json");
     const payload: unknown = isJSON ? await response.json().catch(() => null) : await response.text().catch(() => "");
 
@@ -194,7 +219,7 @@ export class Api {
         payload && typeof payload === "object"
           ? (payload as Problem)
           : { title: response.statusText, detail: typeof payload === "string" ? payload.slice(0, 300) : "" };
-      if (response.status === 401) this.onUnauthorized?.();
+      if (response.status === 401 && isSessionDead(problem.code)) this.onUnauthorized?.();
       throw new ApiError(response.status, problem);
     }
 

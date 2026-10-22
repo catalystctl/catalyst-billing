@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/extproto"
+	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/store"
 )
 
@@ -196,6 +197,21 @@ func cmdMigrate(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// Seed the notification templates after the schema is current, not inside a migration.
+	//
+	// They are data an operator edits, so a migration that inserts them would fight an
+	// operator's wording on the next deploy. Seeding here instead means a fresh install and an
+	// upgraded install both get a template for every event, an edited one is never overwritten
+	// (the insert is ON CONFLICT DO NOTHING), and no event can be enqueued into a missing
+	// template — which the notify package treats as a hard error rather than sending a blank
+	// mail.
+	if n, err := notify.SeedTemplates(ctx, pool); err != nil {
+		return fmt.Errorf("seed notification templates: %w", err)
+	} else if n > 0 {
+		fmt.Printf("seeded %d notification template(s)\n", n)
+	}
+
 	if len(applied) == 0 {
 		fmt.Println("schema is up to date")
 		return nil

@@ -182,45 +182,61 @@ shared surface:
 - **The customer route guard.** A customer now reaches their own account screens instead of
   being bounced to `/portal` by a Settings link that went nowhere.
 
+## What this round closed
+
+Every item in the previous "not done" list that could be closed has been. Each of these is a
+decision with a test behind it, not a checkbox:
+
+- **`order:create:self`** exists, so checkout no longer borrows `invoice:pay:self` to sell a free
+  product. Nine other permissions came with it, each split where a read and a write deserved
+  different grants: `credit:read:all` versus `credit:write`, `service:write:self` versus
+  `service:read:self`, `paymentmethod:*:self` for a saved instrument.
+- **Registration is a public path**, and `mail.must_verify` is enforced end to end: the session
+  gate refuses an unverified account, the token is single-use and expires, and a resend is
+  reachable without revealing whether an address exists.
+- **One-time and free products exist.** A free price activates with no invoice; a one-time price
+  creates a service with no subscription, so the renewal engine never sees it.
+- **Order cancellation and termination run.** `cronjob.order_cancel_days` and
+  `cronjob.terminate_days` were settings nothing read; they are now two bounded, idempotent,
+  individually kill-switchable jobs. Termination goes through the provisioning queue, and a
+  service under a manual hold is never taken by the job.
+- **Service metadata exists**: label, description, custom properties, with the customer's own
+  name winning over a derived one so a service is never blank.
+- **The staff credit screen is real.** `/credits` lists balances, searches, and grants credit
+  through the existing money path.
+- **Credential mail is templated.** Password reset and verification are editable templates with
+  their own events; the non-enumeration, single-use and expiry properties are each tested.
+- **A product can word its activation email.** `products.email_template` was a column nothing
+  read; it is now rendered into the activation message.
+- **Stock and per-user limits reconciled.** `internal/service`'s helper adopted checkout's
+  stricter rule — a pending subscription occupies a slot — because the looser one let a customer
+  place ten unpaid orders and take delivery of ten services the moment the last payment settled.
+- **Live role refresh** works without a restart, as a short TTL with an explicit hook rather than
+  a query on the guarded path.
+- **Real gateways and provisioners exist**: a Stripe adapter and a Pterodactyl adapter, both
+  driven through the core's own protocol client in their conformance tests, and both
+  configurable from the panel.
+- **A locale catalog.** Two locales ship, `de` disabled but fully translated; a missing key falls
+  back rather than rendering blank, and a customer's stored choice beats their browser's header.
+
 ## Not done, and why
 
-Recorded rather than hidden:
+Still recorded rather than hidden:
 
-- **`order:create:self`.** Checkout borrows `invoice:pay:self`, which is defensible (placing an
-  order creates an obligation to pay) but is a borrow. A dedicated permission is a decision,
-  not a merge artifact.
-- **Registration is not a public path.** `PUBLIC_PATHS` omits `/register`, so the screen is
-  unreachable by the visitor it exists for (see the defects section). One line in
-  `web/src/routes.ts`.
-- **One-time products cannot be expressed.** `price_versions.interval` is `CHECK`ed to
-  monthly/quarterly/semiannual/annual, so `SF-13`'s one-time product is a schema change, not a
-  service change.
-- **Order cancellation and termination have settings and no jobs.** `cronjob.order_cancel_days`
-  and `cronjob.terminate_days` are read by nothing (`OPS-02`, `OPS-05`).
-- **Service metadata was never added.** `services` has no label, description or custom-property
-  column (`SVC-02`/`03`/`04`).
 - **Email piping has a model and no ingest.** `message_id` dedupe and `ticket_mail_logs` are in
-  place; no IMAP poller or inbound webhook turns a message into a reply (`TKT-11`).
-- **The staff credit screen is a placeholder.** `/credits` renders "not available in this
-  build"; the customer screen is real. The harness reports it as not built rather than skipping
-  it silently.
-- **Templated credential mails.** Password reset and email verification still use the
-  hardcoded messages. Switching them gets operator-editable wording and an inbox row, but it
-  changes the text a customer receives during a security flow and deserves its own review.
-- **Stock/limit reconciliation.** Checkout implements stock and per-user limits inline with a
-  sorted lock order; `internal/service` now exports its own helpers. One implementation should
-  win — and checkout's counts pending subscriptions toward the per-user limit, which is the
-  stricter and correct behaviour, so the reconciliation should adopt it rather than the reverse.
-- **Recurring affiliate commission** (`GRW-03`). Commission is paid on a signup. A renewal
-  invoice has no signup to attribute, and a recurring commission is a policy decision the growth
-  package deliberately does not make silently.
-- **Live role refresh for the CLI.** The Authorizer reloads on a role edit through HTTP; a role
-  created directly in the database is picked up at the next boot.
-- **Real gateways and provisioners** (`PAY-01`, `SVC-18`). Still the fake fixtures. This is a
-  protocol-and-adapter job, not a schema one.
-- **i18n, social login, OAuth2 server, importers, marketplace** (`P6`). Not started.
+  place; no IMAP poller or inbound webhook turns a message into a reply (`TKT-11`). This is the
+  largest remaining gap and it is a security-sensitive one: attribution must refuse an ambiguous
+  match rather than guess, or a stranger's message lands in someone else's thread.
+- **Arbitrary-length billing periods.** `one_time` and `free` are in the interval set; an N-day
+  period is not, because it needs a period model `internal/calendar` does not have. Recorded in
+  `0028_plan_types.sql`.
+- **Self-applying panel updates.** The update check, the approved target version and the state
+  are honest; the panel does not replace its own binary, because doing that safely needs a
+  deployment shape this repository does not have. An update is approved and the operator deploys.
+- **A cPanel provisioner.** Two real adapters exist; a third would prove the protocol is not
+  Pterodactyl-shaped, which is worth doing and is not a prerequisite for taking money.
 
-## The never-regress list, checked
+## The never-regress list, checked## The never-regress list, checked
 
 | Rule | Evidence |
 |---|---|

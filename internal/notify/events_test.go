@@ -746,7 +746,7 @@ func TestEventMailIsRenderedAndLinkIsAbsolute(t *testing.T) {
 			UserID: userID, Email: "render@example.test",
 			InvoiceID: "77777777-7777-7777-7777-777777777777",
 			Number:    "INV-000777", Total: "USD 42.00",
-			InvoiceURL: "/invoices/77777777-7777-7777-7777-777777777777",
+			InvoiceURL: "/portal/invoices/77777777-7777-7777-7777-777777777777",
 		})
 		return err
 	})
@@ -766,7 +766,7 @@ func TestEventMailIsRenderedAndLinkIsAbsolute(t *testing.T) {
 	if strings.Contains(body, "{{") {
 		t.Fatalf("body still contains a placeholder: %q", body)
 	}
-	if !strings.Contains(body, "http://") || !strings.Contains(body, "/invoices/7777") {
+	if !strings.Contains(body, "http://") || !strings.Contains(body, "/portal/invoices/7777") {
 		t.Fatalf("the invoice link is not absolute: %q", body)
 	}
 
@@ -776,7 +776,7 @@ func TestEventMailIsRenderedAndLinkIsAbsolute(t *testing.T) {
 		`SELECT url FROM notifications WHERE user_id = $1`, userID).Scan(&url); err != nil {
 		t.Fatalf("read inbox url: %v", err)
 	}
-	if !strings.HasPrefix(url, "/invoices/") {
+	if !strings.HasPrefix(url, "/portal/invoices/") {
 		t.Fatalf("inbox url = %q, want a panel-relative path", url)
 	}
 }
@@ -878,5 +878,125 @@ func TestEventWithoutEmailStillWritesInbox(t *testing.T) {
 	}
 	if res.Reason != "no_recipient" {
 		t.Fatalf("reason = %q, want no_recipient", res.Reason)
+	}
+}
+
+// Every default link points somewhere a *customer* can actually reach.
+//
+// A notification is read by a customer, and the panel only lets a customer reach /portal,
+// /account, /cart, /checkout and /tickets. A default of "/invoices/<id>" would deep-link a
+// customer into the staff invoice screen and bounce them out of their own area — a broken
+// link in the one place a customer is most likely to click it. This test pins the rule so a
+// future default cannot quietly reintroduce it.
+func TestDefaultLinksAreCustomerReachable(t *testing.T) {
+	customerPrefixes := []string{"/portal", "/account", "/cart", "/checkout", "/tickets"}
+
+	reachable := func(path string) bool {
+		for _, p := range customerPrefixes {
+			if path == p || strings.HasPrefix(path, p+"/") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Every default is expressed as a literal in the event functions, so assert on the
+	// rendered result with the optional URLs left empty — that is exactly the fallback path.
+	cases := map[string]func(ctx context.Context, tx pgx.Tx, q *notify.Queue, userID string) (notify.Outcome, error){
+		notify.EventNewInvoiceCreated: func(ctx context.Context, tx pgx.Tx, q *notify.Queue, userID string) (notify.Outcome, error) {
+			return notify.InvoiceIssued(ctx, tx, q, notify.InvoiceIssuedInput{
+				UserID: userID, Email: "links@example.test",
+				InvoiceID: "11111111-1111-1111-1111-111111111111",
+			})
+		},
+		notify.EventInvoicePaid: func(ctx context.Context, tx pgx.Tx, q *notify.Queue, userID string) (notify.Outcome, error) {
+			return notify.InvoicePaid(ctx, tx, q, notify.InvoicePaidInput{
+				UserID: userID, Email: "links@example.test",
+				InvoiceID: "22222222-2222-2222-2222-222222222222",
+			})
+		},
+		notify.EventInvoicePaymentFailed: func(ctx context.Context, tx pgx.Tx, q *notify.Queue, userID string) (notify.Outcome, error) {
+			return notify.InvoicePaymentFailed(ctx, tx, q, notify.InvoicePaymentFailedInput{
+				UserID: userID, Email: "links@example.test",
+				InvoiceID: "33333333-3333-3333-3333-333333333333",
+			})
+		},
+		notify.EventNewOrderCreated: func(ctx context.Context, tx pgx.Tx, q *notify.Queue, userID string) (notify.Outcome, error) {
+			return notify.OrderCreated(ctx, tx, q, notify.OrderCreatedInput{
+				UserID: userID, Email: "links@example.test",
+				OrderID: "44444444-4444-4444-4444-444444444444",
+			})
+		},
+		notify.EventNewServerCreated: func(ctx context.Context, tx pgx.Tx, q *notify.Queue, userID string) (notify.Outcome, error) {
+			return notify.ServerCreated(ctx, tx, q, notify.ServerCreatedInput{
+				UserID: userID, Email: "links@example.test",
+				ServiceID: "55555555-5555-5555-5555-555555555555",
+			})
+		},
+		notify.EventServerSuspended: func(ctx context.Context, tx pgx.Tx, q *notify.Queue, userID string) (notify.Outcome, error) {
+			return notify.ServerSuspended(ctx, tx, q, notify.ServerSuspendedInput{
+				UserID: userID, Email: "links@example.test",
+				ServiceID: "66666666-6666-6666-6666-666666666666",
+			})
+		},
+		notify.EventServerTerminated: func(ctx context.Context, tx pgx.Tx, q *notify.Queue, userID string) (notify.Outcome, error) {
+			return notify.ServerTerminated(ctx, tx, q, notify.ServerTerminatedInput{
+				UserID: userID, Email: "links@example.test",
+				ServiceID: "77777777-7777-7777-7777-777777777777",
+			})
+		},
+		notify.EventServiceCancellationReceived: func(ctx context.Context, tx pgx.Tx, q *notify.Queue, userID string) (notify.Outcome, error) {
+			return notify.CancellationReceived(ctx, tx, q, notify.CancellationReceivedInput{
+				UserID: userID, Email: "links@example.test",
+				ServiceID: "88888888-8888-8888-8888-888888888888",
+			})
+		},
+		notify.EventNewTicketMessage: func(ctx context.Context, tx pgx.Tx, q *notify.Queue, userID string) (notify.Outcome, error) {
+			return notify.TicketMessage(ctx, tx, q, notify.TicketMessageInput{
+				UserID: userID, Email: "links@example.test",
+				TicketID: "99999999-9999-9999-9999-999999999999",
+			})
+		},
+		notify.EventNewLoginDetected: func(ctx context.Context, tx pgx.Tx, q *notify.Queue, userID string) (notify.Outcome, error) {
+			return notify.NewLogin(ctx, tx, q, notify.NewLoginInput{
+				UserID: userID, Email: "links@example.test",
+				AuthEventID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+			})
+		},
+	}
+
+	pool := storetest.DB(t)
+	ctx := context.Background()
+	seedTemplates(t, pool)
+	queue := notify.NewQueue(pool)
+	userID := seedUser(t, pool, "links@example.test")
+
+	for event, call := range cases {
+		var res notify.Outcome
+		inTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			res, err = call(ctx, tx, queue, userID)
+			return err
+		})
+		_ = res
+
+		// The inbox row carries the relative path, which is the one a customer clicks.
+		var url string
+		if err := pool.QueryRow(ctx, `
+			SELECT url FROM notifications
+			WHERE user_id = $1 AND event_key = $2
+			ORDER BY created_at DESC LIMIT 1`, userID, event).Scan(&url); err != nil {
+			t.Fatalf("%s: no inbox row to check: %v", event, err)
+		}
+		if url == "" {
+			t.Fatalf("%s: the inbox row has no url", event)
+		}
+		if !reachable(url) {
+			t.Fatalf("%s: default url %q is not a customer-reachable path (allowed prefixes %v)",
+				event, url, customerPrefixes)
+		}
+		if strings.HasPrefix(url, "http") {
+			t.Fatalf("%s: the inbox url must be panel-relative, got %q", event, url)
+		}
 	}
 }

@@ -125,14 +125,42 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       mod = (await match.route.load()) as { default: (ctx: Ctx) => Node | Promise<Node>; meta?: PageMeta };
     } catch (err) {
       if (token !== routeToken) return;
+      // Two different failures arrive here and they deserve different words.
+      //
+      // A dynamic import that cannot be resolved means the chunk for this screen is not in this
+      // build. That is not a crash and a Reload button is a lie: reloading fetches the same
+      // build. It is what a screen looks like while it is still being written, and it is also
+      // what a real deployment sees after a partial asset upload, so the honest answer is "this
+      // screen is not available in this build" with a way back rather than a stack trace.
+      //
+      // Anything else is a genuine load failure — a network error, a corrupted chunk — and the
+      // Reload button is right for it.
+      const message = String(err);
+      const unresolved = /dynamically imported module|Failed to fetch dynamically|Importing a module script failed|Cannot find module/i.test(message);
       content.replaceChildren(
-        h(
-          "div",
-          { class: "error-state" },
-          h("p", { class: "empty-title" }, "This screen could not be loaded"),
-          h("p", { class: "empty-body" }, String(err)),
-          h("button", { class: "btn", type: "button", onclick: () => window.location.reload() }, "Reload"),
-        ),
+        unresolved
+          ? h(
+              "div",
+              { class: "empty-state" },
+              h("p", { class: "empty-title" }, "This screen is not available in this build"),
+              h(
+                "p",
+                { class: "empty-body" },
+                "The page exists in the navigation but its module is not part of the bundle that was served. Everything else in the panel still works.",
+              ),
+              h(
+                "a",
+                { class: "btn", href: "/", "data-link": "true" },
+                "Back to the dashboard",
+              ),
+            )
+          : h(
+              "div",
+              { class: "error-state" },
+              h("p", { class: "empty-title" }, "This screen could not be loaded"),
+              h("p", { class: "empty-body" }, message),
+              h("button", { class: "btn", type: "button", onclick: () => window.location.reload() }, "Reload"),
+            ),
       );
       return;
     }

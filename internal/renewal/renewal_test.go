@@ -3,6 +3,7 @@ package renewal_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -121,6 +122,171 @@ func (h *harness) run(t *testing.T) []renewal.Result {
 		t.Fatalf("run: %v", err)
 	}
 	return results
+}
+
+// ------------------------------------------------------- config option fixtures --
+
+// addOption adds a dropdown option to the harness product with one choice, and prices
+// that choice at the harness price version — the shape a paid product option has.
+func (h *harness) addOption(t *testing.T, name, choice string, amountMinor, setupMinor int64) string {
+	t.Helper()
+	ctx := context.Background()
+	var id string
+	if err := h.pool.QueryRow(ctx, `
+		INSERT INTO config_options (product_id, name, option_type, choices, sort_order)
+		VALUES ($1, $2, 'dropdown', jsonb_build_array($3::text),
+		        (SELECT count(*) FROM config_options WHERE product_id = $1)::int)
+		RETURNING id`, h.productID, name, choice).Scan(&id); err != nil {
+		t.Fatalf("config option: %v", err)
+	}
+	if _, err := h.pool.Exec(ctx, `
+		INSERT INTO config_option_prices
+			(config_option_id, price_version_id, choice, amount_minor, setup_minor)
+		VALUES ($1, $2, $3, $4, $5)`,
+		id, h.priceID, choice, amountMinor, setupMinor); err != nil {
+		t.Fatalf("config option price: %v", err)
+	}
+	return id
+}
+
+// addFreeTextOption adds a free-form option, which by design has no price row: the customer
+// types a value and nothing in the catalogue prices it.
+func (h *harness) addFreeTextOption(t *testing.T, name string) string {
+	t.Helper()
+	var id string
+	if err := h.pool.QueryRow(context.Background(), `
+		INSERT INTO config_options (product_id, name, option_type, choices, sort_order)
+		VALUES ($1, $2, 'text', '[]'::jsonb,
+		        (SELECT count(*) FROM config_options WHERE product_id = $1)::int)
+		RETURNING id`, h.productID, name).Scan(&id); err != nil {
+		t.Fatalf("free text option: %v", err)
+	}
+	return id
+}
+
+// service creates the service row a subscription delivers, which is what carries the
+// config-option selection.
+func (h *harness) service(t *testing.T, subscriptionID string) string {
+	t.Helper()
+	var id string
+	if err := h.pool.QueryRow(context.Background(), `
+		INSERT INTO services (customer_id, subscription_id, product_id, status)
+		VALUES ($1, $2, $3, 'active') RETURNING id`,
+		h.customerID, subscriptionID, h.productID).Scan(&id); err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	return id
+}
+
+// choose stores a selection the way checkout does: the value plus the price it contributed
+// at selection time.
+func (h *harness) choose(t *testing.T, serviceID, optionID, value string, amountMinor, setupMinor int64) {
+	t.Helper()
+	if _, err := h.pool.Exec(context.Background(), `
+		INSERT INTO service_configs (service_id, config_option_id, value, amount_minor, setup_minor)
+		VALUES ($1, $2, $3, $4, $5)`,
+		serviceID, optionID, value, amountMinor, setupMinor); err != nil {
+		t.Fatalf("service config: %v", err)
+	}
+}
+
+// invoiceLine is one persisted document line.
+//
+// Quantity is kept as the database renders it so a comparison is exact rather than
+// approximate.
+type invoiceLine struct {
+	Position    int
+	Description string
+	Quantity    string
+	UnitMinor   int64
+	NetMinor    int64
+	TaxMinor    int64
+	TotalMinor  int64
+}
+
+// invoiceIDs lists the invoices in issuance order.
+func (h *harness) invoiceIDs(t *testing.T) []string {
+	t.Helper()
+	rows, err := h.pool.Query(context.Background(),
+		`SELECT id FROM invoices ORDER BY number NULLS LAST, issued_at, id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+// lines reads an invoice's lines in document order.
+func (h *harness) lines(t *testing.T, invoiceID string) []invoiceLine {
+	t.Helper()
+	rows, err := h.pool.Query(context.Background(), `
+		SELECT position, description, quantity::text, unit_minor, net_minor, tax_minor,
+		       total_minor
+		FROM invoice_lines WHERE invoice_id = $1 ORDER BY position`, invoiceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []invoiceLine
+	for rows.Next() {
+		var l invoiceLine
+		if err := rows.Scan(&l.Position, &l.Description, &l.Quantity, &l.UnitMinor,
+			&l.NetMinor, &l.TaxMinor, &l.TotalMinor); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// invoiceTotal reads the invoice's own total.
+func (h *harness) invoiceTotal(t *testing.T, invoiceID string) int64 {
+	t.Helper()
+	var total int64
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT total_minor FROM invoices WHERE id = $1`, invoiceID).Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	return total
+}
+
+// onlyInvoice is the single invoice a one-renewal test produced, asserting there is exactly
+// one.
+func (h *harness) onlyInvoice(t *testing.T) string {
+	t.Helper()
+	ids := h.invoiceIDs(t)
+	if len(ids) != 1 {
+		t.Fatalf("%d invoices, want exactly 1", len(ids))
+	}
+	return ids[0]
+}
+
+// assertLines compares a document's line set exactly: a fix that adds a line, drops one,
+// reorders one or changes an amount must fail here.
+func assertLines(t *testing.T, got, want []invoiceLine) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("invoice has %d lines, want %d:\n got: %+v\nwant: %+v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("line %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
 }
 
 func (h *harness) invoiceCount(t *testing.T) int {
@@ -566,5 +732,335 @@ func TestFreePriceIsNeverRenewed(t *testing.T) {
 	}
 	if n := h.invoiceCount(t); n != 0 {
 		t.Fatalf("%d invoices issued for a free price, want 0", n)
+	}
+}
+
+// ------------------------------------------------------------- surcharge tests --
+
+// baseLine is the renewal line every subscription produces for the harness product: the
+// price version's 1200 minor, quantity 1. It is written out in full because the base line
+// must not move when surcharges are added.
+func baseLine() invoiceLine {
+	return invoiceLine{
+		Position:    1,
+		Description: "VPS",
+		Quantity:    "1.000000",
+		UnitMinor:   1200,
+		NetMinor:    1200,
+		TaxMinor:    0,
+		TotalMinor:  1200,
+	}
+}
+
+// The leak: a subscription whose service has a paid config option must renew at base+option,
+// not at base. Before the fix the second period onward dropped the option while the
+// provisioned resource kept running.
+func TestRenewalBillsPaidConfigOption(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+	svc := h.service(t, subID)
+	ram := h.addOption(t, "RAM", "32 GB", 1000, 0)
+	h.choose(t, svc, ram, "32 GB", 1000, 0)
+
+	results := h.run(t)
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("results = %+v, want one invoiced", results)
+	}
+
+	id := h.onlyInvoice(t)
+	if total := h.invoiceTotal(t, id); total != 2200 {
+		t.Fatalf("invoice total = %d, want 2200 (1200 base + 1000 RAM)", total)
+	}
+	assertLines(t, h.lines(t, id), []invoiceLine{
+		baseLine(),
+		{
+			Position:    2,
+			Description: "RAM: 32 GB",
+			Quantity:    "1.000000",
+			UnitMinor:   1000,
+			NetMinor:    1000,
+			TaxMinor:    0,
+			TotalMinor:  1000,
+		},
+	})
+}
+
+// Two paid options each get their own line and sum into the total.
+func TestRenewalSumsMultipleConfigOptions(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+	svc := h.service(t, subID)
+	ram := h.addOption(t, "RAM", "32 GB", 1000, 0)
+	backup := h.addOption(t, "Backup", "daily", 500, 0)
+	h.choose(t, svc, ram, "32 GB", 1000, 0)
+	h.choose(t, svc, backup, "daily", 500, 0)
+
+	results := h.run(t)
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("results = %+v, want one invoiced", results)
+	}
+
+	id := h.onlyInvoice(t)
+	if total := h.invoiceTotal(t, id); total != 2700 {
+		t.Fatalf("invoice total = %d, want 2700 (1200 + 1000 + 500)", total)
+	}
+	assertLines(t, h.lines(t, id), []invoiceLine{
+		baseLine(),
+		{
+			Position: 2, Description: "RAM: 32 GB", Quantity: "1.000000",
+			UnitMinor: 1000, NetMinor: 1000, TotalMinor: 1000,
+		},
+		{
+			Position: 3, Description: "Backup: daily", Quantity: "1.000000",
+			UnitMinor: 500, NetMinor: 500, TotalMinor: 500,
+		},
+	})
+}
+
+// An option priced at zero contributes no line at all. A zero-amount line is noise on a
+// document the customer keeps, and it would make every free checkbox visible on the invoice.
+func TestZeroPricedOptionProducesNoLine(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+	svc := h.service(t, subID)
+	location := h.addOption(t, "Location", "EU", 0, 0)
+	h.choose(t, svc, location, "EU", 0, 0)
+
+	results := h.run(t)
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("results = %+v, want one invoiced", results)
+	}
+
+	id := h.onlyInvoice(t)
+	if total := h.invoiceTotal(t, id); total != 1200 {
+		t.Fatalf("invoice total = %d, want 1200", total)
+	}
+	// Exactly the base line: no zero-amount surcharge line was written.
+	assertLines(t, h.lines(t, id), []invoiceLine{baseLine()})
+}
+
+// Setup is charged once, when the service is created. It must not recur on any renewal.
+func TestSurchargeSetupDoesNotRecur(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+	svc := h.service(t, subID)
+	// 1000 recurring plus a 500 one-off setup.
+	ram := h.addOption(t, "RAM", "32 GB", 1000, 500)
+	h.choose(t, svc, ram, "32 GB", 1000, 500)
+
+	if results := h.run(t); len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("first renewal: %+v", results)
+	}
+	// Walk into the next period and renew again: the second renewal is the one that used to
+	// repeat a setup fee when it repeated anything.
+	h.now = time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC)
+	if results := h.run(t); len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("second renewal: %+v", results)
+	}
+
+	ids := h.invoiceIDs(t)
+	if len(ids) != 2 {
+		t.Fatalf("%d invoices, want 2", len(ids))
+	}
+	want := []invoiceLine{
+		baseLine(),
+		{
+			Position: 2, Description: "RAM: 32 GB", Quantity: "1.000000",
+			UnitMinor: 1000, NetMinor: 1000, TotalMinor: 1000,
+		},
+	}
+	for i, id := range ids {
+		if total := h.invoiceTotal(t, id); total != 2200 {
+			t.Fatalf("invoice %d total = %d, want 2200 (setup must not recur)", i+1, total)
+		}
+		assertLines(t, h.lines(t, id), want)
+	}
+}
+
+// A subscription with no config options renews exactly as it did before the fix: one base
+// line, nothing else. This is the common case, and it must not regress.
+func TestNoConfigOptionsRenewsAsBefore(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+	h.service(t, subID) // a service exists; it simply has no options chosen
+
+	results := h.run(t)
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("results = %+v, want one invoiced", results)
+	}
+
+	id := h.onlyInvoice(t)
+	if total := h.invoiceTotal(t, id); total != 1200 {
+		t.Fatalf("invoice total = %d, want 1200", total)
+	}
+	assertLines(t, h.lines(t, id), []invoiceLine{baseLine()})
+}
+
+// The invoice total is the sum of its lines, and the ledger posting still balances when a
+// surcharge changes that total.
+func TestSurchargeTotalAndPostingBalance(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+	svc := h.service(t, subID)
+	ram := h.addOption(t, "RAM", "32 GB", 1000, 0)
+	h.choose(t, svc, ram, "32 GB", 1000, 0)
+
+	if results := h.run(t); len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("results = %+v", results)
+	}
+
+	ctx := context.Background()
+	id := h.onlyInvoice(t)
+	total := h.invoiceTotal(t, id)
+
+	var lineSum int64
+	for _, l := range h.lines(t, id) {
+		lineSum += l.TotalMinor
+	}
+	if lineSum != total {
+		t.Fatalf("lines sum to %d, invoice total is %d", lineSum, total)
+	}
+
+	var debit, credit int64
+	if err := h.pool.QueryRow(ctx, `
+		SELECT COALESCE(sum(debit_minor), 0), COALESCE(sum(credit_minor), 0)
+		FROM journal_entries`).Scan(&debit, &credit); err != nil {
+		t.Fatal(err)
+	}
+	if debit != credit {
+		t.Fatalf("posting does not balance: debits %d, credits %d", debit, credit)
+	}
+	if debit != total {
+		t.Fatalf("posting is %d, invoice total is %d", debit, total)
+	}
+
+	// The receivable carries the whole invoice, surcharge included, so dunning and payment
+	// allocation see the amount the customer was actually billed.
+	var receivable int64
+	if err := h.pool.QueryRow(ctx,
+		`SELECT COALESCE(sum(debit_minor), 0) FROM journal_entries WHERE account_code = 'ar'`,
+	).Scan(&receivable); err != nil {
+		t.Fatal(err)
+	}
+	if receivable != total {
+		t.Fatalf("accounts receivable = %d, want %d", receivable, total)
+	}
+
+	// Every individual posting balances, not merely the sum of all of them.
+	var unbalanced int
+	if err := h.pool.QueryRow(ctx, `
+		SELECT count(*) FROM (
+			SELECT transaction_id FROM journal_entries
+			GROUP BY transaction_id
+			HAVING sum(debit_minor) <> sum(credit_minor)
+		) bad`).Scan(&unbalanced); err != nil {
+		t.Fatal(err)
+	}
+	if unbalanced != 0 {
+		t.Fatalf("%d unbalanced journal transactions", unbalanced)
+	}
+}
+
+// A selection that was sold as paid, whose price row the catalogue has since dropped, is
+// refused as needs_review rather than renewed at zero. Renewing at zero would give the
+// resource away — the same leak this fix closes — and renewing at the recorded amount would
+// price the period from two different sources.
+func TestUnpricedPaidOptionNeedsReview(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+	svc := h.service(t, subID)
+	ram := h.addOption(t, "RAM", "32 GB", 1000, 0)
+	h.choose(t, svc, ram, "32 GB", 1000, 0)
+
+	// The catalogue stops pricing a choice this service is on.
+	if _, err := h.pool.Exec(context.Background(),
+		`DELETE FROM config_option_prices WHERE config_option_id = $1`, ram); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := h.engine.Run(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("run must not fail on an unpriced option: %v", err)
+	}
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeNeedsReview {
+		t.Fatalf("results = %+v, want one needs_review", results)
+	}
+	if n := h.invoiceCount(t); n != 0 {
+		t.Fatalf("%d invoices issued for an unpriced paid option, want 0", n)
+	}
+
+	// Nothing was billed, so nothing may have moved: the schedule is where it was and a human
+	// can still fix the catalogue or the service.
+	var version int64
+	var next time.Time
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT version, next_billing_at FROM subscriptions WHERE id = $1`, subID,
+	).Scan(&version, &next); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 {
+		t.Fatalf("subscription version = %d, want 1 (unchanged)", version)
+	}
+	if want := time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC); !next.Equal(want) {
+		t.Fatalf("next billing = %s, want %s", next, want)
+	}
+
+	// The reason names the option, so the operator does not have to guess which one.
+	if detail := results[0].Detail; !strings.Contains(detail, "RAM: 32 GB") {
+		t.Fatalf("detail = %q, want it to name the unpriced option", detail)
+	}
+}
+
+// The other half of that decision: a free-form option has no price row by design and must not
+// block the renewal. Treating every missing row as a fault would wedge every service with a
+// text or number option.
+func TestUnpricedFreeOptionStillRenews(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+	svc := h.service(t, subID)
+	hostname := h.addFreeTextOption(t, "Hostname")
+	h.choose(t, svc, hostname, "web-01", 0, 0)
+
+	results := h.run(t)
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("results = %+v, want one invoiced", results)
+	}
+	id := h.onlyInvoice(t)
+	assertLines(t, h.lines(t, id), []invoiceLine{baseLine()})
+}
+
+// The option is priced from the subscription's own price version, the same one the base line
+// comes from, so a later catalog version cannot re-price an option underneath a live base
+// price (or the reverse).
+func TestSurchargeUsesSubscriptionPriceVersion(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+	svc := h.service(t, subID)
+	ram := h.addOption(t, "RAM", "32 GB", 1000, 0)
+	h.choose(t, svc, ram, "32 GB", 1000, 0)
+
+	// A new price version prices the same option at 5000. The subscription stays on v1.
+	ctx := context.Background()
+	var v2 string
+	if err := h.pool.QueryRow(ctx, `
+		INSERT INTO price_versions
+			(product_id, version, currency, amount_minor, interval, anchor_day, anchor_timezone)
+		VALUES ($1, 2, 'USD', 1200, 'monthly', 31, 'UTC') RETURNING id`, h.productID,
+	).Scan(&v2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.pool.Exec(ctx, `
+		INSERT INTO config_option_prices
+			(config_option_id, price_version_id, choice, amount_minor)
+		VALUES ($1, $2, '32 GB', 5000)`, ram, v2); err != nil {
+		t.Fatal(err)
+	}
+
+	if results := h.run(t); len(results) != 1 || results[0].Outcome != renewal.OutcomeInvoiced {
+		t.Fatalf("results = %+v", results)
+	}
+	id := h.onlyInvoice(t)
+	if total := h.invoiceTotal(t, id); total != 2200 {
+		t.Fatalf("invoice total = %d, want 2200 (the subscribed version's option price, not 5000)", total)
 	}
 }

@@ -299,11 +299,28 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 			return e.record(ctx, tx, runID, sub.ID, period.Key(), out)
 		}
 
+		// The chosen config options are part of what the subscription costs, so the renewal
+		// carries the base price plus one line per paid option. Before this call the engine
+		// billed the base price alone and gave every paid option away from the second period
+		// onwards. See surcharges.go for which price is used and why.
+		surcharges, err := loadSurchargeLines(ctx, tx, sub, price.Currency)
+		if errors.Is(err, ErrUnpricedSurcharge) {
+			// A paid option the catalogue no longer prices at this version. Billing the base
+			// alone would hand the resource over for free, so a human decides.
+			out.Outcome = OutcomeNeedsReview
+			out.Detail = err.Error()
+			return e.record(ctx, tx, runID, sub.ID, period.Key(), out)
+		}
+		if err != nil {
+			return err
+		}
+
 		lines := []billing.Line{{
 			Description:   price.Description,
 			QuantityMilli: 1000,
 			UnitPrice:     money.New(price.AmountMinor, price.Currency),
 		}}
+		lines = append(lines, surcharges...)
 		dueAt := now.AddDate(0, 0, p.PaymentTermsDays)
 
 		req := billing.IssueRequest{

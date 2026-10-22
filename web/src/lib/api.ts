@@ -131,6 +131,18 @@ export class Api {
     return this.request<T>("PUT", path, { ...options, body });
   }
 
+  /**
+   * A partial update.
+   *
+   * It is separate from put() because the difference is not cosmetic on this API: a PUT replaces
+   * a record's editable fields, so a caller that sends only the field it changed silently clears
+   * the rest. Several staff routes are PATCH for exactly that reason — the locale editor is one,
+   * where a rename and a switch must not be able to clobber each other.
+   */
+  async patch<T>(path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
+    return this.request<T>("PATCH", path, { ...options, body });
+  }
+
   async del<T>(path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
     return this.request<T>("DELETE", path, { ...options, body });
   }

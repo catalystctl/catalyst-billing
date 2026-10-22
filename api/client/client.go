@@ -381,6 +381,36 @@ func (c *Client) DeleteStaffHoldsByHoldid(ctx context.Context, holdId string, qu
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffLocalesByCode calls DELETE /api/v1/staff/locales/{code}.
+//
+// # Remove a locale and its translations
+//
+// Permission: i18n:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// code is the code path parameter.
+func (c *Client) DeleteStaffLocalesByCode(ctx context.Context, code string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/locales/{code}"
+	path = strings.ReplaceAll(path, "{code}", url.PathEscape(code))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
+// DeleteStaffLocalesByCodeKeysByKey calls DELETE /api/v1/staff/locales/{code}/keys/{key}.
+//
+// # Remove one translation so the key falls back
+//
+// Permission: i18n:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// code is the code path parameter.
+// key is the key path parameter.
+func (c *Client) DeleteStaffLocalesByCodeKeysByKey(ctx context.Context, code string, key string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/locales/{code}/keys/{key}"
+	path = strings.ReplaceAll(path, "{code}", url.PathEscape(code))
+	path = strings.ReplaceAll(path, "{key}", url.PathEscape(key))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffOauthclientsById calls DELETE /api/v1/staff/oauth-clients/{id}.
 //
 // # Delete a client
@@ -586,6 +616,22 @@ func (c *Client) GetExtensionsHooks(ctx context.Context, query url.Values, body 
 // Liveness
 func (c *Client) GetHealthz(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/healthz"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetI18nLocales calls GET /api/v1/i18n/locales.
+//
+// The languages this shop offers, and what this request resolved to
+func (c *Client) GetI18nLocales(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/i18n/locales"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetI18nMessages calls GET /api/v1/i18n/messages.
+//
+// The merged message catalogue for one locale
+func (c *Client) GetI18nMessages(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/i18n/messages"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -1453,6 +1499,26 @@ func (c *Client) GetStaffInvoicesByIdPdf(ctx context.Context, id string, query u
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffLocales calls GET /api/v1/staff/locales.
+//
+// # Every locale with its translation coverage
+//
+// Permission: i18n:write. Staff only.
+func (c *Client) GetStaffLocales(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/locales"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffLocalesKeys calls GET /api/v1/staff/locales/keys.
+//
+// # Search the catalogue by key
+//
+// Permission: i18n:write. Staff only.
+func (c *Client) GetStaffLocalesKeys(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/locales/keys"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffLogsEmail calls GET /api/v1/staff/logs/email.
 //
 // # Email delivery log
@@ -1893,6 +1959,20 @@ func (c *Client) GetStaffUpgrades(ctx context.Context, query url.Values, body an
 func (c *Client) GetStaffWebhooks(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/webhooks"
 	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// PatchStaffLocalesByCode calls PATCH /api/v1/staff/locales/{code}.
+//
+// # Edit a locale's name, native name, enabled state or sort order
+//
+// Permission: i18n:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// code is the code path parameter.
+func (c *Client) PatchStaffLocalesByCode(ctx context.Context, code string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/locales/{code}"
+	path = strings.ReplaceAll(path, "{code}", url.PathEscape(code))
+	return c.do(ctx, "PATCH", path, query, body, true, true)
 }
 
 // PatchStaffTicketsById calls PATCH /api/v1/staff/tickets/{id}.
@@ -2615,6 +2695,32 @@ func (c *Client) PostStaffInvoicesByIdVoidreason(ctx context.Context, id string,
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffLocales calls POST /api/v1/staff/locales.
+//
+// # Add a locale
+//
+// Permission: i18n:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffLocales(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/locales"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffLocalesByCodeDefault calls POST /api/v1/staff/locales/{code}/default.
+//
+// # Make this locale the default
+//
+// Permission: i18n:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// code is the code path parameter.
+func (c *Client) PostStaffLocalesByCodeDefault(ctx context.Context, code string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/locales/{code}/default"
+	path = strings.ReplaceAll(path, "{code}", url.PathEscape(code))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffMarketplaceInstall calls POST /api/v1/staff/marketplace/install.
 //
 // # Download, verify and record an extension
@@ -3217,6 +3323,22 @@ func (c *Client) PutStaffGateways(ctx context.Context, query url.Values, body an
 func (c *Client) PutStaffInvoicesByIdClientnote(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/invoices/{id}/client-note"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffLocalesByCodeKeysByKey calls PUT /api/v1/staff/locales/{code}/keys/{key}.
+//
+// # Set one translation
+//
+// Permission: i18n:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// code is the code path parameter.
+// key is the key path parameter.
+func (c *Client) PutStaffLocalesByCodeKeysByKey(ctx context.Context, code string, key string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/locales/{code}/keys/{key}"
+	path = strings.ReplaceAll(path, "{code}", url.PathEscape(code))
+	path = strings.ReplaceAll(path, "{key}", url.PathEscape(key))
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }
 

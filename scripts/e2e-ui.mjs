@@ -813,6 +813,11 @@ try {
   // in the list deliberately so the report says so rather than omitting it.
   await assertNewScreen("credits-staff", { path: "/credits", expect: ["Credit"] });
   await assertNewScreen("affiliates", { path: "/affiliates", expect: ["Affiliates"] });
+  await assertNewScreen("locales", { path: "/locales", expect: ["Locales", "Languages"] });
+  await assertNewScreen("imports", { path: "/imports", expect: ["Imports", "The dump"] });
+  await assertNewScreen("updates", { path: "/settings/updates", expect: ["Updates"] });
+  await assertNewScreen("marketplace", { path: "/marketplace", expect: ["Marketplace"] });
+  await assertNewScreen("oauth-clients", { path: "/oauth-clients", expect: ["OAuth clients"] });
 
   // Gateway and provisioner configuration. These two are the screens an operator must be able
   // to use before the panel can take money or build a server, so they get more than a heading

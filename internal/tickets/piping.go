@@ -1,0 +1,1198 @@
+// Email piping (E3.8 / TKT-11): turning an inbound message into a reply.
+//
+// Two ingest paths — a provider webhook and an IMAP poller — and one attribution core,
+// which is this file. Both hand a parsed InboundMessage to Ingest and get the same answer,
+// because the rules that make piping safe are not about the transport:
+//
+//  1. **An inbound message is untrusted input.** It has a From that anybody can write and a
+//     body that will be rendered to a support agent. Nothing in it is an identity; the only
+//     identity that counts is the one this package resolves, and every resolution is
+//     checked against the customer the ticket already belongs to.
+//
+//  2. **A reply is attributed to the right ticket or not at all.** The order is fixed:
+//     threading headers against stored message ids, then a ticket id embedded in the reply
+//     address, then the sender's verified address against exactly one customer. Ambiguity
+//     is a refusal — two customers sharing an address, two tickets in one References chain,
+//     a sender who is not the ticket's customer — and a refusal is stored with its reason,
+//     never guessed at. A message from a stranger appended to someone else's thread is how
+//     an attacker reads a support conversation they are not part of.
+//
+//  3. **A mail loop must be impossible.** The panel's own address, its own outgoing header,
+//     an empty From and the RFC 3834 auto-reply markers are dropped before attribution is
+//     even attempted. Two automated systems replying to each other is an outage nobody
+//     notices until a mailbox fills.
+//
+// Idempotence is the fourth: the Message-ID is the key. A redelivery — an IMAP refetch, a
+// provider retry — returns the first result and writes nothing, because the partial unique
+// index on ticket_messages.message_id and the one on the inbound mail log both refuse a
+// second row rather than relying on a read-then-write check.
+
+package tickets
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/mail"
+	"strings"
+	"time"
+
+	"github.com/catalyst/billing/internal/audit"
+	"github.com/catalyst/billing/internal/notify"
+	"github.com/catalyst/billing/internal/settings"
+	"github.com/catalyst/billing/internal/store"
+	"github.com/jackc/pgx/v5"
+)
+
+// Reasons a message is stored but not attached to a ticket.
+//
+// They are stable codes rather than prose because the staff view groups by them and an
+// operator's alerting can too. A new reason is a new code, not a reworded string.
+const (
+	// ReasonNoSender is a message with no usable From. It cannot be attributed to anyone.
+	ReasonNoSender = "no_sender"
+	// ReasonOwnAddress is a message whose From is the panel's own piping address: a loop.
+	ReasonOwnAddress = "own_address"
+	// ReasonOwnHeader is a message carrying the panel's own outgoing header: a loop.
+	ReasonOwnHeader = "own_header"
+	// ReasonAutoReply is an RFC 3834 auto-reply (Auto-Submitted: auto-replied and friends).
+	ReasonAutoReply = "auto_reply"
+	// ReasonBulk is a mass mailing (Precedence: bulk/junk/list). Never a customer's reply.
+	ReasonBulk = "bulk"
+	// ReasonTooLarge is a message over MaxMessageBytes. It is refused, not truncated: half a
+	// support request is worse than a bounce the customer can see.
+	ReasonTooLarge = "too_large"
+	// ReasonEmptyBody is a message with no text part and no usable subject.
+	ReasonEmptyBody = "empty_body"
+	// ReasonAmbiguousThread is a References chain that names more than one ticket.
+	ReasonAmbiguousThread = "ambiguous_thread"
+	// ReasonUnknownTicket is a reply address naming a ticket that does not exist.
+	ReasonUnknownTicket = "unknown_ticket"
+	// ReasonSenderMismatch is a sender who is not the ticket's customer. The message is not
+	// appended: this is the refusal that stops a stranger reading a thread.
+	ReasonSenderMismatch = "sender_mismatch"
+	// ReasonNoCustomer is a sender whose address matches no customer.
+	ReasonNoCustomer = "no_customer"
+	// ReasonAmbiguousSender is a sender whose address matches more than one customer.
+	ReasonAmbiguousSender = "ambiguous_sender"
+	// ReasonTicketsDisabled is a new email when the operator has switched support off.
+	ReasonTicketsDisabled = "tickets_disabled"
+	// ReasonDuplicateMessage is a Message-ID already imported by the other path.
+	ReasonDuplicateMessage = "duplicate_message"
+	// ReasonUnparseable is a message the transport could not parse into headers and a body.
+	ReasonUnparseable = "unparseable"
+)
+
+// Attribution methods, recorded on the log row so "why did this attach here?" is
+// answerable without replaying the message.
+const (
+	AttributedByThread       = "thread"
+	AttributedByReplyAddress = "reply_address"
+	AttributedBySender       = "sender"
+)
+
+// Bounds. A message id longer than the RFC 5322 header limit is not an id, and a
+// References chain longer than this is not a thread.
+const (
+	maxReferences = 64
+	// maxReplyAddressUUIDScan is how far into a local part a ticket id may start. A reply
+	// address is generated by us, so the id is near the front; scanning a whole 320-character
+	// local part is not a search worth doing.
+	maxReplyAddressUUIDScan = 128
+)
+
+// InboundMessage is one parsed email, from either ingest path.
+//
+// It is a plain value with no methods that touch the database: the transports differ in
+// everything except how a message looks, so the parser produces this and Ingest decides
+// what it means.
+type InboundMessage struct {
+	// MessageID is the email Message-ID with its angle brackets removed. An empty value is
+	// replaced with a digest of the message, which is what keeps a redelivery dedupable even
+	// when the sender omitted the header.
+	MessageID string
+	// From is the sender's address, bare ("alice@example.test"), not the display form.
+	From     string
+	FromName string
+	// To and Cc are recipient addresses. A ticket id embedded in a To address is the second
+	// attribution method.
+	To []string
+	Cc []string
+	// Subject is stored as-is (the ticket's subject column is capped separately).
+	Subject string
+	// InReplyTo and References are the threading headers. They are the first attribution
+	// method and the only one that is not guessable by a sender who does not already know a
+	// message id.
+	InReplyTo  string
+	References []string
+	// Body is the plain-text body. HTML is reduced to text by the parser; attachments are
+	// refused and counted in AttachmentsDropped.
+	Body string
+	// AutoSubmitted is the Auto-Submitted header value, verbatim.
+	AutoSubmitted string
+	// Headers holds the headers the loop check reads, keyed case-insensitively by the
+	// lookup helper.
+	Headers map[string]string
+	// AttachmentsDropped is how many parts were refused because they were attachments.
+	AttachmentsDropped int
+	// ReceivedAt is when the message was received; zero uses the store clock.
+	ReceivedAt time.Time
+	// Source is "webhook" or "imap". It is recorded, not trusted.
+	Source string
+}
+
+// IngestOutcome is what happened to a message.
+type IngestOutcome string
+
+const (
+	// IngestAttached is a reply appended to an existing ticket.
+	IngestAttached IngestOutcome = "attached"
+	// IngestCreated is a new ticket opened from an email whose sender is exactly one
+	// customer and which matched no existing thread. Opening a ticket is not attaching to a
+	// thread, so it does not carry the "someone else's conversation" risk.
+	IngestCreated IngestOutcome = "created"
+	// IngestDuplicate is a Message-ID that was already imported. Nothing was written.
+	IngestDuplicate IngestOutcome = "duplicate"
+	// IngestIgnored is a message dropped before attribution: a loop, an auto-reply, an
+	// oversized body. It is stored with its reason.
+	IngestIgnored IngestOutcome = "ignored"
+	// IngestUnattributed is a message that could not be attributed to a ticket or a single
+	// customer. It is stored with its reason and attached to nothing.
+	IngestUnattributed IngestOutcome = "unattributed"
+)
+
+// IngestResult is what Ingest decided and did.
+type IngestResult struct {
+	Outcome IngestOutcome
+	// TicketID is the ticket the message was attached to or created. Empty for a refusal.
+	TicketID string
+	// CustomerID is the customer the message was attributed to, when one was identified.
+	CustomerID string
+	// MessageID is the stored ticket_messages id. Empty when nothing was appended.
+	MessageID string
+	// LogID is the ticket_mail_logs row. It is always set: a refusal is stored too.
+	LogID string
+	// Reason is the stable refusal code for an ignored or unattributed message.
+	Reason string
+	// AttributedBy is how the ticket was matched: thread, reply_address or sender.
+	AttributedBy string
+	// Subject is the message's subject, echoed for the caller's log line.
+	Subject string
+}
+
+// PipingConfig is the mail group's configuration for inbound piping.
+//
+// It is read from the settings table rather than the environment because the piping
+// address and secret are operational choices an operator changes without a restart, and
+// because the IMAP password is a secret the settings page already redacts.
+type PipingConfig struct {
+	// Address is mail.piping_address: the panel's own address. A message whose From is this
+	// is a loop.
+	Address string
+	// Secret authenticates the inbound webhook. Empty means the endpoint refuses every
+	// request: an unauthenticated ingest endpoint is an open door.
+	Secret string
+	// IMAP is the poller's configuration.
+	IMAP IMAPConfig
+}
+
+// LoadPipingConfig reads the mail group's piping settings.
+func LoadPipingConfig(ctx context.Context, pool *store.Pool) (PipingConfig, error) {
+	var out PipingConfig
+	if pool == nil {
+		return out, errors.New("tickets: no database")
+	}
+	cfg, err := loadPipingConfig(ctx, settings.New(pool))
+	if err != nil {
+		return PipingConfig{}, err
+	}
+	return cfg, nil
+}
+
+// loadPipingConfig is the seam the tests use to drive the parser without a database.
+func loadPipingConfig(ctx context.Context, reader settingsReader) (PipingConfig, error) {
+	address, err := reader.String(ctx, "mail", "piping_address")
+	if err != nil {
+		return PipingConfig{}, fmt.Errorf("tickets: read piping address: %w", err)
+	}
+	secret, err := reader.String(ctx, "mail", "piping_secret")
+	if err != nil {
+		return PipingConfig{}, fmt.Errorf("tickets: read piping secret: %w", err)
+	}
+	out := PipingConfig{Address: strings.TrimSpace(address), Secret: strings.TrimSpace(secret)}
+	imap, err := loadIMAPConfig(ctx, reader)
+	if err != nil {
+		return PipingConfig{}, err
+	}
+	out.IMAP = imap
+	return out, nil
+}
+
+// Ingest turns one inbound message into a reply, a new ticket, or a recorded refusal.
+//
+// Everything — the reply, its audit row, the notification it queues and the mail log row
+// that says what happened — commits in one transaction. That is what makes "the message is
+// in the thread but the log says it was refused" impossible, and it is why the log row is
+// written even for a refusal: the answer to "did the customer's reply arrive?" is a row,
+// not an absence.
+func (s *Store) Ingest(ctx context.Context, in InboundMessage) (IngestResult, error) {
+	// Only the panel's own address is needed here. The webhook secret and the IMAP
+	// credentials belong to the transports; reading the whole mail group on every message
+	// would be six settings queries per reply for one value.
+	address, err := settings.New(s.pool).String(ctx, "mail", "piping_address")
+	if err != nil {
+		return IngestResult{}, fmt.Errorf("tickets: read piping address: %w", err)
+	}
+	cfg := PipingConfig{Address: strings.TrimSpace(address)}
+	msg := normaliseInbound(in, s.clock())
+
+	var out IngestResult
+	err = s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		out, err = s.ingestTx(ctx, tx, msg, cfg)
+		return err
+	})
+	if err != nil {
+		return IngestResult{}, err
+	}
+	return out, nil
+}
+
+// ingestTx is Ingest inside a caller's transaction.
+func (s *Store) ingestTx(ctx context.Context, tx pgx.Tx, msg InboundMessage, cfg PipingConfig) (IngestResult, error) {
+	now := msg.ReceivedAt
+	if now.IsZero() {
+		now = s.clock()
+	}
+	res := IngestResult{Subject: msg.Subject}
+
+	// ---- 1. Idempotence, before anything else -------------------------------
+	//
+	// The log row is the record of a delivery, so an existing one means this exact message
+	// has already been handled by one path or the other. Answering with the first result
+	// rather than a second reply is what makes a provider retry harmless.
+	if existing, err := s.inboundLogFor(ctx, tx, msg.MessageID); err != nil {
+		return IngestResult{}, err
+	} else if existing.LogID != "" {
+		existing.Outcome = IngestDuplicate
+		existing.Subject = msg.Subject
+		return existing, nil
+	}
+
+	// ---- 2. Loop prevention, before attribution ----------------------------
+	//
+	// A dropped message is not an error: it is a decision, and it is stored with its reason
+	// so an operator can see that the panel is talking to itself instead of guessing why a
+	// reply vanished.
+	if reason := screenInbound(msg, cfg.Address); reason != "" {
+		logID, err := s.logInbound(ctx, tx, msg, inboundLog{
+			Status: "ignored", Reason: reason, Source: msg.Source, At: now,
+		})
+		if err != nil {
+			return IngestResult{}, err
+		}
+		res.Outcome = IngestIgnored
+		res.Reason = reason
+		res.LogID = logID
+		return res, nil
+	}
+
+	// ---- 3. Attribution ----------------------------------------------------
+	attr, err := s.attribute(ctx, tx, msg)
+	if err != nil {
+		return IngestResult{}, err
+	}
+	if attr.Reason != "" {
+		logID, err := s.logInbound(ctx, tx, msg, inboundLog{
+			Status: "ignored", Reason: attr.Reason, TicketID: attr.TicketID,
+			CustomerID: attr.CustomerID, AttributedBy: attr.AttributedBy,
+			Source: msg.Source, At: now,
+		})
+		if err != nil {
+			return IngestResult{}, err
+		}
+		if err := s.auditRefusal(ctx, tx, msg, attr, attr.Reason); err != nil {
+			return IngestResult{}, err
+		}
+		res.Outcome = IngestUnattributed
+		res.Reason = attr.Reason
+		res.CustomerID = attr.CustomerID
+		res.AttributedBy = attr.AttributedBy
+		res.LogID = logID
+		return res, nil
+	}
+
+	// ---- 4. Attach, or open a ticket for the sender ------------------------
+	switch {
+	case attr.TicketID != "":
+		appended, duplicate, err := s.ReplyAsCustomerTx(ctx, tx, attr.CustomerID, attr.TicketID,
+			ReplyInput{Body: msg.Body, MessageID: msg.MessageID, Now: now})
+		switch {
+		case errors.Is(err, ErrNotFound):
+			// The ticket disappeared between attribution and the locked read. Refusing is the
+			// only safe answer: there is no thread to append to.
+			return s.refuse(ctx, tx, msg, now, res, IngestUnattributed, ReasonUnknownTicket, attr)
+		case err != nil:
+			return IngestResult{}, err
+		case duplicate:
+			// The Message-ID is already a message on this ticket, so the reply exists and this
+			// delivery added nothing. The log row records the duplicate rather than a second
+			// reply.
+			return s.refuse(ctx, tx, msg, now, res, IngestDuplicate, ReasonDuplicateMessage, attr)
+		}
+
+		res.Outcome = IngestAttached
+		res.TicketID = attr.TicketID
+		res.CustomerID = attr.CustomerID
+		res.MessageID = appended.ID
+		res.AttributedBy = attr.AttributedBy
+		if err := s.auditIngest(ctx, tx, msg, res, now); err != nil {
+			return IngestResult{}, err
+		}
+		if err := s.notifyAssignee(ctx, tx, msg, res); err != nil {
+			return IngestResult{}, err
+		}
+		logID, err := s.logInbound(ctx, tx, msg, inboundLog{
+			Status: "received", TicketID: res.TicketID, CustomerID: res.CustomerID,
+			AttributedBy: res.AttributedBy, Source: msg.Source, At: now,
+		})
+		if err != nil {
+			return IngestResult{}, err
+		}
+		res.LogID = logID
+		return res, nil
+
+	default:
+		// A single customer and no thread: this is a new support request by email, not a
+		// reply. It is opened for the sender's own customer, which is attribution by
+		// construction — it cannot attach to a conversation that already exists.
+		thread, err := s.CreateTx(ctx, tx, CreateInput{
+			CustomerID:  attr.CustomerID,
+			Subject:     subjectOrFallback(msg.Subject),
+			Body:        msg.Body,
+			MessageID:   msg.MessageID,
+			Attachments: nil,
+			Now:         now,
+		})
+		switch {
+		case errors.Is(err, ErrDisabled):
+			return s.refuse(ctx, tx, msg, now, res, IngestIgnored, ReasonTicketsDisabled, attr)
+		case errors.Is(err, ErrDuplicate):
+			return s.refuse(ctx, tx, msg, now, res, IngestDuplicate, ReasonDuplicateMessage, attr)
+		case err != nil:
+			return IngestResult{}, err
+		case thread.Duplicate:
+			return s.refuse(ctx, tx, msg, now, res, IngestDuplicate, ReasonDuplicateMessage, attr)
+		}
+
+		res.Outcome = IngestCreated
+		res.TicketID = thread.Ticket.ID
+		res.CustomerID = attr.CustomerID
+		res.AttributedBy = AttributedBySender
+		if len(thread.Messages) > 0 {
+			res.MessageID = thread.Messages[0].ID
+		}
+		if err := s.auditIngest(ctx, tx, msg, res, now); err != nil {
+			return IngestResult{}, err
+		}
+		logID, err := s.logInbound(ctx, tx, msg, inboundLog{
+			Status: "received", TicketID: res.TicketID, CustomerID: res.CustomerID,
+			AttributedBy: res.AttributedBy, Source: msg.Source, At: now,
+		})
+		if err != nil {
+			return IngestResult{}, err
+		}
+		res.LogID = logID
+		return res, nil
+	}
+}
+
+// refuse records a message that was attributed far enough to be dangerous and then refused.
+func (s *Store) refuse(ctx context.Context, tx pgx.Tx, msg InboundMessage, now time.Time,
+	res IngestResult, outcome IngestOutcome, reason string, attr attribution) (IngestResult, error) {
+	logID, err := s.logInbound(ctx, tx, msg, inboundLog{
+		Status: "ignored", Reason: reason, TicketID: attr.TicketID,
+		CustomerID: attr.CustomerID, AttributedBy: attr.AttributedBy,
+		Source: msg.Source, At: now,
+	})
+	if err != nil {
+		return IngestResult{}, err
+	}
+	if err := s.auditRefusal(ctx, tx, msg, attr, reason); err != nil {
+		return IngestResult{}, err
+	}
+	res.Outcome = outcome
+	res.Reason = reason
+	res.TicketID = ""
+	res.MessageID = ""
+	res.CustomerID = attr.CustomerID
+	res.AttributedBy = attr.AttributedBy
+	res.LogID = logID
+	return res, nil
+}
+
+// ------------------------------------------------------------------ attribution --
+
+// attribution is the answer to "which ticket, which customer, and why".
+type attribution struct {
+	TicketID   string
+	CustomerID string
+	// AttributedBy is how the ticket was matched, empty when only a customer was.
+	AttributedBy string
+	// Reason is set when the message must not be attached. It is a refusal, not a hint.
+	Reason string
+}
+
+// attribute resolves a message to a ticket and a customer, or refuses.
+//
+// The order matters and is not configurable: threading headers are unforgeable without
+// knowing a stored message id, a reply address is unforgeable without having received one,
+// and the sender's address is the weakest signal of the three. Whichever method matches, the
+// sender is then checked against the ticket's customer — that check is what turns "the
+// headers say this belongs to ticket X" into "this person is allowed to reply to X".
+func (s *Store) attribute(ctx context.Context, tx pgx.Tx, msg InboundMessage) (attribution, error) {
+	// (a) Threading headers.
+	refs := messageIDList(append([]string{msg.InReplyTo}, msg.References...)...)
+	if len(refs) > 0 {
+		tickets, err := ticketsForMessageIDs(ctx, tx, refs)
+		if err != nil {
+			return attribution{}, err
+		}
+		switch len(tickets) {
+		case 0:
+			// Not a thread we know. Fall through to the address methods.
+		case 1:
+			return s.checkTicketSender(ctx, tx, msg, tickets[0], AttributedByThread)
+		default:
+			// A References chain that spans two tickets is either a forwarded thread or an
+			// attempt to confuse the resolver. Either way it is not something to guess at.
+			return attribution{Reason: ReasonAmbiguousThread}, nil
+		}
+	}
+
+	// (b) A ticket id embedded in a reply address.
+	for _, addr := range append(append([]string{}, msg.To...), msg.Cc...) {
+		id := ticketIDFromAddress(addr)
+		if id == "" {
+			continue
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM tickets WHERE id = $1)`, id).Scan(&exists); err != nil {
+			return attribution{}, fmt.Errorf("tickets: resolve reply address: %w", err)
+		}
+		if !exists {
+			return attribution{Reason: ReasonUnknownTicket}, nil
+		}
+		return s.checkTicketSender(ctx, tx, msg, id, AttributedByReplyAddress)
+	}
+
+	// (c) The sender's verified address, against exactly one customer.
+	customers, err := senderCustomers(ctx, tx, msg.From)
+	if err != nil {
+		return attribution{}, err
+	}
+	switch len(customers) {
+	case 0:
+		return attribution{Reason: ReasonNoCustomer}, nil
+	case 1:
+		return attribution{CustomerID: customers[0], AttributedBy: AttributedBySender}, nil
+	default:
+		// Two customers share an address. Attaching to either would be a coin flip on whose
+		// support thread this is.
+		return attribution{Reason: ReasonAmbiguousSender}, nil
+	}
+}
+
+// checkTicketSender resolves a ticket's customer and refuses unless the sender is that
+// customer.
+func (s *Store) checkTicketSender(ctx context.Context, tx pgx.Tx, msg InboundMessage,
+	ticketID, attributedBy string) (attribution, error) {
+	var customerID string
+	err := tx.QueryRow(ctx, `SELECT customer_id FROM tickets WHERE id = $1`, ticketID).Scan(&customerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return attribution{Reason: ReasonUnknownTicket}, nil
+	}
+	if err != nil {
+		return attribution{}, fmt.Errorf("tickets: resolve ticket customer: %w", err)
+	}
+
+	senders, err := senderCustomers(ctx, tx, msg.From)
+	if err != nil {
+		return attribution{}, err
+	}
+	for _, candidate := range senders {
+		if candidate == customerID {
+			return attribution{TicketID: ticketID, CustomerID: customerID, AttributedBy: attributedBy}, nil
+		}
+	}
+	// The message names a ticket that belongs to somebody else. It is not appended, and the
+	// refusal records the ticket so an operator can see that someone tried.
+	return attribution{
+		TicketID:     ticketID,
+		CustomerID:   customerID,
+		AttributedBy: attributedBy,
+		Reason:       ReasonSenderMismatch,
+	}, nil
+}
+
+// ticketsForMessageIDs finds the distinct tickets a set of message ids belongs to.
+//
+// Both spellings of every id are tried. A Message-ID is canonically written between angle
+// brackets and stored exactly as the message carried it, so a reply's In-Reply-To ("<a@b>")
+// and a stored id ("a@b", or the reverse) are the same message. Comparing one spelling only
+// would silently fail to thread, and a failed thread means a customer's reply opens a second
+// ticket instead of joining the first.
+func ticketsForMessageIDs(ctx context.Context, q querier, ids []string) ([]string, error) {
+	bare := make([]string, 0, len(ids))
+	bracketed := make([]string, 0, len(ids))
+	for _, id := range ids {
+		bare = append(bare, cleanMessageID(id))
+		bracketed = append(bracketed, "<"+cleanMessageID(id)+">")
+	}
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT ticket_id::text FROM ticket_messages
+		WHERE message_id = ANY($1::text[]) OR message_id = ANY($2::text[])
+		ORDER BY 1`, bare, bracketed)
+	if err != nil {
+		return nil, fmt.Errorf("tickets: resolve thread: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("tickets: scan thread ticket: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tickets: read thread: %w", err)
+	}
+	return out, nil
+}
+
+// senderCustomers lists the customers an address belongs to.
+//
+// Two sources, and both are deliberate: `customers.email` is the billing address every
+// invoice goes to, and a verified user address linked to a customer account is the login the
+// customer actually signs in with. A *unverified* user address is not a source — otherwise
+// anyone could register a stranger's address and receive their support thread. The result
+// can contain more than one customer, and the caller treats that as a refusal.
+func senderCustomers(ctx context.Context, q querier, from string) ([]string, error) {
+	from = strings.TrimSpace(from)
+	if from == "" {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT c.id::text
+		FROM customers c
+		WHERE lower(c.email) = lower($1)
+		UNION
+		SELECT ca.customer_id::text
+		FROM users u
+		JOIN customer_accounts ca ON ca.user_id = u.id
+		WHERE lower(u.email) = lower($1) AND u.email_verified_at IS NOT NULL
+		ORDER BY 1`, from)
+	if err != nil {
+		return nil, fmt.Errorf("tickets: resolve sender: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("tickets: scan sender customer: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tickets: read sender: %w", err)
+	}
+	return out, nil
+}
+
+// ticketIDFromAddress extracts a ticket id embedded in a recipient's local part, e.g.
+// support+ticket-<uuid>@example.test or <uuid>@support.example.test.
+//
+// It looks for the shape of a UUID rather than a prefix, because the reply address is
+// generated by whatever MTA the operator runs and its convention is not ours to dictate.
+// The id is only a *candidate*: the sender still has to be the ticket's customer.
+func ticketIDFromAddress(addr string) string {
+	addr = strings.TrimSpace(addr)
+	at := strings.LastIndex(addr, "@")
+	if at <= 0 {
+		return ""
+	}
+	local := addr[:at]
+	if len(local) > maxReplyAddressUUIDScan {
+		local = local[:maxReplyAddressUUIDScan]
+	}
+	for i := 0; i+36 <= len(local); i++ {
+		if validUUID(local[i : i+36]) {
+			return local[i : i+36]
+		}
+	}
+	return ""
+}
+
+// -------------------------------------------------------------------- screening --
+
+// screenInbound returns a reason code when a message must be dropped before attribution,
+// and "" when it may be attributed.
+//
+// Every check here exists because the alternative is a loop or a reply nobody wrote: a
+// panel address writing to itself, an out-of-office answering a ticket notification, a
+// newsletter sent to the support address, a body large enough to be an upload.
+func screenInbound(msg InboundMessage, pipingAddress string) string {
+	if strings.TrimSpace(msg.From) == "" {
+		return ReasonNoSender
+	}
+	if pipingAddress != "" && strings.EqualFold(strings.TrimSpace(pipingAddress), msg.From) {
+		return ReasonOwnAddress
+	}
+	// The panel's own outgoing mail carries a marker header. A message that has one is our
+	// own mail coming back, whatever its From says.
+	for name, value := range msg.Headers {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if ownHeader(name) {
+			return ReasonOwnHeader
+		}
+	}
+	if marker := headerValue(msg.Headers, "Auto-Submitted"); marker != "" {
+		if autoReply(marker) {
+			return ReasonAutoReply
+		}
+	}
+	if autoReply(msg.AutoSubmitted) {
+		return ReasonAutoReply
+	}
+	if precedence := headerValue(msg.Headers, "Precedence"); bulkPrecedence(precedence) {
+		return ReasonBulk
+	}
+	if headerValue(msg.Headers, "List-Id") != "" {
+		// A mailing list is never a customer replying to their own ticket.
+		return ReasonBulk
+	}
+	if len(msg.Body) > MaxMessageBytes {
+		return ReasonTooLarge
+	}
+	if strings.TrimSpace(msg.Body) == "" && strings.TrimSpace(msg.Subject) == "" {
+		return ReasonEmptyBody
+	}
+	return ""
+}
+
+// ownHeader reports whether a header name is one the panel sets on its own outbound mail.
+func ownHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "x-billing-panel", "x-billing-panel-outgoing", "x-catalyst-billing":
+		return true
+	}
+	return false
+}
+
+// autoReply reports whether an Auto-Submitted value marks an automated message.
+//
+// RFC 3834 defines "no" as the only value a human-sent message carries; everything else
+// (auto-generated, auto-replied, auto-notified) is a machine on the other end. An unknown
+// value is treated as automated, because the cost of dropping a real reply is a support
+// ticket and the cost of keeping a loop is a mail server.
+func autoReply(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if semi := strings.IndexByte(value, ';'); semi >= 0 {
+		value = value[:semi]
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value != "" && value != "no"
+}
+
+// bulkPrecedence reports whether a Precedence value marks a mass mailing.
+func bulkPrecedence(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "bulk", "junk", "list":
+		return true
+	}
+	return false
+}
+
+// headerValue looks a header up case-insensitively. Header names are case-insensitive by
+// RFC 5322 and a provider may canonicalise them differently from us.
+func headerValue(headers map[string]string, name string) string {
+	if len(headers) == 0 {
+		return ""
+	}
+	for key, value := range headers {
+		if strings.EqualFold(strings.TrimSpace(key), name) {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+// ------------------------------------------------------------------- normalising --
+
+// normaliseInbound cleans a message into the shape the attribution code can rely on.
+func normaliseInbound(in InboundMessage, now time.Time) InboundMessage {
+	in.FromName = strings.TrimSpace(in.FromName)
+	in.From = normaliseAddress(in.From)
+	in.To = normaliseAddresses(in.To)
+	in.Cc = normaliseAddresses(in.Cc)
+	in.Subject = sanitiseLine(in.Subject)
+	in.Body = strings.TrimSpace(strings.ReplaceAll(in.Body, "\r\n", "\n"))
+	if in.Body == "" && in.Subject != "" {
+		// A reply whose body is empty but whose subject says something is still a reply. It is
+		// stored with the subject as its text rather than refused: a customer who wrote only a
+		// subject line has still written to us.
+		in.Body = in.Subject
+	}
+	in.MessageID = cleanMessageID(in.MessageID)
+	if in.MessageID == "" {
+		// No Message-ID: synthesise one from the message's content so a redelivery of the
+		// same message still dedupes. The digest is over the content only — never over the
+		// delivery time — because an IMAP refetch after a crash arrives at a different moment
+		// and must still be recognised as the same message.
+		in.MessageID = syntheticMessageID(in)
+	}
+	if len(in.MessageID) > MaxMessageIDLen {
+		sum := sha256.Sum256([]byte(in.MessageID))
+		in.MessageID = hex.EncodeToString(sum[:]) + "@piping.invalid"
+	}
+	in.References = messageIDList(in.References...)
+	in.InReplyTo = cleanMessageID(in.InReplyTo)
+	if in.ReceivedAt.IsZero() {
+		in.ReceivedAt = now
+	}
+	if in.AttachmentsDropped < 0 {
+		in.AttachmentsDropped = 0
+	}
+	return in
+}
+
+// normaliseAddress reduces a From value to a bare address.
+func normaliseAddress(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if parsed, err := mail.ParseAddress(value); err == nil {
+		return strings.ToLower(strings.TrimSpace(parsed.Address))
+	}
+	// ParseAddress refuses an address with no display name and stray whitespace. Take the
+	// angle-bracket content when there is one; otherwise keep the raw value, which will fail
+	// to match any customer and be refused with a reason.
+	if start, end := strings.LastIndex(value, "<"), strings.LastIndex(value, ">"); start >= 0 && end > start {
+		return strings.ToLower(strings.TrimSpace(value[start+1 : end]))
+	}
+	return strings.ToLower(value)
+}
+
+// normaliseAddresses reduces a recipient list to bare addresses, dropping empties.
+func normaliseAddresses(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		addr := normaliseAddress(value)
+		if addr == "" {
+			continue
+		}
+		if _, dup := seen[addr]; dup {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	return out
+}
+
+// cleanMessageID strips the angle brackets and whitespace from a Message-ID header value.
+func cleanMessageID(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "<")
+	value = strings.TrimSuffix(value, ">")
+	value = strings.TrimSpace(value)
+	// A header that contains several ids (a malformed In-Reply-To) keeps the first.
+	if fields := strings.Fields(value); len(fields) > 1 {
+		value = fields[0]
+	}
+	return strings.Trim(value, "<>")
+}
+
+// messageIDList flattens References-style values into a bounded, de-duplicated list.
+func messageIDList(values ...string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		for _, field := range strings.Fields(value) {
+			id := cleanMessageID(field)
+			if id == "" {
+				continue
+			}
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+			if len(out) >= maxReferences {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// syntheticMessageID builds a stable id for a message that has none.
+//
+// It is a digest of the content, so the same message delivered twice produces the same id.
+// The trade-off is stated rather than hidden: two genuinely identical messages from one
+// sender (the same subject and the same body) collapse into one reply. A provider that
+// supplies a Message-ID never reaches this path, and the alternative — no id at all — means a
+// redelivery is a second reply, which is the failure this feature exists to prevent.
+func syntheticMessageID(in InboundMessage) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{in.From, in.Subject, in.Body}, "\x00")))
+	return hex.EncodeToString(sum[:]) + "@piping.invalid"
+}
+
+// sanitiseLine collapses a header value to one line. A newline in a subject is how a stored
+// value becomes two lines in a list row.
+func sanitiseLine(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.TrimSpace(s)
+}
+
+// subjectOrFallback is the subject a ticket opened from email gets.
+func subjectOrFallback(subject string) string {
+	subject = sanitiseLine(subject)
+	if subject == "" {
+		return "(no subject)"
+	}
+	if len(subject) > MaxSubjectLen {
+		return subject[:MaxSubjectLen]
+	}
+	return subject
+}
+
+// ------------------------------------------------------------------------ audit --
+
+// auditIngest records the reply in the audit log, inside the transaction that wrote it.
+func (s *Store) auditIngest(ctx context.Context, tx pgx.Tx, msg InboundMessage, res IngestResult, now time.Time) error {
+	action := "ticket.piped_reply"
+	if res.Outcome == IngestCreated {
+		action = "ticket.piped_create"
+	}
+	return audit.Record(ctx, tx, audit.Event{
+		// The actor is the system: an inbound message has no authenticated user, and claiming
+		// the customer's identity would make a stranger's refused message indistinguishable
+		// from a real reply in the audit trail.
+		Actor:      audit.Actor{Kind: audit.ActorSystem},
+		Action:     action,
+		TargetType: "ticket",
+		TargetID:   res.TicketID,
+		Outcome:    audit.OutcomeSuccess,
+		Changes: map[string]any{
+			"message_id":          msg.MessageID,
+			"from":                msg.From,
+			"attributed_by":       res.AttributedBy,
+			"attachments_dropped": msg.AttachmentsDropped,
+			"source":              msg.Source,
+		},
+	})
+}
+
+// auditedRefusal reports whether a refusal is evidence of an attempt rather than noise.
+//
+// An out-of-office reply or a newsletter is routine and would flood the audit log; a message
+// that names a ticket belonging to someone else is not. Those are the refusals an
+// investigation would want to find.
+func auditedRefusal(reason string) bool {
+	switch reason {
+	case ReasonSenderMismatch, ReasonAmbiguousSender, ReasonAmbiguousThread, ReasonUnknownTicket:
+		return true
+	}
+	return false
+}
+
+// auditRefusal records a refusal that is worth investigating.
+func (s *Store) auditRefusal(ctx context.Context, tx pgx.Tx, msg InboundMessage, attr attribution, reason string) error {
+	if !auditedRefusal(reason) {
+		return nil
+	}
+	return audit.Record(ctx, tx, audit.Event{
+		Actor:      audit.Actor{Kind: audit.ActorSystem},
+		Action:     "ticket.piping_refused",
+		TargetType: "ticket",
+		TargetID:   attr.TicketID,
+		Outcome:    audit.OutcomeDenied,
+		Changes: map[string]any{
+			"reason":        reason,
+			"from":          msg.From,
+			"message_id":    msg.MessageID,
+			"attributed_by": attr.AttributedBy,
+		},
+	})
+}
+
+// notifyAssignee tells the ticket's owner that a customer replied.
+//
+// The notification goes to the assignee, because the customer's reply is work for whoever
+// owns the ticket. An unassigned ticket notifies nobody: it is in the queue, which is where
+// an unowned ticket is supposed to be visible. The Message-ID is the dedupe key, so a
+// redelivered message cannot notify twice.
+func (s *Store) notifyAssignee(ctx context.Context, tx pgx.Tx, msg InboundMessage, res IngestResult) error {
+	var (
+		assigneeID, email, name, number, subject string
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE(t.assigned_to::text, ''), COALESCE(u.email, ''),
+		       COALESCE(NULLIF(u.display_name, ''), ''), COALESCE(t.number, ''), t.subject
+		FROM tickets t
+		LEFT JOIN users u ON u.id = t.assigned_to
+		WHERE t.id = $1`, res.TicketID).Scan(&assigneeID, &email, &name, &number, &subject)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("tickets: resolve assignee: %w", err)
+	}
+	if assigneeID == "" || email == "" {
+		return nil
+	}
+	if _, err := notify.TicketMessage(ctx, tx, notify.NewQueue(s.pool), notify.TicketMessageInput{
+		UserID:    assigneeID,
+		Email:     email,
+		TicketID:  res.TicketID,
+		Reference: number,
+		Subject:   subject,
+		Author:    msg.FromName,
+		Excerpt:   msg.Body,
+		MessageID: msg.MessageID,
+	}); err != nil {
+		return fmt.Errorf("tickets: notify assignee: %w", err)
+	}
+	return nil
+}
+
+// --------------------------------------------------------------- the mail log --
+
+// inboundLog is one row to write into ticket_mail_logs.
+type inboundLog struct {
+	Status       string
+	Reason       string
+	TicketID     string
+	CustomerID   string
+	AttributedBy string
+	Source       string
+	At           time.Time
+}
+
+// logInbound writes the log row for a delivery, whatever its outcome.
+//
+// The insert is ON CONFLICT DO NOTHING because two ingest paths can race on the same
+// Message-ID: the winner's row is the record, and the loser returning an empty id is the
+// duplicate answer, not a failure. Nothing here is silently dropped — a refusal reaches the
+// staff view as a row with a reason.
+func (s *Store) logInbound(ctx context.Context, tx pgx.Tx, msg InboundMessage, row inboundLog) (string, error) {
+	var id string
+	err := tx.QueryRow(ctx, `
+		INSERT INTO ticket_mail_logs
+			(message_id, subject, from_address, to_address, body, status, direction,
+			 ticket_id, customer_id, attributed_by, reason, attachments_dropped, source, created_at)
+		VALUES (NULLIF($1, ''), $2, $3, $4, $5, $6, 'inbound',
+		        NULLIF($7, '')::uuid, NULLIF($8, '')::uuid, NULLIF($9, ''),
+		        $10, $11, $12, $13)
+		ON CONFLICT (message_id) WHERE direction = 'inbound' AND message_id IS NOT NULL
+		DO NOTHING
+		RETURNING id`,
+		msg.MessageID, truncateText(msg.Subject, 500), msg.From,
+		truncateText(strings.Join(msg.To, ", "), 500), truncateText(msg.Body, MaxMessageBytes),
+		row.Status, row.TicketID, row.CustomerID, row.AttributedBy, row.Reason,
+		msg.AttachmentsDropped, row.Source, row.At).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The other path (or a concurrent delivery) already logged this message.
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("tickets: log inbound message: %w", err)
+	}
+	return id, nil
+}
+
+// inboundLogFor returns the existing log row for a message id, if any.
+func (s *Store) inboundLogFor(ctx context.Context, q querier, messageID string) (IngestResult, error) {
+	var out IngestResult
+	var status, reason string
+	err := q.QueryRow(ctx, `
+		SELECT id::text, COALESCE(ticket_id::text, ''), COALESCE(customer_id::text, ''),
+		       status, reason, COALESCE(attributed_by, '')
+		FROM ticket_mail_logs
+		WHERE direction = 'inbound' AND message_id = $1`, messageID).
+		Scan(&out.LogID, &out.TicketID, &out.CustomerID, &status, &reason, &out.AttributedBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return IngestResult{}, nil
+	}
+	if err != nil {
+		return IngestResult{}, fmt.Errorf("tickets: read inbound log: %w", err)
+	}
+	out.Reason = reason
+	if status == "received" && out.TicketID != "" {
+		out.Outcome = IngestAttached
+		if out.AttributedBy == AttributedBySender {
+			// The first delivery opened a ticket for the sender rather than appending to one.
+			out.Outcome = IngestCreated
+		}
+	}
+	return out, nil
+}
+
+// DroppedMessage is a message a transport refused before it could be parsed into an
+// InboundMessage (an oversized IMAP message, for example). It is logged for the same reason
+// a refusal is: an absence is not an answer.
+type DroppedMessage struct {
+	MessageID string
+	From      string
+	Subject   string
+	Body      string
+	Reason    string
+	Source    string
+}
+
+// RecordDropped stores a refusal for a message that never reached attribution.
+//
+// The message id may be empty — a message whose headers could not be read has none — and is
+// then stored as NULL rather than synthesised: a synthetic id would make every unparseable
+// message look like a redelivery of the first one, so the second would not be recorded at all.
+func (s *Store) RecordDropped(ctx context.Context, d DroppedMessage) (string, error) {
+	var id string
+	msg := InboundMessage{
+		MessageID: cleanMessageID(d.MessageID),
+		From:      normaliseAddress(d.From),
+		Subject:   sanitiseLine(d.Subject),
+		Body:      strings.TrimSpace(d.Body),
+		Source:    d.Source,
+	}
+	err := s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		id, err = s.logInbound(ctx, tx, msg, inboundLog{
+			Status: "ignored", Reason: d.Reason, Source: d.Source, At: s.clock(),
+		})
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// MailLog is one inbound message as the staff view renders it.
+type MailLog struct {
+	ID                 string
+	MessageID          string
+	From               string
+	To                 string
+	Subject            string
+	Body               string
+	Status             string
+	TicketID           string
+	CustomerID         string
+	AttributedBy       string
+	Reason             string
+	AttachmentsDropped int
+	Source             string
+	CreatedAt          time.Time
+}
+
+// MailLogFilter narrows the inbound mail view.
+type MailLogFilter struct {
+	// Status is "received", "ignored" or "" / "all" for everything inbound.
+	Status string
+}
+
+// MailLogStatuses is the closed set the filter accepts for inbound rows.
+var MailLogStatuses = []string{"received", "ignored", "failed", "sent"}
+
+// ListInboundMail lists inbound messages newest first, with the refused ones filterable.
+//
+// This is the "surfaced, never silently dropped" half of the piping contract: an operator
+// can see every message that arrived and was not attached, with the reason.
+func (s *Store) ListInboundMail(ctx context.Context, f MailLogFilter, limit int, cursor string) ([]MailLog, string, error) {
+	limit = clampLimit(limit)
+	args := make([]any, 0, 4)
+	where := "direction = 'inbound'"
+
+	status := strings.TrimSpace(f.Status)
+	if status != "" && status != "all" {
+		valid := false
+		for _, candidate := range MailLogStatuses {
+			if candidate == status {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return nil, "", fmt.Errorf("%w: unknown status %q", ErrInvalidInput, status)
+		}
+		args = append(args, status)
+		where += fmt.Sprintf(" AND status = $%d", len(args))
+	}
+	if cursor != "" {
+		when, id, err := decodeCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		args = append(args, when, id)
+		where += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", len(args)-1, len(args))
+	}
+	args = append(args, limit+1)
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, COALESCE(message_id, ''), from_address, to_address, subject, body,
+		       status, COALESCE(ticket_id::text, ''), COALESCE(customer_id::text, ''),
+		       COALESCE(attributed_by, ''), reason, attachments_dropped, source, created_at
+		FROM ticket_mail_logs
+		WHERE `+where+`
+		ORDER BY created_at DESC, id DESC
+		LIMIT $`+fmt.Sprint(len(args)), args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("tickets: list inbound mail: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]MailLog, 0, limit)
+	for rows.Next() {
+		var m MailLog
+		if err := rows.Scan(&m.ID, &m.MessageID, &m.From, &m.To, &m.Subject, &m.Body,
+			&m.Status, &m.TicketID, &m.CustomerID, &m.AttributedBy, &m.Reason,
+			&m.AttachmentsDropped, &m.Source, &m.CreatedAt); err != nil {
+			return nil, "", fmt.Errorf("tickets: scan inbound mail: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("tickets: read inbound mail: %w", err)
+	}
+	if len(out) <= limit {
+		return out, "", nil
+	}
+	last := out[limit-1]
+	return out[:limit], encodeCursor(last.CreatedAt, last.ID), nil
+}
+
+// truncateText bounds a stored log field. The log is evidence, not an archive of the
+// mailbox: the reply itself is in the thread, and a 40 MB attachment body must not end up in
+// a log column.
+func truncateText(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	return s[:limit]
+}

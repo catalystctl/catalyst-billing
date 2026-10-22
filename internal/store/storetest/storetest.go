@@ -379,6 +379,36 @@ func Truncate(ctx context.Context, conn *pgx.Conn) error {
 		return fmt.Errorf("restore ledger accounts: %w", err)
 	}
 
+	// The locale catalog is reference data (0037): every installation has `en` as its default,
+	// and a store whose default row had been truncated could not write a translation at all.
+	// The seeded rows are restored here so a test that enabled `de` or edited a translation
+	// starts from the migrated state, exactly like the ledger accounts above.
+	//
+	// The default is cleared first because a partial unique index allows exactly one, so a test
+	// that made another locale the default would otherwise collide with the row being restored.
+	// Two statements rather than one is the price of that index, and the index is worth it: a
+	// "default" that is two locales is a shop that renders in whichever row the planner read
+	// first.
+	if _, err := conn.Exec(ctx, `UPDATE locales SET is_default = false WHERE is_default`); err != nil {
+		return fmt.Errorf("clear default locale: %w", err)
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO locales (code, name, native_name, enabled, is_default, sort_order) VALUES
+			('en', 'English', 'English', true,  true,  10),
+			('de', 'German',  'Deutsch', false, false, 20)
+		ON CONFLICT (code) DO UPDATE
+		SET name = EXCLUDED.name, native_name = EXCLUDED.native_name,
+		    enabled = EXCLUDED.enabled, is_default = EXCLUDED.is_default,
+		    sort_order = EXCLUDED.sort_order`); err != nil {
+		return fmt.Errorf("restore locales: %w", err)
+	}
+	// Locales a test created are removed, so the set is the migrated set rather than the
+	// migrated set plus whatever the previous test invented.
+	if _, err := conn.Exec(ctx,
+		`DELETE FROM locales WHERE code NOT IN ('en', 'de')`); err != nil {
+		return fmt.Errorf("prune test locales: %w", err)
+	}
+
 	// Reference rows are not truncated, so a test that edited one would leak into
 	// every later test in the package. Restoring them explicitly makes each test start
 	// from the migrated state regardless of what the previous one did.

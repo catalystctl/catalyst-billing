@@ -350,12 +350,17 @@ func (s *Store) Put(ctx context.Context, locale, key, text, actorID string) (Ent
 	return out, err
 }
 
-// DeleteTx removes one translation, which is how a locale falls back to the default for a key.
+// DeleteTranslationTx removes one translation, which is how a locale falls back to the default
+// for a key.
+//
+// It is named apart from the locale-level Delete on purpose: this package has two things a
+// caller can delete, a locale and a translation, and a method called Delete on a Store that
+// owns both is a method whose meaning has to be looked up.
 //
 // The default locale's own row is protected: deleting it would leave the key with no text
 // anywhere, and the fallback would then be the key itself — a visible regression for every
 // locale at once.
-func (s *Store) DeleteTx(ctx context.Context, q querier, locale, key string) error {
+func (s *Store) DeleteTranslationTx(ctx context.Context, q querier, locale, key string) error {
 	normalized, err := NormalizeCode(locale)
 	if err != nil {
 		return err
@@ -377,10 +382,10 @@ func (s *Store) DeleteTx(ctx context.Context, q querier, locale, key string) err
 	return nil
 }
 
-// Delete removes one translation and commits it.
-func (s *Store) Delete(ctx context.Context, locale, key string) error {
+// DeleteTranslation removes one translation and commits it.
+func (s *Store) DeleteTranslation(ctx context.Context, locale, key string) error {
 	return s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		return s.DeleteTx(ctx, tx, locale, key)
+		return s.DeleteTranslationTx(ctx, tx, locale, key)
 	})
 }
 

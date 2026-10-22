@@ -49,6 +49,10 @@ func identityOperations() map[string]Operation {
 			"is_system":   map[string]any{"type": "boolean", "description": "A system role cannot be edited or deleted."},
 			"created_at":  map[string]any{"type": "string", "format": "date-time"},
 			"permissions": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"holders": map[string]any{"type": "integer",
+				"description": "How many accounts hold the role. The access-review question, answered per role."},
+			"active_holders": map[string]any{"type": "integer",
+				"description": "How many of the holders can actually sign in. A role held only by disabled accounts grants nothing."},
 		},
 	}
 
@@ -160,6 +164,19 @@ func identityOperations() map[string]Operation {
 			Responses: []Response{
 				{Status: 201, Description: "The role"},
 				{Status: 400, Description: "Invalid name, or an undeclared permission", Schema: ProblemRef()},
+			},
+		},
+		"PATCH /api/v1/staff/roles/{id}": {
+			Summary: "Rename a custom role, or change its description",
+			Description: "Requires `staff:manage`. The name is lower-case, 2–40 characters, and may not be one of the four " +
+				"reserved names. A rename cascades to the accounts holding the role (`staff_roles.role` is a foreign key " +
+				"with ON UPDATE CASCADE), so nobody has to be re-granted: permissions are resolved by name. A system role " +
+				"is refused with 409 `system_role`.",
+			Responses: []Response{
+				{Status: 200, Description: "The updated role", Schema: role},
+				{Status: 400, Description: "An invalid name", Schema: ProblemRef()},
+				{Status: 404, Description: "No such role", Schema: ProblemRef()},
+				{Status: 409, Description: "A system role, or a name that is already taken", Schema: ProblemRef()},
 			},
 		},
 		"PUT /api/v1/staff/roles/{id}/permissions": {

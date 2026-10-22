@@ -21277,11 +21277,17 @@ paths:
                                     data:
                                         items:
                                             properties:
+                                                active_holders:
+                                                    description: How many of the holders can actually sign in. A role held only by disabled accounts grants nothing.
+                                                    type: integer
                                                 created_at:
                                                     format: date-time
                                                     type: string
                                                 description:
                                                     type: string
+                                                holders:
+                                                    description: How many accounts hold the role. The access-review question, answered per role.
+                                                    type: integer
                                                 id:
                                                     format: uuid
                                                     type: string
@@ -21465,6 +21471,104 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Delete a custom role
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: staff:manage
+            x-rate-class: mutation
+            x-staff-only: true
+        patch:
+            description: 'Requires `staff:manage`. The name is lower-case, 2–40 characters, and may not be one of the four reserved names. A rename cascades to the accounts holding the role (`staff_roles.role` is a foreign key with ON UPDATE CASCADE), so nobody has to be re-granted: permissions are resolved by name. A system role is refused with 409 `system_role`.'
+            operationId: PatchStaffRolesById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    active_holders:
+                                        description: How many of the holders can actually sign in. A role held only by disabled accounts grants nothing.
+                                        type: integer
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    description:
+                                        type: string
+                                    holders:
+                                        description: How many accounts hold the role. The access-review question, answered per role.
+                                        type: integer
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    is_system:
+                                        description: A system role cannot be edited or deleted.
+                                        type: boolean
+                                    name:
+                                        type: string
+                                    permissions:
+                                        items:
+                                            type: string
+                                        type: array
+                                required:
+                                    - id
+                                    - name
+                                    - is_system
+                                    - permissions
+                                type: object
+                    description: The updated role
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An invalid name
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such role
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A system role, or a name that is already taken
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Rename a custom role, or change its description
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -28526,6 +28630,488 @@ paths:
             x-permission: service:read:all
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/users:
+        get:
+            description: |-
+                One list for both audiences, because the screen is one screen: an operator looking for "the person who rang up" and an operator looking for "the support agent we hired" are asking the same question of the same table. Keyset-paginated newest first.
+
+                `q` searches the address and the display name and needs at least two characters (a one-character search matches most of the table and is refused with 400 `invalid_user`). `staff=true` is the agent list, `staff=false` the customers; absent is both. `role` matches a role name exactly, `status` one of active, disabled or pending.
+            operationId: GetStaffUsers
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                customer_id:
+                                                    description: The billing record this login owns, or null.
+                                                    format: uuid
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                display_name:
+                                                    type: string
+                                                email:
+                                                    format: email
+                                                    type: string
+                                                email_verified:
+                                                    description: Whether the address has been confirmed.
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                is_staff:
+                                                    description: True when `role` is set.
+                                                    type: boolean
+                                                last_sign_in_at:
+                                                    description: 'The last successful sign-in, from the authentication trail rather than from the live session list: a revoked session is still evidence that somebody signed in.'
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                role:
+                                                    description: The staff role name, empty for a customer-only account. One of administrator, billing, support, infrastructure, or a custom role.
+                                                    type: string
+                                                status:
+                                                    enum:
+                                                        - active
+                                                        - disabled
+                                                        - pending
+                                                    type: string
+                                            required:
+                                                - id
+                                                - email
+                                                - display_name
+                                                - status
+                                                - email_verified
+                                                - role
+                                                - is_staff
+                                                - created_at
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: The accounts
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A short search, an unknown status, or a bad cursor
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List accounts, staff and customers
+            x-permission: staff:manage
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: |-
+                Requires `staff:manage`. The account and its role are written in one transaction: a staff account with no role can sign in and do nothing, which is a worse outcome than a failed create.
+
+                An empty `role` creates a customer-only account, which is the same screen and the same call: a support agent onboarding somebody who rang up is not a different job from onboarding an agent. When the address already has a customer record with no login attached, the new account is linked to it; the response's `customer_id` says whether that happened. A customer record is never created here — billing records belong to the customers surface.
+
+                The password is hashed with the same validator registration uses, so a short one is 422 `weak_password` with the same message. No response contains a password.
+            operationId: PostStaffUsers
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                display_name:
+                                    maxLength: 200
+                                    type: string
+                                email:
+                                    format: email
+                                    type: string
+                                email_verified:
+                                    default: true
+                                    description: 'Whether the operator has confirmed the address. Defaults to true: the address was given to them by the person on the other end.'
+                                    type: boolean
+                                password:
+                                    description: 'At least 12 characters. The same validator registration uses: a weak one is refused with the same 422 `weak_password`.'
+                                    format: password
+                                    type: string
+                                role:
+                                    description: administrator, billing, support, infrastructure, or a custom role name. Omit or send an empty string for a customer-only account.
+                                    type: string
+                            required:
+                                - email
+                                - display_name
+                                - password
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    customer_id:
+                                        description: The billing record this login owns, or null.
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    display_name:
+                                        type: string
+                                    email:
+                                        format: email
+                                        type: string
+                                    email_verified:
+                                        description: Whether the address has been confirmed.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    is_staff:
+                                        description: True when `role` is set.
+                                        type: boolean
+                                    last_sign_in_at:
+                                        description: 'The last successful sign-in, from the authentication trail rather than from the live session list: a revoked session is still evidence that somebody signed in.'
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    role:
+                                        description: The staff role name, empty for a customer-only account. One of administrator, billing, support, infrastructure, or a custom role.
+                                        type: string
+                                    status:
+                                        enum:
+                                            - active
+                                            - disabled
+                                            - pending
+                                        type: string
+                                required:
+                                    - id
+                                    - email
+                                    - display_name
+                                    - status
+                                    - email_verified
+                                    - role
+                                    - is_staff
+                                    - created_at
+                                type: object
+                    description: The account
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An invalid address, display name, or role name
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: That address already has an account (`email_taken`)
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The password is outside the accepted length (`weak_password`)
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Create a login and assign its role
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: staff:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/users/{id}:
+        delete:
+            description: |-
+                Deliberately hard, and the empty case is the honest one: an account that has done anything has audit rows, and a customer's login is referenced by the customer record and by the invoices behind it. Those references are NO ACTION in the schema, so an account with a history cannot be deleted at all. The account's own authentication history is the exception: it is a login trail with a retention policy rather than an append-only record, and it is removed with the account.
+
+                The refusal is named rather than a foreign-key error: 409 `user_has_history` says what holds the account, and 409 `last_administrator` and `self_lockout` cover the two cases where deleting would end the panel's own access. Disabling is the operation an operator almost always wants, and it preserves the history that makes an incident review possible.
+            operationId: DeleteStaffUsersById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such account
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The account is referenced, or is the last administrator, or is your own
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete an account that nothing depends on
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: staff:manage
+            x-rate-class: mutation
+            x-staff-only: true
+        patch:
+            description: |-
+                A partial update: the screen sends the field the operator touched, and a full replacement would let a dialog that only renamed somebody silently clear their role.
+
+                Two refusals carry their own codes. `self_lockout` (409): an operator cannot disable the account they are signed in as. `last_administrator` (409): the change would demote or disable the only active administrator. The second is a database invariant — the trigger counts under an advisory transaction lock — so two operators demoting two administrators at the same moment cannot both succeed.
+
+                Disabling revokes the account's sessions as well as its status, so the session list of a disabled account does not look like an account somebody is still using.
+            operationId: PatchStaffUsersById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            description: 'A partial update. An absent field is left alone; `"role": ""` removes the staff role and makes the account a customer.'
+                            properties:
+                                display_name:
+                                    maxLength: 200
+                                    type: string
+                                email:
+                                    description: 'Changing the address clears its verification: a confirmation given for one mailbox does not transfer to another.'
+                                    format: email
+                                    type: string
+                                role:
+                                    description: A role name, or an empty string to demote the account to a customer.
+                                    type: string
+                                status:
+                                    enum:
+                                        - active
+                                        - disabled
+                                        - pending
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    customer_id:
+                                        description: The billing record this login owns, or null.
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    display_name:
+                                        type: string
+                                    email:
+                                        format: email
+                                        type: string
+                                    email_verified:
+                                        description: Whether the address has been confirmed.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    is_staff:
+                                        description: True when `role` is set.
+                                        type: boolean
+                                    last_sign_in_at:
+                                        description: 'The last successful sign-in, from the authentication trail rather than from the live session list: a revoked session is still evidence that somebody signed in.'
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    role:
+                                        description: The staff role name, empty for a customer-only account. One of administrator, billing, support, infrastructure, or a custom role.
+                                        type: string
+                                    status:
+                                        enum:
+                                            - active
+                                            - disabled
+                                            - pending
+                                        type: string
+                                required:
+                                    - id
+                                    - email
+                                    - display_name
+                                    - status
+                                    - email_verified
+                                    - role
+                                    - is_staff
+                                    - created_at
+                                type: object
+                    description: The updated account
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An invalid address, display name, status or role name
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such account
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`email_taken`, `last_administrator` or `self_lockout`'
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Edit an account, or enable/disable it
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: staff:manage
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/users/{id}/impersonate:
         post:
             description: 'Requires `staff:manage`. Issues a real session for the target user with `impersonated_by` set to the operator, and sets it as the session cookie. Because it is an ordinary session, every existing query scopes to the target automatically: the operator can do exactly what the customer can, and nothing more. A staff account cannot be impersonated, and neither can a disabled one. Both principals are audited, and the response carries `impersonating: true` so the banner can be raised before the first request.'
@@ -28585,6 +29171,88 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Start impersonating a customer
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: staff:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/users/{id}/password:
+        post:
+            description: |-
+                Sets the password directly rather than mailing a reset link, because this is the onboarding path for an installation that may have no mail transport configured — the same situation that made the CLI the only way to create the first account. The cost is that the operator knows the password, so the screen tells them to have the user change it and the audit row records who set it.
+
+                Every session of the target is revoked, by the same credential-version bump the reset flow uses: whoever held the old password may still be holding a live session. The response reports the number of sessions ended and nothing about the credential — no endpoint in this API returns a password. A weak one is 422 `weak_password`, the same code and message registration answers with.
+            operationId: PostStaffUsersByIdPassword
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                password:
+                                    description: At least 12 characters.
+                                    format: password
+                                    type: string
+                            required:
+                                - password
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: The password was set and the target's sessions ended
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such account
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The password is outside the accepted length (`weak_password`)
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Set another account's password
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key

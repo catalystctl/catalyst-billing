@@ -551,6 +551,20 @@ func (c *Client) DeleteStaffUpgradegraphByProductidByUpgradetoid(ctx context.Con
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffUsersById calls DELETE /api/v1/staff/users/{id}.
+//
+// # Delete an account that nothing depends on
+//
+// Permission: staff:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeleteStaffUsersById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/users/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // Get calls GET /.
 //
 // The embedded application shell
@@ -2051,6 +2065,16 @@ func (c *Client) GetStaffUpgrades(ctx context.Context, query url.Values, body an
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffUsers calls GET /api/v1/staff/users.
+//
+// # List accounts, staff and customers
+//
+// Permission: staff:manage. Staff only.
+func (c *Client) GetStaffUsers(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/users"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffWebhooks calls GET /api/v1/staff/webhooks.
 //
 // # Webhook inbox
@@ -2075,6 +2099,20 @@ func (c *Client) PatchStaffLocalesByCode(ctx context.Context, code string, query
 	return c.do(ctx, "PATCH", path, query, body, true, true)
 }
 
+// PatchStaffRolesById calls PATCH /api/v1/staff/roles/{id}.
+//
+// # Rename a custom role, or change its description
+//
+// Permission: staff:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PatchStaffRolesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/roles/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PATCH", path, query, body, true, true)
+}
+
 // PatchStaffTicketsById calls PATCH /api/v1/staff/tickets/{id}.
 //
 // # Change a ticket's status, priority or department
@@ -2085,6 +2123,20 @@ func (c *Client) PatchStaffLocalesByCode(ctx context.Context, code string, query
 // id is the id path parameter.
 func (c *Client) PatchStaffTicketsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/tickets/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PATCH", path, query, body, true, true)
+}
+
+// PatchStaffUsersById calls PATCH /api/v1/staff/users/{id}.
+//
+// Edit an account, or enable/disable it
+//
+// Permission: staff:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PatchStaffUsersById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/users/{id}"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "PATCH", path, query, body, true, true)
 }
@@ -3211,6 +3263,18 @@ func (c *Client) PostStaffUpgradegraph(ctx context.Context, query url.Values, bo
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffUsers calls POST /api/v1/staff/users.
+//
+// # Create a login and assign its role
+//
+// Permission: staff:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffUsers(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/users"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffUsersByIdImpersonate calls POST /api/v1/staff/users/{id}/impersonate.
 //
 // # Start impersonating a customer
@@ -3221,6 +3285,20 @@ func (c *Client) PostStaffUpgradegraph(ctx context.Context, query url.Values, bo
 // id is the id path parameter.
 func (c *Client) PostStaffUsersByIdImpersonate(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/users/{id}/impersonate"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffUsersByIdPassword calls POST /api/v1/staff/users/{id}/password.
+//
+// # Set another account's password
+//
+// Permission: staff:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffUsersByIdPassword(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/users/{id}/password"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }

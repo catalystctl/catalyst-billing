@@ -33,6 +33,7 @@ package storetest
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net/url"
@@ -52,7 +53,22 @@ import (
 const DefaultDSN = "postgres://billing:devonly-billing-owner@127.0.0.1:5442/billing_test?sslmode=disable"
 
 // testLockID serialises tests inside one package.
-const testLockID int64 = 8_421_196_317_004_212
+//
+// It is derived from the package's own database name rather than being a single constant, because
+// `pg_advisory_lock` is CLUSTER-wide, not database-scoped: one constant serialises every package
+// against every other, which is not what this is for. Each package already has its own database
+// (see databaseName), so the lock only needs to order tests within it — two packages writing to
+// two different databases have nothing to order.
+//
+// The single constant worked by accident until `internal/httpapi` grew past the 60s wait: while
+// every package finished quickly, no one was ever blocked long enough to notice. Once one package
+// took ~150s, every package that started alongside it failed with "timed out waiting for the
+// package test lock, held by backend(s) []" — and that empty holder list is the tell, because the
+// holder is in a different database and the query filters by database.
+func testLockID() int64 {
+	sum := sha256.Sum256([]byte("catalyst-billing-test-lock:" + databaseName()))
+	return int64(binary.BigEndian.Uint64(sum[:8]) & 0x7FFF_FFFF_FFFF_FFFF)
+}
 
 // lockWait bounds how long a test waits for the package lock before failing.
 // A suite that hangs is worse than one that fails: it burns CI minutes and
@@ -213,7 +229,7 @@ func DB(t *testing.T) *store.Pool {
 		sessions[name] = sess
 		sessionsMu.Unlock()
 
-		t.Cleanup(func() { release(name) })
+		t.Cleanup(func() { teardown(name) })
 	}
 
 	sessionsMu.Lock()
@@ -313,7 +329,7 @@ func acquireTestLock(conn *pgx.Conn) error {
 
 	for {
 		var got bool
-		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, testLockID).Scan(&got); err != nil {
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, testLockID()).Scan(&got); err != nil {
 			return fmt.Errorf("try lock: %w", err)
 		}
 		if got {
@@ -334,7 +350,7 @@ func acquireTestLock(conn *pgx.Conn) error {
 func lockHolders(ctx context.Context, conn *pgx.Conn) ([]int, error) {
 	rows, err := conn.Query(ctx, `
 		SELECT pid FROM pg_locks
-		WHERE locktype = 'advisory' AND granted AND objid = $1`, testLockID)
+		WHERE locktype = 'advisory' AND granted AND objid = $1`, testLockID())
 	if err != nil {
 		return nil, err
 	}
@@ -350,16 +366,24 @@ func lockHolders(ctx context.Context, conn *pgx.Conn) ([]int, error) {
 	return pids, rows.Err()
 }
 
-// release drops one reference and, when the last one goes, unlocks the database.
-func release(name string) {
+// teardown unlocks the database and drops the session when a test finishes.
+//
+// It deliberately does NOT decrement a reference count first.
+//
+// The count was incremented on every DB(t) call but the cleanup was registered only once — on
+// the first call — so a test that asked for the database twice left the count at 1 after the one
+// cleanup ran, took the early return, and never unlocked. The lock was then held for the rest of
+// the package's run, and every later test failed with "timed out waiting for the package test
+// lock, held by backend(s) []". The empty holder list was the tell: `lockHolders` filters by
+// database, and with a cluster-wide lock the holder was reported as nobody.
+//
+// A test's cleanup marks the end of that test, so everything it acquired goes then, whatever the
+// count says. The count still exists for its real purpose — a second DB(t) call reuses the same
+// session instead of truncating the first world's fixtures away.
+func teardown(name string) {
 	sessionsMu.Lock()
 	sess, ok := sessions[name]
 	if !ok {
-		sessionsMu.Unlock()
-		return
-	}
-	sess.refs--
-	if sess.refs > 0 {
 		sessionsMu.Unlock()
 		return
 	}
@@ -368,7 +392,7 @@ func release(name string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := sess.conn.Exec(ctx, `SELECT pg_advisory_unlock($1)`, testLockID); err != nil {
+	if _, err := sess.conn.Exec(ctx, `SELECT pg_advisory_unlock($1)`, testLockID()); err != nil {
 		// A failed unlock would wedge every later test in this package.
 		panic(fmt.Sprintf("storetest: release test lock: %v", err))
 	}

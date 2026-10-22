@@ -40,26 +40,37 @@ OUT = ROOT / "assets" / "brand"
 FONT_DIR = Path(os.environ.get("BRAND_FONT_DIR", Path.home() / ".cache/catbrand/fonts"))
 
 # --------------------------------------------------------------------- tokens --
-# The site's tokens, converted from HSL. Kept as literals rather than parsed from the
-# site's stylesheet: a build that scraped a live URL would fail offline, and one that
-# parsed our own CSS would silently half-brand itself on a rename.
+# Every value below was measured from the rendered site (a headless screenshot of
+# catalystctl.com, then colour-clustered), not inferred from its stylesheet. The two do
+# differ: the stylesheet says --edge is 44 10% 21% (#3B3830), but the border that actually
+# draws on the page is #1E1D19, because --edge is used at partial opacity. Measurement wins.
+#
+# THE RULE THIS FILE EXISTS TO ENFORCE:
+#   #F97301 (saturated orange) is LOGO-ONLY. It appears nowhere else on the site — not as
+#   an accent word, not as an eyebrow square, not as a button, not as a rule. The accent is
+#   the muted tan SIGNAL below. An asset that paints orange anywhere but inside the mark is
+#   off-brand, and that is what the first draft of these banners got wrong.
 
-INK = "#110F0E"        # --ink            30 10% 6%
-BG = "#161412"         # --background     30 10% 8%
-PANEL = "#1C1A17"      # --panel          36 10% 10%
-PANEL_2 = "#24221E"    # --panel-2        34 10% 13%
-EDGE = "#3B3830"       # --edge           44 10% 21%
-CHALK = "#EFEEEB"      # --chalk          40 12% 93%
-DUST = "#A6A096"       # --dust           38 8% 62%
-MUTED = "#B6B3AF"      # --muted-foreground 37 5% 70%
-SIGNAL = "#C48D5A"     # --signal         29 47% 56%
-SUCCESS = "#23B370"    # --success       152 67% 42%
-WARNING = "#DF9516"    # --warning        38 82% 48%
-DANGER = "#D93F3F"     # --danger          0 67% 55%
-INFO = "#3F7AD9"       # --info          217 67% 55%
+INK = "#110F0E"        # the deepest ground
+BG = "#161412"         # --background  30 10% 8%   — page ground, FLAT (no wash)
+PANEL = "#1C1A17"      # --panel       36 10% 10%  — card surface
+PANEL_2 = "#23211C"    # raised surface / hover
+EDGE = "#1E1D19"       # the hairline that actually draws (measured)
+EDGE_STRONG = "#312E28"  # a border that should read as a border
+EDGE_TRACK = "#3B3830"   # progress-bar tracks, --edge at full strength
+CHALK = "#F3F2F2"      # headings — measured; near-neutral, not warm
+MUTED = "#B6B3AF"      # body copy — --muted-foreground 37 5% 70%
+DUST = "#A6A096"       # labels — --dust 38 8% 62%
+FAINT = "#6D6A67"      # mono meta lines, the dimmest legible text
+SIGNAL = "#C48D5A"     # --signal 29 47% 56% — THE accent: eyebrows, CTAs, accent words
+SUCCESS = "#23B370"    # --success 152 67% 42%
+WARNING = "#B77B16"    # --warning, as it renders inside a badge (dimmed)
+DANGER = "#D93F3F"     # --danger 0 67% 55%
+INFO = "#3F7AD9"       # --info 217 67% 55%
 
-ORANGE = "#F97301"     # the mark, sampled from the parent logo
-ORANGE_DEEP = "#D95F00"  # one step down, for hairlines and rules
+ORANGE = "#F97301"     # the mark ONLY. See the rule above.
+
+RADIUS = 4             # the site's --deck-radius / --radius: 4px, not 8
 
 SANS, MONO, DISPLAY = "DMSans", "JetBrainsMono", "Oxanium"
 
@@ -184,13 +195,16 @@ def doc(w: float, h: float, body: str, *, bg: str | None = None, radius: int = 0
     )
 
 
-def eyebrow(x: float, y: float, label: str, *, color: str = DUST, size: float = 11.5, tracking: float = 0.17) -> str:
+def eyebrow(x: float, y: float, label: str, *, dot: str = SIGNAL, color: str = DUST,
+            size: float = 11.5, tracking: float = 0.17) -> str:
     """The site's eyebrow: a small filled square, then uppercase mono with wide tracking.
-    It is the element that most obviously says 'same family as catalystctl.com'."""
+
+    The square is TAN, not orange — measured from the site's own section eyebrows. The one
+    exception is a genuine status eyebrow ("early testing"), which uses a green dot."""
     side = size * 0.62
     return (
         f'<rect x="{x:.2f}" y="{y - size * 0.74:.2f}" width="{side:.2f}" height="{side:.2f}" '
-        f'rx="{side * 0.16:.2f}" fill="{ORANGE}"/>'
+        f'rx="{side * 0.16:.2f}" fill="{dot}"/>'
         + text(label.upper(), x + size * 1.45, y, size, family=MONO, weight=500, color=color, tracking=tracking)
     )
 
@@ -199,7 +213,7 @@ def rule(x1: float, y: float, x2: float, color: str = EDGE, opacity: float = 1.0
     return f'<line x1="{x1:.2f}" y1="{y:.2f}" x2="{x2:.2f}" y2="{y:.2f}" stroke="{color}" stroke-opacity="{opacity}"/>'
 
 
-def arrow(x: float, y: float, size: float, color: str = ORANGE) -> str:
+def arrow(x: float, y: float, size: float, color: str = SIGNAL) -> str:
     """A right arrow as geometry, not a character: the latin subsets omit U+2192, and two
     strokes stay crisp at 11px where a subset glyph would not."""
     h = size * 0.40
@@ -210,16 +224,61 @@ def arrow(x: float, y: float, size: float, color: str = ORANGE) -> str:
     )
 
 
-def wash(w: float, h: float, color: str = ORANGE, opacity: float = 0.10) -> str:
-    """The site's own page wash: one soft radial from the top-left, so the ground is not a
-    flat rectangle. Kept faint — at more than ~0.12 it reads as a gradient, not a light."""
+def vrule(x: float, y1: float, y2: float, color: str = EDGE) -> str:
+    """The site divides a strip into columns with a vertical hairline rather than drawing
+    separate cards. That is the single most recognisable thing about its section layout."""
+    return f'<line x1="{x:.2f}" y1="{y1:.2f}" x2="{x:.2f}" y2="{y2:.2f}" stroke="{color}"/>'
+
+
+def card(x: float, y: float, w: float, h: float, *, fill: str = PANEL, stroke: str = EDGE) -> str:
+    return (f'<rect x="{x:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h:.2f}" '
+            f'rx="{RADIUS}" fill="{fill}" stroke="{stroke}"/>')
+
+
+def meter(x: float, y: float, w: float, frac: float, color: str, *, h: float = 4.0) -> str:
+    """The site's resource meter: a full-width track at EDGE_TRACK with a coloured fill.
+    Not a segmented bar and not a coloured block — a thin measure of how much."""
     return (
-        f'<defs><radialGradient id="wash" cx="12%" cy="-14%" r="92%">'
-        f'<stop offset="0" stop-color="{color}" stop-opacity="{opacity}"/>'
-        f'<stop offset="1" stop-color="{color}" stop-opacity="0"/>'
-        f"</radialGradient></defs>"
-        f'<rect width="{w:.0f}" height="{h:.0f}" fill="url(#wash)"/>'
+        f'<rect x="{x:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h}" rx="{h / 2}" fill="{EDGE_TRACK}"/>'
+        f'<rect x="{x:.2f}" y="{y:.2f}" width="{max(3.0, w * frac):.2f}" height="{h}" rx="{h / 2}" fill="{color}"/>'
     )
+
+
+def wrap(s: str, width: float, size: float, family: str = SANS, weight: int = 400) -> list[str]:
+    """Greedy wrap measured with the real font, so a paragraph cannot overrun its column."""
+    words, line, out = s.split(), "", []
+    for word in words:
+        trial = f"{line} {word}".strip()
+        if line and text_width(trial, size, family, weight) > width:
+            out.append(line)
+            line = word
+        else:
+            line = trial
+    if line:
+        out.append(line)
+    return out
+
+
+def button(x: float, y: float, label: str, *, primary: bool = True,
+           size: float = 13.0, pad_x: float = 16.0, h: float = 34.0) -> tuple[str, float]:
+    """The site's primary CTA: a tan fill, near-black label, 4px radius, an arrow after.
+
+    Measured off the live site: 148x34 for "Install Catalyst ->", radius 4, label ~13px in
+    DM Sans at 500. The ghost variant is the same box with a tan hairline and tan label.
+    Returns (markup, total width) so a caller can lay out two buttons side by side."""
+    tw = text_width(label, size, SANS, 500)
+    arrow_w = size * 0.9
+    w = tw + arrow_w + pad_x * 2
+    if primary:
+        out = (f'<rect x="{x:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h:.2f}" rx="{RADIUS}" fill="{SIGNAL}"/>'
+               + text(label, x + pad_x, y + h / 2 + size * 0.36, size, weight=500, color=BG))
+    else:
+        out = (f'<rect x="{x:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h:.2f}" rx="{RADIUS}" '
+               f'fill="none" stroke="{SIGNAL}"/>'
+               + text(label, x + pad_x, y + h / 2 + size * 0.36, size, weight=500, color=SIGNAL))
+    out += arrow(x + pad_x + tw + size * 0.28, y + h / 2, arrow_w * 0.62,
+                 BG if primary else SIGNAL)
+    return out, w
 
 
 def assert_fits(name: str, left_end: float, right_start: float) -> None:
@@ -245,7 +304,7 @@ def build_logos() -> dict[str, str]:
     s = 512
     out["logo-badge.svg"] = doc(
         s, s,
-        f'<rect width="{s}" height="{s}" rx="112" fill="{BG}"/>' + wash(s, s, ORANGE, 0.16) + mark(s / 2, s / 2, 356),
+        f'<rect width="{s}" height="{s}" rx="112" fill="{BG}"/>' + mark(s / 2, s / 2, 356),
     )
 
     # Horizontal lockup: mark, then "Catalyst" in Oxanium with "Billing" set in mono caps.
@@ -301,113 +360,127 @@ def build_logos() -> dict[str, str]:
 # --------------------------------------------------------------------- banners --
 
 def build_readme_banner() -> str:
-    """1280x320 — the README hero. Everything a reader needs in one screen: the family,
-    the product, what it is, and what it is built on."""
+    """1280x320 — the README hero.
+
+    Composed from the site's own parts, in its own order: an eyebrow, the lockup, a body
+    line, a mono meta line, and one card on the right. Flat ground, tan accents, orange
+    confined to the mark."""
     w, h = 1280, 320
-    body = wash(w, h, ORANGE, 0.11)
+    body = ""
 
-    # A ledger sheet on the right: ruled rows with money in tabular figures and a settled
-    # marker per row. The only decoration, and it is the product's own shape.
-    gx0, gx1 = 744, w - 56
+    # --- right: a ledger card, the same anatomy as the site's vitals panel -----------
+    cx0, cy0, cw, ch = 704, 48, 520, 232
+    body += card(cx0, cy0, cw, ch)
+    body += eyebrow(cx0 + 22, cy0 + 30, "ledger", size=10.5, tracking=0.22)
+    body += text("Open", cx0 + cw - 40, cy0 + 30, 10.5, family=MONO, weight=500, color=SIGNAL, anchor="end", tracking=0.12)
+    body += arrow(cx0 + cw - 34, cy0 + 26, 11, SIGNAL)
+    body += rule(cx0, cy0 + 48, cx0 + cw)
+
     rows = (
-        ("INV-2026-0141", "1,248.00", SUCCESS),
-        ("INV-2026-0142", "312.40", INFO),
-        ("INV-2026-0143", "96.00", DANGER),
-        ("INV-2026-0144", "1,860.00", DUST),
+        ("Northwind Hosting", "INV-2026-0141", "1,248.00", "PAID", SUCCESS),
+        ("Kestrel Systems", "INV-2026-0142", "312.40", "OPEN", INFO),
+        ("Greyline Labs", "INV-2026-0143", "96.00", "OVERDUE", DANGER),
     )
-    top, row_h = 78.0, 40.0
-    # The panel has to be tall enough for the header rule, the rows, the closing rule and
-    # the balance line — computed from those parts, so adding a row cannot clip the total.
-    sheet_h = 26 + 8 + len(rows) * row_h + 4 + 44
-    sheet = [f'<rect x="{gx0}" y="{top - 26}" width="{gx1 - gx0}" height="{sheet_h}" rx="6" fill="{PANEL}" stroke="{EDGE}"/>']
-    sheet.append(text("LEDGER", gx0 + 18, top - 4, 10, family=MONO, weight=500, color=DUST, tracking=0.22))
-    sheet.append(rule(gx0, top + 8, gx1, EDGE))
-    for i, (ref, amount, col) in enumerate(rows):
-        ry = top + 8 + i * row_h
-        sheet.append(f'<circle cx="{gx0 + 24}" cy="{ry + 20}" r="3" fill="{col}"/>')
-        sheet.append(text(ref, gx0 + 38, ry + 24, 12, family=MONO, weight=400, color=MUTED, tracking=0.02))
-        sheet.append(text(amount, gx1 - 20, ry + 24, 13, family=MONO, weight=500, color=CHALK, anchor="end"))
-        if i < len(rows) - 1:
-            sheet.append(rule(gx0 + 18, ry + row_h, gx1 - 18, EDGE, 0.55))
-    sheet.append(rule(gx0, top + 8 + len(rows) * row_h + 4, gx1, EDGE))
-    sheet.append(text("Balance", gx0 + 18, top + 8 + len(rows) * row_h + 32, 11, family=MONO, weight=500, color=DUST, tracking=0.16))
-    sheet.append(text("3,516.40", gx1 - 20, top + 8 + len(rows) * row_h + 33, 16, family=MONO, weight=500, color=ORANGE, anchor="end"))
-    body += "".join(sheet)
+    row_h = 42.0
+    for i, (who, ref, amount, state, dot) in enumerate(rows):
+        ry = cy0 + 48 + i * row_h
+        body += text(who, cx0 + 22, ry + 20, 12.5, weight=500, color=CHALK, tracking=-0.008)
+        body += text(ref, cx0 + 22, ry + 34, 9.5, family=MONO, weight=400, color=FAINT, tracking=0.02)
+        body += text(amount, cx0 + cw - 22, ry + 20, 13, family=MONO, weight=500, color=CHALK, anchor="end", tracking=-0.01)
+        sw = text_width(state, 9, MONO, 500, 0.12)
+        body += f'<circle cx="{cx0 + cw - 22 - sw - 8:.2f}" cy="{ry + 31.5}" r="2.3" fill="{dot}"/>'
+        body += text(state, cx0 + cw - 22, ry + 34, 9, family=MONO, weight=500, color=dot, anchor="end", tracking=0.12)
+        body += rule(cx0 + 22, ry + row_h, cx0 + cw - 22, EDGE)
 
-    mh = 132.0
-    x = 56.0
-    body += mark(x + mark_width(mh) / 2, 132, mh)
-    tx = x + mark_width(mh) + 40
-    assert_fits("banner-readme", tx + 460, gx0 - 30)
+    fy = cy0 + 48 + len(rows) * row_h
+    body += text("Balance", cx0 + 22, fy + 26, 10, family=MONO, weight=500, color=DUST, tracking=0.16)
+    body += text("3,516.40", cx0 + cw - 22, fy + 27, 17, family=MONO, weight=500, color=SIGNAL, anchor="end", tracking=-0.02)
+    body += text("USD · per currency, never summed", cx0 + 22, fy + 44, 9.5, family=MONO, weight=400, color=FAINT, tracking=0.02)
 
-    body += eyebrow(tx, 84, "catalyst · self-hosted · go + postgresql", size=10.5, tracking=0.18)
-    body += text("Catalyst", tx, 178, 66, family=DISPLAY, weight=600, color=CHALK, tracking=-0.02)
-    body += text("Billing", tx + text_width("Catalyst", 66, DISPLAY, 600, -0.02) + 18, 178, 30, family=MONO, weight=500, color=ORANGE, tracking=0.24)
-    body += text("Billing and service automation for hosting providers.", tx, 218, 19, color=MUTED, tracking=-0.004)
-    body += text("Exact money · immutable invoices · a subledger that always balances", tx, 250, 12.5, family=MONO, weight=400, color=DUST, tracking=0.015)
+    # --- left: the lockup, then the line that says what it is ------------------------
+    mh = 86.0
+    body += mark(56 + mark_width(mh) / 2, 96, mh)
+    tx = 56 + mark_width(mh) + 26
+    body += text("Catalyst", tx, 120, 58, family=DISPLAY, weight=600, color=CHALK, tracking=-0.02)
+    body += text("BILLING", tx + text_width("Catalyst", 58, DISPLAY, 600, -0.02) + 16, 118,
+                 15, family=MONO, weight=500, color=SIGNAL, tracking=0.30)
+
+    body += text("Billing and service automation for hosting providers.", 56, 178, 18, color=MUTED, tracking=-0.004)
+    body += text("Exact money · immutable invoices · a subledger that always balances",
+                 56, 206, 11.5, family=MONO, weight=400, color=FAINT, tracking=0.015)
+    body += rule(56, 244, 500, EDGE)
+    body += eyebrow(56, 274, "self-hosted · go + postgresql · extensions", size=10, tracking=0.17)
+    assert_fits("banner-readme", tx + text_width("Catalyst", 58, DISPLAY, 600, -0.02) + 200, cx0 - 30)
+
     return doc(w, h, body, bg=BG)
 
 
 def build_github_banner() -> str:
-    """1280x640 — GitHub's social preview. Its own idea rather than a bigger OG card:
-    the claim on the left, the three numbers that back it on the right, and the ledger
-    rule motif tying it to the product."""
+    """1280x640 — GitHub's social preview.
+
+    The site's section anatomy at poster scale: lockup, eyebrow, a headline with one tan
+    phrase, a body line, a primary CTA, then a single stat strip divided by vertical
+    hairlines. No floating cards and no coloured bars — the site draws neither."""
     w, h = 1280, 640
-    body = wash(w, h, ORANGE, 0.11)
+    body = ""
 
-    # header lockup
-    mh = 66.0
-    body += mark(72 + mark_width(mh) / 2, 96, mh)
-    body += text("Catalyst", 72 + mark_width(mh) + 22, 116, 38, family=DISPLAY, weight=600, color=CHALK, tracking=-0.018)
-    body += text("BILLING", 72 + mark_width(mh) + 22 + text_width("Catalyst", 38, DISPLAY, 600, -0.018) + 16, 114,
-                 12.5, family=MONO, weight=500, color=ORANGE, tracking=0.28)
+    mh = 54.0
+    body += mark(72 + mark_width(mh) / 2, 82, mh)
+    body += text("Catalyst", 72 + mark_width(mh) + 18, 96, 31, family=DISPLAY, weight=600, color=CHALK, tracking=-0.018)
+    body += text("BILLING", 72 + mark_width(mh) + 18 + text_width("Catalyst", 31, DISPLAY, 600, -0.018) + 13, 94,
+                 11, family=MONO, weight=500, color=ORANGE, tracking=0.28)
+    body += rule(72, 134, w - 72, EDGE)
 
-    # headline — three lines, each measured, so it cannot reach the right column
-    col_split = 660.0
-    lines = (("Revenue operations", CHALK), ("for the people who keep", CHALK), ("the ledger honest.", ORANGE))
+    body += eyebrow(72, 186, "revenue operations", size=11, tracking=0.18)
+
+    lines = (("Revenue operations", CHALK), ("for the people who keep", CHALK), ("the ledger honest.", SIGNAL))
+    size = 46.0
     for i, (line, col) in enumerate(lines):
-        size = 58.0
-        while text_width(line, size, DISPLAY, 600, -0.028) > col_split - 72 - 40:
+        while text_width(line, size, DISPLAY, 600, -0.028) > w - 144:
             size -= 1
-        body += text(line, 72, 292 + i * 68, size, family=DISPLAY, weight=600, color=col, tracking=-0.028)
-        assert_fits("banner-github headline", 72 + text_width(line, size, DISPLAY, 600, -0.028), col_split - 40)
+        body += text(line, 72, 250 + i * 54, size, family=DISPLAY, weight=600, color=col, tracking=-0.028)
 
-    body += text("One Go binary. PostgreSQL. No framework in the frontend.", 72, 512, 17, color=MUTED)
+    body += text("One Go binary. PostgreSQL. No framework in the frontend.", 72, 404, 15, color=MUTED)
 
-    # footer rule + wordmark
-    body += rule(72, 560, w - 72, EDGE)
-    body += text("catalystctl.com", 72, 596, 12.5, family=MONO, weight=400, color=DUST, tracking=0.08)
-    body += text("GPL-3.0 · self-hosted", w - 72, 596, 12.5, family=MONO, weight=400, color=DUST, tracking=0.08, anchor="end")
+    b1, _ = button(72, 428, "Clone the repo")
+    body += b1
 
-    # right column: three facts, each with a rule and a figure
-    facts = (
-        ("79", "tables", "one schema, 26 migrations", ORANGE),
-        ("205", "API operations", "generated document, parity tested", INFO),
-        ("0", "floats", "integer minor units end to end", SUCCESS),
+    sx, sy, sw_, sh = 72, 496, w - 144, 92
+    body += card(sx, sy, sw_, sh)
+    stats = (
+        ("TABLES", "79", "one schema, 26 migrations", None),
+        ("API OPERATIONS", "205", "generated, parity tested", None),
+        ("FLOATS", "0", "integer minor units", None),
+        ("BROWSER TESTS", "244", "every screen, headless", SUCCESS),
     )
-    fx = col_split
-    for i, (num, unit, claim, col) in enumerate(facts):
-        fy = 300 + i * 96
-        body += f'<rect x="{fx}" y="{fy - 34}" width="3" height="62" rx="1.5" fill="{col}"/>'
-        body += text(num, fx + 26, fy, 42, family=MONO, weight=500, color=CHALK, tracking=-0.02)
-        body += text(unit, fx + 26 + text_width(num, 42, MONO, 500) + 14, fy, 15, color=MUTED)
-        body += text(claim, fx + 26, fy + 24, 12, family=MONO, weight=400, color=DUST, tracking=0.01)
-        assert_fits("banner-github facts", fx + 26 + text_width(claim, 12, MONO, 400), w - 60)
+    col_w = sw_ / len(stats)
+    for i, (label, figure, desc, dot) in enumerate(stats):
+        x = sx + i * col_w
+        if i:
+            body += vrule(x, sy, sy + sh, EDGE)
+        px = x + 22
+        if dot:
+            body += f'<circle cx="{px + 3:.2f}" cy="{sy + 24.5}" r="3" fill="{dot}"/>'
+            body += text(label, px + 13, sy + 28, 9.5, family=MONO, weight=500, color=DUST, tracking=0.14)
+        else:
+            body += text(label, px, sy + 28, 9.5, family=MONO, weight=500, color=DUST, tracking=0.14)
+        body += text(figure, px, sy + 62, 24, family=DISPLAY, weight=600, color=CHALK, tracking=-0.01)
+        body += text(desc, px, sy + 80, 9.5, family=MONO, weight=400, color=FAINT, tracking=0.01)
+
+    body += text("catalystctl.com", 72, 620, 11, family=MONO, weight=400, color=FAINT, tracking=0.08)
+    body += text("GPL-3.0 · self-hosted", w - 72, 620, 11, family=MONO, weight=400, color=FAINT, tracking=0.08, anchor="end")
     return doc(w, h, body, bg=BG)
 
 
-# ------------------------------------------------------------------------- og --
-
 def ledger_card(x: float, y: float, w: float, h: float) -> str:
-    """The OG card's right panel. Same anatomy as the parent site's vitals panel — an
-    eyebrow header, hairline rules, mono labels, a footer of status dots — filled with
-    the product's own subject: invoices and money in tabular figures."""
+    """The OG card's right panel, built from the site's table anatomy: a mono caps header,
+    hairline rows, tabular figures, and a state that is a dot plus a word."""
     pad = 22.0
-    s = [f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="8" fill="{PANEL}" stroke="{EDGE}"/>']
+    s = [card(x, y, w, h)]
     s.append(eyebrow(x + pad, y + 30, "ledger", size=10.5, tracking=0.22))
-    s.append(text("Open", x + w - pad - 18, y + 30, 10.5, family=MONO, weight=500, color=ORANGE, anchor="end", tracking=0.12))
-    s.append(arrow(x + w - pad - 13, y + 26, 12, ORANGE))
-    s.append(rule(x, y + 50, x + w))
+    s.append(text("Open", x + w - pad - 18, y + 30, 10.5, family=MONO, weight=500, color=SIGNAL, anchor="end", tracking=0.12))
+    s.append(arrow(x + w - pad - 13, y + 26, 11, SIGNAL))
+    s.append(rule(x, y + 48, x + w))
 
     rows = (
         ("Northwind Hosting", "INV-2026-0141", "1,248.00", "PAID", SUCCESS),
@@ -415,116 +488,112 @@ def ledger_card(x: float, y: float, w: float, h: float) -> str:
         ("Greyline Labs", "INV-2026-0143", "96.00", "OVERDUE", DANGER),
         ("Vantage Cloud", "INV-2026-0144", "1,860.00", "DRAFT", DUST),
     )
-    row_h = 48.0
-    for i, (who, ref, amount, status, col) in enumerate(rows):
-        ry = y + 50 + i * row_h
-        s.append(text(who, x + pad, ry + 23, 13.5, weight=500, color=CHALK, tracking=-0.008))
-        s.append(text(ref, x + pad, ry + 39, 10.5, family=MONO, weight=400, color=DUST, tracking=0.02))
-        s.append(text(amount, x + w - pad, ry + 23, 14, family=MONO, weight=500, color=CHALK, anchor="end", tracking=-0.01))
-        sw = text_width(status, 9.5, MONO, 500, 0.12)
-        s.append(f'<circle cx="{x + w - pad - sw - 9:.2f}" cy="{ry + 35.5}" r="2.6" fill="{col}"/>')
-        s.append(text(status, x + w - pad, ry + 39, 9.5, family=MONO, weight=500, color=col, anchor="end", tracking=0.12))
-        if i < len(rows) - 1:
-            s.append(rule(x + pad, ry + row_h, x + w - pad, EDGE, 0.6))
+    row_h = 44.0
+    for i, (who, ref, amount, state, dot) in enumerate(rows):
+        ry = y + 48 + i * row_h
+        s.append(text(who, x + pad, ry + 21, 12.5, weight=500, color=CHALK, tracking=-0.008))
+        s.append(text(ref, x + pad, ry + 35, 9.5, family=MONO, weight=400, color=FAINT, tracking=0.02))
+        s.append(text(amount, x + w - pad, ry + 21, 13, family=MONO, weight=500, color=CHALK, anchor="end", tracking=-0.01))
+        sw = text_width(state, 9, MONO, 500, 0.12)
+        s.append(f'<circle cx="{x + w - pad - sw - 8:.2f}" cy="{ry + 32.5}" r="2.3" fill="{dot}"/>')
+        s.append(text(state, x + w - pad, ry + 35, 9, family=MONO, weight=500, color=dot, anchor="end", tracking=0.12))
+        s.append(rule(x + pad, ry + row_h, x + w - pad, EDGE))
 
-    by = y + 50 + len(rows) * row_h
-    s.append(rule(x, by, x + w))
-    s.append(text("Balance", x + pad, by + 30, 10.5, family=MONO, weight=500, color=DUST, tracking=0.16))
-    s.append(text("3,516.40", x + w - pad, by + 32, 20, family=MONO, weight=500, color=ORANGE, anchor="end", tracking=-0.02))
-
-    bar_y, bar_h, bar_w = by + 46, 5.0, w - 2 * pad
-    cx = x + pad
-    for frac, col in ((0.52, SUCCESS), (0.30, INFO), (0.18, DANGER)):
-        seg = bar_w * frac
-        s.append(f'<rect x="{cx:.2f}" y="{bar_y}" width="{seg - 3:.2f}" height="{bar_h}" rx="{bar_h / 2:.2f}" fill="{col}"/>')
-        cx += seg
-
-    lx = x + pad
-    for label, col in (("12 paid", SUCCESS), ("3 open", INFO), ("1 overdue", DANGER)):
-        s.append(f'<circle cx="{lx + 3:.2f}" cy="{bar_y + 26}" r="3" fill="{col}"/>')
-        s.append(text(label, lx + 13, bar_y + 30, 10.5, family=MONO, weight=400, color=MUTED, tracking=0.04))
-        lx += 13 + text_width(label, 10.5, MONO, 400, 0.04) + 22
+    by = y + 48 + len(rows) * row_h
+    s.append(text("Balance", x + pad, by + 24, 10, family=MONO, weight=500, color=DUST, tracking=0.16))
+    s.append(text("3,516.40", x + w - pad, by + 25, 18, family=MONO, weight=500, color=SIGNAL, anchor="end", tracking=-0.02))
+    # one honest measure: how much of the open book is collected, as the site meters CPU.
+    s.append(meter(x + pad, by + 40, w - 2 * pad, 0.52, SUCCESS))
+    s.append(text("USD · per currency, never summed", x + pad, by + 62, 9.5, family=MONO, weight=400, color=FAINT, tracking=0.02))
     return "".join(s)
 
 
 def build_og_default() -> str:
-    """1200x630 — the link card. The parent's OG grammar (eyebrow, big wordmark, one
-    subline, a panel on the right) with the product's own panel content."""
+    """1200x630 — the link card.
+
+    Retells the site's hero for this product, in its order: lockup, eyebrow, headline with
+    one tan phrase, body line, a primary CTA beside a ghost one, then the mono meta line
+    that names the stack. The CTA matters: the site's hero is anchored by a tan button, and
+    a card without one reads as a poster rather than as the same product."""
     w, h = 1200, 630
-    body = wash(w, h, ORANGE, 0.12)
-    body += ledger_card(628, 150, 508, 356)
+    body = ledger_card(636, 132, 500, 300)
 
     x = 72.0
-    mh = 84.0
-    body += mark(x + mark_width(mh) / 2, 168, mh)
-    body += text("Catalyst", x + mark_width(mh) + 24, 186, 44, family=DISPLAY, weight=600, color=CHALK, tracking=-0.018)
-    body += text("BILLING", x + mark_width(mh) + 24 + text_width("Catalyst", 44, DISPLAY, 600, -0.018) + 16, 184,
-                 13, family=MONO, weight=500, color=ORANGE, tracking=0.28)
+    mh = 64.0
+    body += mark(x + mark_width(mh) / 2, 148, mh)
+    body += text("Catalyst", x + mark_width(mh) + 18, 162, 35, family=DISPLAY, weight=600, color=CHALK, tracking=-0.018)
+    body += text("BILLING", x + mark_width(mh) + 18 + text_width("Catalyst", 35, DISPLAY, 600, -0.018) + 13, 160,
+                 11.5, family=MONO, weight=500, color=ORANGE, tracking=0.28)
 
-    assert_fits("og-default headline", x + 520, 628 - 24)
-    body += text("Billing and service", x, 306, 52, family=DISPLAY, weight=600, color=CHALK, tracking=-0.028)
-    body += text("automation for hosting", x, 362, 52, family=DISPLAY, weight=600, color=CHALK, tracking=-0.028)
-    body += text("providers.", x, 418, 52, family=DISPLAY, weight=600, color=ORANGE, tracking=-0.028)
+    body += eyebrow(x, 246, "self-hosted · go + postgresql · extensions", size=11, tracking=0.17)
 
-    body += text("Exact money · immutable invoices · a ledger that balances", x, 468, 14, family=MONO, weight=400, color=DUST, tracking=0.015)
-    body += rule(x, 512, 420, EDGE)
-    body += text("catalystctl.com", x, 548, 13, family=MONO, weight=400, color=MUTED, tracking=0.08)
-    body += text("self-hosted · GPL-3.0", x, 574, 11.5, family=MONO, weight=400, color=DUST, tracking=0.06)
+    assert_fits("og-default headline", x + 520, 636 - 24)
+    body += text("Billing and service", x, 320, 44, family=DISPLAY, weight=600, color=CHALK, tracking=-0.028)
+    body += text("automation for", x, 370, 44, family=DISPLAY, weight=600, color=CHALK, tracking=-0.028)
+    body += text("hosting providers.", x, 420, 44, family=DISPLAY, weight=600, color=SIGNAL, tracking=-0.028)
+
+    body += text("Exact money · immutable invoices · a ledger that balances", x, 462, 12.5, family=MONO, weight=400, color=FAINT, tracking=0.015)
+
+    b1, w1 = button(x, 494, "Get started")
+    b2, _ = button(x + w1 + 10, 494, "Read the docs", primary=False)
+    body += b1 + b2
+
+    body += rule(x, 560, 500, EDGE)
+    body += text("catalystctl.com", x, 590, 12, family=MONO, weight=400, color=MUTED, tracking=0.08)
+    body += text("self-hosted · GPL-3.0", x + 190, 590, 11, family=MONO, weight=400, color=FAINT, tracking=0.06)
     return doc(w, h, body, bg=BG)
 
 
 def build_og_architecture() -> str:
-    """The second card: what it is made of, for docs and technical posts. Three columns,
-    one per trust boundary — the only architecture diagram this system actually needs."""
+    """The second card: the site's three-column numbered strip, which is how it explains a
+    process. One bordered box, divided by hairlines — not three cards with coloured edges."""
     w, h = 1200, 630
-    body = wash(w, h, ORANGE, 0.11)
+    body = ""
 
-    mh = 58.0
-    body += mark(72 + mark_width(mh) / 2, 96, mh)
-    body += text("Catalyst", 72 + mark_width(mh) + 20, 114, 34, family=DISPLAY, weight=600, color=CHALK, tracking=-0.018)
-    body += text("BILLING", 72 + mark_width(mh) + 20 + text_width("Catalyst", 34, DISPLAY, 600, -0.018) + 14, 112,
-                 12, family=MONO, weight=500, color=ORANGE, tracking=0.28)
+    mh = 54.0
+    body += mark(72 + mark_width(mh) / 2, 90, mh)
+    body += text("Catalyst", 72 + mark_width(mh) + 18, 106, 31, family=DISPLAY, weight=600, color=CHALK, tracking=-0.018)
+    body += text("BILLING", 72 + mark_width(mh) + 18 + text_width("Catalyst", 31, DISPLAY, 600, -0.018) + 13, 104,
+                 11, family=MONO, weight=500, color=SIGNAL, tracking=0.28)
+    body += rule(72, 140, w - 72, EDGE)
 
-    body += text("One binary, three trust boundaries.", 72, 214, 40, family=DISPLAY, weight=600, color=CHALK, tracking=-0.026)
-    body += text("The core is the authority. A provider is never the last word on what happened.", 72, 248, 16.5, color=MUTED)
+    body += eyebrow(72, 192, "architecture", size=11, tracking=0.18)
+    body += text("One binary, three trust boundaries.", 72, 246, 38, family=DISPLAY, weight=600, color=CHALK, tracking=-0.026)
+    body += text("The core is the authority. A provider is never the last word on what happened.",
+                 72, 278, 15.5, color=MUTED)
 
     cols = (
         ("01", "panel", "TypeScript, no framework, embedded",
-         "Everything it shows comes from the API, and every action it hides is refused by the server.", ORANGE),
+         "Everything it shows comes from the API, and every action it hides is refused by the server.",
+         "reads /api/v1 · refuses nothing it is shown"),
         ("02", "core", "Go · exact money · the subledger",
-         "Constraints and triggers hold what must never be false; a stale worker cannot act.", INFO),
+         "Constraints and triggers hold what must never be false; a stale worker cannot act.",
+         "postgresql · one schema · 26 migrations"),
         ("03", "provider", "out-of-process extension",
-         "Crash-isolated JSON-RPC. An unverifiable outcome becomes unknown and waits for reconciliation.", SUCCESS),
+         "Crash-isolated JSON-RPC. An unverifiable outcome becomes unknown and waits for reconciliation.",
+         "NDJSON · deadlines · crash isolation"),
     )
-    gap = 26.0
-    cw = (w - 72 * 2 - 2 * gap) / 3
-    for i, (num, name, sub, blurb, col) in enumerate(cols):
-        cx = 72 + i * (cw + gap)
-        body += f'<rect x="{cx:.2f}" y="300" width="{cw:.2f}" height="228" rx="8" fill="{PANEL}" stroke="{EDGE}"/>'
-        body += f'<rect x="{cx:.2f}" y="300" width="{cw:.2f}" height="3" rx="1.5" fill="{col}"/>'
-        body += text(num, cx + 22, 334, 11, family=MONO, weight=500, color=col, tracking=0.18)
-        body += text(name, cx + 22, 374, 25, family=DISPLAY, weight=600, color=CHALK, tracking=-0.015)
-        body += text(sub, cx + 22, 398, 11, family=MONO, weight=400, color=DUST, tracking=0.01)
+    sx, sy, sw_, sh = 72, 316, w - 144, 240
+    body += card(sx, sy, sw_, sh)
+    col_w = sw_ / 3
+    for i, (num, name, sub, blurb, foot) in enumerate(cols):
+        x = sx + i * col_w
+        if i:
+            body += vrule(x, sy, sy + sh, EDGE)
+        px = x + 24
+        body += text(num, px, sy + 34, 10.5, family=MONO, weight=500, color=FAINT, tracking=0.18)
+        body += text(name, px, sy + 70, 22, family=DISPLAY, weight=600, color=CHALK, tracking=-0.015)
+        body += text(sub, px, sy + 92, 10.5, family=MONO, weight=400, color=DUST, tracking=0.01)
+        for j, ln in enumerate(wrap(blurb, col_w - 48, 12.5)):
+            body += text(ln, px, sy + 122 + j * 19, 12.5, color=MUTED, tracking=-0.004)
+        body += rule(px, sy + sh - 44, x + col_w - 24, EDGE)
+        body += text(foot, px, sy + sh - 24, 9.5, family=MONO, weight=400, color=FAINT, tracking=0.02)
 
-        words, line, lines = blurb.split(), "", []
-        for word in words:
-            trial = f"{line} {word}".strip()
-            if text_width(trial, 13, SANS) > cw - 44 and line:
-                lines.append(line)
-                line = word
-            else:
-                line = trial
-        lines.append(line)
-        for j, ln in enumerate(lines):
-            body += text(ln, cx + 22, 428 + j * 20, 13, color=MUTED, tracking=-0.004)
-
-    body += rule(72, 566, w - 72, EDGE)
-    body += text("catalystctl.com", 72, 600, 12.5, family=MONO, weight=400, color=MUTED, tracking=0.08)
-    body += text("self-hosted · GPL-3.0 · one postgresql database", w - 72, 600, 11.5, family=MONO, weight=400, color=DUST, tracking=0.06, anchor="end")
+    body += rule(72, 590, w - 72, EDGE)
+    body += text("catalystctl.com", 72, 620, 11.5, family=MONO, weight=400, color=FAINT, tracking=0.08)
+    body += text("self-hosted · GPL-3.0 · one postgresql database", w - 72, 620, 11, family=MONO, weight=400, color=FAINT, tracking=0.06, anchor="end")
     return doc(w, h, body, bg=BG)
 
-
-# ----------------------------------------------------------------------- main --
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)

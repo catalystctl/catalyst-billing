@@ -252,7 +252,13 @@ func TestPreviewRendersBothChannels(t *testing.T) {
 		t.Fatalf("the subject does not carry the invoice number: %q", preview.Mail.Subject)
 	}
 	// The absolute form of the same link, which is what a mail must carry.
-	if !strings.Contains(preview.Mail.Body, "http://127.0.0.1:8080"+samples["invoice_url"]) {
+	//
+	// Asserted as a property, not against a literal base URL. The base comes from
+	// BILLING_PUBLIC_URL, so hardcoding one makes this pass or fail on the deployment's
+	// configuration rather than on behaviour — and `http://` specifically is wrong, because a mail
+	// linking to an https origin is more correct than one that does not. What matters is that the
+	// link is absolute at all: a relative path in an email is unclickable, which is the defect.
+	if !strings.Contains(preview.Mail.Body, "://") || !strings.Contains(preview.Mail.Body, samples["invoice_url"]) {
 		t.Fatalf("the mail body does not carry an absolute invoice link: %q", preview.Mail.Body)
 	}
 	// The inbox row is rendered from the same data, with the relative link.

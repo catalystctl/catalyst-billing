@@ -29,6 +29,12 @@ func registerRoles(r *router) {
 	r.staffGet("/api/v1/staff/roles", authn.PermStaffManage, r.s.handleRoleList)
 	r.staffMutation(http.MethodPost, "/api/v1/staff/roles",
 		authn.PermStaffManage, r.s.handleRoleCreate)
+	// A rename is separate from a permission change because they answer different
+	// questions. "Call this role support-lead" is an edit to the name; "let it also void an
+	// invoice" is an edit to what it grants. Sending both through one PUT would let a
+	// dialog that only renamed a role silently replace its permission set.
+	r.staffMutation(http.MethodPatch, "/api/v1/staff/roles/{id}",
+		authn.PermStaffManage, r.s.handleRoleUpdate)
 	r.staffMutation(http.MethodPut, "/api/v1/staff/roles/{id}/permissions",
 		authn.PermStaffManage, r.s.handleRoleUpdatePermissions)
 	r.staffMutation(http.MethodDelete, "/api/v1/staff/roles/{id}",
@@ -39,20 +45,41 @@ func registerRoles(r *router) {
 }
 
 // roleJSON is the wire shape of a role.
-func roleJSON(rec authn.RoleRecord) map[string]any {
+//
+// `holders` is the access-review answer: how many accounts hold the role, and how many of
+// those can actually sign in. A role held only by disabled accounts grants nothing, which is
+// exactly what an operator needs to know before deleting it or judging what it is worth.
+func roleJSON(rec authn.RoleRecord, usage authn.RoleUsage) map[string]any {
 	perms := make([]string, 0, len(rec.Permissions))
 	for _, p := range rec.Permissions {
 		perms = append(perms, string(p))
 	}
 	sort.Strings(perms)
 	return map[string]any{
-		"id":          rec.ID,
-		"name":        rec.Name,
-		"description": rec.Description,
-		"is_system":   rec.System,
-		"created_at":  rec.CreatedAt.UTC(),
-		"permissions": perms,
+		"id":             rec.ID,
+		"name":           rec.Name,
+		"description":    rec.Description,
+		"is_system":      rec.System,
+		"created_at":     rec.CreatedAt.UTC(),
+		"permissions":    perms,
+		"holders":        usage.Holders,
+		"active_holders": usage.Active,
 	}
+}
+
+// roleUsage counts the holders of every role.
+//
+// A failure to count is logged and rendered as zero rather than failing the request: the
+// role list is the answer, and "0 holders" on a screen that could not count is a smaller
+// lie than an error page. The count is also the number the delete path re-checks under a
+// lock, so this is display only.
+func (s *Server) roleUsage(r *http.Request) map[string]authn.RoleUsage {
+	usage, err := s.auth.Service.RoleHolderCounts(r.Context())
+	if err != nil {
+		s.cfg.Logger.ErrorContext(r.Context(), "could not count role holders", "error", err)
+		return map[string]authn.RoleUsage{}
+	}
+	return usage
 }
 
 func (s *Server) handleRoleList(w http.ResponseWriter, r *http.Request) {
@@ -65,9 +92,10 @@ func (s *Server) handleRoleList(w http.ResponseWriter, r *http.Request) {
 		s.identityError(w, r, err)
 		return
 	}
+	usage := s.roleUsage(r)
 	out := make([]map[string]any, 0, len(roles))
 	for _, rec := range roles {
-		out = append(out, roleJSON(rec))
+		out = append(out, roleJSON(rec, usage[rec.Name]))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": out})
 }
@@ -139,7 +167,43 @@ func (s *Server) handleRoleCreate(w http.ResponseWriter, r *http.Request) {
 		"permissions": req.Permissions,
 	})
 	s.refreshAuthorizerTable(r)
-	writeJSON(w, http.StatusCreated, roleJSON(rec))
+	writeJSON(w, http.StatusCreated, roleJSON(rec, s.roleUsage(r)[rec.Name]))
+}
+
+// handleRoleUpdate renames a custom role and/or changes its description.
+//
+// The rename cascades to `staff_roles.role` through the foreign key (0026), so the accounts
+// holding the role follow it and nothing has to be re-granted. A system role is refused, as
+// every write to one is: the four seeded roles are what the separation of duties is written
+// against, and a rename would be a way to make "administrator" mean something else.
+func (s *Server) handleRoleUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.auth == nil || s.auth.Service == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "auth_not_configured", "authentication is not configured")
+		return
+	}
+	id := r.PathValue("id")
+	if !validUUID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such role")
+		return
+	}
+
+	var req struct {
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+	}
+	if !s.decodeJSON(w, r, &req, 16<<10) {
+		return
+	}
+
+	rec, err := s.auth.Service.UpdateRoleDetails(r.Context(), id, req.Name, req.Description,
+		s.auditorFor(r, ""))
+	if err != nil {
+		s.identityError(w, r, err)
+		return
+	}
+
+	s.refreshAuthorizerTable(r)
+	writeJSON(w, http.StatusOK, roleJSON(rec, s.roleUsage(r)[rec.Name]))
 }
 
 func (s *Server) handleRoleUpdatePermissions(w http.ResponseWriter, r *http.Request) {
@@ -175,7 +239,7 @@ func (s *Server) handleRoleUpdatePermissions(w http.ResponseWriter, r *http.Requ
 		"permissions": req.Permissions,
 	})
 	s.refreshAuthorizerTable(r)
-	writeJSON(w, http.StatusOK, roleJSON(rec))
+	writeJSON(w, http.StatusOK, roleJSON(rec, s.roleUsage(r)[rec.Name]))
 }
 
 func (s *Server) handleRoleDelete(w http.ResponseWriter, r *http.Request) {

@@ -561,6 +561,16 @@ func (c *Client) GetPortalCredits(ctx context.Context, query url.Values, body an
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetPortalCreditsTransactions calls GET /api/v1/portal/credits/transactions.
+//
+// # Your credit statement
+//
+// Permission: customer:read:self.
+func (c *Client) GetPortalCreditsTransactions(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/credits/transactions"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetPortalInvoices calls GET /api/v1/portal/invoices.
 //
 // # The customer's invoices

@@ -2675,6 +2675,55 @@ paths:
                 required: true
             x-permission: invoice:pay:self
             x-rate-class: mutation
+    /api/v1/portal/credits/transactions:
+        get:
+            description: 'Newest first. Read from the ledger, because that is where the balance comes from: a statement assembled from anywhere else could disagree with the number it is meant to explain. A movement is signed — positive when credit was added, negative when it was spent — and scoped to the caller in SQL, so there is no id to substitute.'
+            operationId: GetPortalCreditsTransactions
+            responses:
+                2XX:
+                    description: A page of credit movements
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Not signed in
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Your credit statement
+            x-permission: customer:read:self
+            x-rate-class: read
     /api/v1/portal/impersonation/stop:
         post:
             description: 'Ends the borrowed session and rotates the operator''s own session token back into the cookie. Rotation is deliberate: the impersonated token was in a browser that may have been shared, and a token that outlives the impersonation is the one thing that must not happen. If the operator''s own session ended meanwhile, the cookie is cleared and the answer is 401 rather than a session that looks alive.'

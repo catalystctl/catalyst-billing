@@ -3,7 +3,9 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/credit"
@@ -37,6 +39,12 @@ func init() {
 func registerCredits(r *router) {
 	// The customer's own balance, per currency.
 	r.get("/api/v1/portal/credits", authn.PermCustomerReadSelf, r.s.handlePortalCredits)
+
+	// The customer's own credit movements, newest first. Read from the ledger, because that is
+	// where the balance above comes from: a statement assembled from anywhere else could disagree
+	// with the number it is meant to explain.
+	r.get("/api/v1/portal/credits/transactions",
+		authn.PermCustomerReadSelf, r.s.handlePortalCreditTransactions)
 
 	// A top-up. It is a payment, so it uses the same permission as paying an invoice: a
 	// customer who may pay may top up, and one who may not may not.
@@ -268,4 +276,43 @@ func (s *Server) handleStaffGrantCredit(w http.ResponseWriter, r *http.Request) 
 		"status":      "issued",
 		"replayed":    grant.AlreadyGranted,
 	})
+}
+
+// handlePortalCreditTransactions serves a customer's credit statement.
+//
+// It is scoped in SQL by the session's customer id, so substituting another customer's id is not
+// possible: there is no id in the request to substitute.
+func (s *Server) handlePortalCreditTransactions(w http.ResponseWriter, r *http.Request) {
+	if s.pool == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "storage_unavailable", "no database configured")
+		return
+	}
+	customerID, ok := s.customerFor(w, r)
+	if !ok {
+		return
+	}
+
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			limit = n
+		}
+	}
+
+	entries, err := credit.TransactionsFor(r.Context(), s.pool, customerID, limit)
+	if err != nil {
+		s.staffError(w, r, err)
+		return
+	}
+
+	out := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, map[string]any{
+			"id":         e.ID,
+			"amount":     amountJSON(e.Amount),
+			"memo":       e.Memo,
+			"created_at": e.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"transactions": out})
 }

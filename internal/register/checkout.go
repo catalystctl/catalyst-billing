@@ -57,6 +57,7 @@ import (
 	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/calendar"
+	"github.com/catalyst/billing/internal/credit"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/store"
@@ -734,6 +735,18 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 	if err := s.queueInvoice(ctx, tx, invoiceID, customerID, issued.Number,
 		issued.Totals.Total, now.AddDate(0, 0, 30)); err != nil {
 		return CheckoutResult{}, err
+	}
+
+	// Spend any credit the customer already holds, in the same transaction that issued the
+	// invoice. Applying it here rather than in a later job is what makes "I had $20 of credit and
+	// the invoice was $18" resolve to a paid order immediately instead of an invoice that sits
+	// open until a sweep finds it.
+	//
+	// A failure is fatal rather than best-effort: the credit application is money, and an order
+	// that committed while its credit silently did not would leave the customer charged twice.
+	// A customer with no credit, or with auto-use turned off, is a no-op.
+	if _, err := credit.ApplyCreditToInvoice(ctx, tx, invoiceID); err != nil {
+		return CheckoutResult{}, fmt.Errorf("checkout: apply credit: %w", err)
 	}
 
 	priced, err := invoiceLines(ctx, tx, invoiceID, cur)

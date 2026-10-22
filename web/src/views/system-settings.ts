@@ -364,11 +364,18 @@ export default async function systemSettingsPage(ctx: Ctx): Promise<Node> {
     if (key.kind === "bool") {
       const box = h("input", { type: "checkbox", checked: key.value === "true" });
       readers.set(key.key, () => (box.checked ? "true" : "false"));
+      // The word beside a switch is the only place the state is written out, so it has to follow
+      // the box. A label that stayed "Off" after a click would make the form disagree with itself
+      // and with what Save would send.
+      const state = h("span", null, key.value === "true" ? "On" : "Off");
+      box.addEventListener("change", () => {
+        state.textContent = box.checked ? "On" : "Off";
+      });
       return h(
         "div",
         { class: "stack-sm settings-control" },
         head,
-        h("label", { class: "switch" }, box, h("span", null, key.value === "true" ? "On" : "Off")),
+        h("label", { class: "switch" }, box, state),
         hint ? h("span", { class: "field-hint" }, hint) : null,
       );
     }

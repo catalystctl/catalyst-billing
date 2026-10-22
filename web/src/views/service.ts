@@ -4,6 +4,13 @@
 // off". It answers, in order: what is this, what state is it in, what is the queue doing
 // with it, what is holding it, and what has it been billed.
 //
+// "What is this" is its own read (`GET /api/v1/staff/services/{id}/metadata`) rather than a
+// field on the detail response, because it is the same object the customer's own page shows and
+// the same object an invoice can print from. The card renders the *effective* label and
+// description — the ones the server derived from the product and the selected options when
+// nobody wrote any — so a support agent never reads an empty heading, and the edit dialog offers
+// the derived text as the starting point.
+//
 // Three rules shape the actions:
 //
 //  - Suspension eligibility is a *deliberate* button, never a page-load side effect. The
@@ -121,6 +128,57 @@ interface ServiceDetail {
   invoices: Invoice[];
 }
 
+/** One property with its definition attached (SVC-08). `show_on_invoice` is the definition's
+ *  decision about documents; `customer_visible` is a separate question with a separate answer. */
+interface ServiceProperty {
+  key: string;
+  label: string;
+  description: string;
+  value: string;
+  show_on_invoice: boolean;
+  customer_visible: boolean;
+  sort_order: number;
+}
+
+/** GET /api/v1/staff/services/{id}/metadata. `label` and `description` are what a human wrote
+ *  and may be empty; the `effective_*` fields are what to display and are never empty. */
+interface ServiceMetadata {
+  service_id: string;
+  status: string;
+  customer: { id: string; email: string };
+  product: { id: string; name: string };
+  plan: {
+    price_version_id: string;
+    name: string;
+    interval: string;
+    currency: string;
+    amount_minor: number;
+    setup_minor: number;
+    amount?: Amount;
+  };
+  quantity: number;
+  order_id?: string;
+  label: string;
+  description: string;
+  effective_label: string;
+  effective_description: string;
+  derived_description: string;
+  custom_properties: Record<string, string>;
+  properties: ServiceProperty[];
+  config: Array<{ config_option_id: string; name: string; value: string }>;
+  updated_at: string;
+}
+
+/** One configured property definition, as the staff properties screen edits it. */
+interface PropertyDefinition {
+  key: string;
+  label: string;
+  description: string;
+  show_on_invoice: boolean;
+  customer_visible: boolean;
+  sort_order: number;
+}
+
 /** GET /api/v1/staff/services/{id}/suspension-eligibility. `outstanding` is the server's
  *  formatted amount ("USD 1,240.00"), not an Amount, because the engine compares across
  *  currencies before it formats. */
@@ -191,6 +249,7 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
   });
 
   let detail: ServiceDetail | null = null;
+  let metadata: ServiceMetadata | null = null;
   let eligibility: Eligibility | null = null;
   let eligibilityError: string | null = null;
   let eligibilityBusy = false;
@@ -213,6 +272,24 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
 
   // ------------------------------------------------------------------ load --
 
+  /**
+   * The metadata read is separate from the detail read, and a failure is not a page failure:
+   * the rest of the screen (the queue, the holds, the invoices) is still the answer to "why was I
+   * cut off", and a support agent must not lose it because one endpoint is unhappy. A missing
+   * metadata object simply omits the card.
+   */
+  const loadMetadata = async (): Promise<void> => {
+    try {
+      metadata = await ctx.api.get<ServiceMetadata>(`/api/v1/staff/services/${id}/metadata`, {
+        cache: false,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (isAbort(err)) return;
+      metadata = null;
+    }
+  };
+
   const load = async (): Promise<void> => {
     try {
       const next = await ctx.api.get<ServiceDetail>(`/api/v1/staff/services/${id}`, {
@@ -221,6 +298,8 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
       });
       if (controller.signal.aborted) return;
       detail = next;
+      await loadMetadata();
+      if (controller.signal.aborted) return;
       describe(next.service);
       paint();
     } catch (err) {
@@ -247,6 +326,8 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
       });
       if (controller.signal.aborted) return;
       detail = next;
+      await loadMetadata();
+      if (controller.signal.aborted) return;
       describe(next.service);
       paint();
     } catch (err) {
@@ -259,8 +340,12 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
   };
 
   const describe = (svc: Service) => {
-    ctx.setTitle(nameOf(svc));
-    ctx.setCrumbs([{ label: "Services", href: "/services" }, { label: nameOf(svc) }]);
+    // The label the customer chose is the name of this service. Falling back to the external id
+    // is right for a service nobody has named, because that is the identifier the customer quotes
+    // in a ticket; a label exists precisely so it can be quoted instead.
+    const title = metadata?.effective_label || nameOf(svc);
+    ctx.setTitle(title);
+    ctx.setCrumbs([{ label: "Services", href: "/services" }, { label: title }]);
   };
 
   // A committed change to this service (the worker suspending it, a colleague adding a hold)
@@ -522,6 +607,126 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
     }
   };
 
+  // -------------------------------------------------------------- metadata --
+
+  /**
+   * The metadata edit dialog (SVC-03, SVC-08).
+   *
+   * One dialog rather than a separate screen, because the three fields are one answer to one
+   * question. The property fields are generated from the installation's definitions, not from the
+   * service's values: a property the service does not carry yet still has to be settable, and a
+   * value with no definition is refused by the server anyway.
+   */
+  const editMetadata = async () => {
+    const current = metadata;
+    if (!current) return;
+
+    let definitions: PropertyDefinition[] = [];
+    try {
+      const res = await ctx.api.get<{ properties: PropertyDefinition[] }>(
+        "/api/v1/staff/service-properties",
+        { cache: false },
+      );
+      definitions = res.properties ?? [];
+    } catch (err) {
+      ctx.toast("Could not load the property definitions", {
+        tone: "danger",
+        detail: err instanceof ApiError ? err.detail || err.code : String(err),
+      });
+      return;
+    }
+
+    const labelInput = input({
+      id: "metadata-label",
+      value: current.label,
+      placeholder: current.product.name,
+      maxlength: 120,
+      autocomplete: "off",
+    });
+    const descriptionInput = textarea({
+      id: "metadata-description",
+      value: current.description,
+      placeholder: current.derived_description,
+      maxlength: 2000,
+    });
+    const propertyFields = definitions.map((definition) => ({
+      definition,
+      control: input({
+        id: `metadata-property-${definition.key}`,
+        value: current.custom_properties[definition.key] ?? "",
+        maxlength: 200,
+        autocomplete: "off",
+      }),
+    }));
+
+    await ctx.formDialog({
+      title: "Edit service metadata",
+      subtitle: "The customer reads the label and the description on their own service page.",
+      submitLabel: "Save metadata",
+      body: h(
+        "div",
+        { class: "stack" },
+        field({
+          label: "Label",
+          hint: "Shown instead of the product name. Leave it empty to use the product's name.",
+          control: labelInput,
+        }),
+        field({
+          label: "Description",
+          hint: `Leave it empty to use the derived description: ${truncate(current.derived_description, 140)}`,
+          control: descriptionInput,
+        }),
+        propertyFields.length > 0
+          ? h(
+              "div",
+              { class: "stack-sm" },
+              h("p", { class: "field-hint" }, "Properties"),
+              ...propertyFields.map((entry) =>
+                field({
+                  label: entry.definition.label,
+                  hint: propertyHint(entry.definition),
+                  control: entry.control,
+                }),
+              ),
+              h(
+                "p",
+                { class: "field-hint" },
+                "An empty property is unset. Whether a property prints on an invoice is decided on its definition, not here.",
+              ),
+            )
+          : h(
+              "p",
+              { class: "field-hint" },
+              "No custom properties are defined on this installation.",
+            ),
+      ),
+      onSubmit: async () => {
+        // Every field is sent, including the untouched ones: an empty value unsets a property, and
+        // the form shows the current value, so a faithful edit is exactly what the operator sees.
+        const properties: Record<string, string> = {};
+        for (const entry of propertyFields) {
+          properties[entry.definition.key] = entry.control.value.trim();
+        }
+        try {
+          await ctx.api.put(`/api/v1/staff/services/${id}/metadata`, {
+            label: labelInput.value.trim(),
+            description: descriptionInput.value.trim(),
+            custom_properties: properties,
+          });
+        } catch (err) {
+          if (err instanceof ApiError) return err.detail || humanStatus(err.code);
+          return String(err);
+        }
+        ctx.toast("Metadata saved", {
+          tone: "success",
+          detail: labelInput.value.trim() || current.product.name,
+        });
+        await refresh();
+        return;
+      },
+    });
+  };
+
   const checkEligibility = async () => {
     if (eligibilityBusy) return;
     // Deliberate: this endpoint records a suspension_decisions row. It must never run on
@@ -597,7 +802,7 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
       "div",
       { class: "page" },
       pageHead({
-        title: nameOf(svc),
+        title: metadata?.effective_label || nameOf(svc),
         badge: serviceStatusBadge(svc.status),
         sub: h(
           "span",
@@ -889,6 +1094,8 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
       ? banner("danger", "The last operation reported an error", h("span", { class: "mono" }, svc.last_error))
       : null;
 
+    const metadataPanel = metadata ? metadataCard(metadata) : null;
+
     const subscription = data.subscription
       ? card({
           title: "Subscription",
@@ -942,7 +1149,94 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
       ),
     });
 
-    return h("div", { class: "split" }, h("div", { class: "stack" }, facts, lastError, subscription), related);
+    return h("div", { class: "split" }, h("div", { class: "stack" }, facts, lastError, subscription), h("div", { class: "stack" }, metadataPanel, related));
+  };
+
+  /**
+   * "What this is": the answer a support agent needs before anything else on this page.
+   *
+   * It renders the effective values rather than the written ones, and says which is which: an
+   * operator who sees a description has to know whether the customer wrote it or the server
+   * derived it, because "fix the description" means two different things in those two cases.
+   */
+  const metadataCard = (m: ServiceMetadata): Node => {
+    const items: Array<{ label: Child; value: Child }> = [
+      { label: "Name", value: h("span", null, m.effective_label) },
+      {
+        label: "Named by",
+        value: m.label
+          ? h("span", { class: "row-wrap" }, badge("The customer", "info", { dot: true }))
+          : h("span", { class: "faint" }, "the product (no label written)"),
+      },
+      {
+        label: "Plan",
+        value: h(
+          "span",
+          { class: "row-wrap" },
+          m.plan.name || h("span", { class: "faint" }, "no subscription"),
+          m.plan.interval ? h("span", { class: "faint" }, `· ${titleCase(m.plan.interval)}`) : null,
+        ),
+      },
+      {
+        label: "Price",
+        value: m.plan.amount
+          ? moneyEl(m.plan.amount)
+          : h("span", { class: "faint" }, "not priced from a subscription"),
+      },
+      { label: "Quantity", value: mono(m.quantity) },
+      {
+        label: "Order",
+        value: m.order_id
+          ? h("a", { class: "linkish", href: `/orders/${m.order_id}` }, shortId(m.order_id, 12))
+          : h("span", { class: "faint" }, "no order (provisioned from an invoice)"),
+      },
+    ];
+
+    const description = h(
+      "div",
+      { class: "stack-sm" },
+      h("p", { class: "svc-meta-description" }, m.effective_description),
+      m.description
+        ? null
+        : h(
+            "p",
+            { class: "field-hint" },
+            "Derived from the product and the selected options; nobody has written a description.",
+          ),
+    );
+
+    const properties = m.properties.length
+      ? h(
+          "div",
+          { class: "stack-sm" },
+          h("p", { class: "field-hint" }, "Properties"),
+          ...m.properties.map((property) =>
+            h(
+              "div",
+              { class: "kv" },
+              h("span", { class: "kv-key" }, property.label),
+              h(
+                "span",
+                { class: "kv-value row-wrap" },
+                mono(property.value),
+                property.show_on_invoice
+                  ? badge("On invoices", "info", { dot: true })
+                  : null,
+                property.customer_visible ? null : badge("Internal", "warning", { dot: true }),
+              ),
+            ),
+          ),
+        )
+      : null;
+
+    return card({
+      title: "What this is",
+      sub: "Label, description and properties",
+      actions: ctx.can("service:write:all")
+        ? btn("Edit metadata", { size: "sm", icon: "edit", onclick: () => void editMetadata() })
+        : null,
+      body: h("div", { class: "stack-sm" }, description, metaGrid(items), properties),
+    });
   };
 
   const operationsTab = (data: ServiceDetail): Node => {

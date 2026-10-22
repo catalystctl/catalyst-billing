@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/events"
+	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/register"
+	"github.com/jackc/pgx/v5"
 )
 
 // The customer checkout endpoint (CT-07, CT-08, SF-20, SF-21).
@@ -132,6 +135,10 @@ func (s *Server) handleCustomerCheckout(w http.ResponseWriter, r *http.Request) 
 	// Both the customer and the staff who own the revenue path may care that an order
 	// was placed. It is published after the commit, never inside it.
 	s.publishOrderEvents(res)
+
+	// And the customer is told directly, because the live event only reaches a browser that is
+	// already open. A customer who closed the tab still deserves the confirmation.
+	s.notifyOrderPlaced(r.Context(), res, user.ID, user.Email)
 
 	writeJSON(w, http.StatusCreated, checkoutJSON(res))
 }
@@ -279,5 +286,30 @@ func (s *Server) publishOrderEvents(res register.CheckoutResult) {
 		CustomerID: res.CustomerID,
 		Permission: string(authn.PermInvoiceReadAll),
 		Data:       data,
+	})
+}
+
+// notifyOrderPlaced tells a customer their order was received.
+//
+// It runs on its own transaction, after the order committed, and is deliberately best-effort:
+// the order is the durable fact, and a mail that cannot be queued must not fail a checkout the
+// customer already completed. Dedupe is the order id, so a double-clicked Place order button
+// produces one message.
+func (s *Server) notifyOrderPlaced(ctx context.Context, res register.CheckoutResult, userID, email string) {
+	if s.pool == nil || s.notify == nil || res.OrderID == "" {
+		return
+	}
+
+	total := res.Total.Format()
+	_ = s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := notify.OrderCreated(ctx, tx, s.notify, notify.OrderCreatedInput{
+			UserID:   userID,
+			Email:    email,
+			OrderID:  res.OrderID,
+			Number:   res.InvoiceNumber,
+			Total:    total,
+			OrderURL: "/portal",
+		})
+		return err
 	})
 }

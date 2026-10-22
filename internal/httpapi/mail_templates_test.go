@@ -118,6 +118,44 @@ func TestProductEmailTemplateNeedsCatalogWrite(t *testing.T) {
 	}
 }
 
+// A product update that does not mention the snippet leaves it alone.
+//
+// The panel's product form predates this field, and its "publish / hide" toggle PUTs the whole
+// product without it. If an absent field meant "empty", toggling visibility would silently wipe
+// the instructions a customer is told when they buy — the kind of data loss nobody notices until
+// a customer asks how to log in.
+func TestProductUpdateWithoutTheSnippetLeavesItAlone(t *testing.T) {
+	env := newStaffEnv(t)
+
+	rec := env.postJSON(t, "/api/v1/staff/catalog/products", env.admin, env.adminCSRF, map[string]any{
+		"slug": "kept", "name": "Kept", "email_template": "The panel login is the one you registered with.",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d: %s", rec.Code, rec.Body)
+	}
+	productID, _ := decodeBody[map[string]any](t, rec)["id"].(string)
+
+	// Exactly the body the visibility toggle sends: no email_template key at all.
+	rec = env.putJSON(t, "/api/v1/staff/catalog/products/"+productID, env.admin, env.adminCSRF,
+		map[string]any{"slug": "kept", "name": "Kept", "hidden": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update = %d: %s", rec.Code, rec.Body)
+	}
+	if got := decodeBody[map[string]any](t, rec)["email_template"]; got != "The panel login is the one you registered with." {
+		t.Fatalf("an update that omitted the snippet erased it: %v", got)
+	}
+
+	// An explicit empty string does clear it, so "remove my instructions" is expressible.
+	rec = env.putJSON(t, "/api/v1/staff/catalog/products/"+productID, env.admin, env.adminCSRF,
+		map[string]any{"slug": "kept", "name": "Kept", "email_template": ""})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear = %d: %s", rec.Code, rec.Body)
+	}
+	if got := decodeBody[map[string]any](t, rec)["email_template"]; got != "" {
+		t.Fatalf("an explicit empty snippet did not clear the field: %v", got)
+	}
+}
+
 // ------------------------------------------------------------------ wording --
 
 // An operator rewords the reset mail and the customer receives that wording — and the token in it

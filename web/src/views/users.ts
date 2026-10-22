@@ -21,6 +21,12 @@
 //    rare action that cannot be undone.
 //  - **Custom roles are offered, not guessed.** The role list is read from the roles screen's
 //    endpoint, so a role an operator defined there is assignable here without a deploy.
+//  - **A staff account is also a customer.** Creating a login creates its billing account in
+//    the same act, so an agent can buy and hold a service without anybody linking two records
+//    by hand. The column below shows which billing account each login owns and links to it, so
+//    "can this person buy" is answerable from the list rather than from a support ticket. That
+//    link is a *customer* relationship: it gives the account no reach over anyone else's data,
+//    and the role is still what decides what they can do.
 
 import { ApiError } from "../lib/api";
 import { h } from "../lib/dom";
@@ -52,6 +58,9 @@ interface UserRow {
   /** The staff role name, empty for a customer. */
   role: string;
   is_staff: boolean;
+  /** The billing account this login owns: created with the account, staff included, because an
+   *  agent buys and holds services like any customer. Null only for an account whose address is
+   *  already another login's billing record, which the server refuses to share. */
   customer_id: string | null;
   created_at: string;
   last_sign_in_at: string | null;
@@ -139,6 +148,23 @@ export default async function usersPage(ctx: Ctx): Promise<Node> {
       render: (row) => badge(humanStatus(row.status), statusTone(row.status), { dot: true }),
     },
     {
+      key: "billing",
+      label: "Billing account",
+      hideSmall: true,
+      render: (row) =>
+        row.customer_id
+          ? h(
+              "a",
+              {
+                class: "linkish nowrap",
+                href: `/customers/${encodeURIComponent(row.customer_id)}`,
+                title: "Open the billing account this login owns",
+              },
+              "Open",
+            )
+          : h("span", { class: "faint nowrap" }, "None"),
+    },
+    {
       key: "last_sign_in",
       label: "Last sign-in",
       align: "right",
@@ -209,7 +235,8 @@ export default async function usersPage(ctx: Ctx): Promise<Node> {
     limit: 25,
     empty,
     rowKey: (row) => row.id,
-    footNote: "Newest first. A customer with no customer record can sign in and find nothing.",
+    footNote:
+      "Newest first. Every account created here owns a billing account, staff included: that is what makes it able to buy and hold a service.",
   });
 
   function describeEmpty(): void {
@@ -309,6 +336,14 @@ export default async function usersPage(ctx: Ctx): Promise<Node> {
           "info",
           "The password is never returned",
           "No response from this screen contains it, and the audit row records only that it was set.",
+        ),
+        banner(
+          "info",
+          "A billing account is created with the login",
+          "Staff included: an agent buys and holds services like any customer, so the account is able to buy immediately " +
+            "instead of waiting for somebody to link two records by hand. That link is a customer relationship and grants " +
+            "no reach over anyone else's data — the role is still what decides what they can do. If the address is already " +
+            "another login's billing account the create is refused, because sharing one would expose that customer's invoices.",
         ),
       ),
       onSubmit: async () => {
@@ -631,7 +666,11 @@ function createError(err: unknown): string {
   if (!(err instanceof ApiError)) return "The server could not be reached, so no account was created.";
   switch (err.code) {
     case "email_taken":
-      return "That address already has an account. Edit it instead, or reset its password.";
+      // Two causes share this code: the address already has a login, or it is already another
+      // login's *billing* account — which is never shared, because a second login on one billing
+      // account would expose that customer's invoices. The sentence has to cover both, because
+      // the server cannot tell them apart in a way this dialog can act on differently.
+      return "That address is already in use: it has a login, or it is another login's billing account (two logins cannot share one). Edit that account, or use the person's own address.";
     case "weak_password":
       return err.detail || "That password is too short.";
     case "invalid_email":

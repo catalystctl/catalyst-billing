@@ -7134,6 +7134,449 @@ paths:
             summary: The ticket form's configuration
             x-permission: ticket:read:self
             x-rate-class: read
+    /api/v1/push/config:
+        get:
+            description: The portal reads this before rendering its notification control. `enabled` is false when the operator has switched push off or when the VAPID key pair is missing or unusable, and the screen then hides the control rather than offering one that cannot work. The public key is served here rather than stored in the frontend so a key rotation reaches every browser without a rebuild.
+            operationId: GetPushConfig
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    enabled:
+                                        description: 'True only when push is switched on and the VAPID key pair is present and usable. The portal hides its "enable notifications" control when this is false: offering a button that cannot work is worse than offering none.'
+                                        type: boolean
+                                    max_devices:
+                                        description: How many devices one account may register.
+                                        type: integer
+                                    reason:
+                                        description: Why push is unavailable. Empty when it is available. `keys_invalid` means the stored key pair is unusable — a half-copied value, a key on the wrong curve, or two halves from different pairs.
+                                        enum:
+                                            - disabled
+                                            - keys_missing
+                                            - keys_invalid
+                                        type: string
+                                    vapid_public_key:
+                                        description: Base64url VAPID public key, an uncompressed P-256 point. Pass it to `pushManager.subscribe({applicationServerKey})` as bytes. Empty when `enabled` is false.
+                                        type: string
+                                required:
+                                    - enabled
+                                    - vapid_public_key
+                                    - max_devices
+                                type: object
+                    description: The push configuration
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No session
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Whether web push is available, and the key to subscribe with
+            x-rate-class: read
+    /api/v1/push/subscriptions:
+        get:
+            description: 'Newest first. The user id comes from the session and is in the WHERE clause, so this cannot be asked for another account''s devices. The auth secret and the device''s public key are not returned: the device already has them, and echoing a secret is a leak waiting for a log line.'
+            operationId: GetPushSubscriptions
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                created_at:
+                                                    description: 'When this endpoint was first registered. Re-subscribing keeps the original value: it is the device''s first appearance, not the last.'
+                                                    format: date-time
+                                                    type: string
+                                                endpoint:
+                                                    description: The push service URL this device subscribed with. Always https.
+                                                    format: uri
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                last_used_at:
+                                                    description: When a push was last handed to the push service. Null means the device has never received one.
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                user_agent:
+                                                    description: What the browser reported when it subscribed, truncated. A label, never parsed.
+                                                    type: string
+                                            required:
+                                                - id
+                                                - endpoint
+                                                - created_at
+                                            type: object
+                                        type: array
+                                    max_devices:
+                                        type: integer
+                                required:
+                                    - data
+                                    - max_devices
+                                type: object
+                    description: The caller's devices
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No session
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List the caller's push devices
+            x-rate-class: read
+        post:
+            description: 'The body is the browser''s own `PushSubscription.toJSON()`, passed through unchanged: `endpoint`, and a `keys` object with `p256dh` and `auth`. The endpoint is the key. Re-subscribing the same endpoint replaces the row rather than adding a second one — including its owner, because a browser subscription belongs to the browser profile and not to an account, so a shared laptop that signs into another account must stop delivering the previous one''s notifications. The endpoint must be https: the server POSTs to it, so a plaintext or non-URL value is refused with 422 `invalid_subscription` rather than being stored and retried forever. An account may register at most `max_devices` devices; a new one beyond that is 422 `push_device_limit`.'
+            operationId: PostPushSubscriptions
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                endpoint:
+                                    format: uri
+                                    type: string
+                                keys:
+                                    properties:
+                                        auth:
+                                            description: The 16-byte shared auth secret, base64url. RFC 8291.
+                                            type: string
+                                        p256dh:
+                                            description: The device's P-256 public key, base64url, uncompressed point.
+                                            type: string
+                                    required:
+                                        - p256dh
+                                        - auth
+                                    type: object
+                            required:
+                                - endpoint
+                                - keys
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    created_at:
+                                        description: 'When this endpoint was first registered. Re-subscribing keeps the original value: it is the device''s first appearance, not the last.'
+                                        format: date-time
+                                        type: string
+                                    endpoint:
+                                        description: The push service URL this device subscribed with. Always https.
+                                        format: uri
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    last_used_at:
+                                        description: When a push was last handed to the push service. Null means the device has never received one.
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    user_agent:
+                                        description: What the browser reported when it subscribed, truncated. A label, never parsed.
+                                        type: string
+                                required:
+                                    - id
+                                    - endpoint
+                                    - created_at
+                                type: object
+                    description: The registered device
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No session
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`invalid_subscription` or `push_device_limit`'
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`push_not_configured`: no VAPID key pair is set'
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Register a browser for push notifications
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: false
+            x-rate-class: mutation
+    /api/v1/push/subscriptions/{id}:
+        delete:
+            description: 'Scoped to the caller in SQL: another account''s subscription id matches no row and answers 404 `not_found`, the same answer as an id that never existed, so the endpoint is not an oracle for which ids exist. Deleting an already-deleted subscription is also 404; a client that treats that as success is right to.'
+            operationId: DeletePushSubscriptionsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - deleted
+                                        type: string
+                                required:
+                                    - status
+                                    - id
+                                type: object
+                    description: The device was removed
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No session
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`not_found`: no such device for this account'
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Unregister one of the caller's push devices
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: false
+            x-rate-class: mutation
+    /api/v1/push/test:
+        post:
+            description: 'A real delivery: the same RFC 8291 encryption, the same VAPID signature, the same dead-device cleanup as any notification the panel sends. The body is empty. The event key is empty on purpose — a test push is not an event, and a customer who pressed the button has already consented to receiving it, so the preference lookup is skipped rather than consulted. 409 `no_push_device` means there was nothing to send to, either because no device is registered or because every registered device turned out to be gone and was removed. 502 `push_delivery_failed` means the push service refused: usually a VAPID key pair that does not match, a subject the service rejects, or a clock far enough out that the token is expired.'
+            operationId: PostPushTest
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    failed:
+                                        description: 'Devices that could not be reached for a transient reason (a 5xx, a rate limit, a network error). The subscription is kept: these are retried by the next notification.'
+                                        type: integer
+                                    failures:
+                                        description: Up to three human-readable reasons, for the screen and the log. Never a database message.
+                                        items:
+                                            type: string
+                                        type: array
+                                    removed:
+                                        description: Devices deleted because the push service answered 404 or 410. That is a dead device — the browser was uninstalled or its site data was cleared — not an error, and the subscription is gone from the next list.
+                                        type: integer
+                                    sent:
+                                        description: Devices the push service accepted the notification for.
+                                        type: integer
+                                required:
+                                    - sent
+                                    - removed
+                                    - failed
+                                type: object
+                    description: Delivered to at least one device
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No session
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`no_push_device`'
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`push_delivery_failed`'
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`push_not_configured`'
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Send a test notification to every device on the account
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: false
+            x-rate-class: mutation
     /api/v1/staff/affiliates:
         get:
             description: Every affiliate, newest first, with per-currency balances and the number of customers they referred. Balances are a materialised total maintained in the same transaction as each commission, so this list does not sum history to answer "what do we owe".

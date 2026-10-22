@@ -243,3 +243,212 @@ func TestCreateDefaultsToQuantityOne(t *testing.T) {
 		t.Fatalf("quantity = %d, want 1", qty)
 	}
 }
+
+// ------------------------------------------------------- one-time and free --
+
+// addPrice inserts one price version and returns its id. The tests below each need a price with
+// a different interval, and the fixture's is monthly.
+func (f *fixture) addPrice(t *testing.T, version int, interval string, amount, setup int64) string {
+	t.Helper()
+	var id string
+	if err := f.pool.QueryRow(context.Background(), `
+		INSERT INTO price_versions (product_id, version, currency, amount_minor, setup_minor,
+			interval, anchor_day, anchor_timezone, name)
+		VALUES ($1, $2, 'USD', $3, $4, $5, 15, 'UTC', $6)
+		RETURNING id`, f.prodID, version, amount, setup, interval, interval).Scan(&id); err != nil {
+		t.Fatalf("price %s: %v", interval, err)
+	}
+	return id
+}
+
+// A one-time price is charged once and creates a service with no subscription. The absence of
+// the subscription is the whole point: it is what makes the renewal engine unable to see it.
+func TestOneTimePurchaseCreatesNoSubscription(t *testing.T) {
+	f := newFixture(t)
+	priceID := f.addPrice(t, 10, "one_time", 25000, 0)
+	res, err := f.create(t, orders.Request{PriceVersionID: priceID})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ctx := context.Background()
+
+	if res.Status != "pending_payment" || res.InvoiceID == "" {
+		t.Fatalf("one-time purchase = %+v, want an ordinary invoice to pay", res)
+	}
+	if res.SubscriptionID != "" {
+		t.Fatalf("subscription = %q, want none: a one-time purchase must not create a schedule", res.SubscriptionID)
+	}
+	var subscriptions int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM subscriptions`).Scan(&subscriptions); err != nil {
+		t.Fatal(err)
+	}
+	if subscriptions != 0 {
+		t.Fatalf("subscriptions = %d after a one-time purchase, want 0", subscriptions)
+	}
+	// The invoice is not part of a billing series, so the per-period unique index can never
+	// consider it and dunning (which joins subscriptions) can never suspend for it.
+	var subID *string
+	var periodKey *string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT subscription_id, period_key FROM invoices WHERE id = $1`, res.InvoiceID).
+		Scan(&subID, &periodKey); err != nil {
+		t.Fatal(err)
+	}
+	if subID != nil || periodKey != nil {
+		t.Fatalf("invoice subscription=%v period_key=%v, want both null", subID, periodKey)
+	}
+	// It was priced once, in full.
+	if got, want := res.Total.Minor(), int64(25000); got != want {
+		t.Fatalf("total = %d, want %d", got, want)
+	}
+}
+
+// A free price activates without an invoice. There is nothing to pay, so a zero-total document
+// would be a document nobody can pay.
+func TestFreePurchaseActivatesWithoutAnInvoice(t *testing.T) {
+	f := newFixture(t)
+	priceID := f.addPrice(t, 11, "free", 0, 0)
+	res, err := f.create(t, orders.Request{PriceVersionID: priceID})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ctx := context.Background()
+
+	if res.InvoiceID != "" || res.InvoiceNumber != "" {
+		t.Fatalf("free purchase issued an invoice (%q), want none", res.InvoiceNumber)
+	}
+	if res.Status != "paid" {
+		t.Fatalf("status = %q, want paid", res.Status)
+	}
+	if res.Total.Minor() != 0 {
+		t.Fatalf("total = %d, want 0", res.Total.Minor())
+	}
+	var invoices int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM invoices`).Scan(&invoices); err != nil {
+		t.Fatal(err)
+	}
+	if invoices != 0 {
+		t.Fatalf("invoices = %d for a free purchase, want 0", invoices)
+	}
+	if len(res.ServiceIDs) != 1 {
+		t.Fatalf("service ids = %v, want the service it activated", res.ServiceIDs)
+	}
+	// The service exists, has no schedule, and is queued for provisioning: exactly what a
+	// settled payment would have produced.
+	var status string
+	var subscription *string
+	if err := f.pool.QueryRow(ctx, `SELECT status, subscription_id FROM services WHERE id = $1`,
+		res.ServiceIDs[0]).Scan(&status, &subscription); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" || subscription != nil {
+		t.Fatalf("service status=%q subscription=%v, want pending and no schedule", status, subscription)
+	}
+	var operations int
+	if err := f.pool.QueryRow(ctx, `
+		SELECT count(*) FROM service_operations WHERE service_id = $1 AND kind = 'create' AND status = 'queued'`,
+		res.ServiceIDs[0]).Scan(&operations); err != nil {
+		t.Fatal(err)
+	}
+	if operations != 1 {
+		t.Fatalf("create operations = %d, want 1: a free service nobody provisions is not delivered", operations)
+	}
+}
+
+// A recurring price still creates a subscription with the right next-bill date. This is the
+// other half of the pair above: the branch must not have broken the ordinary path.
+func TestRecurringPurchaseCreatesSubscriptionWithNextBillDate(t *testing.T) {
+	f := newFixture(t)
+	res, err := f.create(t, orders.Request{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if res.SubscriptionID == "" {
+		t.Fatal("a recurring purchase must create a subscription")
+	}
+	ctx := context.Background()
+	var interval string
+	var start, end, next time.Time
+	if err := f.pool.QueryRow(ctx, `
+		SELECT interval, current_period_start, current_period_end, next_billing_at
+		  FROM subscriptions WHERE id = $1`, res.SubscriptionID).
+		Scan(&interval, &start, &end, &next); err != nil {
+		t.Fatal(err)
+	}
+	if interval != "monthly" {
+		t.Fatalf("interval = %q, want monthly", interval)
+	}
+	// The anchor day is the 15th and testNow is the 15th of March, so the period runs to the
+	// 15th of April and that is the next bill.
+	// The anchor puts the boundary at midnight in the billing timezone, so the period starts on
+	// the 15th rather than at the instant of purchase.
+	if got, want := start.UTC().Format("2006-01-02"), "2026-03-15"; got != want {
+		t.Fatalf("period start = %s, want %s", got, want)
+	}
+	if !next.Equal(end) {
+		t.Fatalf("next_billing_at = %s, want the period end %s", next, end)
+	}
+	if got, want := next.UTC().Format("2006-01-02"), "2026-04-15"; got != want {
+		t.Fatalf("next bill = %s, want %s", got, want)
+	}
+}
+
+// A one-time service is invisible to the two things that could otherwise bill it again: the
+// renewal scanner and dunning. Both are SQL predicates, so the assertion here is that the rows a
+// one-time purchase leaves behind do not match them.
+//
+// This is deliberately written from the data rather than by calling those packages: the property
+// is "no subscription exists", and a caller that never joins can only be defeated by a row that
+// does not exist.
+func TestOneTimeServiceIsInvisibleToRenewalAndDunning(t *testing.T) {
+	f := newFixture(t)
+	priceID := f.addPrice(t, 12, "free", 0, 0)
+	res, err := f.create(t, orders.Request{PriceVersionID: priceID})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if len(res.ServiceIDs) != 1 {
+		t.Fatalf("services = %v, want one", res.ServiceIDs)
+	}
+	ctx := context.Background()
+
+	// The renewal scanner's own predicate: it reads `subscriptions`, and a service with no
+	// schedule has no row there to scan.
+	var due int
+	if err := f.pool.QueryRow(ctx, `
+		SELECT count(*) FROM subscriptions sub
+		  JOIN services s ON s.subscription_id = sub.id
+		 WHERE s.id = $1 AND sub.status IN ('active', 'past_due')`, res.ServiceIDs[0]).
+		Scan(&due); err != nil {
+		t.Fatal(err)
+	}
+	if due != 0 {
+		t.Fatalf("%d renewable subscriptions behind a one-time service, want 0", due)
+	}
+
+	// Dunning's own join: it finds the invoice that funds a service through the subscription, so
+	// an invoice that cannot recur can never justify a suspension.
+	var funding int
+	if err := f.pool.QueryRow(ctx, `
+		SELECT count(*) FROM invoices i
+		  JOIN subscriptions sub ON sub.id = i.subscription_id
+		  JOIN services s ON s.subscription_id = sub.id
+		 WHERE s.id = $1 AND i.status = 'open'`, res.ServiceIDs[0]).Scan(&funding); err != nil {
+		t.Fatal(err)
+	}
+	if funding != 0 {
+		t.Fatalf("%d open invoices link a one-time service to dunning, want 0", funding)
+	}
+
+	// The portal's own read: a left join, so it reports "no next bill" rather than inventing one.
+	var nextBill *time.Time
+	if err := f.pool.QueryRow(ctx, `
+		SELECT sub.next_billing_at FROM services s
+		  LEFT JOIN subscriptions sub ON sub.id = s.subscription_id
+		 WHERE s.id = $1`, res.ServiceIDs[0]).Scan(&nextBill); err != nil {
+		t.Fatal(err)
+	}
+	if nextBill != nil {
+		t.Fatalf("the portal would claim a next-bill date of %s for a one-time service", nextBill)
+	}
+}

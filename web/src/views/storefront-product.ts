@@ -10,6 +10,7 @@ import { ApiError } from "../lib/api";
 import { h, swap } from "../lib/dom";
 import { money, type Amount } from "../lib/format";
 import { brandMark, icon } from "../lib/icons";
+import { descriptionBody } from "../lib/richtext";
 import type { AuthCtx } from "../lib/types";
 import { badge, btn, errorState, skeletonPage } from "../ui/kit";
 
@@ -23,6 +24,11 @@ interface Price {
   amount: Amount;
   setup: Amount;
   interval: string;
+  // The server decides both: the wording, so a new interval is not a client release, and
+  // whether the plan bills again, so a one-time product is not described as a subscription.
+  interval_label?: string;
+  recurring?: boolean;
+  sort_order?: number;
 }
 
 interface Product {
@@ -30,18 +36,27 @@ interface Product {
   name: string;
   short_description: string;
   description: string;
+  description_format?: string;
   category_name: string;
   category_slug: string;
   image_url: string;
   prices: Price[];
 }
 
+// A fallback for an interval the server did not label. The server's `interval_label` is what is
+// normally shown, because it knows about intervals this file has never heard of.
 const INTERVAL_LABEL: Record<string, string> = {
   monthly: "per month",
   quarterly: "per quarter",
   semiannual: "every six months",
   annual: "per year",
+  one_time: "one-time",
+  free: "free",
 };
+
+function intervalLabel(price: Price): string {
+  return price.interval_label || INTERVAL_LABEL[price.interval] || price.interval;
+}
 
 export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node> {
   const slug = ctx.params.slug ?? window.location.pathname.split("/").pop() ?? "";
@@ -117,8 +132,15 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
     );
 
   const render = (product: Product): Node => {
-    const prices = [...(product.prices ?? [])].sort((a, b) => a.amount.minor - b.amount.minor);
-    const cheapest = prices[0];
+    // The plans arrive in the operator's order (`price_versions.sort_order`), and that order is
+    // the merchandising decision: "Basic, Pro, Enterprise" is not a sort by price. The "cheapest"
+    // used for the call to action is computed separately so it cannot disturb the list.
+    const prices = product.prices ?? [];
+    const cheapest = prices.reduce<Price | undefined>(
+      (best, price) => (best === undefined || price.amount.minor < best.amount.minor ? price : best),
+      undefined,
+    );
+    const anyRecurring = prices.some((price) => price.recurring !== false);
     const buyHref = `/login?next=${encodeURIComponent("/portal")}`;
 
     return h(
@@ -158,14 +180,16 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
             ),
           ),
           product.description
-            ? h("div", { class: "store-prose" }, ...product.description.split(/\n{2,}/).map((para) => h("p", null, para)))
+            ? descriptionBody(product.description, product.description_format ?? "plain")
             : null,
           h(
             "div",
             { class: "store-includes" },
             include("checkCircle", "Provisioned automatically after payment"),
             include("checkCircle", "An invoice you can download and a ledger you can audit"),
-            include("checkCircle", "Cancel at the end of any paid period"),
+            // A one-time product has no period to cancel at the end of, so promising one would
+            // be a claim the checkout cannot honour.
+            anyRecurring ? include("checkCircle", "Cancel at the end of any paid period") : null,
           ),
         ),
         h(
@@ -186,7 +210,7 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
                         "div",
                         { class: "store-plan-main" },
                         h("span", { class: "store-plan-name" }, price.name || `Version ${price.version}`),
-                        h("span", { class: "store-plan-interval" }, INTERVAL_LABEL[price.interval] ?? price.interval),
+                        h("span", { class: "store-plan-interval" }, intervalLabel(price)),
                       ),
                       h(
                         "div",

@@ -614,13 +614,18 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 		orderItemIDs = append(orderItemIDs, itemID)
 	}
 
-	// One subscription per line, starting 'pending' so an unpaid order can never
-	// renew. The payment applier activates it; the zero-total path activates it here.
-	subscriptionIDs := make([]string, 0, len(lines))
-	for _, cl := range lines {
-		start, end, err := periodFor(cl, now)
+	// One subscription per *recurring* line, starting 'pending' so an unpaid order can never
+	// renew. The payment applier activates it; the zero-total path activates it here. A one-time
+	// or free line gets no subscription at all — see plan_interval.go for why the absence, rather
+	// than a placeholder row, is what stops it being renewed.
+	subscriptionIDs := make([]string, len(lines))
+	for i, cl := range lines {
+		start, end, recurring, err := planSchedule(cl, now)
 		if err != nil {
 			return CheckoutResult{}, err
+		}
+		if !recurring {
+			continue
 		}
 		var subID string
 		if err := tx.QueryRow(ctx, `
@@ -633,14 +638,17 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 			start, end, nullableString(plan.couponID), plan.cyclesApplied).Scan(&subID); err != nil {
 			return CheckoutResult{}, fmt.Errorf("checkout: insert subscription: %w", err)
 		}
-		subscriptionIDs = append(subscriptionIDs, subID)
+		subscriptionIDs[i] = subID
 	}
+	// The first subscription that exists, for the invoice and the coupon redemption. An order of
+	// one-time lines has none, and both columns are nullable for exactly that case.
+	firstSubscriptionID := firstID(subscriptionIDs)
 
 	out := CheckoutResult{
 		OrderID:         orderID,
 		CustomerID:      customerID,
 		Currency:        currency,
-		SubscriptionIDs: subscriptionIDs,
+		SubscriptionIDs: compactIDs(subscriptionIDs),
 		CouponCode:      plan.code,
 		Discount:        money.New(plan.amount, cur),
 	}
@@ -658,7 +666,7 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 			// The redemption is recorded even though there is no invoice: `max_uses`
 			// counts uses, and a free order is still a use. The invoice id is null,
 			// which the unique index tolerates.
-			if err := insertRedemption(ctx, tx, plan, customerID, "", subscriptionIDs[0], currency); err != nil {
+			if err := insertRedemption(ctx, tx, plan, customerID, "", firstSubscriptionID, currency); err != nil {
 				return CheckoutResult{}, err
 			}
 		}
@@ -695,8 +703,8 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 	invoiceID, _, snap, err := s.issuer.CreateDraft(ctx, tx, billing.IssueRequest{
 		CustomerID:      customerID,
 		OrderID:         orderID,
-		SubscriptionID:  subscriptionIDs[0],
-		PeriodKey:       now.UTC().Format("2006-01-02"),
+		SubscriptionID:  firstSubscriptionID,
+		PeriodKey:       invoicePeriodKey(firstSubscriptionID, now),
 		Lines:           chargeLines,
 		Merchant:        s.merchant,
 		Customer:        customer,
@@ -716,7 +724,7 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 			return CheckoutResult{}, err
 		}
 		snap = adjusted
-		if err := insertRedemption(ctx, tx, plan, customerID, invoiceID, subscriptionIDs[0], currency); err != nil {
+		if err := insertRedemption(ctx, tx, plan, customerID, invoiceID, firstSubscriptionID, currency); err != nil {
 			return CheckoutResult{}, err
 		}
 	}
@@ -1377,10 +1385,13 @@ func (s *CheckoutService) activateZeroTotal(ctx context.Context, tx pgx.Tx, cust
 		}
 
 		var serviceID string
+		// A one-time or free line has no subscription, so the service is written with none: the
+		// absence is what tells dunning, the portal and the renewal engine that this service has
+		// no schedule behind it.
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO services (customer_id, subscription_id, product_id, status, generation, config)
 			VALUES ($1, $2, $3, 'pending', 1, $4)
-			RETURNING id`, customerID, subscriptionIDs[i], cl.productID, config).Scan(&serviceID); err != nil {
+			RETURNING id`, customerID, nullableString(subscriptionIDs[i]), cl.productID, config).Scan(&serviceID); err != nil {
 			return nil, fmt.Errorf("checkout: create service: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `
@@ -1406,7 +1417,7 @@ func (s *CheckoutService) activateZeroTotal(ctx context.Context, tx pgx.Tx, cust
 	// 'fulfilling' and then 'completed' as the provisioning operations settle.
 	if _, err := tx.Exec(ctx, `
 		UPDATE subscriptions SET status = 'active', version = version + 1
-		WHERE id = ANY($1::uuid[])`, subscriptionIDs); err != nil {
+		WHERE id = ANY($1::uuid[])`, compactIDs(subscriptionIDs)); err != nil {
 		return nil, fmt.Errorf("checkout: activate subscriptions: %w", err)
 	}
 	return serviceIDs, nil

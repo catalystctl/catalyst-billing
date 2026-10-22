@@ -148,6 +148,12 @@ func (s *Server) apiKeyIdentity(r *http.Request, presented string) (APIKeyIdenti
 	if err != nil {
 		return APIKeyIdentity{}, authn.User{}, false
 	}
+	// A key may be restricted to a set of networks. The check fails closed: a key whose allowlist
+	// cannot be read is refused, because a key that is momentarily unrestricted is a key that can
+	// be used from anywhere, and the moment it takes to notice is the whole attack.
+	if !s.apiKeyAllowedFromRequest(r, key.ID) {
+		return APIKeyIdentity{}, authn.User{}, false
+	}
 	user, err := s.auth.Service.UserByID(r.Context(), key.UserID)
 	if err != nil || user.Status != "active" {
 		// A key outliving its owner's disabled account would be a permanent backdoor.

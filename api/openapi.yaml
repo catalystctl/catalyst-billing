@@ -2543,6 +2543,59 @@ paths:
                 required: true
             x-permission: invoice:pay:self
             x-rate-class: mutation
+    /api/v1/portal/impersonation/stop:
+        post:
+            description: 'Ends the borrowed session and rotates the operator''s own session token back into the cookie. Rotation is deliberate: the impersonated token was in a browser that may have been shared, and a token that outlives the impersonation is the one thing that must not happen. If the operator''s own session ended meanwhile, the cookie is cleared and the answer is 401 rather than a session that looks alive.'
+            operationId: PostPortalImpersonationStop
+            responses:
+                2XX:
+                    description: Back to the operator's own identity
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: This session is not an impersonation
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The operator's own session has ended; sign in again
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Stop impersonating and return to your own session
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:read:self
+            x-rate-class: mutation
     /api/v1/portal/invoices:
         get:
             description: 'Scoped in SQL: substituting another customer''s identifier returns not_found, identical to a nonexistent id.'
@@ -2994,6 +3047,89 @@ paths:
                 - bearerKey: []
             summary: Download an invoice as a PDF
             x-permission: invoice:read:self
+            x-rate-class: read
+    /api/v1/portal/login-history:
+        get:
+            description: 'Every auth event recorded for this account — successful and failed logins, password changes, impersonation start and stop — newest first, keyset-paginated. Scoped by user id in SQL: there is no parameter that names another account.'
+            operationId: GetPortalLoginhistory
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                detail:
+                                                    type: string
+                                                event:
+                                                    description: e.g. login_succeeded, login_failed, password_changed, impersonation_started.
+                                                    type: string
+                                                id:
+                                                    format: int64
+                                                    type: integer
+                                                ip:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - event
+                                                - created_at
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: A page of events
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The caller's authentication history
+            x-permission: customer:read:self
             x-rate-class: read
     /api/v1/portal/notifications:
         get:
@@ -4641,6 +4777,219 @@ paths:
             summary: Products this service can move to
             x-permission: service:upgrade:self
             x-rate-class: read
+    /api/v1/portal/sessions:
+        get:
+            description: 'Where this account is signed in, newest activity first. The token and the CSRF secret are never returned: the list describes sessions, it does not hand out credentials. `current` marks the session that made the request, so a client can render "this device" without comparing anything. Expired and revoked sessions are excluded — they cannot authenticate, and they are already in the login history.'
+            operationId: GetPortalSessions
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                current:
+                                                    description: True for the session that made this request.
+                                                    type: boolean
+                                                expires_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                impersonated_by:
+                                                    description: The operator behind an impersonated session.
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                ip:
+                                                    description: The address the session was created from, or empty when unknown.
+                                                    type: string
+                                                last_seen_at:
+                                                    format: date-time
+                                                    type: string
+                                                user_agent:
+                                                    type: string
+                                                user_id:
+                                                    format: uuid
+                                                    type: string
+                                            required:
+                                                - id
+                                                - created_at
+                                                - last_seen_at
+                                                - ip
+                                                - user_agent
+                                                - current
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: The sessions
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The caller's live sessions
+            x-permission: customer:read:self
+            x-rate-class: read
+    /api/v1/portal/sessions/{id}:
+        delete:
+            description: 'Ownership is part of the query, so another user''s session id returns 404 — identical to an id that never existed. Revoking the session that made the request is allowed and is a logout: the response says `current: true` and both cookies are cleared.'
+            operationId: DeletePortalSessionsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Revoked, or signed out when it was the current session
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such session for this user
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Revoke one of the caller's sessions
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
+    /api/v1/portal/sessions/revoke-others:
+        post:
+            description: Revokes every live session except the one making the request, and reports how many were ended. The current session is kept so the caller is not signed out by their own security action.
+            operationId: PostPortalSessionsRevokeothers
+            responses:
+                2XX:
+                    description: The others were revoked
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is not authenticated by a session (an API key has none to keep)
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Sign out everywhere else
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
     /api/v1/portal/tickets:
         get:
             description: 'Scoped in SQL: the customer is resolved from the session and the query filters on it, so substituting another customer''s ticket identifier returns not_found, identical to an id that never existed. `status` filters to open, replied or closed; `all` (the default) does not filter.'
@@ -6247,6 +6596,135 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Revoke an API key
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: apikey:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/api-keys/{id}/ip-allowlist:
+        get:
+            description: Returns the CIDRs the key may be used from. An empty list means unrestricted, which is what every key minted before this feature has.
+            operationId: GetStaffApikeysByIdIpallowlist
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The allowlist
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such key for this user
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Read a key's address allowlist
+            x-permission: apikey:manage
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: CIDRs only; host bits are masked off and duplicates dropped. An empty list removes the restriction. The caller's address is taken from the same trusted-proxy logic the rest of the server uses, so the check is enforceable behind a load balancer and cannot be spoofed by a header.
+            operationId: PutStaffApikeysByIdIpallowlist
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                ip_allowlist:
+                                    items:
+                                        description: A CIDR, e.g. 203.0.113.0/24 or 2001:db8::/32.
+                                        type: string
+                                    type: array
+                            required:
+                                - ip_allowlist
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: The saved allowlist
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An entry is not a CIDR, or the list is too long
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such key for this user
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Restrict a key to a set of networks
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -12220,6 +12698,56 @@ paths:
             x-permission: payment:refund
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/permissions:
+        get:
+            description: Every permission this build declares, the current set per role, and which role names are system roles. Served so the matrix screen cannot offer a permission the server would refuse.
+            operationId: GetStaffPermissions
+            responses:
+                2XX:
+                    description: The matrix
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The declared permission set and the current matrix
+            x-permission: staff:manage
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/refunds/{id}:
         get:
             operationId: GetStaffRefundsById
@@ -12274,6 +12802,280 @@ paths:
             summary: One refund
             x-permission: payment:refund
             x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/roles:
+        get:
+            description: System roles first, then custom roles by name. A system role's permissions are reported from the code map, not from the table, so a hand-edited row cannot widen what the code grants.
+            operationId: GetStaffRoles
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                description:
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                is_system:
+                                                    description: A system role cannot be edited or deleted.
+                                                    type: boolean
+                                                name:
+                                                    type: string
+                                                permissions:
+                                                    items:
+                                                        type: string
+                                                    type: array
+                                            required:
+                                                - id
+                                                - name
+                                                - is_system
+                                                - permissions
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: The roles
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Roles and their permission sets
+            x-permission: staff:manage
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: 'Requires `staff:manage`. The name is lower-case, 2–40 characters, and may not be one of the four reserved role names. Every permission must be one this build declares: a role holding a permission no handler checks would look wider than it is.'
+            operationId: PostStaffRoles
+            responses:
+                2XX:
+                    description: The role
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Invalid name, or an undeclared permission
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Create a custom role
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: staff:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/roles/{id}:
+        delete:
+            description: Refused for a system role (409 `system_role`) and for a role somebody still holds (409 `role_in_use`). A cascade would silently strip that user's access, which is an incident, not a convenience.
+            operationId: DeleteStaffRolesById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such role
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A system role, or a role that is still assigned
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete a custom role
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: staff:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/roles/{id}/permissions:
+        put:
+            description: The submitted set replaces the stored one, because the screen is a matrix and a server-computed diff between two racing submits is wrong in a way nobody can see. A system role is refused with 409.
+            operationId: PutStaffRolesByIdPermissions
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The updated role
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An undeclared permission
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such role
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A system role cannot be changed
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Replace a custom role's permissions
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: staff:manage
+            x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/services:
         get:
@@ -13087,6 +13889,168 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: service:upgrade
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/sessions:
+        get:
+            description: Without `user_id` this is the caller's own list, identical to the portal route. Naming another user requires `staff:manage`; a staff member without it gets 403 rather than an empty page, so the difference between "nobody is signed in" and "you may not look" stays visible.
+            operationId: GetStaffSessions
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                current:
+                                                    description: True for the session that made this request.
+                                                    type: boolean
+                                                expires_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                impersonated_by:
+                                                    description: The operator behind an impersonated session.
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                ip:
+                                                    description: The address the session was created from, or empty when unknown.
+                                                    type: string
+                                                last_seen_at:
+                                                    format: date-time
+                                                    type: string
+                                                user_agent:
+                                                    type: string
+                                                user_id:
+                                                    format: uuid
+                                                    type: string
+                                            required:
+                                                - id
+                                                - created_at
+                                                - last_seen_at
+                                                - ip
+                                                - user_agent
+                                                - current
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: The sessions
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Naming another user requires staff:manage
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Sessions, for the caller or for a named user
+            x-permission: customer:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/sessions/{id}:
+        delete:
+            description: 'Requires `staff:manage`. The subject is the caller unless `user_id` names someone else, and the session must belong to that subject. Revoking your own current session signs you out, exactly as the portal route does: the consequence of revoking a session must not depend on the URL used.'
+            operationId: DeleteStaffSessionsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Revoked, or signed out when it was the caller's own current session
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such session for that user
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Revoke a session as an administrator
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: staff:manage
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/settings:
@@ -14952,6 +15916,72 @@ paths:
             summary: The pending-upgrade queue
             x-permission: service:read:all
             x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/users/{id}/impersonate:
+        post:
+            description: 'Requires `staff:manage`. Issues a real session for the target user with `impersonated_by` set to the operator, and sets it as the session cookie. Because it is an ordinary session, every existing query scopes to the target automatically: the operator can do exactly what the customer can, and nothing more. A staff account cannot be impersonated, and neither can a disabled one. Both principals are audited, and the response carries `impersonating: true` so the banner can be raised before the first request.'
+            operationId: PostStaffUsersByIdImpersonate
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The impersonated session
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Self-impersonation, or the request used an API key
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The target is a staff account
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such user
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The target account is disabled
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Start impersonating a customer
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: staff:manage
+            x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/webhooks:
         get:

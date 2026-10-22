@@ -376,7 +376,7 @@ func (e *authEnv) loginReadingDemand(t *testing.T, email, password string) (*htt
 		t.Fatalf("login: status %d, body %s", rec.Code, rec.Body)
 	}
 	var body struct {
-		EnrolmentRequired bool   `json:"enrolment_required"`
+		EnrolmentRequired bool   `json:"mfa_enrolment_required"`
 		CSRFToken         string `json:"csrf_token"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -393,7 +393,7 @@ func (e *authEnv) loginReadingDemand(t *testing.T, email, password string) (*htt
 
 // loginDemand is the part of the sign-in response the shell reads.
 type loginDemand struct {
-	EnrolmentRequired bool `json:"enrolment_required"`
+	EnrolmentRequired bool `json:"mfa_enrolment_required"`
 }
 
 // ---------------------------------------------------------------- closure --

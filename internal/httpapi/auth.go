@@ -482,9 +482,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"roles":          res.User.Roles,
 			"is_staff":       res.User.IsStaff(),
 		},
-		"enrolment_required": s.enrolmentRequired(r, res.User.ID),
-		"csrf_token":         res.Session.CSRFToken,
-		"expires_at":         res.Session.ExpiresAt,
+		// `mfa_enrolment_required`, not `enrolment_required`: this is a flat identity document, and
+		// the same name is returned by GET /auth/me. A field that means one thing carries one name
+		// across the two documents a client reads to learn who it is signed in as. The bare
+		// `enrolment_required` is used inside objects that are already scoped to a second factor —
+		// the `logins[]` entries of the staff account-state payload and GET /portal/mfa — where the
+		// prefix would only repeat the context.
+		"mfa_enrolment_required": s.enrolmentRequired(r, res.User.ID),
+		"csrf_token":             res.Session.CSRFToken,
+		"expires_at":             res.Session.ExpiresAt,
 	})
 }
 

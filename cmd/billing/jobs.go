@@ -14,6 +14,7 @@ import (
 	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/fulfilment"
 	"github.com/catalyst/billing/internal/httpapi"
+	"github.com/catalyst/billing/internal/lifecycle"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/payments"
@@ -276,6 +277,23 @@ func buildJobs(pool *store.Pool, logger *slog.Logger, apiServer *httpapi.Server)
 		}
 	} else {
 		logger.Warn("notifications are disabled by kill switch")
+	}
+
+	// ---- lifecycle: the two rules nothing used to read ------------------------
+	//
+	// cronjob.order_cancel_days and cronjob.terminate_days are settings, not code, so they were
+	// reported by the panel while nothing acted on them: an unpaid order stayed pending forever
+	// and a suspension never became a termination. These two jobs are what make those settings
+	// real. Each is independently kill-switchable inside internal/lifecycle, because terminating
+	// a customer's server is the one action an operator must be able to stop instantly without a
+	// redeploy.
+	for _, lj := range lifecycle.Jobs(pool, logger) {
+		lj := lj
+		jobs = append(jobs, jobSpec{
+			name:     lj.Name,
+			interval: lj.Interval,
+			run:      lj.Run,
+		})
 	}
 
 	return clients, jobs

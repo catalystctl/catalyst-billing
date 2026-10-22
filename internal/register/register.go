@@ -360,12 +360,21 @@ func (s *Service) sendVerification(ctx context.Context, userID string) error {
 		return nil
 	}
 	link := s.baseURL + "/api/v1/auth/verify?token=" + res.Token
-	msg := notify.EmailVerificationMessage(res.Email, link, authn.EmailVerificationLifetime)
-	// The dedupe key carries the token: two genuine requests are two messages, while a
-	// retried request for the same token is one.
-	msg.DedupeKey = "email_verification:" + res.Token[:12]
+	in := notify.EmailVerificationInput{
+		UserID:    userID,
+		Email:     res.Email,
+		Link:      link,
+		ExpiresIn: authn.EmailVerificationLifetime,
+		// The dedupe component is a prefix of the token, never the token itself: two genuine
+		// requests are two messages, while a retried request for the same token is one.
+		Token: res.Token[:12],
+	}
+	// The wording comes from the editable email_verification template, the same one the signed-in
+	// "resend verification" endpoint uses. A registration mail that is hardcoded while that one is
+	// operator-editable would mean two different messages for one event, and the operator would
+	// only ever find out about the one they cannot edit.
 	return s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		_, _, err := s.queue.Enqueue(ctx, tx, msg)
+		_, err := notify.EmailVerification(ctx, tx, s.queue, in)
 		return err
 	})
 }

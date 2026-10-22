@@ -128,7 +128,8 @@ type Outcome struct {
 	Inboxed bool
 	// Reason explains why a channel was skipped, and is empty when nothing was skipped. The
 	// values are stable strings a caller can branch on: "template_disabled", "mail_disabled",
-	// "in_app_disabled", "preference_off", "preference_never", "no_recipient", "no_user".
+	// "mail_disabled_by_setting", "in_app_disabled", "preference_off", "preference_never",
+	// "no_recipient", "no_user".
 	Reason string
 }
 
@@ -192,10 +193,32 @@ func dispatch(ctx context.Context, tx pgx.Tx, queue *Queue, eventKey string, d T
 	mailRendered := Render(tmpl, absoluteLinks(vars))
 
 	// ---- mail ----
+	//
+	// Three switches decide the mail channel, and they are checked in order of authority: the
+	// installation-wide kill switch, the per-template channel toggle, and the user's own
+	// preference. The kill switch comes first because it is the operator's emergency brake
+	// (a misconfigured SMTP relay must stop every message, not only the one they remembered to
+	// disable), and because it is the one switch a customer cannot override.
 	if !decision.Mail {
 		res.Reason = decision.MailReason
 	} else if !tmpl.MailEnabled {
 		res.Reason = "mail_disabled"
+	} else if mailDisabledBySetting(ctx, tx) {
+		res.Reason = "mail_disabled_by_setting"
+		// Record the decision rather than only skipping it. "We did not send it" and "we failed
+		// to send it" are different answers to a support ticket, and only one of them is a bug.
+		// The row is written with status 'suppressed', so the drain loop never claims it.
+		if queue != nil {
+			if err := queue.Suppress(ctx, tx, Message{
+				Kind:      eventKey,
+				To:        d.Email,
+				Subject:   mailRendered.Subject,
+				Body:      mailRendered.Body,
+				DedupeKey: dedupeKey(eventKey, d.DedupeKey),
+			}, "mail.disable is set"); err != nil {
+				return res, err
+			}
+		}
 	} else if strings.TrimSpace(d.Email) == "" {
 		res.Reason = "no_recipient"
 	} else if queue == nil {
@@ -349,13 +372,17 @@ func dedupeKey(eventKey, subject string) string {
 
 // PasswordReset sends the reset mail.
 //
-// It is the templated form of PasswordResetMessage: the wording comes from the
-// password_reset template, and an inbox row is written alongside the mail so a customer who
-// reads the panel first still sees that a reset was requested.
+// The wording comes from the editable password_reset template, and an inbox row is written
+// alongside the mail so a customer who reads the panel first still sees that a reset was
+// requested — the notice is a security signal, and a mailbox the customer may no longer control
+// is the wrong place for the only copy of it.
 //
 // The dedupe key must include the token, not just the user: two genuine reset requests must
 // both arrive, while a retried request for the same token must not. The caller passes the
 // token (or a prefix of its hash) as Token.
+//
+// The token is data, and this function does not care what it is: the link is built by the caller,
+// so a link built from the request Host header cannot reach a customer through here.
 func PasswordReset(ctx context.Context, tx pgx.Tx, queue *Queue, in PasswordResetInput) (Outcome, error) {
 	vars := map[string]string{
 		"email":        in.Email,
@@ -519,16 +546,36 @@ type OrderCreatedInput struct {
 }
 
 // ServerCreated tells a customer their service is ready.
+//
+// It is also the activation message (SF-11): the per-product snippet an operator writes — how to
+// log in to the panel they just bought, which port the game server listens on, where the DNS
+// records go — arrives here as Instructions and is rendered as {{product_instructions}}. A
+// product with no snippet gets DefaultActivationInstructions rather than a hole in the sentence,
+// because an empty activation mail is the one message a customer is guaranteed to open.
+//
+// The snippet is data, not a template: it is substituted as a value in a single render pass, so
+// a snippet that happens to contain "{{link}}" renders literally. An operator writing product
+// copy must not be able to reach another variable by typing its name.
 func ServerCreated(ctx context.Context, tx pgx.Tx, queue *Queue, in ServerCreatedInput) (Outcome, error) {
 	vars := map[string]string{
-		"service_name": in.ServiceName,
-		"server_name":  orDefault(in.ServerName, in.ServiceName),
-		"service_url":  orDefault(in.ServiceURL, "/portal/services/"+in.ServiceID),
+		"service_name":         in.ServiceName,
+		"server_name":          orDefault(in.ServerName, in.ServiceName),
+		"product_instructions": orDefault(in.Instructions, DefaultActivationInstructions),
+		"service_url":          orDefault(in.ServiceURL, "/portal/services/"+in.ServiceID),
 	}
 	return dispatch(ctx, tx, queue, EventNewServerCreated, Target{
 		UserID: in.UserID, Email: in.Email, DedupeKey: in.ServiceID, Vars: vars,
 	})
 }
+
+// DefaultActivationInstructions is what the activation message says when a product carries no
+// snippet of its own.
+//
+// It is a sentence, not an empty string, and that is the whole point: the template is written by
+// an operator and may place {{product_instructions}} mid-paragraph, where an empty value would
+// read as a mistake. It also tells the customer where to go next, which is the one thing a
+// generic activation mail can usefully say.
+const DefaultActivationInstructions = "Sign in to your account for the access details."
 
 // ServerCreatedInput is what ServerCreated needs.
 type ServerCreatedInput struct {
@@ -537,7 +584,10 @@ type ServerCreatedInput struct {
 	ServiceID   string
 	ServiceName string
 	ServerName  string
-	ServiceURL  string
+	// Instructions is the product's activation snippet (products.email_template). Empty falls
+	// back to DefaultActivationInstructions.
+	Instructions string
+	ServiceURL   string
 }
 
 // ServerSuspended tells a customer their service was suspended.
@@ -761,6 +811,26 @@ func companyName(ctx context.Context, q Querier) string {
 		return "Catalyst Billing"
 	}
 	return name
+}
+
+// mailDisabledBySetting reports whether the operator has switched mail off for the whole
+// installation (`mail.disable`).
+//
+// It is read inside the caller's transaction, next to the change it is about to describe, so a
+// settings edit that commits after this read cannot half-apply to a message already queued. A
+// missing row or an unparseable value is "not disabled": a settings read must never be the
+// reason a customer is not told their password was reset.
+func mailDisabledBySetting(ctx context.Context, q Querier) bool {
+	var v string
+	if err := q.QueryRow(ctx,
+		`SELECT value FROM settings WHERE group_key = 'mail' AND key = 'disable'`).Scan(&v); err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "t", "1", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // publicURL is the origin a link in a mail must point at.

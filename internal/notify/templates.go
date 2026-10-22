@@ -136,13 +136,42 @@ func scanTemplate(row pgx.Row) (Template, error) {
 }
 
 // TemplateFor loads one event's template.
+//
+// A row that does not exist is not an error when this build ships a default for the event: it
+// means the installation has not been seeded yet, and the shipped wording is exactly what a
+// fresh installation would send. There is no delete path for a template — the staff screen can
+// reword one or reset it to the default, not remove it — so "no row" cannot mean "an operator
+// took this away". Falling back rather than failing is what keeps the credential flows working
+// in a database that has been migrated but not yet seeded, and a missing template must never be
+// the reason a customer cannot reset a password.
+//
+// An event key this build knows nothing about is still ErrTemplateNotFound. A template for an
+// event that does not exist looks like a working feature and is a permanently silent one, so it
+// must be visible.
 func TemplateFor(ctx context.Context, q Querier, eventKey string) (Template, error) {
 	t, err := scanTemplate(q.QueryRow(ctx,
 		`SELECT `+templateColumns+` FROM notification_templates WHERE event_key = $1`, eventKey))
 	if errors.Is(err, ErrTemplateNotFound) {
+		if def, ok := DefaultTemplateFor(eventKey); ok {
+			return def, nil
+		}
 		return Template{}, fmt.Errorf("%w: %s", ErrTemplateNotFound, eventKey)
 	}
 	return t, err
+}
+
+// DefaultTemplateFor returns the shipped default for one event, and whether this build has one.
+//
+// It is exported because the staff template screen needs the same answer for its "reset to the
+// shipped wording" action, and two copies of "which event has which default" is one copy too
+// many.
+func DefaultTemplateFor(eventKey string) (Template, bool) {
+	for _, t := range DefaultTemplates() {
+		if t.EventKey == eventKey {
+			return t, true
+		}
+	}
+	return Template{}, false
 }
 
 // Templates lists every template, ordered by event key so the staff screen is stable.
@@ -431,6 +460,8 @@ func DefaultTemplates() []Template {
 		all(EventNewServerCreated, "Server created",
 			"{{service_name}} is ready",
 			"{{service_name}} has been set up and is ready to use.\n"+
+				"\n"+
+				"{{product_instructions}}\n"+
 				"\n"+
 				"Server: {{server_name}}\n"+
 				"\n"+

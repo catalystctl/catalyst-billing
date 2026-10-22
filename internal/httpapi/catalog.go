@@ -376,11 +376,15 @@ func (s *Server) productJSON(p catalog.Product) map[string]any {
 		})
 	}
 	return map[string]any{
-		"id":                   p.ID,
-		"slug":                 p.Slug,
-		"name":                 p.Name,
-		"short_description":    p.ShortDescription,
-		"description":          p.Description,
+		"id":                p.ID,
+		"slug":              p.Slug,
+		"name":              p.Name,
+		"short_description": p.ShortDescription,
+		"description":       p.Description,
+		// The per-product activation snippet. It is staff-only by construction: this shape is
+		// the panel's, and publicProductJSON below deliberately omits it. An operator writes it
+		// for someone who has already bought the product, not for a visitor deciding whether to.
+		"email_template":       p.EmailTemplate,
 		"category_id":          p.CategoryID,
 		"category_name":        p.CategoryName,
 		"category_slug":        p.CategorySlug,

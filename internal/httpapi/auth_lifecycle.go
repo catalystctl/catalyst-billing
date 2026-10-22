@@ -30,6 +30,14 @@ import (
 // The tokens themselves live in the database as hashes (internal/authn), and the message that
 // carries one is written to the durable outbox in the same transaction as the token, so a crash
 // cannot lose the mail and a retry cannot send it twice.
+//
+// The wording of both messages comes from the editable templates in internal/notify
+// (password_reset and email_verification), not from a string literal here. An operator can
+// reword the mail — add their own support address, say which panel URL to use — without a
+// deploy, and the same event also writes an inbox row, because "a reset was requested for your
+// account" is a security signal a customer should see in the panel and not only in a mailbox
+// they may no longer control. Nothing about the security properties changes: the token is
+// single-use, still expires, and an unknown address still gets the same answer and no mail.
 
 func init() {
 	RegisterRoutes("60-auth-lifecycle", registerAuthLifecycle)
@@ -62,11 +70,15 @@ func publicBaseURL() string {
 	return "http://127.0.0.1:8080"
 }
 
-// queueMessage writes a message to the outbox inside the caller's transaction.
+// queueMessage writes a raw message to the outbox inside the caller's transaction.
+//
+// The credential flows no longer use it — they dispatch through the templated events in
+// internal/notify, which render the operator's wording and write the inbox row too. It is kept
+// for a caller that genuinely has a finished message in hand (a one-off notice with no template
+// of its own), and it fails rather than silently doing nothing when there is no outbox, because
+// a 202 that promised a mail nobody will send is worse than a 503.
 func (s *Server) queueMessage(ctx context.Context, tx pgx.Tx, msg notify.Message) error {
 	if s.notify == nil {
-		// Without an outbox there is nowhere to record the decision. Failing is honest: a 202
-		// that promised a mail nobody will send is worse than a 503.
 		return errors.New("httpapi: no notification queue configured")
 	}
 	_, _, err := s.notify.Enqueue(ctx, tx, msg)
@@ -118,13 +130,24 @@ func (s *Server) handleResetRequest(w http.ResponseWriter, r *http.Request) {
 
 	if res.Token != "" {
 		link := publicBaseURL() + "/reset?token=" + res.Token
-		msg := notify.PasswordResetMessage(res.Email, link, authn.PasswordResetLifetime)
-		// The dedupe key includes the token: two genuine requests must both be delivered, while a
-		// retried request for the same token must not send twice.
-		msg.DedupeKey = "password_reset:" + res.Token[:12]
+		in := notify.PasswordResetInput{
+			UserID: res.UserID,
+			Email:  res.Email,
+			Link:   link,
+			// The link expires, and the template says so. The lifetime is read from authn so the
+			// sentence and the database CHECK cannot disagree.
+			ExpiresIn: authn.PasswordResetLifetime,
+			// The dedupe component is a prefix of the token, never the token: the outbox must not
+			// become a store of working reset links. Two genuine requests are two messages, while a
+			// retried request for the same token is one.
+			Token: res.Token[:12],
+		}
 		if err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
-			return s.queueMessage(ctx, tx, msg)
+			_, err := notify.PasswordReset(ctx, tx, s.notify, in)
+			return err
 		}); err != nil {
+			// The response stays 202. A 500 here would only happen for an address that exists, which
+			// makes it an account oracle — and the customer's next step is the same either way.
 			s.cfg.Logger.ErrorContext(r.Context(), "could not queue the reset message", "error", err)
 		}
 	}
@@ -204,10 +227,16 @@ func (s *Server) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 
 	if res.Token != "" {
 		link := publicBaseURL() + "/api/v1/auth/verify?token=" + res.Token
-		msg := notify.EmailVerificationMessage(res.Email, link, authn.EmailVerificationLifetime)
-		msg.DedupeKey = "email_verification:" + res.Token[:12]
+		in := notify.EmailVerificationInput{
+			UserID:    user.ID,
+			Email:     res.Email,
+			Link:      link,
+			ExpiresIn: authn.EmailVerificationLifetime,
+			Token:     res.Token[:12],
+		}
 		if err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
-			return s.queueMessage(ctx, tx, msg)
+			_, err := notify.EmailVerification(ctx, tx, s.notify, in)
+			return err
 		}); err != nil {
 			s.cfg.Logger.ErrorContext(r.Context(), "could not queue the verification message", "error", err)
 		}

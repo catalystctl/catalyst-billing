@@ -7935,6 +7935,375 @@ paths:
             x-permission: credit:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/affiliates/{id}/payouts:
+        get:
+            description: |-
+                What the affiliate has earned, what has already been paid, what is still owed, and the rows that make up the difference: every commission with the order or renewal invoice it came from and the payout that settled it, and every payout with its method and reference.
+
+                The totals are all-time, so the period scopes only the rows: a window that predates the commissions still states what is owed. `reconciles` reports whether `earned - paid == outstanding` held when the report was read.
+
+                `currency` narrows the report to one currency. Omit it for every currency the affiliate has touched — an affiliate with earnings in two currencies has two balances and two payouts, because summing them would be arithmetic without an exchange rate.
+            operationId: GetStaffAffiliatesByIdPayouts
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                affiliate_id:
+                                                    format: uuid
+                                                    type: string
+                                                code:
+                                                    type: string
+                                                currency:
+                                                    type: string
+                                                earned:
+                                                    allOf:
+                                                        - $ref: '#/components/schemas/Amount'
+                                                    description: Every commission ever recorded, in this currency.
+                                                email:
+                                                    format: email
+                                                    type: string
+                                                outstanding:
+                                                    $ref: '#/components/schemas/Amount'
+                                                paid:
+                                                    $ref: '#/components/schemas/Amount'
+                                                payouts:
+                                                    type: integer
+                                                reconciles:
+                                                    description: Whether `earned - paid == outstanding` held when the report was read. A false here is a defect in the data, and the rows below are how to find it.
+                                                    type: boolean
+                                                rows:
+                                                    description: The commission and payout rows inside the period, newest first. The totals above are all-time; the period only scopes these rows.
+                                                    items:
+                                                        properties:
+                                                            amount:
+                                                                $ref: '#/components/schemas/Amount'
+                                                            id:
+                                                                format: uuid
+                                                                type: string
+                                                            invoice_id:
+                                                                format: uuid
+                                                                type: string
+                                                            kind:
+                                                                description: '`commission` is earned on an order, `renewal` on a renewal invoice, `payout` is money that left.'
+                                                                enum:
+                                                                    - commission
+                                                                    - renewal
+                                                                    - payout
+                                                                type: string
+                                                            occurred_at:
+                                                                format: date-time
+                                                                type: string
+                                                            order_id:
+                                                                format: uuid
+                                                                type: string
+                                                            paid_at:
+                                                                format: date-time
+                                                                type:
+                                                                    - string
+                                                                    - "null"
+                                                            payout_id:
+                                                                description: The payout that settled this commission. Absent while it is still owed.
+                                                                format: uuid
+                                                                type: string
+                                                            rate:
+                                                                description: The canonical rational captured when the commission was recorded.
+                                                                type: string
+                                                            renewal_index:
+                                                                description: 1 for the first renewal of a referred customer, 2 for the second, and so on.
+                                                                type: integer
+                                                            status:
+                                                                description: A commission's status, or `recorded` for a payout row, which has no lifecycle.
+                                                                enum:
+                                                                    - pending
+                                                                    - approved
+                                                                    - paid
+                                                                    - recorded
+                                                                type: string
+                                                        required:
+                                                            - kind
+                                                            - id
+                                                            - amount
+                                                            - status
+                                                            - occurred_at
+                                                        type: object
+                                                    type: array
+                                            required:
+                                                - affiliate_id
+                                                - currency
+                                                - earned
+                                                - paid
+                                                - outstanding
+                                                - reconciles
+                                                - rows
+                                            type: object
+                                        type: array
+                                    history:
+                                        description: Recorded payouts, newest first.
+                                        items:
+                                            properties:
+                                                affiliate_id:
+                                                    format: uuid
+                                                    type: string
+                                                amount:
+                                                    $ref: '#/components/schemas/Amount'
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                created_by:
+                                                    format: uuid
+                                                    type: string
+                                                currency:
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                method:
+                                                    enum:
+                                                        - credit
+                                                        - paypal
+                                                        - bank_transfer
+                                                        - manual
+                                                    type: string
+                                                note:
+                                                    type: string
+                                                period_from:
+                                                    format: date-time
+                                                    type: string
+                                                period_to:
+                                                    format: date-time
+                                                    type: string
+                                                reference:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - affiliate_id
+                                                - currency
+                                                - amount
+                                                - method
+                                                - created_at
+                                            type: object
+                                        type: array
+                                    period:
+                                        properties:
+                                            from:
+                                                format: date-time
+                                                type: string
+                                            to:
+                                                format: date-time
+                                                type: string
+                                        type: object
+                                required:
+                                    - data
+                                    - history
+                                    - period
+                                type: object
+                    description: The reconciliation
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The period is not one this endpoint accepts
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such affiliate
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Reconcile one affiliate's earnings over a period
+            x-permission: report:read
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: |-
+                Settles the affiliate's whole outstanding balance in one currency and records it as an append-only row that links every commission it settled.
+
+                It never restates what a commission was worth: the amount on a commission row is the fact the payout pays, not a figure the payout recalculates. After a payout the reconciliation reads `earned == paid` and `outstanding == 0`.
+
+                It refuses when the materialised balance and the commission rows disagree (409 `balance_mismatch`) — paying either figure would move money nobody can account for afterwards. A second call with nothing outstanding is 409 `nothing_to_pay`, so a double-click pays once even before the Idempotency-Key layer answers.
+
+                The payout row and its audit event commit in one transaction: if the audit write fails, the money does not move.
+            operationId: PostStaffAffiliatesByIdPayouts
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                currency:
+                                    description: The currency of the balance to settle. A payout never mixes currencies.
+                                    pattern: ^[A-Za-z0-9]{2,12}$
+                                    type: string
+                                from:
+                                    description: The start of the window the operator was reviewing. Recorded on the payout, not used to filter what is settled.
+                                    type: string
+                                method:
+                                    description: How the money left. Defaults to the affiliate's configured method.
+                                    enum:
+                                        - credit
+                                        - paypal
+                                        - bank_transfer
+                                        - manual
+                                    type: string
+                                note:
+                                    type: string
+                                reference:
+                                    description: A provider or bank reference, quoted when reconciling a statement.
+                                    type: string
+                                to:
+                                    description: The end of that window.
+                                    type: string
+                            required:
+                                - currency
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    affiliate_id:
+                                        format: uuid
+                                        type: string
+                                    amount:
+                                        $ref: '#/components/schemas/Amount'
+                                    commissions:
+                                        description: How many commission rows the payout settled, of both kinds.
+                                        type: integer
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    currency:
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    method:
+                                        enum:
+                                            - credit
+                                            - paypal
+                                            - bank_transfer
+                                            - manual
+                                        type: string
+                                    order_commissions:
+                                        type: integer
+                                    reference:
+                                        type: string
+                                    renewal_commissions:
+                                        type: integer
+                                required:
+                                    - id
+                                    - affiliate_id
+                                    - currency
+                                    - amount
+                                    - method
+                                    - commissions
+                                    - created_at
+                                type: object
+                    description: The recorded payout
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Nothing outstanding, or the balance disagrees with its rows
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The currency or the method is not valid
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Record a payout
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: credit:read:all
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/affiliates/payouts:
         get:
             description: Every affiliate with an outstanding balance, per currency, plus the totals per currency. A balance is per currency because commission is earned in the order's currency and there is no conversion rate in this system, so summing across currencies would be meaningless.
@@ -13369,6 +13738,264 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Dashboard figures for a period
+            x-permission: report:read
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/dashboard/widgets:
+        get:
+            description: |-
+                Revenue from the ledger, the customer counts, the support queue, the overdue position and the paid-not-provisioned queue, over a period the caller chooses.
+
+                `period` is `7d`, `30d`, `90d` or `custom`; a custom period needs `from` and `to` as RFC3339 timestamps or `YYYY-MM-DD` dates, and may not span more than 366 days. A date-only `to` means the end of that day, so a range cannot silently exclude the day the operator asked for.
+
+                Revenue is read from `journal_entries` on the revenue account, not from invoice totals, so a voided invoice is not revenue and a credit note reduces it. It is per currency and has no cross-currency total, because there is no exchange rate in this system.
+
+                A figure that could not be read is `null` and is named in `unavailable`; a period with nothing in it is `0`. The response is still 200 in both cases: the dashboard is the first screen an operator opens and it has to render when one number cannot be read.
+            operationId: GetStaffDashboardWidgets
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    active_customers:
+                                        description: Customers with a live service, an invoice issued or a payment received in the period.
+                                        type:
+                                            - integer
+                                            - "null"
+                                    available:
+                                        description: False when at least one figure could not be read.
+                                        type: boolean
+                                    days:
+                                        type: integer
+                                    from:
+                                        format: date-time
+                                        type: string
+                                    generated_at:
+                                        format: date-time
+                                        type: string
+                                    new_customers:
+                                        description: Customer records created in the period.
+                                        type:
+                                            - integer
+                                            - "null"
+                                    open_tickets:
+                                        description: The support queue depth now. A queue is a current state, so it does not move when the period changes.
+                                        type:
+                                            - integer
+                                            - "null"
+                                    overdue_invoices:
+                                        description: The overdue position now, not a period total.
+                                        properties:
+                                            count:
+                                                type: integer
+                                            money:
+                                                description: What is still owed on each overdue invoice, per currency.
+                                                items:
+                                                    properties:
+                                                        currency:
+                                                            type: string
+                                                        display:
+                                                            type: string
+                                                        minor:
+                                                            description: Integer minor units. Never a float, never a decimal string.
+                                                            format: int64
+                                                            type: integer
+                                                        scale:
+                                                            type: integer
+                                                    required:
+                                                        - currency
+                                                        - scale
+                                                        - minor
+                                                        - display
+                                                    type: object
+                                                type: array
+                                            oldest_due_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                        type:
+                                            - object
+                                            - "null"
+                                    paid_not_provisioned:
+                                        allOf:
+                                            - properties:
+                                                action:
+                                                    type: string
+                                                code:
+                                                    enum:
+                                                        - paid_not_provisioned
+                                                    type: string
+                                                count:
+                                                    description: Every affected invoice, not just the rows below.
+                                                    type: integer
+                                                detail:
+                                                    type: string
+                                                items:
+                                                    items:
+                                                        properties:
+                                                            customer_id:
+                                                                format: uuid
+                                                                type: string
+                                                            email:
+                                                                format: email
+                                                                type: string
+                                                            invoice_id:
+                                                                format: uuid
+                                                                type: string
+                                                            issued_at:
+                                                                format: date-time
+                                                                type:
+                                                                    - string
+                                                                    - "null"
+                                                            number:
+                                                                type: string
+                                                            order_id:
+                                                                format: uuid
+                                                                type: string
+                                                            total:
+                                                                $ref: '#/components/schemas/Amount'
+                                                        required:
+                                                            - invoice_id
+                                                            - total
+                                                        type: object
+                                                    type: array
+                                                money:
+                                                    description: The amount at stake per currency. There is no cross-currency total.
+                                                    items:
+                                                        properties:
+                                                            currency:
+                                                                type: string
+                                                            display:
+                                                                type: string
+                                                            minor:
+                                                                description: Integer minor units. Never a float, never a decimal string.
+                                                                format: int64
+                                                                type: integer
+                                                            scale:
+                                                                type: integer
+                                                        required:
+                                                            - currency
+                                                            - scale
+                                                            - minor
+                                                            - display
+                                                        type: object
+                                                    type: array
+                                                oldest_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                severity:
+                                                    enum:
+                                                        - critical
+                                                        - warning
+                                                        - info
+                                                    type: string
+                                                title:
+                                                    type: string
+                                                truncated:
+                                                    description: True when `count` exceeds the rows returned.
+                                                    type: boolean
+                                              required:
+                                                - code
+                                                - count
+                                                - items
+                                                - truncated
+                                              type: object
+                                        description: 'The exception queue internal/ops alerts on: settled invoices whose order bought nothing that is running.'
+                                    period:
+                                        enum:
+                                            - 7d
+                                            - 30d
+                                            - 90d
+                                            - custom
+                                        type: string
+                                    revenue:
+                                        description: Net revenue per currency, from the ledger.
+                                        items:
+                                            properties:
+                                                currency:
+                                                    type: string
+                                                display:
+                                                    type: string
+                                                minor:
+                                                    description: Integer minor units. Never a float, never a decimal string.
+                                                    format: int64
+                                                    type: integer
+                                                scale:
+                                                    type: integer
+                                            required:
+                                                - currency
+                                                - scale
+                                                - minor
+                                                - display
+                                            type: object
+                                        type: array
+                                    tickets_opened:
+                                        description: Tickets opened in the period.
+                                        type:
+                                            - integer
+                                            - "null"
+                                    to:
+                                        format: date-time
+                                        type: string
+                                    unavailable:
+                                        description: The JSON keys of the widgets that failed, so a screen can mark them.
+                                        items:
+                                            type: string
+                                        type: array
+                                required:
+                                    - period
+                                    - from
+                                    - to
+                                    - days
+                                    - generated_at
+                                    - available
+                                    - revenue
+                                type: object
+                    description: The widget set
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The period is not one this endpoint accepts
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Dashboard widgets over a selectable period
             x-permission: report:read
             x-rate-class: read
             x-staff-only: true

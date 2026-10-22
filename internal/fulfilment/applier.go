@@ -114,7 +114,13 @@ func (a *Applier) ApplySettledPayment(ctx context.Context, tx pgx.Tx, p payments
 		// money. Commission is a liability the moment the payment settles, so recording it later
 		// would leave a window in which the books say the shop earned the full amount and it did
 		// not. An invoice with no referral is a no-op, which is the overwhelmingly common case.
-		if _, err := growth.RecordCommissionForPaidInvoice(ctx, tx, p.InvoiceID); err != nil &&
+		//
+		// RecordSettledInvoiceCommission covers both kinds of commission, so a renewal is paid
+		// for in this same transaction too: the first order's commission is earned on the
+		// invoice's order, and a renewal's is attributed to the referral recorded on the
+		// customer. With `affiliates.recurring` off — the default — a renewal still records
+		// nothing, which is exactly the behaviour before the recurring work landed.
+		if _, err := growth.RecordSettledInvoiceCommission(ctx, tx, p.InvoiceID); err != nil &&
 			!errors.Is(err, growth.ErrNotReferred) {
 			return payments.ApplyResult{}, fmt.Errorf("record affiliate commission: %w", err)
 		}

@@ -4,19 +4,22 @@
 // the exception list from ops.Overview, ordered by what happens if it is ignored, plus the
 // four counts that belong in a header. A number nobody can act on is not on this page.
 
+import { ApiError } from "../lib/api";
 import type { Amount } from "../lib/format";
 import { h } from "../lib/dom";
-import { age, humanStatus, relative } from "../lib/format";
+import { age, dateOnly, humanStatus, money, relative } from "../lib/format";
 import { icon, type IconName } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import {
   badge,
+  banner,
   btn,
   card,
   emptyState,
   errorState,
   moneyEl,
   pageHead,
+  skeletonLines,
   skeletonPage,
   statusBadge,
 } from "../ui/kit";
@@ -60,6 +63,60 @@ interface InvoiceRow {
   customer?: { id: string; email: string };
 }
 
+/** The wire shape of `GET /api/v1/staff/dashboard/widgets`.
+ *
+ *  Every figure is nullable on purpose: `null` means the query failed and the widget is named
+ *  in `unavailable`, while `0` means the period was empty. The two must render differently —
+ *  a dash and a zero — because a dashboard that reports an outage as a quiet month is worse
+ *  than one that reports nothing. */
+interface DashboardWidgets {
+  period: string;
+  from: string;
+  to: string;
+  days: number;
+  generated_at: string;
+  available: boolean;
+  unavailable: string[];
+  revenue: Amount[];
+  active_customers: number | null;
+  new_customers: number | null;
+  open_tickets: number | null;
+  tickets_opened: number | null;
+  overdue_invoices: {
+    count: number;
+    oldest_due_at: string | null;
+    money: Amount[];
+  } | null;
+  paid_not_provisioned: {
+    code: string;
+    title: string;
+    detail: string;
+    action: string;
+    severity: "critical" | "warning" | "info";
+    count: number;
+    oldest_at: string | null;
+    money: Amount[];
+    items: Array<{
+      invoice_id: string;
+      number: string;
+      customer_id: string;
+      email: string;
+      order_id: string;
+      total: Amount;
+      issued_at: string | null;
+    }>;
+    truncated: boolean;
+  } | null;
+}
+
+/** The periods the server accepts. `custom` needs `from` and `to`. */
+const PERIODS: ReadonlyArray<{ key: string; label: string }> = [
+  { key: "7d", label: "7 days" },
+  { key: "30d", label: "30 days" },
+  { key: "90d", label: "90 days" },
+  { key: "custom", label: "Custom" },
+];
+
 const EXCEPTION_LINKS: Record<string, string> = {
   paid_not_provisioned: "/services?has_open_operation=true",
   unknown_operations: "/operations?status=unknown",
@@ -87,15 +144,249 @@ export default async function dashboardPage(ctx: Ctx): Promise<Node> {
   const controller = new AbortController();
   ctx.onDispose(() => controller.abort());
 
+  // The widget period. It lives in the query string so a refresh, a bookmark or a link to a
+  // colleague lands on the same window: a dashboard whose range resets on every reload makes
+  // two people comparing screens disagree without knowing it.
+  let period = periodFromQuery(ctx.route.query.get("period"));
+  let customFrom = ctx.route.query.get("from") ?? "";
+  let customTo = ctx.route.query.get("to") ?? "";
+
+  let widgets: DashboardWidgets | null = null;
+  let widgetsError: unknown = null;
+  let widgetsLoading = false;
+
+  // The two hosts are created once and moved into whatever tree `render` builds, so a period
+  // change replaces the widgets and leaves the exception list — which is a current state, not
+  // a period figure — alone.
+  const widgetHost = h("div", { class: "stack" });
+  const periodHost = h("div", { class: "row-wrap" });
+
   const load = async () => {
     try {
       const overview = await ctx.api.get<Overview>("/api/v1/ops/overview", { cache: false, signal: controller.signal });
       if (controller.signal.aborted) return;
       host.replaceChildren(render(overview));
+      // The widgets are a second request on purpose: they are period-scoped and reloadable on
+      // their own, and a failure there must not blank the exception list.
+      void loadWidgets();
     } catch (err) {
       if (controller.signal.aborted) return;
       host.replaceChildren(errorState(err, () => void load()));
     }
+  };
+
+  /** Re-reads the widget set for the current period. */
+  const loadWidgets = async () => {
+    widgetsLoading = true;
+    widgetsError = null;
+    renderWidgets();
+    const query: Record<string, string> = { period };
+    if (period === "custom") {
+      query.from = customFrom;
+      query.to = customTo;
+    }
+    try {
+      const next = await ctx.api.get<DashboardWidgets>("/api/v1/staff/dashboard/widgets", {
+        query,
+        cache: false,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      widgets = next;
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      widgetsError = err;
+    }
+    widgetsLoading = false;
+    renderWidgets();
+  };
+
+  /** Switches the window and reloads only the widgets. */
+  const choosePeriod = (next: string): void => {
+    if (next === period && next !== "custom") return;
+    period = next;
+    if (next !== "custom") {
+      customFrom = "";
+      customTo = "";
+    }
+    ctx.replaceQuery({
+      period: next === "30d" ? null : next,
+      from: next === "custom" ? customFrom || null : null,
+      to: next === "custom" ? customTo || null : null,
+    });
+    renderPeriodBar();
+    if (next === "custom" && (!customFrom || !customTo)) {
+      // Wait for the operator to pick a range: asking for a period with no bounds is a 400
+      // and a dialog telling them so, which is not a useful first answer.
+      widgetHost.replaceChildren(
+        emptyState({
+          title: "Choose a range",
+          body: "Pick a start and an end date to see the figures for that window.",
+          icon: "calendar",
+        }),
+      );
+      return;
+    }
+    void loadWidgets();
+  };
+
+  /** Renders the period selector. */
+  const renderPeriodBar = (): void => {
+    const customInputs = h(
+      "div",
+      { class: "row-wrap", hidden: period !== "custom" },
+      h(
+        "label",
+        { class: "row-wrap" },
+        h("span", { class: "field-label" }, "From"),
+        h("input", {
+          class: "input input--sm",
+          type: "date",
+          value: customFrom,
+          "aria-label": "Period start",
+          onchange: (event: Event) => {
+            customFrom = (event.target as HTMLInputElement).value;
+          },
+        }),
+      ),
+      h(
+        "label",
+        { class: "row-wrap" },
+        h("span", { class: "field-label" }, "To"),
+        h("input", {
+          class: "input input--sm",
+          type: "date",
+          value: customTo,
+          "aria-label": "Period end",
+          onchange: (event: Event) => {
+            customTo = (event.target as HTMLInputElement).value;
+          },
+        }),
+      ),
+      btn("Apply", {
+        size: "sm",
+        variant: "primary",
+        icon: "check",
+        onclick: () => {
+          if (!customFrom || !customTo) {
+            ctx.toast("Pick both dates", { tone: "danger", detail: "A range needs a start and an end." });
+            return;
+          }
+          ctx.replaceQuery({ period: "custom", from: customFrom, to: customTo });
+          void loadWidgets();
+        },
+      }),
+    );
+
+    const buttons = PERIODS.map((option) =>
+      btn(option.label, {
+        size: "sm",
+        variant: option.key === period ? "primary" : "ghost",
+        onclick: () => choosePeriod(option.key),
+      }),
+    );
+
+    periodHost.replaceChildren(
+      h(
+        "div",
+        { class: "row-wrap" },
+        h("span", { class: "field-label" }, icon("calendar", 12), "Period"),
+        ...buttons,
+      ),
+      customInputs,
+    );
+  };
+
+  /** Renders the widget set: revenue, the counts, the overdue position and the queue. */
+  const renderWidgets = (): void => {
+    if (widgetsLoading && widgets === null) {
+      widgetHost.replaceChildren(card({ title: "This period", body: skeletonLines(3) }));
+      return;
+    }
+    if (widgetsError !== null) {
+      widgetHost.replaceChildren(
+        banner(
+          "warning",
+          "The period figures could not be read",
+          h("span", null, describeWidgetError(widgetsError)),
+          btn("Try again", { size: "sm", variant: "ghost", icon: "refresh", onclick: () => void loadWidgets() }),
+        ),
+      );
+      return;
+    }
+    if (widgets === null) return;
+
+    const unavailable = new Set(widgets.unavailable ?? []);
+    const window = `${dateOnly(widgets.from)} → ${dateOnly(widgets.to)}`;
+
+    const revenue = card({
+      title: "Revenue",
+      sub: `${window} · from the ledger`,
+      actions: widgets.available ? null : badge("Partial", "warning", { dot: true }),
+      body:
+        widgets.revenue.length === 0
+          ? emptyState({
+              title: "No revenue in this period",
+              body: "Nothing was earned between these dates. A voided invoice and a credit note both land here as zero, because the figure is the ledger and not a sum of invoices.",
+              icon: "dollar",
+            })
+          : h(
+              "div",
+              { class: "stack-sm" },
+              ...widgets.revenue.map((amount) =>
+                h(
+                  "div",
+                  { class: "kv" },
+                  h("span", { class: "kv-key" }, amount.currency),
+                  h("span", { class: "kv-value money money--lg" }, moneyEl(amount)),
+                ),
+              ),
+              h(
+                "span",
+                { class: "field-hint" },
+                "Per currency and never summed: there is no exchange rate in this system, so a combined total would be arithmetic on unrelated quantities.",
+              ),
+            ),
+    });
+
+    const counts = h(
+      "div",
+      { class: "grid-4" },
+      widgetStat(
+        "Active customers",
+        widgets.active_customers,
+        `Customers with a live service, an invoice or a payment in the ${widgets.days} days`,
+        "users",
+        unavailable.has("active_customers"),
+      ),
+      widgetStat(
+        "New customers",
+        widgets.new_customers,
+        "Signed up in the period",
+        "plus",
+        unavailable.has("new_customers"),
+      ),
+      widgetStat(
+        "Open tickets",
+        widgets.open_tickets,
+        widgets.tickets_opened === null
+          ? "The queue right now"
+          : `${widgets.tickets_opened} opened in the period`,
+        "message",
+        unavailable.has("open_tickets"),
+      ),
+      widgetStat(
+        "Overdue invoices",
+        widgets.overdue_invoices?.count ?? null,
+        widgets.overdue_invoices && widgets.overdue_invoices.money.length > 0
+          ? `${widgets.overdue_invoices.money.map((m) => money(m)).join(" · ")} still owed`
+          : "Nothing is past due",
+        "clock",
+        unavailable.has("overdue_invoices"),
+      ),
+    );
+
+    widgetHost.replaceChildren(revenue, counts, exceptionQueueCard(widgets));
   };
 
   const render = (overview: Overview): Node => {
@@ -223,10 +514,14 @@ export default async function dashboardPage(ctx: Ctx): Promise<Node> {
       }),
       hero,
       stats,
+      periodHost,
+      widgetHost,
       h("div", { class: "split" }, exceptionCard, side),
       recent ?? h("div"),
     );
   };
+
+  renderPeriodBar();
 
   const recentInvoices = (c: Ctx): Node => {
     const columns: Column<InvoiceRow>[] = [
@@ -350,4 +645,115 @@ function shortcut(ctx: Ctx, href: string, iconName: IconName, title: string, sub
     h("div", { class: "cell-main" }, h("div", { class: "primary" }, title), h("div", { class: "secondary" }, sub)),
     icon("chevronRight", 13),
   );
+}
+
+/** Reads the period out of the query string, falling back to the default window. */
+function periodFromQuery(raw: string | null): string {
+  const value = (raw ?? "").trim();
+  for (const option of PERIODS) {
+    if (option.key === value) return value;
+  }
+  return "30d";
+}
+
+/** Turns a failed widget request into a sentence an operator can act on. */
+function describeWidgetError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === "invalid_period") {
+      return err.detail || "That is not a period this panel accepts. Choose 7, 30 or 90 days, or a range of at most a year.";
+    }
+    return `${err.status} ${err.code}: ${err.detail}`;
+  }
+  return "The database did not answer. The exception list above is unaffected.";
+}
+
+/** One widget figure.
+ *
+ *  `value === null` means the server could not read it, and it renders as a dash with a note
+ *  saying so — never as zero. An empty period is a zero; an outage is not. */
+function widgetStat(
+  label: string,
+  value: number | null,
+  hint: string,
+  iconName: IconName,
+  unavailable: boolean,
+): HTMLElement {
+  const missing = unavailable || value === null;
+  return h(
+    "section",
+    { class: "card stat" },
+    h("span", { class: "stat-label" }, icon(iconName, 12), label),
+    h("span", { class: "stat-value" }, missing ? "—" : value.toLocaleString("en-US")),
+    h("span", { class: "stat-hint" }, missing ? "Could not be read" : hint),
+  );
+}
+
+/** The paid-not-provisioned queue: settled invoices whose order bought nothing that runs.
+ *
+ *  It is the same exception the ops overview alerts on, rendered with the rows behind it so
+ *  the card is a queue an operator can work rather than a number to worry about. */
+function exceptionQueueCard(widgets: DashboardWidgets): HTMLElement {
+  const queue = widgets.paid_not_provisioned;
+  if (queue === null) {
+    return card({
+      title: "Paid, but not running",
+      body: emptyState({
+        title: "The queue could not be read",
+        body: "The exception list above still shows what the engine knows. Reload the period to try again.",
+        icon: "alertTriangle",
+      }),
+    });
+  }
+
+  const moneyAtStake = queue.money.length > 0 ? queue.money.map((amount) => money(amount)).join(" · ") : null;
+
+  if (queue.count === 0) {
+    return card({
+      title: "Paid, but not running",
+      actions: badge("Clear", "success", { dot: true }),
+      body: emptyState({
+        title: "Nothing is paid for nothing",
+        body: "Every settled order has a service that is running. This card fills itself from the invoices whose order bought nothing that is up.",
+        icon: "checkCircle",
+      }),
+    });
+  }
+
+  return card({
+    title: "Paid, but not running",
+    sub: queue.count === 1 ? "1 invoice" : `${queue.count} invoices`,
+    actions: badge("Critical", "danger", { dot: true }),
+    flush: true,
+    body: h(
+      "div",
+      null,
+      ...queue.items.map((item) =>
+        h(
+          "a",
+          { class: "card-link", href: `/invoices/${item.invoice_id}` },
+          h("span", { class: "search-hit-icon" }, icon("alertCircle", 13)),
+          h(
+            "div",
+            { class: "cell-main" },
+            h("div", { class: "primary" }, item.number || "Invoice"),
+            h("div", { class: "secondary" }, `${item.email} · ${moneyEl(item.total)}`),
+          ),
+          h(
+            "div",
+            { class: "cell-main" },
+            h("div", { class: "secondary nowrap" }, item.issued_at ? `issued ${relative(item.issued_at)}` : "—"),
+          ),
+        ),
+      ),
+    ),
+    foot: h(
+      "div",
+      { class: "row-wrap" },
+      h("span", { class: "field-hint" }, queue.action),
+      queue.truncated
+        ? h("span", { class: "field-hint faint" }, `Showing the oldest ${queue.items.length} of ${queue.count}.`)
+        : null,
+      moneyAtStake ? h("span", { class: "field-hint" }, `${moneyAtStake} paid for nothing.`) : null,
+    ),
+  });
 }

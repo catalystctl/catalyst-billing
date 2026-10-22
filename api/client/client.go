@@ -467,6 +467,20 @@ func (c *Client) DeleteStaffRolesById(ctx context.Context, id string, query url.
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffSecuritySessionsById calls DELETE /api/v1/staff/security/sessions/{id}.
+//
+// # Revoke any account's session
+//
+// Permission: staff:manage. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeleteStaffSecuritySessionsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/security/sessions/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffServicepropertiesByKey calls DELETE /api/v1/staff/service-properties/{key}.
 //
 // # Delete a service property definition
@@ -518,6 +532,22 @@ func (c *Client) DeleteStaffTaxratesById(ctx context.Context, id string, query u
 // An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
 func (c *Client) DeleteStaffUpdatesApproval(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/updates/approval"
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
+// DeleteStaffUpgradegraphByProductidByUpgradetoid calls DELETE /api/v1/staff/upgrade-graph/{product_id}/{upgrade_to_id}.
+//
+// # Remove an edge from the upgrade graph
+//
+// Permission: catalog:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// productId is the product_id path parameter.
+// upgradeToId is the upgrade_to_id path parameter.
+func (c *Client) DeleteStaffUpgradegraphByProductidByUpgradetoid(ctx context.Context, productId string, upgradeToId string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/upgrade-graph/{product_id}/{upgrade_to_id}"
+	path = strings.ReplaceAll(path, "{product_id}", url.PathEscape(productId))
+	path = strings.ReplaceAll(path, "{upgrade_to_id}", url.PathEscape(upgradeToId))
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
@@ -1443,6 +1473,16 @@ func (c *Client) GetStaffGatewaysTest(ctx context.Context, query url.Values, bod
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffHolds calls GET /api/v1/staff/holds.
+//
+// # Every hold, with the service, the customer, when it was placed and who placed it
+//
+// Permission: service:read:all. Staff only.
+func (c *Client) GetStaffHolds(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/holds"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffImports calls GET /api/v1/staff/imports.
 //
 // # List recorded import runs
@@ -1737,6 +1777,26 @@ func (c *Client) GetStaffRoles(ctx context.Context, query url.Values, body any) 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffSecuritySessions calls GET /api/v1/staff/security/sessions.
+//
+// # Every live session, across every account
+//
+// Permission: staff:manage. Staff only.
+func (c *Client) GetStaffSecuritySessions(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/security/sessions"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffSecuritySignins calls GET /api/v1/staff/security/sign-ins.
+//
+// # Successful and failed sign-in attempts, across every account
+//
+// Permission: staff:manage. Staff only.
+func (c *Client) GetStaffSecuritySignins(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/security/sign-ins"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffServers calls GET /api/v1/staff/servers.
 //
 // # Read the provisioning server configuration
@@ -1938,6 +1998,16 @@ func (c *Client) GetStaffUpdates(ctx context.Context, query url.Values, body any
 // Permission: update:manage. Staff only.
 func (c *Client) GetStaffUpdatesTelemetry(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/updates/telemetry"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffUpgradegraph calls GET /api/v1/staff/upgrade-graph.
+//
+// # The product upgrade graph, with both endpoints and their current prices
+//
+// Permission: catalog:write. Staff only.
+func (c *Client) GetStaffUpgradegraph(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/upgrade-graph"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -3047,6 +3117,18 @@ func (c *Client) PostStaffUpdatesCheck(ctx context.Context, query url.Values, bo
 // An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
 func (c *Client) PostStaffUpdatesTelemetrySend(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/updates/telemetry/send"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffUpgradegraph calls POST /api/v1/staff/upgrade-graph.
+//
+// Add an edge: from this product, a customer may move to that one
+//
+// Permission: catalog:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffUpgradegraph(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/upgrade-graph"
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 

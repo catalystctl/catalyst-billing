@@ -52,10 +52,18 @@ interface Affiliate {
   commission_rate: string;
   payout_method: string;
   enabled: boolean;
+  /** 'active' | 'suspended' | 'deleted'. Derived server-side; branch on this, not on `enabled`. */
+  status: AffiliateStatus;
+  suspended_at: string | null;
+  suspended_reason: string;
+  deleted_at: string | null;
+  deleted_reason: string;
   referred_count: number;
   balances: Array<{ currency: string; owed: Amount; paid: Amount }>;
   created_at: string;
 }
+
+type AffiliateStatus = "active" | "suspended" | "deleted";
 
 /** One row of a reconciliation: a commission or a payout. */
 interface ReconRow {
@@ -125,6 +133,14 @@ const METHODS: ReadonlyArray<{ value: string; label: string }> = [
 /** The permission the payout action requires today. */
 const PAYOUT_PERMISSION = "credit:read:all";
 
+/**
+ * The permission the four controls require: setting the rate, suspending, reinstating and
+ * deleting. It is credit:write — not report:read — because each of them changes how much
+ * money will later leave the business. Support holds neither, so the screen offers the
+ * actions only to a role that can complete them rather than letting a click fail with 403.
+ */
+const CONTROL_PERMISSION = "credit:write";
+
 export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
   if (!ctx.can("report:read")) {
     return h(
@@ -142,11 +158,17 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
   }
 
   const canPay = ctx.can(PAYOUT_PERMISSION);
+  const canControl = ctx.can(CONTROL_PERMISSION);
 
   let period = periodFromQuery(ctx.route.query.get("period"));
   let customFrom = ctx.route.query.get("from") ?? "";
   let customTo = ctx.route.query.get("to") ?? "";
   let selected = ctx.route.query.get("affiliate") ?? "";
+  // The archive is off by default: a deleted affiliate is not somebody to enrol, suspend or
+  // reason about. It stays reachable because a deleted affiliate can still be owed money, and
+  // the screen that settles a debt has to be able to name the payee.
+  let showDeleted = ctx.route.query.get("deleted") === "1";
+  let loaded: Affiliate[] = [];
 
   const reportHost = h("div", { class: "stack" }, skeletonLines(3));
   const periodHost = h("div", { class: "row-wrap" });
@@ -200,7 +222,7 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
     {
       key: "status",
       label: "Status",
-      render: (row) => (row.enabled ? badge("Active", "success", { dot: true }) : badge("Retired", "neutral")),
+      render: (row) => statusCell(row),
     },
     {
       key: "actions",
@@ -208,13 +230,55 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
       align: "right",
       width: "1%",
       render: (row) =>
-        btn(row.id === selected ? "Selected" : "Reconcile", {
-          size: "sm",
-          variant: row.id === selected ? "primary" : "ghost",
-          icon: "eye",
-          title: "Show what this affiliate earned, what was paid and the rows that make up the difference",
-          onclick: () => void selectAffiliate(row.id),
-        }),
+        h(
+          "div",
+          { class: "row-wrap" },
+          btn(row.id === selected ? "Selected" : "Reconcile", {
+            size: "sm",
+            variant: row.id === selected ? "primary" : "ghost",
+            icon: "eye",
+            title: "Show what this affiliate earned, what was paid and the rows that make up the difference",
+            onclick: () => void selectAffiliate(row.id),
+          }),
+          // The three controls. A deleted affiliate offers none of them: the record is closed
+          // and the server would refuse the request anyway, so the screen does not pretend.
+          row.status !== "deleted" && canControl
+            ? btn("Set rate", {
+                size: "sm",
+                variant: "ghost",
+                icon: "percent",
+                title: `Set a custom commission rate for ${row.code}. It applies to future commission only.`,
+                onclick: () => void openRate(row),
+              })
+            : null,
+          row.status === "active" && canControl
+            ? btn("Suspend", {
+                size: "sm",
+                variant: "ghost",
+                icon: "pauseCircle",
+                title: `Stop ${row.code} earning: their link stops attributing and no further commission accrues`,
+                onclick: () => void suspendAffiliate(row),
+              })
+            : null,
+          row.status === "suspended" && canControl
+            ? btn("Reinstate", {
+                size: "sm",
+                variant: "ghost",
+                icon: "playCircle",
+                title: `Put ${row.code} back into the programme with the rate they had`,
+                onclick: () => void reinstateAffiliate(row),
+              })
+            : null,
+          row.status !== "deleted" && canControl
+            ? btn("Delete", {
+                size: "sm",
+                variant: "ghost",
+                icon: "trash",
+                title: `Archive ${row.code}. Their commission and any balance stay: a deleted affiliate can still be owed money`,
+                onclick: () => void deleteAffiliate(row),
+              })
+            : null,
+        ),
     },
   ];
 
@@ -226,10 +290,12 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
   const table = createTable<Affiliate>(ctx, {
     path: "/api/v1/staff/affiliates",
     columns,
+    query: showDeleted ? { include_deleted: "1" } : {},
     limit: 100,
     empty,
     rowKey: (row) => row.id,
     onLoaded: (rows) => {
+      loaded = rows;
       // Land on the first affiliate when nothing is selected, so the screen answers a
       // question instead of showing an empty report beside a list.
       if (!selected && rows.length > 0 && rows[0]) {
@@ -247,6 +313,207 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
     ctx.replaceQuery({ affiliate: affiliateID });
     await table.reload();
     await loadReport();
+  };
+
+  /** Reloads the list, and the report when the changed payee is the selected one. */
+  const refresh = async (affiliateID: string): Promise<void> => {
+    await table.reload();
+    if (affiliateID === selected) await loadReport();
+  };
+
+  /**
+   * What this affiliate is still owed, in words, for the dialog that has to say it plainly.
+   * A suspension or a deletion does not forgive a balance, and the operator should read that
+   * before they click rather than discover it afterwards.
+   */
+  const owedSummary = (row: Affiliate): string => {
+    const owed = row.balances.filter((balance) => balance.owed.minor > 0).map((balance) => money(balance.owed));
+    return owed.length === 0 ? "nothing" : owed.join(", ");
+  };
+
+  // --------------------------------------------------------------- controls --
+
+  /** Sets a custom commission rate for one affiliate. */
+  const openRate = async (row: Affiliate): Promise<void> => {
+    const rate = input({
+      id: "affiliate-rate",
+      value: row.commission_rate,
+      placeholder: "10%, 0.1 or 1/10",
+      autocomplete: "off",
+    });
+    await ctx.formDialog({
+      title: `Commission rate for ${row.code}`,
+      subtitle: `Currently ${row.commission_rate}. The rate is an exact rational, never a float.`,
+      submitLabel: "Save the rate",
+      body: h(
+        "div",
+        { class: "stack" },
+        field({
+          label: "Rate",
+          control: rate,
+          required: true,
+          hint: "10%, 0.1 or 1/10. At most 100%, and 0 is a legitimate \"this affiliate earns nothing\".",
+        }),
+        banner(
+          "info",
+          "Future commission only",
+          h(
+            "span",
+            null,
+            "Every commission row keeps the rate that produced it, so changing the rate cannot restate what a past order earned.",
+          ),
+        ),
+      ),
+      onSubmit: async () => {
+        const value = rate.value.trim();
+        if (!value) return "Enter a rate: 10%, 0.1 or 1/10.";
+        try {
+          const saved = await ctx.api.patch<Affiliate>(`/api/v1/staff/affiliates/${row.id}`, {
+            commission_rate: value,
+          });
+          ctx.toast("Commission rate saved", {
+            tone: "success",
+            detail: `${row.code} · ${row.commission_rate} → ${saved.commission_rate}`,
+          });
+          await refresh(row.id);
+          return undefined;
+        } catch (err) {
+          return describeError(err);
+        }
+      },
+    });
+  };
+
+  /** Suspends (bans) an affiliate, with the reason the next operator will read. */
+  const suspendAffiliate = async (row: Affiliate): Promise<void> => {
+    const reason = input({
+      id: "suspend-reason",
+      placeholder: "Chargebacks on every referral",
+      autocomplete: "off",
+    });
+    await ctx.formDialog({
+      title: `Suspend ${row.code}?`,
+      subtitle: "Their referral link stops attributing signups and no further commission accrues.",
+      submitLabel: "Suspend",
+      danger: true,
+      body: h(
+        "div",
+        { class: "stack" },
+        field({
+          label: "Reason",
+          control: reason,
+          required: true,
+          hint: "Recorded with your name. It is what the next operator reviews.",
+        }),
+        banner(
+          "warning",
+          "What a suspension does not do",
+          h(
+            "span",
+            null,
+            `It does not touch what ${row.code} has already earned: ${owedSummary(row)} stays owed and stays payable.`,
+          ),
+        ),
+      ),
+      onSubmit: async () => {
+        const value = reason.value.trim();
+        if (!value) return "A reason is required: it is what the next operator reviews.";
+        try {
+          await ctx.api.post(`/api/v1/staff/affiliates/${row.id}/suspend`, { reason: value });
+          ctx.toast("Affiliate suspended", {
+            tone: "success",
+            detail: `${row.code} can no longer earn`,
+          });
+          await refresh(row.id);
+          return undefined;
+        } catch (err) {
+          return describeError(err);
+        }
+      },
+    });
+  };
+
+  /** Puts a suspended affiliate back to work with the rate they had. */
+  const reinstateAffiliate = async (row: Affiliate): Promise<void> => {
+    const ok = await ctx.confirm({
+      title: `Reinstate ${row.code}?`,
+      body: `Their link attributes again and commission accrues at ${row.commission_rate}.`,
+      confirmLabel: "Reinstate",
+    });
+    if (!ok) return;
+    try {
+      await ctx.api.post(`/api/v1/staff/affiliates/${row.id}/reinstate`, {});
+      ctx.toast("Affiliate reinstated", {
+        tone: "success",
+        detail: `${row.code} earns again at ${row.commission_rate}`,
+      });
+      await refresh(row.id);
+    } catch (err) {
+      ctx.toast(err instanceof ApiError ? err.detail || describeError(err) : "The affiliate could not be reinstated", {
+        tone: "danger",
+        detail: err instanceof ApiError ? err.code : undefined,
+      });
+    }
+  };
+
+  /**
+   * Archives an affiliate. The dialog states what deletion does *not* do, because the whole
+   * point of an archive rather than a removal is that the debt survives it.
+   */
+  const deleteAffiliate = async (row: Affiliate): Promise<void> => {
+    const reason = input({
+      id: "delete-reason",
+      placeholder: "Left the programme",
+      autocomplete: "off",
+    });
+    await ctx.formDialog({
+      title: `Delete ${row.code}?`,
+      subtitle: "The affiliate leaves the programme and the default list. Their ledger stays.",
+      submitLabel: "Delete the affiliate",
+      danger: true,
+      body: h(
+        "div",
+        { class: "stack" },
+        field({
+          label: "Reason",
+          control: reason,
+          required: true,
+          hint: "Recorded with your name. It is what the next operator reviews.",
+        }),
+        banner(
+          "warning",
+          "The debt is not deleted",
+          h(
+            "span",
+            null,
+            `A deleted affiliate with unpaid commission is still a debt. ${row.code} keeps ${owedSummary(row)}: it stays on the payout report and can still be paid.`,
+          ),
+        ),
+      ),
+      onSubmit: async () => {
+        const value = reason.value.trim();
+        if (!value) return "A reason is required: it is what the next operator reviews.";
+        try {
+          await ctx.api.del(`/api/v1/staff/affiliates/${row.id}`, { reason: value });
+          ctx.toast("Affiliate deleted", {
+            tone: "success",
+            detail: `${row.code} archived; their commission and balance are kept`,
+          });
+          // A deleted affiliate leaves the default list, so a selection that pointed at it
+          // would show a report for a payee the operator can no longer see. Clear it unless
+          // the archive is being shown.
+          if (!showDeleted && selected === row.id) {
+            selected = "";
+            ctx.replaceQuery({ affiliate: null });
+          }
+          await table.reload(showDeleted ? { include_deleted: "1" } : {});
+          await loadReport();
+          return undefined;
+        } catch (err) {
+          return describeError(err);
+        }
+      },
+    });
   };
 
   /** Loads the reconciliation for the selected affiliate. */
@@ -288,6 +555,37 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
   /** Renders the report: one card per currency, then the payout history. */
   const renderReport = (report: ReportResponse): Node[] => {
     const nodes: Node[] = [];
+
+    // A payee who has left the programme still has books, and the state is stated above them:
+    // a suspended affiliate earns nothing more, a deleted one is archived, and in both cases
+    // what is below is still owed and still payable.
+    const payee = loaded.find((row) => row.id === selected);
+    if (payee?.status === "suspended") {
+      nodes.push(
+        banner(
+          "warning",
+          `${payee.code} is suspended`,
+          h(
+            "span",
+            null,
+            `They accrue no further commission${payee.suspended_reason ? ` (${payee.suspended_reason})` : ""}, but what is below is still owed and can still be paid.`,
+          ),
+        ),
+      );
+    }
+    if (payee?.status === "deleted") {
+      nodes.push(
+        banner(
+          "info",
+          `${payee.code} is deleted`,
+          h(
+            "span",
+            null,
+            `The affiliate has left the programme${payee.deleted_reason ? ` (${payee.deleted_reason})` : ""}. Their ledger is kept, so what is still owed remains payable and auditable.`,
+          ),
+        ),
+      );
+    }
 
     const mismatch = report.data.filter((line) => !line.reconciles);
     if (mismatch.length > 0) {
@@ -673,7 +971,21 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
       h(
         "div",
         { class: "stack" },
-        sectionTitle("Payees"),
+        sectionTitle(
+          "Payees",
+          btn(showDeleted ? "Hide deleted" : "Show deleted", {
+            size: "sm",
+            variant: "ghost",
+            icon: showDeleted ? "eye" : "trash",
+            title:
+              "A deleted affiliate is archived, not removed: their commission and any balance are kept, and can still be paid",
+            onclick: () => {
+              showDeleted = !showDeleted;
+              ctx.replaceQuery({ deleted: showDeleted ? "1" : null });
+              void table.reload(showDeleted ? { include_deleted: "1" } : {});
+            },
+          }),
+        ),
         table.el,
       ),
       h("div", { class: "stack" }, periodHost, reportHost),
@@ -693,6 +1005,34 @@ function periodFromQuery(raw: string | null): string {
     if (option.key === value) return value;
   }
   return "30d";
+}
+
+/**
+ * The status badge, with the reason underneath when there is one.
+ *
+ * It renders the server's derived status and never re-derives it from `enabled`: the server
+ * is the authority on whether an affiliate can earn, and a screen that computed its own
+ * answer would eventually disagree with the request it just sent.
+ */
+function statusCell(row: Affiliate): Node {
+  switch (row.status) {
+    case "suspended":
+      return h(
+        "div",
+        { class: "cell-main" },
+        badge("Suspended", "danger", { dot: true }),
+        row.suspended_reason ? h("div", { class: "secondary" }, row.suspended_reason) : null,
+      );
+    case "deleted":
+      return h(
+        "div",
+        { class: "cell-main" },
+        badge("Deleted", "neutral"),
+        row.deleted_reason ? h("div", { class: "secondary" }, row.deleted_reason) : null,
+      );
+    default:
+      return badge("Active", "success", { dot: true });
+  }
 }
 
 /** The label for a payout method. */
@@ -754,6 +1094,10 @@ function describeError(err: unknown): string {
         return "The materialised balance disagrees with the commission rows. The report shows both figures; fix the difference before paying.";
       case "not_found":
         return "That affiliate does not exist.";
+      case "affiliate_deleted":
+        return "That affiliate has been deleted. Their ledger is kept, but the record itself is closed.";
+      case "invalid_input":
+        return err.detail || "That value is not accepted.";
       case "invalid_period":
         return err.detail || "That is not a period this panel accepts.";
       default:

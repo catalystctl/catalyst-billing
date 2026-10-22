@@ -67,6 +67,21 @@ func (s *Server) registerAffiliateRoutes(r *router) {
 	r.staffMutation(http.MethodPost, "/api/v1/staff/affiliates",
 		authn.PermCreditWrite, s.handleCreateAffiliate)
 
+	// The four controls that change what an affiliate is worth, all on credit:write for the
+	// same reason the registration is: each of them changes how much money will later leave
+	// the business. A rate change sets what future commission pays; a suspension stops it
+	// accruing; a reinstatement starts it again; a deletion retires the payee while leaving
+	// the debt they are owed intact. report:read — the permission the list needs — is a read
+	// permission, and a read permission must not be able to do any of that.
+	r.staffMutation(http.MethodPatch, "/api/v1/staff/affiliates/{id}",
+		authn.PermCreditWrite, s.handleUpdateAffiliate)
+	r.staffMutation(http.MethodPost, "/api/v1/staff/affiliates/{id}/suspend",
+		authn.PermCreditWrite, s.handleSuspendAffiliate)
+	r.staffMutation(http.MethodPost, "/api/v1/staff/affiliates/{id}/reinstate",
+		authn.PermCreditWrite, s.handleReinstateAffiliate)
+	r.staffMutation(http.MethodDelete, "/api/v1/staff/affiliates/{id}",
+		authn.PermCreditWrite, s.handleDeleteAffiliate)
+
 	// The payout is a money action: idempotent, audited, and gated on credit:write.
 	r.staffMutation(http.MethodPost, "/api/v1/staff/affiliates/{id}/payout",
 		authn.PermCreditWrite, s.handleAffiliatePayout)
@@ -113,11 +128,23 @@ func affiliateJSON(a growth.Affiliate) map[string]any {
 		"commission_rate": a.CommissionRate,
 		"payout_method":   a.PayoutMethod,
 		"enabled":         a.Enabled,
-		"referred_count":  a.ReferredCount,
-		"balances":        balances,
-		"created_at":      a.CreatedAt,
+		// status is the field to branch on: 'active', 'suspended' or 'deleted'. It is
+		// derived server-side from the state that actually gates earning, so a client that
+		// re-derives it from `enabled` cannot disagree with what the server will do.
+		"status":           a.Status,
+		"suspended_at":     nullableString(a.SuspendedAt),
+		"suspended_reason": a.SuspendedReason,
+		"deleted_at":       nullableString(a.DeletedAt),
+		"deleted_reason":   a.DeletedReason,
+		"referred_count":   a.ReferredCount,
+		"balances":         balances,
+		"created_at":       a.CreatedAt,
 	}
 }
+
+// nullableString (defined in staff_read.go) renders an optional timestamp as JSON null
+// rather than an empty string, so a client can tell "never happened" from "happened at an
+// empty instant".
 
 // referralJSON renders one attribution or commission row.
 func referralJSON(r growth.Referral) map[string]any {
@@ -152,6 +179,10 @@ func (s *Server) growthError(w http.ResponseWriter, r *http.Request, err error) 
 		writeProblem(w, http.StatusConflict, "attribution_refused", err.Error())
 	case errors.Is(err, growth.ErrAffiliateDisabled):
 		writeProblem(w, http.StatusConflict, "affiliate_disabled", "this affiliate is not enabled")
+	case errors.Is(err, growth.ErrAffiliateDeleted):
+		// A deleted affiliate is archived, not gone: their debt is still payable, but the
+		// record is closed and nothing new can be decided about it.
+		writeProblem(w, http.StatusConflict, "affiliate_deleted", "this affiliate has been deleted")
 	case errors.Is(err, growth.ErrNothingToPay):
 		writeProblem(w, http.StatusConflict, "nothing_to_pay", "there is no outstanding balance to pay")
 	case errors.Is(err, growth.ErrBalanceMismatch):
@@ -171,7 +202,13 @@ func (s *Server) growthError(w http.ResponseWriter, r *http.Request, err error) 
 // ---------------------------------------------------------------- staff read --
 
 func (s *Server) handleListAffiliates(w http.ResponseWriter, r *http.Request) {
-	items, err := s.growthStore().List(r.Context())
+	// Deleted affiliates are excluded unless asked for. They remain reachable here because a
+	// deleted affiliate can still be owed money, and the screen that settles a debt has to be
+	// able to name the payee.
+	includeDeleted := r.URL.Query().Get("include_deleted")
+	items, err := s.growthStore().List(r.Context(), growth.ListOptions{
+		IncludeDeleted: includeDeleted == "1" || strings.EqualFold(includeDeleted, "true"),
+	})
 	if err != nil {
 		s.growthError(w, r, err)
 		return
@@ -204,6 +241,7 @@ func (s *Server) handleAffiliatePayouts(w http.ResponseWriter, r *http.Request) 
 			"currency":            line.Currency,
 			"owed":                amountJSON(line.Owed),
 			"lifetime_paid":       amountJSON(line.LifetimePaid),
+			"deleted":             line.Deleted,
 			"pending_commissions": line.PendingCommissions,
 		})
 		if _, seen := byCurrency[line.Currency]; !seen {
@@ -265,6 +303,203 @@ func (s *Server) handleCreateAffiliate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, affiliateJSON(created))
+}
+
+// --------------------------------------------------------- state changes --
+//
+// The four controls an operator has over a payee, each one an audited transaction: the
+// store call and the audit row commit together, so an action nobody signed for cannot
+// happen — the same rule the payout follows.
+
+// updateAffiliateRequest is the body of a PATCH.
+type updateAffiliateRequest struct {
+	// CommissionRate is a pointer so "absent" and "the empty string" are different things.
+	// An absent field is refused rather than defaulted: this route edits exactly one thing,
+	// and a request that names nothing is a client bug worth reporting.
+	CommissionRate *string `json:"commission_rate"`
+}
+
+// affiliateStateRequest is the body of a suspension or a deletion. The reason is required by
+// the store: a ban or an archive that the next operator cannot understand is a decision that
+// cannot be reviewed.
+type affiliateStateRequest struct {
+	Reason string `json:"reason"`
+}
+
+// affiliateActorID returns the signed-in operator's id, or "" for a caller without a session
+// (which the route's permission check makes impossible in practice).
+func affiliateActorID(r *http.Request) string {
+	if user, ok := userFrom(r.Context()); ok {
+		return user.ID
+	}
+	return ""
+}
+
+// handleUpdateAffiliate sets an affiliate's commission rate.
+//
+// The rate is an exact rational (`10%`, `0.1`, `1/10`) bounded at 100%, and it applies to
+// future commission only: every commission row captures the rate that produced it, so this
+// cannot restate what a past order earned. That is a property of the ledger, not a promise
+// in a comment.
+func (s *Server) handleUpdateAffiliate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !growth.ValidID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+		return
+	}
+	var in updateAffiliateRequest
+	if !s.decodeJSON(w, r, &in, 8<<10) {
+		return
+	}
+	if in.CommissionRate == nil {
+		writeProblem(w, http.StatusUnprocessableEntity, "invalid_input",
+			"commission_rate is required: it is the only field this route edits")
+		return
+	}
+
+	store := s.growthStore()
+	// The previous rate is read first so the audit row can state the change. A concurrent
+	// change would make "from" stale; it cannot make the write wrong, because the rate this
+	// request asked for is the rate that is written.
+	before, err := store.Get(r.Context(), id)
+	if err != nil {
+		s.growthError(w, r, err)
+		return
+	}
+
+	var updated growth.Affiliate
+	err = s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		updated, err = store.SetCommissionRate(ctx, tx, id, *in.CommissionRate)
+		if err != nil {
+			return err
+		}
+		ev := s.auditEvent(r, "affiliate.rate", "affiliate", updated.ID, audit.OutcomeSuccess).
+			WithChanges(map[string]any{
+				"from": before.CommissionRate,
+				"to":   updated.CommissionRate,
+				// Said in the audit row because a reader will otherwise assume a rate change
+				// restates what has already been earned. It does not: the rows keep the rate
+				// they were computed at.
+				"applies_to": "future commissions only",
+			})
+		return audit.Record(ctx, tx, ev)
+	})
+	if err != nil {
+		s.growthError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, affiliateJSON(updated))
+}
+
+// handleSuspendAffiliate bans an affiliate: their code stops attributing and no further
+// commission accrues. What they have already earned is untouched and still payable.
+func (s *Server) handleSuspendAffiliate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !growth.ValidID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+		return
+	}
+	var in affiliateStateRequest
+	if !s.decodeJSON(w, r, &in, 8<<10) {
+		return
+	}
+
+	var suspended growth.Affiliate
+	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		suspended, err = s.growthStore().Suspend(ctx, tx, id, in.Reason, affiliateActorID(r))
+		if err != nil {
+			return err
+		}
+		ev := s.auditEvent(r, "affiliate.suspend", "affiliate", suspended.ID, audit.OutcomeSuccess).
+			WithChanges(map[string]any{
+				"reason": in.Reason,
+				"status": suspended.Status,
+			})
+		return audit.Record(ctx, tx, ev)
+	})
+	if err != nil {
+		s.growthError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, affiliateJSON(suspended))
+}
+
+// handleReinstateAffiliate puts a suspended affiliate back into the programme.
+func (s *Server) handleReinstateAffiliate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !growth.ValidID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+		return
+	}
+
+	var reinstated growth.Affiliate
+	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		reinstated, err = s.growthStore().Reinstate(ctx, tx, id, affiliateActorID(r))
+		if err != nil {
+			return err
+		}
+		ev := s.auditEvent(r, "affiliate.reinstate", "affiliate", reinstated.ID, audit.OutcomeSuccess).
+			WithChanges(map[string]any{"status": reinstated.Status})
+		return audit.Record(ctx, tx, ev)
+	})
+	if err != nil {
+		s.growthError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, affiliateJSON(reinstated))
+}
+
+// handleDeleteAffiliate archives an affiliate. The row stays and so does every commission it
+// earned: a deleted affiliate with unpaid commission is a debt, and the payout report keeps
+// naming them until it is settled.
+func (s *Server) handleDeleteAffiliate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !growth.ValidID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+		return
+	}
+	// A DELETE carries its reason in the body. The client's del() sends one, and a body on
+	// DELETE is what lets the reason be recorded rather than inferred.
+	var in affiliateStateRequest
+	if !s.decodeJSON(w, r, &in, 8<<10) {
+		return
+	}
+
+	var deleted growth.Affiliate
+	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		deleted, err = s.growthStore().Delete(ctx, tx, id, in.Reason, affiliateActorID(r))
+		if err != nil {
+			return err
+		}
+		// What is still owed is written into the audit row, because that is the sentence an
+		// operator needs when they archive a payee: the affiliate is gone, the debt is not.
+		owed := make([]map[string]any, 0, len(deleted.Balances))
+		for _, b := range deleted.Balances {
+			if b.Owed.Minor() > 0 {
+				owed = append(owed, map[string]any{
+					"currency": b.Currency,
+					"minor":    b.Owed.Minor(),
+				})
+			}
+		}
+		ev := s.auditEvent(r, "affiliate.delete", "affiliate", deleted.ID, audit.OutcomeSuccess).
+			WithChanges(map[string]any{
+				"reason":      in.Reason,
+				"status":      deleted.Status,
+				"still_owed":  owed,
+				"ledger_kept": true,
+			})
+		return audit.Record(ctx, tx, ev)
+	})
+	if err != nil {
+		s.growthError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, affiliateJSON(deleted))
 }
 
 // payoutRequest is the body of a payout. The currency is required because a balance is
@@ -601,6 +836,7 @@ func (s *Server) handlePortalAffiliate(w http.ResponseWriter, r *http.Request) {
 		"commission_rate": affiliate.CommissionRate,
 		"payout_method":   affiliate.PayoutMethod,
 		"enabled":         affiliate.Enabled,
+		"status":          affiliate.Status,
 		"referred_count":  affiliate.ReferredCount,
 		"balances":        affiliateJSON(affiliate)["balances"],
 		"referrals":       rows,

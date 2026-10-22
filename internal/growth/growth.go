@@ -58,6 +58,10 @@ var (
 	ErrSelfReferral = errors.New("growth: an affiliate cannot refer themselves")
 	// ErrAffiliateDisabled is returned when a retired affiliate is asked to earn.
 	ErrAffiliateDisabled = errors.New("growth: the affiliate is not enabled")
+	// ErrAffiliateDeleted is returned when an action needs an affiliate that is still in
+	// the programme. A deleted affiliate is archived, not gone: their commission rows and
+	// their balance remain, and remain payable, but the record itself is closed.
+	ErrAffiliateDeleted = errors.New("growth: the affiliate is deleted")
 	// ErrInvalidRate is returned for a rate that is not a rational in [0, 1].
 	ErrInvalidRate = errors.New("growth: invalid commission rate")
 	// ErrNothingToPay is returned by a payout when the outstanding balance is zero.
@@ -94,6 +98,20 @@ type Balance struct {
 	Paid money.Amount
 }
 
+// The three states an affiliate can be in. They are *derived* from the columns that
+// actually gate earning (`enabled`, `deleted_at`) rather than stored beside them, so there
+// is one answer to "may this affiliate earn?" instead of two that can disagree. See
+// migration 0053.
+const (
+	// AffiliateActive is an affiliate whose code attributes and whose referrals earn.
+	AffiliateActive = "active"
+	// AffiliateSuspended is a banned affiliate: the code no longer attributes and no
+	// commission is recorded. Their existing commission is untouched and still payable.
+	AffiliateSuspended = "suspended"
+	// AffiliateDeleted is an archived affiliate. Nothing new accrues; the ledger stays.
+	AffiliateDeleted = "deleted"
+)
+
 // Affiliate is one affiliate and what the panel shows about them.
 type Affiliate struct {
 	ID             string
@@ -103,7 +121,17 @@ type Affiliate struct {
 	CommissionRate string
 	PayoutMethod   string
 	Enabled        bool
-	Balances       []Balance
+	// Status is AffiliateActive, AffiliateSuspended or AffiliateDeleted, derived from the
+	// state that gates earning. A client should branch on this, not on Enabled.
+	Status string
+	// SuspendedAt, SuspendedReason and DeletedAt, DeletedReason are the record of a staff
+	// decision: when and why. They are empty on an affiliate that was never suspended or
+	// deleted, and a row disabled before 0053 has no suspension record to show.
+	SuspendedAt     string
+	SuspendedReason string
+	DeletedAt       string
+	DeletedReason   string
+	Balances        []Balance
 	// ReferredCount is how many customers this affiliate brought.
 	ReferredCount int
 	CreatedAt     string
@@ -138,6 +166,10 @@ type PayoutLine struct {
 	Currency     string
 	Owed         money.Amount
 	LifetimePaid money.Amount
+	// Deleted marks a payee who has left the programme but is still owed money. The line is
+	// still payable — a debt does not expire because the payee was archived — and the flag is
+	// here so the operator knows why the payee is missing from the affiliate list.
+	Deleted bool
 	// PendingCommissions is the number of commission rows that make up Owed.
 	PendingCommissions int
 }

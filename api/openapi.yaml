@@ -23005,6 +23005,121 @@ paths:
             x-permission: ticket:read:all
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/tickets/piping:
+        get:
+            description: Every message that arrived by email, newest first, with the outcome and — for a message that was not attached — the stable reason (`sender_mismatch`, `ambiguous_sender`, `no_customer`, `own_address`, `auto_reply`, `bulk`, `too_large`, …). The body is included so an agent can answer a refused message by hand; `attachments_dropped` says that the sender attached something the panel refused to store. This is the route that makes "a reply was never dropped silently" checkable rather than aspirational. Filter with `status=received|ignored|all`.
+            operationId: GetStaffTicketsPiping
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    messages:
+                                        items:
+                                            properties:
+                                                attachments_dropped:
+                                                    type: integer
+                                                attributed_by:
+                                                    enum:
+                                                        - thread
+                                                        - reply_address
+                                                        - sender
+                                                    type: string
+                                                body:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                customer_id:
+                                                    format: uuid
+                                                    type: string
+                                                from:
+                                                    format: email
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                message_id:
+                                                    description: The email Message-ID.
+                                                    type: string
+                                                reason:
+                                                    description: Why the message was not attached. Empty when it was.
+                                                    type: string
+                                                source:
+                                                    enum:
+                                                        - webhook
+                                                        - imap
+                                                    type: string
+                                                status:
+                                                    enum:
+                                                        - received
+                                                        - ignored
+                                                    type: string
+                                                subject:
+                                                    type: string
+                                                ticket_id:
+                                                    format: uuid
+                                                    type: string
+                                                to:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - status
+                                                - from
+                                                - subject
+                                                - created_at
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type: string
+                                required:
+                                    - messages
+                                type: object
+                    description: A page of inbound messages
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An unknown status filter, or an invalid cursor
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Inbound mail, including the messages that could not be attached
+            x-permission: ticket:read:all
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/upgrades:
         get:
             description: '`paid=true` lists only the rows whose invoice has been paid — the ones the worker will apply. `paid=false` lists every pending row, including a downgrade whose credit has not been posted yet, which is what an operator chasing a stuck change wants to see.'
@@ -23170,6 +23285,171 @@ paths:
             x-permission: payment:reconcile
             x-rate-class: read
             x-staff-only: true
+    /api/v1/webhooks/mail/piping:
+        post:
+            description: 'The provider-facing ingest path. Authenticated by `mail.piping_secret`, presented as `X-Piping-Secret` or `Authorization: Bearer …` and compared in constant time; an installation with no secret configured refuses every request with 503 piping_not_configured, because an ingest endpoint that accepts the empty secret is an open door. The message is attributed by threading headers first, then a ticket id in the reply address, then the sender''s verified address against exactly one customer — and whichever method matches, the sender must be that ticket''s customer or the message is refused as sender_mismatch rather than appended to a stranger''s thread. The panel''s own address, its own outgoing header, an empty From and the RFC 3834 auto-reply markers are dropped before attribution, so a mail loop is impossible. Idempotent on the email Message-ID: a redelivery answers 200 with outcome=duplicate and writes nothing. A refused message is stored with its reason and answers 202 — the provider must not retry it.'
+            operationId: PostWebhooksMailPiping
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                attachments:
+                                    description: 'Attachments are refused, not stored: an inbound file is untrusted input from an unauthenticated sender and would bypass the portal''s size and content-type checks. The count is recorded so an agent can ask for the file through the portal.'
+                                    items: {}
+                                    type: array
+                                auto_submitted:
+                                    description: The RFC 3834 header. Any value other than `no` marks an automated message, which is dropped before attribution so two machines cannot reply to each other.
+                                    type: string
+                                body:
+                                    description: The plain-text body. Over 64 KiB the message is refused and recorded, never truncated.
+                                    maxLength: 65536
+                                    type: string
+                                cc:
+                                    items:
+                                        format: email
+                                        type: string
+                                    type: array
+                                from:
+                                    description: 'The sender. This is the address attribution is checked against, and it is untrusted input: a message may only be appended to a ticket whose customer owns this address (or a verified login address linked to that customer).'
+                                    format: email
+                                    type: string
+                                from_name:
+                                    maxLength: 200
+                                    type: string
+                                headers:
+                                    additionalProperties:
+                                        type: string
+                                    description: Additional headers. The loop check reads `Auto-Submitted`, `Precedence`, `List-Id` and the panel's own outgoing marker from here.
+                                    type: object
+                                in_reply_to:
+                                    description: The threading header. It is matched against stored message ids first, because it is the only attribution method a sender cannot guess.
+                                    maxLength: 998
+                                    type: string
+                                message_id:
+                                    description: 'The email Message-ID. It is the idempotency key: the same id delivered twice creates one reply, not two. When it is absent the panel derives a stable one from the message''s content, so a retry still dedupes.'
+                                    maxLength: 998
+                                    type: string
+                                received_at:
+                                    description: When the provider received the message. Omitted, the panel's clock is used.
+                                    format: date-time
+                                    type: string
+                                references:
+                                    description: The References chain. A chain that names more than one ticket is refused as ambiguous rather than guessed at.
+                                    items:
+                                        type: string
+                                    type: array
+                                subject:
+                                    maxLength: 500
+                                    type: string
+                                to:
+                                    description: Recipients. A ticket id embedded in a local part (support+ticket-<uuid>@…) is the second attribution method, after the threading headers.
+                                    items:
+                                        format: email
+                                        type: string
+                                    type: array
+                            required:
+                                - from
+                                - body
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    attributed_by:
+                                        enum:
+                                            - thread
+                                            - reply_address
+                                            - sender
+                                        type: string
+                                    customer_id:
+                                        format: uuid
+                                        type: string
+                                    log_id:
+                                        description: The inbound mail log row. Every delivery produces one, including a refusal.
+                                        format: uuid
+                                        type: string
+                                    message_id:
+                                        description: The stored message's id, not the email Message-ID.
+                                        format: uuid
+                                        type: string
+                                    outcome:
+                                        description: '`attached` is a reply appended to an existing ticket, `created` a new ticket opened for the sender, `duplicate` a Message-ID already imported (nothing written), and `ignored`/`unattributed` a message that was recorded but attached to nothing.'
+                                        enum:
+                                            - attached
+                                            - created
+                                            - duplicate
+                                            - ignored
+                                            - unattributed
+                                        type: string
+                                    piped_at:
+                                        format: date-time
+                                        type: string
+                                    reason:
+                                        description: 'A stable refusal code: own_address, auto_reply, bulk, sender_mismatch, ambiguous_sender, no_customer, ambiguous_thread, unknown_ticket, too_large, empty_body, duplicate_message, tickets_disabled.'
+                                        type: string
+                                    source:
+                                        enum:
+                                            - webhook
+                                            - imap
+                                        type: string
+                                    subject:
+                                        type: string
+                                    ticket_id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - outcome
+                                    - log_id
+                                type: object
+                    description: Recorded but not attached (ignored or unattributed), with a reason
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The body is not valid JSON
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The piping secret is missing or wrong
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "413":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The envelope is larger than 512 KiB
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Piping is not configured on this installation
+            summary: Ingest one inbound email (mail provider webhook)
+            x-rate-class: ""
     /healthz:
         get:
             description: Reports that the process is running. It does not touch the database, so a database blip does not restart every instance.

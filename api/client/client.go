@@ -1787,6 +1787,16 @@ func (c *Client) GetStaffTicketsMeta(ctx context.Context, query url.Values, body
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffTicketsPiping calls GET /api/v1/staff/tickets/piping.
+//
+// # Inbound mail, including the messages that could not be attached
+//
+// Permission: ticket:read:all. Staff only.
+func (c *Client) GetStaffTicketsPiping(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/piping"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffUpgrades calls GET /api/v1/staff/upgrades.
 //
 // # The pending-upgrade queue
@@ -2803,6 +2813,14 @@ func (c *Client) PostStaffUsersByIdImpersonate(ctx context.Context, id string, q
 func (c *Client) PostWebhooksByProvider(ctx context.Context, provider string, query url.Values, body any) (*Result, error) {
 	path := "/webhooks/{provider}"
 	path = strings.ReplaceAll(path, "{provider}", url.PathEscape(provider))
+	return c.do(ctx, "POST", path, query, body, false, false)
+}
+
+// PostWebhooksMailPiping calls POST /api/v1/webhooks/mail/piping.
+//
+// Ingest one inbound email (mail provider webhook)
+func (c *Client) PostWebhooksMailPiping(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/webhooks/mail/piping"
 	return c.do(ctx, "POST", path, query, body, false, false)
 }
 

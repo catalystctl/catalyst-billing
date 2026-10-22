@@ -20,7 +20,13 @@ if [[ "${1:-}" == "--quiet" ]]; then
 fi
 
 ADDR="${BILLING_DEV_ADDR:-127.0.0.1:8791}"
-PID_FILE=/tmp/billing-dev.pid
+PORT="${ADDR##*:}"
+# One pid file per address: two servers on two addresses are a legitimate thing to want, and a
+# single shared path would make the second one's cleanup delete the first one's record.
+PID_FILE="/tmp/billing-dev-${PORT}.pid"
+# scripts/dev-ui.sh predates this and writes a fixed path. It is still honoured, and still
+# validated by address before anything is killed.
+LEGACY_PID_FILE=/tmp/billing-dev.pid
 stopped=0
 
 stop_pid() {
@@ -36,28 +42,34 @@ stop_pid() {
   kill -9 "$pid" 2>/dev/null || true
 }
 
-if [[ -f "$PID_FILE" ]]; then
-  pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-  if [[ -n "$pid" ]] && stop_pid "$pid"; then
-    echo "dev-stop: stopped the server from $PID_FILE (pid $pid)"
-    stopped=1
-  fi
-  rm -f "$PID_FILE"
-fi
-
-for pid in $(pgrep -x billing 2>/dev/null || true); do
-  # The command line is relative when the script starts the process, so the working directory is
-  # what identifies the checkout; the address identifies which of its servers this is.
+# is_our_server reports whether a pid is a `bin/billing serve` from this checkout, on ADDR.
+#
+# The command line is relative when this script starts the process, so the working directory is
+# what identifies the checkout; BILLING_HTTP_ADDR identifies which of its servers this is. A pid
+# file alone is not enough — /tmp is shared, and a stale one from another address must not take
+# a running server down with it.
+is_our_server() {
+  local pid="$1" cmdline cwd addr
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null || return 1
   cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
   cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
-  if [[ "$cwd" != "$PWD" || "$cmdline" != *"bin/billing serve"* ]]; then
-    continue
-  fi
+  [[ "$cwd" == "$PWD" && "$cmdline" == *"bin/billing serve"* ]] || return 1
   addr="$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^BILLING_HTTP_ADDR=//p' || true)"
-  if [[ -n "$addr" && "$addr" != "$ADDR" ]]; then
-    continue
+  [[ -z "$addr" || "$addr" == "$ADDR" ]]
+}
+
+for candidate in "$PID_FILE" "$LEGACY_PID_FILE"; do
+  [[ -f "$candidate" ]] || continue
+  pid="$(cat "$candidate" 2>/dev/null || true)"
+  if is_our_server "$pid" && stop_pid "$pid"; then
+    echo "dev-stop: stopped bin/billing serve on $ADDR (pid $pid)"
+    stopped=1
   fi
-  if stop_pid "$pid"; then
+  rm -f "$candidate"
+done
+
+for pid in $(pgrep -x billing 2>/dev/null || true); do
+  if is_our_server "$pid" && stop_pid "$pid"; then
     echo "dev-stop: stopped bin/billing serve on $ADDR (pid $pid)"
     stopped=1
   fi

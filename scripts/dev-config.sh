@@ -42,7 +42,7 @@ setting() {
 }
 
 setting servers provider fake
-setting gateway provider fake
+setting gateway provider stripe
 setting gateway enabled true
 
 # A staff account. `admin create-user` refuses a duplicate, which is the behaviour that matters

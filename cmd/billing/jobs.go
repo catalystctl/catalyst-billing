@@ -289,6 +289,14 @@ func buildJobs(pool *store.Pool, logger *slog.Logger, apiServer *httpapi.Server)
 	// real. Each is independently kill-switchable inside internal/lifecycle, because terminating
 	// a customer's server is the one action an operator must be able to stop instantly without a
 	// redeploy.
+	// Email piping: the pull half of the two ingest paths. A fresh installation has no mailbox,
+	// and the job is a harmless no-op there rather than a failure every minute.
+	if pj, err := pipingJob(pool, logger); err != nil {
+		logger.Warn("ticket piping is not available", "error", err)
+	} else {
+		jobs = append(jobs, pj)
+	}
+
 	for _, lj := range lifecycle.Jobs(pool, logger) {
 		lj := lj
 		jobs = append(jobs, jobSpec{

@@ -10,6 +10,11 @@
 // order is placed for the acting staff member's own billing account. A staff member who
 // is the billing account must not have to link an account to an account first — see
 // billingAccountFor.
+//
+// The second rule: `custom_price_minor` lets an operator agree a number with one customer.
+// The amount is sent as integer minor units and stored as an explicit override on the line,
+// together with the reason that justifies it; the catalog is never written, because the
+// price list is what every other customer pays. A custom price without a reason is refused.
 
 package httpapi
 
@@ -18,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/authn"
@@ -37,15 +43,43 @@ func init() {
 
 // createOrderRequest is the body of a purchase.
 //
-// There is no amount and no currency: both are read from the price version, so a
-// caller cannot choose what to charge.
+// There is no *catalog* amount and no currency: both are read from the price version, so a
+// caller cannot quietly choose what to charge. The one exception is deliberate and loud —
+// `custom_price_minor` — because agreeing a price with a customer is a thing an operator
+// legitimately does, and it must be recorded rather than done by editing the catalog.
 type createOrderRequest struct {
 	// CustomerID is the billing account. Empty means "me" (the acting staff member).
 	CustomerID string `json:"customer_id"`
-	// PriceVersionID is the catalog price being bought.
+	// PriceVersionID is the catalog price being bought. It is required even when the
+	// amount is overridden: it names what is bought, and so what gets provisioned.
 	PriceVersionID string `json:"price_version_id"`
 	// Quantity defaults to 1.
 	Quantity int `json:"quantity"`
+	// CustomPriceMinor is a negotiated unit price in minor units (500 = 5.00 in USD).
+	//
+	// A pointer, not an int, because absent and zero are different answers: absent means
+	// "charge the catalog price", zero is an amount that cannot be charged and is
+	// refused. It replaces the catalog unit price and its setup fee, so the number sent
+	// is the whole price of one unit.
+	CustomPriceMinor *int64 `json:"custom_price_minor"`
+	// CustomPriceReason is why the price differs from the catalog. Mandatory whenever
+	// CustomPriceMinor is present.
+	CustomPriceReason string `json:"custom_price_reason"`
+}
+
+// customPriceOf turns the request's override into the domain's, keeping "absent" distinct
+// from "zero".
+//
+// The reason is trimmed here as well as in the domain, so the audit row records exactly the
+// text the database does rather than the padding the caller happened to send.
+func (req createOrderRequest) customPriceOf() *orders.CustomPrice {
+	if req.CustomPriceMinor == nil {
+		return nil
+	}
+	return &orders.CustomPrice{
+		UnitMinor: *req.CustomPriceMinor,
+		Reason:    strings.TrimSpace(req.CustomPriceReason),
+	}
 }
 
 func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
@@ -68,10 +102,19 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotFound, "not_found", "no such customer")
 		return
 	}
+	// A reason without an amount is a client that meant to send both. Dropping the reason
+	// would charge the catalog price while the operator believes the line was discounted,
+	// which is the one failure a manual price must never have, so it is refused instead.
+	if req.CustomPriceMinor == nil && strings.TrimSpace(req.CustomPriceReason) != "" {
+		writeProblem(w, http.StatusBadRequest, "custom_price_required",
+			"custom_price_reason was sent without custom_price_minor")
+		return
+	}
 
 	user, _ := userFrom(r.Context())
 	svc := orders.New(s.issuer)
 	now := s.now()
+	customPrice := req.customPriceOf()
 
 	var out orders.Result
 	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
@@ -87,6 +130,7 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 			CustomerID:     customerID,
 			PriceVersionID: req.PriceVersionID,
 			Quantity:       req.Quantity,
+			CustomPrice:    customPrice,
 			Merchant:       s.merchant,
 			Terms:          s.terms,
 			Series:         s.series,
@@ -99,14 +143,22 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		out = res
-		return audit.Record(ctx, tx, s.auditEvent(r, "order.create", "order", res.OrderID,
-			audit.OutcomeSuccess).WithChanges(map[string]any{
+		changes := map[string]any{
 			"customer_id":      customerID,
 			"price_version_id": req.PriceVersionID,
 			"quantity":         req.Quantity,
 			"invoice_id":       res.InvoiceID,
 			"total_minor":      res.Total.Minor(),
-		}))
+			"manual_price":     res.ManualPrice,
+		}
+		if customPrice != nil {
+			// The reason belongs in the audit record: "who changed the price, to what and
+			// why" is the question an audit log exists to answer.
+			changes["custom_price_minor"] = customPrice.UnitMinor
+			changes["custom_price_reason"] = customPrice.Reason
+		}
+		return audit.Record(ctx, tx, s.auditEvent(r, "order.create", "order", res.OrderID,
+			audit.OutcomeSuccess).WithChanges(changes))
 	})
 	if err != nil {
 		switch {
@@ -117,6 +169,15 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, orders.ErrInvalidQuantity):
 			writeProblem(w, http.StatusBadRequest, "invalid_quantity",
 				"quantity must be between 1 and 1000")
+		case errors.Is(err, orders.ErrCustomPriceReasonRequired):
+			writeProblem(w, http.StatusBadRequest, "custom_price_reason_required",
+				"a custom price needs a reason: say what the price is for")
+		case errors.Is(err, orders.ErrCustomPriceReasonTooLong):
+			writeProblem(w, http.StatusBadRequest, "invalid_custom_price_reason",
+				"the reason for a custom price must be at most 500 characters")
+		case errors.Is(err, orders.ErrInvalidCustomPrice):
+			writeProblem(w, http.StatusBadRequest, "invalid_custom_price",
+				"a custom price must be a positive amount in minor units")
 		case errors.Is(err, orders.ErrInvalidSchedule):
 			writeProblem(w, http.StatusBadRequest, "invalid_price",
 				"this price cannot be billed: it has no valid schedule")
@@ -130,14 +191,21 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	s.publish(events.Event{Kind: "order.created", Permission: string(authn.PermInvoiceReadAll),
 		Data: map[string]any{"order_id": out.OrderID, "invoice_id": out.InvoiceID}})
-	writeJSON(w, http.StatusCreated, map[string]any{
+	body := map[string]any{
 		"id":              out.OrderID,
 		"invoice_id":      out.InvoiceID,
 		"number":          out.InvoiceNumber,
 		"subscription_id": out.SubscriptionID,
 		"status":          out.Status,
 		"total":           amountJSON(out.Total),
-	})
+		// manual_price tells the caller the line is not priced from the catalog, so a
+		// screen can label it without re-reading the invoice.
+		"manual_price": out.ManualPrice,
+	}
+	if out.ManualPrice {
+		body["custom_price_minor"] = out.UnitMinor
+	}
+	writeJSON(w, http.StatusCreated, body)
 }
 
 // billingAccountFor resolves the acting staff member's own billing account.

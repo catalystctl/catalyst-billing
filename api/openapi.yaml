@@ -644,6 +644,97 @@ paths:
                     description: An internal error occurred
             summary: One public product
             x-rate-class: ""
+    /api/v1/currencies:
+        get:
+            description: 'Public, because the storefront''s currency switcher renders before anyone signs in. Only enabled currencies, default first. `example` renders 123456 minor units in the configured style, so the switcher can preview the format. No exchange rate is implied: prices are explicit per currency.'
+            operationId: GetCurrencies
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                code:
+                                                    pattern: ^[A-Z0-9]{2,12}$
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                decimal_mark:
+                                                    type: string
+                                                enabled:
+                                                    type: boolean
+                                                example:
+                                                    description: 123456 minor units rendered in the configured style.
+                                                    type: string
+                                                group_separator:
+                                                    type: string
+                                                group_size:
+                                                    type: integer
+                                                is_default:
+                                                    type: boolean
+                                                name:
+                                                    type: string
+                                                scale:
+                                                    type: integer
+                                                sort_order:
+                                                    type: integer
+                                                symbol:
+                                                    type: string
+                                                symbol_position:
+                                                    enum:
+                                                        - prefix
+                                                        - suffix
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - code
+                                                - name
+                                                - scale
+                                                - is_default
+                                                - enabled
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: The currencies
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: The currencies offered at checkout
+            x-rate-class: ""
     /api/v1/events:
         get:
             description: 'Filtered per caller: a customer sees only their own events, staff only events whose permission they hold. `Last-Event-ID` resumes after that id; nothing older is replayed. Heartbeat every 20s.'
@@ -881,6 +972,1141 @@ paths:
                 required: true
             x-permission: customer:write:self
             x-rate-class: mutation
+    /api/v1/portal/cart:
+        delete:
+            description: 'Removes every line and detaches the coupon, but keeps the cart and its currency: "clear" is not "delete my cart", and the next add should not have to re-pick a currency.'
+            operationId: DeletePortalCart
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    coupon_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    currency:
+                                        pattern: ^[A-Z0-9]{2,12}$
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    item_count:
+                                        type: integer
+                                    items:
+                                        items:
+                                            properties:
+                                                config:
+                                                    additionalProperties:
+                                                        type: string
+                                                    type: object
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                label:
+                                                    type: string
+                                                price_name:
+                                                    type: string
+                                                price_version_id:
+                                                    format: uuid
+                                                    type: string
+                                                product_id:
+                                                    format: uuid
+                                                    type: string
+                                                product_name:
+                                                    type: string
+                                                quantity:
+                                                    type: integer
+                                            required:
+                                                - id
+                                                - price_version_id
+                                                - quantity
+                                            type: object
+                                        type: array
+                                    tos_accepted_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - id
+                                    - currency
+                                    - items
+                                type: object
+                    description: The empty cart
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Empty the cart
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
+        get:
+            description: 'Created empty on first read, with the default currency. The customer is resolved from the session, never from the URL: a cart id is not a capability. A cart''s currency is fixed once it holds an item, because there is no exchange rate to convert with.'
+            operationId: GetPortalCart
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    coupon_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    currency:
+                                        pattern: ^[A-Z0-9]{2,12}$
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    item_count:
+                                        type: integer
+                                    items:
+                                        items:
+                                            properties:
+                                                config:
+                                                    additionalProperties:
+                                                        type: string
+                                                    type: object
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                label:
+                                                    type: string
+                                                price_name:
+                                                    type: string
+                                                price_version_id:
+                                                    format: uuid
+                                                    type: string
+                                                product_id:
+                                                    format: uuid
+                                                    type: string
+                                                product_name:
+                                                    type: string
+                                                quantity:
+                                                    type: integer
+                                            required:
+                                                - id
+                                                - price_version_id
+                                                - quantity
+                                            type: object
+                                        type: array
+                                    tos_accepted_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - id
+                                    - currency
+                                    - items
+                                type: object
+                    description: The cart
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The caller's cart
+            x-permission: customer:read:self
+            x-rate-class: read
+    /api/v1/portal/cart/coupon:
+        delete:
+            description: 'Idempotent: removing a coupon from a cart that has none is the state the caller asked for.'
+            operationId: DeletePortalCartCoupon
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    cart:
+                                        properties:
+                                            coupon_id:
+                                                format: uuid
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            currency:
+                                                pattern: ^[A-Z0-9]{2,12}$
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            item_count:
+                                                type: integer
+                                            items:
+                                                items:
+                                                    properties:
+                                                        config:
+                                                            additionalProperties:
+                                                                type: string
+                                                            type: object
+                                                        created_at:
+                                                            format: date-time
+                                                            type: string
+                                                        id:
+                                                            format: uuid
+                                                            type: string
+                                                        label:
+                                                            type: string
+                                                        price_name:
+                                                            type: string
+                                                        price_version_id:
+                                                            format: uuid
+                                                            type: string
+                                                        product_id:
+                                                            format: uuid
+                                                            type: string
+                                                        product_name:
+                                                            type: string
+                                                        quantity:
+                                                            type: integer
+                                                    required:
+                                                        - id
+                                                        - price_version_id
+                                                        - quantity
+                                                    type: object
+                                                type: array
+                                            tos_accepted_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                        required:
+                                            - id
+                                            - currency
+                                            - items
+                                        type: object
+                                    totals:
+                                        properties:
+                                            coupon:
+                                                properties:
+                                                    applies_to:
+                                                        type: string
+                                                    code:
+                                                        type: string
+                                                    coupon_id:
+                                                        format: uuid
+                                                        type: string
+                                                    discount:
+                                                        $ref: '#/components/schemas/Amount'
+                                                    recurring_cycles:
+                                                        type:
+                                                            - integer
+                                                            - "null"
+                                                type: object
+                                            coupon_problem:
+                                                description: Why an attached coupon is not reducing anything (expired, exhausted, not applicable).
+                                                type: string
+                                            currency:
+                                                type: string
+                                            discount:
+                                                $ref: '#/components/schemas/Amount'
+                                            item_count:
+                                                type: integer
+                                            lines:
+                                                items:
+                                                    properties:
+                                                        description:
+                                                            type: string
+                                                        discount:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        item_id:
+                                                            format: uuid
+                                                            type: string
+                                                        line:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        net:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        price_version_id:
+                                                            format: uuid
+                                                            type: string
+                                                        product_id:
+                                                            format: uuid
+                                                            type: string
+                                                        quantity:
+                                                            type: integer
+                                                        setup:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        setup_line:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        tax:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        tax_evidence:
+                                                            properties:
+                                                                exemption_reason:
+                                                                    type: string
+                                                                inclusive:
+                                                                    type: boolean
+                                                                jurisdiction:
+                                                                    type: string
+                                                                rate:
+                                                                    type: string
+                                                            type: object
+                                                        tax_rate:
+                                                            type: string
+                                                        total:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        unit:
+                                                            $ref: '#/components/schemas/Amount'
+                                                    type: object
+                                                type: array
+                                            subtotal:
+                                                $ref: '#/components/schemas/Amount'
+                                            tax:
+                                                $ref: '#/components/schemas/Amount'
+                                            total:
+                                                $ref: '#/components/schemas/Amount'
+                                        required:
+                                            - currency
+                                            - lines
+                                            - subtotal
+                                            - discount
+                                            - tax
+                                            - total
+                                        type: object
+                                type: object
+                    description: The cart and its priced total
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Remove the promotion from the cart
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
+        post:
+            description: Validated against the cart's own contents before it is attached, so "apply" cannot succeed on a code the totals would then refuse. Returns the cart and the live total in one response, because applying a coupon is only useful if the UI can show the new number.
+            operationId: PostPortalCartCoupon
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    cart:
+                                        properties:
+                                            coupon_id:
+                                                format: uuid
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            currency:
+                                                pattern: ^[A-Z0-9]{2,12}$
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            item_count:
+                                                type: integer
+                                            items:
+                                                items:
+                                                    properties:
+                                                        config:
+                                                            additionalProperties:
+                                                                type: string
+                                                            type: object
+                                                        created_at:
+                                                            format: date-time
+                                                            type: string
+                                                        id:
+                                                            format: uuid
+                                                            type: string
+                                                        label:
+                                                            type: string
+                                                        price_name:
+                                                            type: string
+                                                        price_version_id:
+                                                            format: uuid
+                                                            type: string
+                                                        product_id:
+                                                            format: uuid
+                                                            type: string
+                                                        product_name:
+                                                            type: string
+                                                        quantity:
+                                                            type: integer
+                                                    required:
+                                                        - id
+                                                        - price_version_id
+                                                        - quantity
+                                                    type: object
+                                                type: array
+                                            tos_accepted_at:
+                                                format: date-time
+                                                type:
+                                                    - string
+                                                    - "null"
+                                        required:
+                                            - id
+                                            - currency
+                                            - items
+                                        type: object
+                                    totals:
+                                        properties:
+                                            coupon:
+                                                properties:
+                                                    applies_to:
+                                                        type: string
+                                                    code:
+                                                        type: string
+                                                    coupon_id:
+                                                        format: uuid
+                                                        type: string
+                                                    discount:
+                                                        $ref: '#/components/schemas/Amount'
+                                                    recurring_cycles:
+                                                        type:
+                                                            - integer
+                                                            - "null"
+                                                type: object
+                                            coupon_problem:
+                                                description: Why an attached coupon is not reducing anything (expired, exhausted, not applicable).
+                                                type: string
+                                            currency:
+                                                type: string
+                                            discount:
+                                                $ref: '#/components/schemas/Amount'
+                                            item_count:
+                                                type: integer
+                                            lines:
+                                                items:
+                                                    properties:
+                                                        description:
+                                                            type: string
+                                                        discount:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        item_id:
+                                                            format: uuid
+                                                            type: string
+                                                        line:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        net:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        price_version_id:
+                                                            format: uuid
+                                                            type: string
+                                                        product_id:
+                                                            format: uuid
+                                                            type: string
+                                                        quantity:
+                                                            type: integer
+                                                        setup:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        setup_line:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        tax:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        tax_evidence:
+                                                            properties:
+                                                                exemption_reason:
+                                                                    type: string
+                                                                inclusive:
+                                                                    type: boolean
+                                                                jurisdiction:
+                                                                    type: string
+                                                                rate:
+                                                                    type: string
+                                                            type: object
+                                                        tax_rate:
+                                                            type: string
+                                                        total:
+                                                            $ref: '#/components/schemas/Amount'
+                                                        unit:
+                                                            $ref: '#/components/schemas/Amount'
+                                                    type: object
+                                                type: array
+                                            subtotal:
+                                                $ref: '#/components/schemas/Amount'
+                                            tax:
+                                                $ref: '#/components/schemas/Amount'
+                                            total:
+                                                $ref: '#/components/schemas/Amount'
+                                        required:
+                                            - currency
+                                            - lines
+                                            - subtotal
+                                            - discount
+                                            - tax
+                                            - total
+                                        type: object
+                                type: object
+                    description: The cart and its priced total
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such code
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The code is expired, exhausted or not applicable
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Apply a promotion to the cart
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
+    /api/v1/portal/cart/items:
+        post:
+            description: 'The price version must exist and belong to a product whose `allow_quantity` policy permits the quantity: `disabled` refuses more than one, `separated`/`combined` allow up to 1000. An identical line (same price version and config) merges into one line with a larger quantity.'
+            operationId: PostPortalCartItems
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    coupon_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    currency:
+                                        pattern: ^[A-Z0-9]{2,12}$
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    item_count:
+                                        type: integer
+                                    items:
+                                        items:
+                                            properties:
+                                                config:
+                                                    additionalProperties:
+                                                        type: string
+                                                    type: object
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                label:
+                                                    type: string
+                                                price_name:
+                                                    type: string
+                                                price_version_id:
+                                                    format: uuid
+                                                    type: string
+                                                product_id:
+                                                    format: uuid
+                                                    type: string
+                                                product_name:
+                                                    type: string
+                                                quantity:
+                                                    type: integer
+                                            required:
+                                                - id
+                                                - price_version_id
+                                                - quantity
+                                            type: object
+                                        type: array
+                                    tos_accepted_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - id
+                                    - currency
+                                    - items
+                                type: object
+                    description: The cart
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such price
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The quantity is not allowed, or the cart is in another currency
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Add a selection to the cart
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
+    /api/v1/portal/cart/items/{id}:
+        delete:
+            description: Scoped to the caller's cart in SQL, so another customer's line id is a 404.
+            operationId: DeletePortalCartItemsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    coupon_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    currency:
+                                        pattern: ^[A-Z0-9]{2,12}$
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    item_count:
+                                        type: integer
+                                    items:
+                                        items:
+                                            properties:
+                                                config:
+                                                    additionalProperties:
+                                                        type: string
+                                                    type: object
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                label:
+                                                    type: string
+                                                price_name:
+                                                    type: string
+                                                price_version_id:
+                                                    format: uuid
+                                                    type: string
+                                                product_id:
+                                                    format: uuid
+                                                    type: string
+                                                product_name:
+                                                    type: string
+                                                quantity:
+                                                    type: integer
+                                            required:
+                                                - id
+                                                - price_version_id
+                                                - quantity
+                                            type: object
+                                        type: array
+                                    tos_accepted_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - id
+                                    - currency
+                                    - items
+                                type: object
+                    description: The cart
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such line
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Remove a line
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
+        put:
+            description: 'Quantity must be between 1 and 1000. Zero is not a delete: removing a line is its own operation, so a client that sends 0 by mistake gets a validation error rather than a silently emptied cart. Another customer''s line id is a 404.'
+            operationId: PutPortalCartItemsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    coupon_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    currency:
+                                        pattern: ^[A-Z0-9]{2,12}$
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    item_count:
+                                        type: integer
+                                    items:
+                                        items:
+                                            properties:
+                                                config:
+                                                    additionalProperties:
+                                                        type: string
+                                                    type: object
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                label:
+                                                    type: string
+                                                price_name:
+                                                    type: string
+                                                price_version_id:
+                                                    format: uuid
+                                                    type: string
+                                                product_id:
+                                                    format: uuid
+                                                    type: string
+                                                product_name:
+                                                    type: string
+                                                quantity:
+                                                    type: integer
+                                            required:
+                                                - id
+                                                - price_version_id
+                                                - quantity
+                                            type: object
+                                        type: array
+                                    tos_accepted_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - id
+                                    - currency
+                                    - items
+                                type: object
+                    description: The cart
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such line
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The quantity is not allowed
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Set a line's quantity
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
+    /api/v1/portal/cart/totals:
+        get:
+            description: Every number is read from `price_versions` at the moment of the call, so a price change while the cart sat open is a non-event. Tax is applied when the installation has it enabled and the customer has a billing country; otherwise the cart is quoted net. A coupon that no longer applies is reported in `coupon_problem` rather than silently dropped.
+            operationId: GetPortalCartTotals
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    coupon:
+                                        properties:
+                                            applies_to:
+                                                type: string
+                                            code:
+                                                type: string
+                                            coupon_id:
+                                                format: uuid
+                                                type: string
+                                            discount:
+                                                $ref: '#/components/schemas/Amount'
+                                            recurring_cycles:
+                                                type:
+                                                    - integer
+                                                    - "null"
+                                        type: object
+                                    coupon_problem:
+                                        description: Why an attached coupon is not reducing anything (expired, exhausted, not applicable).
+                                        type: string
+                                    currency:
+                                        type: string
+                                    discount:
+                                        $ref: '#/components/schemas/Amount'
+                                    item_count:
+                                        type: integer
+                                    lines:
+                                        items:
+                                            properties:
+                                                description:
+                                                    type: string
+                                                discount:
+                                                    $ref: '#/components/schemas/Amount'
+                                                item_id:
+                                                    format: uuid
+                                                    type: string
+                                                line:
+                                                    $ref: '#/components/schemas/Amount'
+                                                net:
+                                                    $ref: '#/components/schemas/Amount'
+                                                price_version_id:
+                                                    format: uuid
+                                                    type: string
+                                                product_id:
+                                                    format: uuid
+                                                    type: string
+                                                quantity:
+                                                    type: integer
+                                                setup:
+                                                    $ref: '#/components/schemas/Amount'
+                                                setup_line:
+                                                    $ref: '#/components/schemas/Amount'
+                                                tax:
+                                                    $ref: '#/components/schemas/Amount'
+                                                tax_evidence:
+                                                    properties:
+                                                        exemption_reason:
+                                                            type: string
+                                                        inclusive:
+                                                            type: boolean
+                                                        jurisdiction:
+                                                            type: string
+                                                        rate:
+                                                            type: string
+                                                    type: object
+                                                tax_rate:
+                                                    type: string
+                                                total:
+                                                    $ref: '#/components/schemas/Amount'
+                                                unit:
+                                                    $ref: '#/components/schemas/Amount'
+                                            type: object
+                                        type: array
+                                    subtotal:
+                                        $ref: '#/components/schemas/Amount'
+                                    tax:
+                                        $ref: '#/components/schemas/Amount'
+                                    total:
+                                        $ref: '#/components/schemas/Amount'
+                                required:
+                                    - currency
+                                    - lines
+                                    - subtotal
+                                    - discount
+                                    - tax
+                                    - total
+                                type: object
+                    description: The priced cart
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Price the cart from the catalog
+            x-permission: customer:read:self
+            x-rate-class: read
     /api/v1/portal/invoices:
         get:
             description: 'Scoped in SQL: substituting another customer''s identifier returns not_found, identical to a nonexistent id.'
@@ -2355,6 +3581,1014 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: catalog:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/coupons:
+        get:
+            description: 'Every coupon, retired ones included, newest first, each with the products it is restricted to. Requires coupon:read:all: a promotion list is a list of every price the shop has discounted.'
+            operationId: GetStaffCoupons
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                amount_minor:
+                                                    description: Fixed discount in minor units of `currency`.
+                                                    format: int64
+                                                    type: integer
+                                                applies_to:
+                                                    enum:
+                                                        - price
+                                                        - setup
+                                                        - all
+                                                    type: string
+                                                code:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                currency:
+                                                    pattern: ^[A-Z0-9]{2,12}$
+                                                    type: string
+                                                description:
+                                                    type: string
+                                                enabled:
+                                                    type: boolean
+                                                expires_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                kind:
+                                                    enum:
+                                                        - percentage
+                                                        - fixed
+                                                    type: string
+                                                max_uses:
+                                                    type:
+                                                        - integer
+                                                        - "null"
+                                                max_uses_per_user:
+                                                    type:
+                                                        - integer
+                                                        - "null"
+                                                percentage:
+                                                    description: Exact decimal percentage for a percentage coupon; never a float.
+                                                    type: string
+                                                product_ids:
+                                                    items:
+                                                        format: uuid
+                                                        type: string
+                                                    type: array
+                                                recurring_cycles:
+                                                    type:
+                                                        - integer
+                                                        - "null"
+                                                starts_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - id
+                                                - code
+                                                - kind
+                                                - applies_to
+                                                - enabled
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: The coupons
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List promotions
+            x-permission: coupon:read:all
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: A percentage coupon carries `percentage` as an exact decimal string ("10", "12.5") and no currency; a fixed coupon carries `amount_minor` plus the `currency` it is denominated in. A float is never accepted, because 0.1 is not representable and a discount is money. `applies_to` is price, setup or all; `recurring_cycles` is the first-N-cycles rule (null is lifetime, 1 is the first invoice only).
+            operationId: PostStaffCoupons
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    amount_minor:
+                                        description: Fixed discount in minor units of `currency`.
+                                        format: int64
+                                        type: integer
+                                    applies_to:
+                                        enum:
+                                            - price
+                                            - setup
+                                            - all
+                                        type: string
+                                    code:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    currency:
+                                        pattern: ^[A-Z0-9]{2,12}$
+                                        type: string
+                                    description:
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    expires_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    kind:
+                                        enum:
+                                            - percentage
+                                            - fixed
+                                        type: string
+                                    max_uses:
+                                        type:
+                                            - integer
+                                            - "null"
+                                    max_uses_per_user:
+                                        type:
+                                            - integer
+                                            - "null"
+                                    percentage:
+                                        description: Exact decimal percentage for a percentage coupon; never a float.
+                                        type: string
+                                    product_ids:
+                                        items:
+                                            format: uuid
+                                            type: string
+                                        type: array
+                                    recurring_cycles:
+                                        type:
+                                            - integer
+                                            - "null"
+                                    starts_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - code
+                                    - kind
+                                    - applies_to
+                                    - enabled
+                                type: object
+                    description: The coupon
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: That code is already in use
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Invalid input
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Create a promotion
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: coupon:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/coupons/{id}:
+        get:
+            description: Includes `product_ids`, which is empty when the coupon applies to every product.
+            operationId: GetStaffCouponsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    amount_minor:
+                                        description: Fixed discount in minor units of `currency`.
+                                        format: int64
+                                        type: integer
+                                    applies_to:
+                                        enum:
+                                            - price
+                                            - setup
+                                            - all
+                                        type: string
+                                    code:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    currency:
+                                        pattern: ^[A-Z0-9]{2,12}$
+                                        type: string
+                                    description:
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    expires_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    kind:
+                                        enum:
+                                            - percentage
+                                            - fixed
+                                        type: string
+                                    max_uses:
+                                        type:
+                                            - integer
+                                            - "null"
+                                    max_uses_per_user:
+                                        type:
+                                            - integer
+                                            - "null"
+                                    percentage:
+                                        description: Exact decimal percentage for a percentage coupon; never a float.
+                                        type: string
+                                    product_ids:
+                                        items:
+                                            format: uuid
+                                            type: string
+                                        type: array
+                                    recurring_cycles:
+                                        type:
+                                            - integer
+                                            - "null"
+                                    starts_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - code
+                                    - kind
+                                    - applies_to
+                                    - enabled
+                                type: object
+                    description: The coupon
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such coupon
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: One promotion
+            x-permission: coupon:read:all
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: 'Retiring is `enabled: false`, never a delete: the invoices the coupon discounted reference it, and an invoice whose discount cannot be explained is not a valid document. A retired coupon refuses new redemptions and keeps its history.'
+            operationId: PutStaffCouponsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    amount_minor:
+                                        description: Fixed discount in minor units of `currency`.
+                                        format: int64
+                                        type: integer
+                                    applies_to:
+                                        enum:
+                                            - price
+                                            - setup
+                                            - all
+                                        type: string
+                                    code:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    currency:
+                                        pattern: ^[A-Z0-9]{2,12}$
+                                        type: string
+                                    description:
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    expires_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    kind:
+                                        enum:
+                                            - percentage
+                                            - fixed
+                                        type: string
+                                    max_uses:
+                                        type:
+                                            - integer
+                                            - "null"
+                                    max_uses_per_user:
+                                        type:
+                                            - integer
+                                            - "null"
+                                    percentage:
+                                        description: Exact decimal percentage for a percentage coupon; never a float.
+                                        type: string
+                                    product_ids:
+                                        items:
+                                            format: uuid
+                                            type: string
+                                        type: array
+                                    recurring_cycles:
+                                        type:
+                                            - integer
+                                            - "null"
+                                    starts_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - code
+                                    - kind
+                                    - applies_to
+                                    - enabled
+                                type: object
+                    description: The coupon
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such coupon
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: That code is already in use
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Invalid input
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Edit or retire a promotion
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: coupon:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/coupons/{id}/redemptions:
+        get:
+            description: One row per recorded use, with the discount actually granted in the invoice's currency. This is the report that answers "what did this promotion cost" without re-running the pricing.
+            operationId: GetStaffCouponsByIdRedemptions
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The redemptions
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such coupon
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Who used a promotion, and what it cost
+            x-permission: coupon:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/currencies:
+        get:
+            description: Disabled currencies included, because they keep the history their price rows and invoices reference.
+            operationId: GetStaffCurrencies
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                code:
+                                                    pattern: ^[A-Z0-9]{2,12}$
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                decimal_mark:
+                                                    type: string
+                                                enabled:
+                                                    type: boolean
+                                                example:
+                                                    description: 123456 minor units rendered in the configured style.
+                                                    type: string
+                                                group_separator:
+                                                    type: string
+                                                group_size:
+                                                    type: integer
+                                                is_default:
+                                                    type: boolean
+                                                name:
+                                                    type: string
+                                                scale:
+                                                    type: integer
+                                                sort_order:
+                                                    type: integer
+                                                symbol:
+                                                    type: string
+                                                symbol_position:
+                                                    enum:
+                                                        - prefix
+                                                        - suffix
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - code
+                                                - name
+                                                - scale
+                                                - is_default
+                                                - enabled
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: The currencies
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List every configured currency
+            x-permission: currency:write
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: Supplies presentation only — symbol, position, grouping, scale — because amounts stay integer minor units. `scale` defaults to the ISO 4217 exponent for the code. Setting `is_default` demotes the incumbent in the same transaction, so "exactly one default" holds at every commit.
+            operationId: PostStaffCurrencies
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    code:
+                                        pattern: ^[A-Z0-9]{2,12}$
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    decimal_mark:
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    example:
+                                        description: 123456 minor units rendered in the configured style.
+                                        type: string
+                                    group_separator:
+                                        type: string
+                                    group_size:
+                                        type: integer
+                                    is_default:
+                                        type: boolean
+                                    name:
+                                        type: string
+                                    scale:
+                                        type: integer
+                                    sort_order:
+                                        type: integer
+                                    symbol:
+                                        type: string
+                                    symbol_position:
+                                        enum:
+                                            - prefix
+                                            - suffix
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - code
+                                    - name
+                                    - scale
+                                    - is_default
+                                    - enabled
+                                type: object
+                    description: The currency
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: That code already exists
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Invalid input
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Add a currency
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: currency:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/currencies/{code}:
+        delete:
+            description: 'Refused while any price version or invoice names it. The supported way to stop offering a currency is `enabled: false`.'
+            operationId: DeleteStaffCurrenciesByCode
+            parameters:
+                - in: path
+                  name: code
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Prices or invoices use it, or it is the default
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete a currency that has never been used
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: currency:write
+            x-rate-class: mutation
+            x-staff-only: true
+        put:
+            description: 'The code and the scale are immutable: changing the exponent would reinterpret every stored minor amount. The default currency cannot be disabled; making another currency the default promotes it in the same transaction.'
+            operationId: PutStaffCurrenciesByCode
+            parameters:
+                - in: path
+                  name: code
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    code:
+                                        pattern: ^[A-Z0-9]{2,12}$
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    decimal_mark:
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    example:
+                                        description: 123456 minor units rendered in the configured style.
+                                        type: string
+                                    group_separator:
+                                        type: string
+                                    group_size:
+                                        type: integer
+                                    is_default:
+                                        type: boolean
+                                    name:
+                                        type: string
+                                    scale:
+                                        type: integer
+                                    sort_order:
+                                        type: integer
+                                    symbol:
+                                        type: string
+                                    symbol_position:
+                                        enum:
+                                            - prefix
+                                            - suffix
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - code
+                                    - name
+                                    - scale
+                                    - is_default
+                                    - enabled
+                                type: object
+                    description: The currency
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such currency
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The change would leave no default, or the scale was changed
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Invalid input
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Edit a currency's presentation or default state
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: currency:write
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/customers:
@@ -4327,6 +6561,505 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: service:terminate
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tax-rates:
+        get:
+            description: 'Every rate, current and historic, newest effective date first. Rates are dated rows: a rate change appends a new row instead of rewriting a filed period. `all` as a country code is the wildcard fallback.'
+            operationId: GetStaffTaxrates
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                country_code:
+                                                    description: ISO 3166-1 alpha-2, or `all` for the wildcard fallback.
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                effective_from:
+                                                    format: date-time
+                                                    type: string
+                                                effective_to:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                enabled:
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                inclusive:
+                                                    type: boolean
+                                                jurisdiction:
+                                                    description: '`DE/standard`, `US-CA/standard` or `all/standard`.'
+                                                    type: string
+                                                name:
+                                                    type: string
+                                                rate:
+                                                    description: 'Exact rational: "0.19", "1/5".'
+                                                    type: string
+                                                region_code:
+                                                    type: string
+                                                tax_class:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - country_code
+                                                - tax_class
+                                                - rate
+                                                - inclusive
+                                                - effective_from
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: The rates
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List jurisdiction tax rates
+            x-permission: tax:write
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: '`rate` is an exact rational string ("0.19", "19%", "1/5"); a float is never accepted. `effective_from` defaults to now and `effective_to` is null for an open-ended rate. Only one open-ended enabled rate may exist per (country, region, class), so a change means closing the old row first. `inclusive` defaults to the installation''s configured tax mode.'
+            operationId: PostStaffTaxrates
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    country_code:
+                                        description: ISO 3166-1 alpha-2, or `all` for the wildcard fallback.
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    effective_from:
+                                        format: date-time
+                                        type: string
+                                    effective_to:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    enabled:
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    inclusive:
+                                        type: boolean
+                                    jurisdiction:
+                                        description: '`DE/standard`, `US-CA/standard` or `all/standard`.'
+                                        type: string
+                                    name:
+                                        type: string
+                                    rate:
+                                        description: 'Exact rational: "0.19", "1/5".'
+                                        type: string
+                                    region_code:
+                                        type: string
+                                    tax_class:
+                                        type: string
+                                required:
+                                    - id
+                                    - country_code
+                                    - tax_class
+                                    - rate
+                                    - inclusive
+                                    - effective_from
+                                type: object
+                    description: The rate
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An open-ended rate for that jurisdiction already exists
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Invalid input
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Append a tax rate
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: tax:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tax-rates/{id}:
+        delete:
+            description: 'Refused once the rate has applied: an issued invoice''s evidence points at it.'
+            operationId: DeleteStaffTaxratesById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The rate has taken effect; disable it instead
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete a rate that never took effect
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: tax:write
+            x-rate-class: mutation
+            x-staff-only: true
+        get:
+            description: '`jurisdiction` renders the row as `DE/standard` or `US-CA/standard` for evidence.'
+            operationId: GetStaffTaxratesById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    country_code:
+                                        description: ISO 3166-1 alpha-2, or `all` for the wildcard fallback.
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    effective_from:
+                                        format: date-time
+                                        type: string
+                                    effective_to:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    enabled:
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    inclusive:
+                                        type: boolean
+                                    jurisdiction:
+                                        description: '`DE/standard`, `US-CA/standard` or `all/standard`.'
+                                        type: string
+                                    name:
+                                        type: string
+                                    rate:
+                                        description: 'Exact rational: "0.19", "1/5".'
+                                        type: string
+                                    region_code:
+                                        type: string
+                                    tax_class:
+                                        type: string
+                                required:
+                                    - id
+                                    - country_code
+                                    - tax_class
+                                    - rate
+                                    - inclusive
+                                    - effective_from
+                                type: object
+                    description: The rate
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such rate
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: One tax rate
+            x-permission: tax:write
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: 'The arithmetic is refused once the rate has taken effect: changing a live rate would rewrite what a past period was taxed at. Close the row and append a new one instead.'
+            operationId: PutStaffTaxratesById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    country_code:
+                                        description: ISO 3166-1 alpha-2, or `all` for the wildcard fallback.
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    effective_from:
+                                        format: date-time
+                                        type: string
+                                    effective_to:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    enabled:
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    inclusive:
+                                        type: boolean
+                                    jurisdiction:
+                                        description: '`DE/standard`, `US-CA/standard` or `all/standard`.'
+                                        type: string
+                                    name:
+                                        type: string
+                                    rate:
+                                        description: 'Exact rational: "0.19", "1/5".'
+                                        type: string
+                                    region_code:
+                                        type: string
+                                    tax_class:
+                                        type: string
+                                required:
+                                    - id
+                                    - country_code
+                                    - tax_class
+                                    - rate
+                                    - inclusive
+                                    - effective_from
+                                type: object
+                    description: The rate
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such rate
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The rate is in effect, or another open-ended rate exists
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Invalid input
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Edit a rate's window or presentation
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: tax:write
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/webhooks:

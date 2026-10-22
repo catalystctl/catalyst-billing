@@ -62,7 +62,8 @@ func buildJobs(pool *store.Pool, logger *slog.Logger, apiServer *httpapi.Server)
 				// Amount verification is always attached in production: a settled
 				// payment is only applied when it matches the recorded checkout.
 				processor := payments.NewProcessor(pool, inbox, gw,
-					envOr("BILLING_GATEWAY_ACCOUNT", ""), fulfilment.NewApplier(pool)).
+					envOr("BILLING_GATEWAY_ACCOUNT", ""),
+					fulfilment.NewApplier(pool).WithNotifier(notify.NewQueue(pool))).
 					WithAttempts(checkout.LookupFor(pool))
 				results, err := processor.Process(ctx, 50)
 				for _, r := range results {

@@ -17620,6 +17620,175 @@ paths:
             x-permission: settings:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/exports/customers.csv:
+        get:
+            description: |-
+                Streams every customer matching the search as `text/csv`, one row per currency the customer owes in. A customer who owes nothing is one row with an empty currency, an empty amount and `outstanding_minor` 0: a balance is not one number, and adding a USD balance to a EUR one would be arithmetic on unrelated quantities.
+
+                Filter: `q`, the same search the customer list uses (email or name, at least two characters). The sort the list offers is not a filter and is refused here: the export is ordered by creation, so two exports of the same data are comparable.
+
+                Columns: `customer_id`, `email`, `name`, `created_at`, `open_invoices`, `services`, `has_login`, `outstanding_currency`, `outstanding`, `outstanding_minor`. Requires customer:read:all.
+            operationId: GetStaffExportsCustomerscsv
+            responses:
+                2XX:
+                    description: The matching customers as CSV
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The search is too short, or a parameter is one this export does not honour
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller may not read customers
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Export customers as CSV
+            x-permission: customer:read:all
+            x-rate-class: export
+            x-staff-only: true
+    /api/v1/staff/exports/invoices.csv:
+        get:
+            description: |-
+                Streams every invoice matching the filters as `text/csv`, in the order the invoice list shows them. Rows are read a page at a time and flushed as they are written, so the download does not grow with the size of the book.
+
+                Filters are the list's: `status`, `customer_id`, `currency`, `from`, `to` (RFC3339) and `overdue`. A parameter this endpoint does not honour is a 400 rather than a filter that is silently ignored.
+
+                Columns: `invoice_id`, `invoice_number`, `status`, `currency`, `issued_at` (RFC3339, UTC), `due_at` (RFC3339, UTC), `due_date` (yyyy-mm-dd), `customer_id`, `customer_email`, `total`, `total_minor`, `paid`, `paid_minor`, `balance_due`, `balance_due_minor`, `overdue`. Every amount appears twice: the bare column is an exact decimal string in the major unit (integer minor units divided by the currency's scale — never a float), and the `_minor` column is the integer count. Text fields that would start a spreadsheet formula are prefixed with an apostrophe, so a customer name cannot execute anything.
+
+                Scoped twice: the route needs invoice:read:all, and a `customer_id` filter additionally needs customer:read:all — an operator cannot export a customer they cannot read.
+            operationId: GetStaffExportsInvoicescsv
+            responses:
+                2XX:
+                    description: The matching invoices as CSV
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A filter is malformed or is one this export does not honour
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller may not read invoices, or may not read the filtered customer
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Export invoices as CSV
+            x-permission: invoice:read:all
+            x-rate-class: export
+            x-staff-only: true
+    /api/v1/staff/exports/services.csv:
+        get:
+            description: |-
+                Streams every service matching the filters as `text/csv`, with the state an operator or an auditor asks about: whose it is, which product it is on, whether it is provisioned, and whether the queue is still holding something for it.
+
+                Filters are the list's: `status`, `customer_id`, `product_id` and `has_open_operation`. A parameter this endpoint does not honour is a 400.
+
+                Columns: `service_id`, `customer_id`, `customer_email`, `product_id`, `product_name`, `status`, `external_id`, `generation`, `created_at`, `next_bill_at`, `open_operations`, `last_error`. There is no money column: what a service costs is on the invoice export and on the invoice itself.
+
+                Scoped twice: the route needs service:read:all, and a `customer_id` filter additionally needs customer:read:all.
+            operationId: GetStaffExportsServicescsv
+            responses:
+                2XX:
+                    description: The matching services as CSV
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A filter is malformed or is one this export does not honour
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller may not read services, or may not read the filtered customer
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Export services as CSV
+            x-permission: service:read:all
+            x-rate-class: export
+            x-staff-only: true
     /api/v1/staff/gateways:
         get:
             description: 'Which provider is configured, whether it is switched on, which binary the runtime will launch, and the state of each credential. A credential is never returned: `is_set` says whether one exists and `source` says where the effective value came from. `source: environment` means the deployment''s environment variable wins over the saved row — the runtime will ignore a value saved from the panel, so a client must render that field read-only. `webhook_url` is derived from `BILLING_PUBLIC_URL`, not from the request''s Host header, because the address a provider must deliver to is the deployment''s public origin. Reading requires `gateway:write`, because a credential''s shape and the public webhook URL are reconnaissance rather than support information.'

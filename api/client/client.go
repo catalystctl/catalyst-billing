@@ -653,6 +653,14 @@ func (c *Client) GetAuthMe(ctx context.Context, query url.Values, body any) (*Re
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetAuthMfa calls GET /api/v1/auth/mfa.
+//
+// Your own second-factor state
+func (c *Client) GetAuthMfa(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/mfa"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetAuthProviders calls GET /api/v1/auth/providers.
 //
 // The providers the sign-in screen may offer
@@ -1622,6 +1630,36 @@ func (c *Client) GetStaffDashboardWidgets(ctx context.Context, query url.Values,
 // Permission: report:read. Staff only.
 func (c *Client) GetStaffDiscord(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/discord"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffExportsCustomerscsv calls GET /api/v1/staff/exports/customers.csv.
+//
+// # Export customers as CSV
+//
+// Permission: customer:read:all. Staff only.
+func (c *Client) GetStaffExportsCustomerscsv(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/exports/customers.csv"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffExportsInvoicescsv calls GET /api/v1/staff/exports/invoices.csv.
+//
+// # Export invoices as CSV
+//
+// Permission: invoice:read:all. Staff only.
+func (c *Client) GetStaffExportsInvoicescsv(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/exports/invoices.csv"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffExportsServicescsv calls GET /api/v1/staff/exports/services.csv.
+//
+// # Export services as CSV
+//
+// Permission: service:read:all. Staff only.
+func (c *Client) GetStaffExportsServicescsv(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/exports/services.csv"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 

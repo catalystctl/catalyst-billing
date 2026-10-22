@@ -31,10 +31,21 @@ SERVER_PID=""
 # An exclusive lock on the script itself is the whole fix. It is taken with `flock` where that
 # exists and skipped where it does not, because a harness that refuses to run on a machine without
 # util-linux would be worse than one that can be run twice by accident.
+#
+# The lock file descriptor is closed for every long-lived child (the server, and the browser
+# harness), with `9>&-` at the call site. Without that the lock leaks: bash creates fd 9 without
+# close-on-exec, node inherits it, node's chromium inherits it from node, and a run that is killed
+# leaves an orphaned browser holding the lock for as long as it lives. That is not theoretical —
+# a stale chromium from an earlier run held this lock for seven hours and every subsequent run
+# failed with "another run holds the lock" while no script was running.
 if command -v flock >/dev/null 2>&1; then
   exec 9>"${TMPDIR:-/tmp}/catalyst-billing-e2e.lock"
   if ! flock -n 9; then
     echo "FAIL: another browser-e2e run holds the lock; wait for it to finish" >&2
+    # A stale holder is the usual cause, and it is invisible without this hint: no script is
+    # running, yet the lock is taken by an orphaned browser that inherited the descriptor.
+    echo "      if no run is in progress, find the holder with:  lsof ${TMPDIR:-/tmp}/catalyst-billing-e2e.lock" >&2
+    echo "      (or: fuser -v ${TMPDIR:-/tmp}/catalyst-billing-e2e.lock) and stop it" >&2
     exit 1
   fi
 fi
@@ -180,7 +191,7 @@ if [[ -z "$BASE" ]]; then
   BILLING_PUBLIC_URL="$BASE" \
   BILLING_MFA_KEY="e2e0b1e2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e" \
   BILLING_MFA_KEY_ID="e2e" \
-    /tmp/billing-e2e serve >/tmp/billing-e2e.log 2>&1 &
+    /tmp/billing-e2e serve >/tmp/billing-e2e.log 2>&1 9>&- &
   SERVER_PID=$!
 
   for _ in $(seq 1 120); do
@@ -424,6 +435,26 @@ CONFIG_PRODUCT_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
 
 # ---------------------------------------------------------------- the drive --
 
+# The record ids the all-routes pass needs.
+#
+# The 37 named screens below are opened by URL, so they need no ids. The route sweep opens
+# *every* route in the table, including the detail screens, and a detail screen is only
+# exercised honestly against a record that exists: "no such invoice" would pass the same
+# assertions as a working invoice page, and the pass would prove nothing. These are read back
+# from the rows seeded above rather than generated, because the id is the database's to
+# assign.
+INVOICE_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
+  -c "SELECT id FROM invoices WHERE number = '${INVOICE_NUMBER}'")" || fail "could not read the seeded invoice id"
+SERVICE_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
+  -c "SELECT id FROM services WHERE external_id = '${SERVICE_EXTERNAL_ID}'")" || fail "could not read the seeded service id"
+TICKET_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
+  -c "SELECT id FROM tickets WHERE subject = '${TICKET_SUBJECT}'")" || fail "could not read the seeded ticket id"
+PRODUCT_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
+  -c "SELECT id FROM products WHERE slug = 'e2e-product-${STAMP}'")" || fail "could not read the seeded product id"
+for pair in "invoice:$INVOICE_ID" "service:$SERVICE_ID" "ticket:$TICKET_ID" "product:$PRODUCT_ID"; do
+  [[ -n "${pair#*:}" ]] || fail "the seed produced no ${pair%%:*} id"
+done
+
 ARGS=(
   "--base=$BASE"
   "--staff=$STAFF_EMAIL"
@@ -449,7 +480,37 @@ ARGS=(
 )
 [[ -n "$SHOTS" ]] && ARGS+=("--screenshots=$SHOTS")
 
-node scripts/e2e-ui.mjs "${ARGS[@]}" || fail "the browser test reported failures"
+node scripts/e2e-ui.mjs "${ARGS[@]}" 9>&- || fail "the browser test reported failures"
+
+# Every route in the table, including the ones the named-screen pass above does not know
+# about.
+#
+# The two passes ask different questions and both have to be asked. The named screens assert
+# what a screen *contains*; this one asserts that every entry in web/src/routes.ts can be
+# opened at all, which is the only way a route whose view module is missing, or whose guard
+# disagrees with the table, becomes a failing test rather than a link somebody clicks once.
+# It runs second because it is the cheaper assertion and because a failure here should not
+# hide a content failure above it.
+#
+# A declared route whose view is still a placeholder is reported and tolerated, because the
+# screens land in parallel and a harness that is red for a screen nobody has written yet stops
+# being run. E2E_STRICT_PLACEHOLDERS=1 turns that tolerance off: use it once every screen
+# exists, and in a release check, so "not built yet" cannot survive into a shipped build.
+SWEEP_ARGS=(
+  "--base=$BASE"
+  "--staff=$STAFF_EMAIL"
+  "--staff-password=$STAFF_PASSWORD"
+  "--customer=$CUSTOMER_EMAIL"
+  "--customer-password=$CUSTOMER_PASSWORD"
+  "--customer-id=$CUSTOMER_ID"
+  "--invoice-id=$INVOICE_ID"
+  "--service-id=$SERVICE_ID"
+  "--ticket-id=$TICKET_ID"
+  "--product-id=$PRODUCT_ID"
+  "--product-slug=e2e-product-${STAMP}"
+)
+[[ -n "${E2E_STRICT_PLACEHOLDERS:-}" ]] && SWEEP_ARGS+=("--strict-placeholders")
+node scripts/e2e-routes.mjs "${SWEEP_ARGS[@]}" 9>&- || fail "the route sweep reported failures"
 
 echo
 echo "authenticated browser test passed against $BASE"

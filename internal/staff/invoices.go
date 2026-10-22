@@ -190,6 +190,11 @@ type PaymentRow struct {
 	Currency          string
 	Status            string
 	ReceivedAt        time.Time
+	// Method and Note are set only on payments a staff member recorded outside a gateway
+	// (provider='manual'). They are nil for gateway payments, whose method the provider owns
+	// and which have no operator note — nil here means "not an offline payment", not "unknown".
+	Method *string
+	Note   *string
 }
 
 // AllocationRow is one payment allocation.
@@ -364,7 +369,7 @@ func (s *Service) invoiceLines(ctx context.Context, invoiceID string) ([]Invoice
 func (s *Service) paymentsForInvoice(ctx context.Context, invoiceID string) ([]PaymentRow, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.id, p.provider, p.provider_account, p.provider_payment_id,
-		       p.amount_minor, p.currency, p.status, p.received_at
+		       p.amount_minor, p.currency, p.status, p.received_at, p.method, p.note
 		FROM payments p
 		JOIN payment_allocations pa ON pa.payment_id = p.id
 		WHERE pa.invoice_id = $1
@@ -379,7 +384,7 @@ func (s *Service) paymentsForInvoice(ctx context.Context, invoiceID string) ([]P
 		var row PaymentRow
 		if err := rows.Scan(&row.ID, &row.Provider, &row.ProviderAccount,
 			&row.ProviderPaymentID, &row.Amount, &row.Currency, &row.Status,
-			&row.ReceivedAt); err != nil {
+			&row.ReceivedAt, &row.Method, &row.Note); err != nil {
 			return nil, fmt.Errorf("staff: scan invoice payment: %w", err)
 		}
 		out = append(out, row)
@@ -518,8 +523,11 @@ type PaymentFilter struct {
 	Provider   string
 	Status     string
 	CustomerID string
-	From       *time.Time
-	To         *time.Time
+	// Method filters offline payments by how the money arrived. It is exact, and a
+	// non-empty value that no row carries simply returns an empty page.
+	Method string
+	From   *time.Time
+	To     *time.Time
 }
 
 // PaymentDetail is the payment view.
@@ -540,6 +548,9 @@ func (s *Service) Payments(ctx context.Context, f PaymentFilter, limit int, curs
 	}
 	if f.Status != "" {
 		b.add("p.status = $%d", f.Status)
+	}
+	if f.Method != "" {
+		b.add("p.method = $%d", f.Method)
 	}
 	if f.CustomerID != "" {
 		b.add(`EXISTS (SELECT 1 FROM payment_allocations pa
@@ -565,7 +576,7 @@ func (s *Service) Payments(ctx context.Context, f PaymentFilter, limit int, curs
 
 	stmt := `
 		SELECT p.id, p.provider, p.provider_account, p.provider_payment_id,
-		       p.amount_minor, p.currency, p.status, p.received_at
+		       p.amount_minor, p.currency, p.status, p.received_at, p.method, p.note
 		FROM payments p
 		WHERE ` + b.whereClause() + `
 		ORDER BY p.received_at DESC, p.id DESC
@@ -582,7 +593,7 @@ func (s *Service) Payments(ctx context.Context, f PaymentFilter, limit int, curs
 		var row PaymentRow
 		if err := rows.Scan(&row.ID, &row.Provider, &row.ProviderAccount,
 			&row.ProviderPaymentID, &row.Amount, &row.Currency, &row.Status,
-			&row.ReceivedAt); err != nil {
+			&row.ReceivedAt, &row.Method, &row.Note); err != nil {
 			return nil, nil, "", fmt.Errorf("staff: scan payment: %w", err)
 		}
 		out = append(out, row)
@@ -647,11 +658,11 @@ func (s *Service) Payment(ctx context.Context, id string) (PaymentDetail, error)
 	var out PaymentDetail
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, provider, provider_account, provider_payment_id, amount_minor,
-		       currency, status, received_at
+		       currency, status, received_at, method, note
 		FROM payments WHERE id = $1`, id).
 		Scan(&out.Payment.ID, &out.Payment.Provider, &out.Payment.ProviderAccount,
 			&out.Payment.ProviderPaymentID, &out.Payment.Amount, &out.Payment.Currency,
-			&out.Payment.Status, &out.Payment.ReceivedAt)
+			&out.Payment.Status, &out.Payment.ReceivedAt, &out.Payment.Method, &out.Payment.Note)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PaymentDetail{}, ErrNotFound
 	}

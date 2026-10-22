@@ -150,13 +150,26 @@ export default async function apiKeysPage(ctx: Ctx): Promise<Node> {
       render: (row) =>
         row.revoked
           ? h("span", { class: "faint" }, "—")
-          : btn("Revoke", {
-              size: "sm",
-              variant: "danger",
-              icon: "trash",
-              title: "Revoke this key",
-              onclick: () => void revokeKey(row),
-            }),
+          : h(
+              "div",
+              { class: "row-wrap" },
+              // The network restriction is a property of a live key, so it is offered on the
+              // row rather than in the create form: a key that leaks is narrowed first and
+              // revoked second, and narrowing must not need a new key.
+              btn("Networks", {
+                size: "sm",
+                icon: "globe",
+                title: "Restrict this key to a set of networks",
+                onclick: () => void editAllowlist(row),
+              }),
+              btn("Revoke", {
+                size: "sm",
+                variant: "danger",
+                icon: "trash",
+                title: "Revoke this key",
+                onclick: () => void revokeKey(row),
+              }),
+            ),
     },
   ];
 
@@ -370,6 +383,81 @@ export default async function apiKeysPage(ctx: Ctx): Promise<Node> {
     ctx.onDispose(() => {
       saved = true;
       handle?.close();
+    });
+  }
+
+  /** The network restriction for one key.
+   *
+   *  It is a separate read and a separate write because the list does not carry it: the
+   *  allowlist is only interesting for the key you are about to change, and fetching it per row
+   *  would put a second query behind a table render. The dialog reads the current value, so an
+   *  operator edits the rule rather than replacing it blind. */
+  async function editAllowlist(row: APIKeyRow): Promise<void> {
+    let current: string[];
+    try {
+      const body = await ctx.api.get<{ ip_allowlist: string[] }>(
+        `/api/v1/staff/api-keys/${row.id}/ip-allowlist`,
+        { cache: false },
+      );
+      current = Array.isArray(body.ip_allowlist) ? body.ip_allowlist : [];
+    } catch (err) {
+      ctx.toast(err instanceof ApiError ? err.detail || humanStatus(err.code) : "The networks could not be read", {
+        tone: "danger",
+        detail: err instanceof ApiError ? err.code : undefined,
+      });
+      return;
+    }
+
+    const ranges = input({
+      id: "key-allowlist",
+      name: "ip_allowlist",
+      class: "input--mono",
+      placeholder: "203.0.113.0/24, 198.51.100.7/32",
+      value: current.join(", "),
+      autocomplete: "off",
+    });
+
+    void ctx.formDialog({
+      title: `Networks for “${row.name}”`,
+      subtitle: current.length === 0
+        ? "This key works from any address. A restriction narrows it without changing the key."
+        : "This key works only from these networks. Remove them all to accept it from anywhere.",
+      submitLabel: "Save networks",
+      body: field({
+        label: "Allowed networks (CIDR)",
+        control: ranges,
+        hint: "Comma-separated IPv4 or IPv6 ranges, for example 203.0.113.0/24. Empty means no restriction. A request from any other address is refused as if the key did not exist.",
+      }),
+      onSubmit: async () => {
+        const list = ranges.value
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        try {
+          const saved = await ctx.api.put<{ ip_allowlist: string[] }>(
+            `/api/v1/staff/api-keys/${row.id}/ip-allowlist`,
+            { ip_allowlist: list },
+          );
+          const stored = Array.isArray(saved.ip_allowlist) ? saved.ip_allowlist : list;
+          // The list does not carry the allowlist, so there is nothing to reload: the
+          // confirmation is the toast, and reopening the dialog reads the stored rule.
+          ctx.toast("Networks saved", {
+            tone: "success",
+            detail: stored.length > 0 ? stored.join(", ") : "Any network",
+          });
+          return undefined;
+        } catch (err) {
+          if (!(err instanceof ApiError)) return "The server could not be reached, so nothing changed.";
+          switch (err.code) {
+            case "invalid_allowlist":
+              return err.detail || "One of those is not a CIDR range.";
+            case "not_found":
+              return "That key no longer exists. Reload the page.";
+            default:
+              return err.detail || `The networks could not be saved (${err.code}).`;
+          }
+        }
+      },
     });
   }
 

@@ -19827,6 +19827,165 @@ paths:
             x-permission: invoice:write:all
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/invoices/{id}/payments:
+        post:
+            description: |-
+                Records a bank transfer, a cash payment, a cheque or another offline payment against one invoice, and allocates it.
+
+                The invoice's paid amount and status follow the allocation: an amount below the outstanding balance leaves the invoice partly paid with a smaller balance, and an amount that settles it marks the invoice paid and runs the same fulfilment the webhook runs (provisioning for what the invoice bought, and credit for a top-up deposit).
+
+                **The payment is not a gateway payment.** The row is written with `provider: "manual"`, the operator's `reference` as the payment id, and the `method` beside it, so a reconciliation report can tell a cheque from a card charge without guessing from a reference prefix.
+
+                **Idempotency works twice.** The route requires an `Idempotency-Key`, so a replay returns the stored response; and the `reference` is the payment's identity in the database, so even a retry with a fresh key applies the money once and answers `already_recorded: true`.
+
+                **An overpayment is refused** with `409 overpayment`, not converted to credit. An operator who received more than the invoice owed records the invoice amount here and grants the remainder as credit as a separate, visible action.
+            operationId: PostStaffInvoicesByIdPayments
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                amount_minor:
+                                    description: 'What actually arrived, in the invoice''s currency, in minor units. Never defaulted from the invoice: a partial payment is the normal case.'
+                                    format: int64
+                                    minimum: 1
+                                    type: integer
+                                currency:
+                                    description: Optional. When present it must match the invoice's currency.
+                                    pattern: ^[A-Z0-9]{2,12}$
+                                    type: string
+                                method:
+                                    description: How the money arrived. `other` keeps the set closed without forcing a wrong value.
+                                    enum:
+                                        - bank_transfer
+                                        - cash
+                                        - cheque
+                                        - other
+                                    type: string
+                                note:
+                                    description: Optional free text for the operator reading the payment list later.
+                                    maxLength: 500
+                                    type: string
+                                reference:
+                                    description: 'The bank reference, cheque number or receipt id. It is the payment''s identity: recording the same reference twice applies the money once.'
+                                    maxLength: 200
+                                    type: string
+                            required:
+                                - amount_minor
+                                - method
+                                - reference
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    already_recorded:
+                                        type: boolean
+                                    amount:
+                                        $ref: '#/components/schemas/Amount'
+                                    invoice_id:
+                                        format: uuid
+                                        type: string
+                                    invoice_paid:
+                                        type: boolean
+                                    method:
+                                        type: string
+                                    method_label:
+                                        type: string
+                                    note:
+                                        type: string
+                                    paid:
+                                        $ref: '#/components/schemas/Amount'
+                                    payment_id:
+                                        format: uuid
+                                        type: string
+                                    provider:
+                                        enum:
+                                            - manual
+                                        type: string
+                                    reference:
+                                        type: string
+                                    remaining:
+                                        $ref: '#/components/schemas/Amount'
+                                    total:
+                                        $ref: '#/components/schemas/Amount'
+                                required:
+                                    - payment_id
+                                    - invoice_id
+                                    - method
+                                    - amount
+                                    - remaining
+                                    - invoice_paid
+                                type: object
+                    description: The recorded payment and the invoice's new balance
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: invalid_method, invalid_payment, invalid_currency or currency_mismatch
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: not_found
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: overpayment, reference_reused, reference_conflict or not_issued
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: idempotency_key_reuse
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Record a payment that arrived outside a gateway
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: payment:reconcile
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/invoices/{id}/pdf:
         get:
             description: 'The operator''s copy, from the same renderer and the same frozen snapshot as the customer''s. A draft answers 409 `not_issued` rather than 404: for an operator the difference between ''a typo'' and ''not issued yet'' is actionable. A void invoice prints the recorded reason on the page.'
@@ -23779,6 +23938,70 @@ paths:
                 - bearerKey: []
             summary: Order detail
             x-permission: invoice:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/payment-methods/offline:
+        get:
+            description: The closed set of methods the record-payment endpoint accepts, with the label to show a human. It is served so the form does not keep a second copy of the vocabulary that could drift from the database's CHECK constraint.
+            operationId: GetStaffPaymentmethodsOffline
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    methods:
+                                        items:
+                                            properties:
+                                                label:
+                                                    type: string
+                                                value:
+                                                    type: string
+                                            type: object
+                                        type: array
+                                type: object
+                    description: The methods
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The offline payment methods
+            x-permission: payment:reconcile
             x-rate-class: read
             x-staff-only: true
     /api/v1/staff/payments:

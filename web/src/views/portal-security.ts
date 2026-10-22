@@ -12,12 +12,13 @@
 //     *owes* the panel a new one and this page says so before anything else. Enrolment returns a
 //     TOTP secret, confirmation returns the recovery codes exactly once in a dialog that cannot be
 //     dismissed until they are acknowledged, and turning it off demands the password *and* a
-//     current code. A QR code is not offered *yet*: the CSP is `img-src 'self' data:`, so a
-//     locally drawn code would be allowed and a third-party QR service would not — the encoder
-//     belongs in a shared helper (web/src/lib/qr.ts) rather than in this screen, and the setup
-//     secret plus otpauth URI are the same handoff until it lands. That last rule is the server's
-//     (`DisableMFA`), not a screen convention: a stolen session alone must not remove a second
-//     factor, and neither must a stolen password alone.
+//     current code. Enrolment shows a QR symbol drawn in the page by `mfaQrPanel` (web/src/lib/qr.ts
+//     is a local encoder — nothing is fetched, so `img-src 'self' data:` is untouched), and the
+//     setup secret and otpauth URI stay visible underneath it: they are the same credential, they
+//     are what works when the URI is too long to draw, and they are what somebody on a desktop
+//     without a camera actually uses. That last rule is the server's (`DisableMFA`), not a screen
+//     convention: a stolen session alone must not remove a second factor, and neither must a
+//     stolen password alone.
 //  3. **Sessions.** `GET /api/v1/portal/sessions` lists where the account is signed in, with one
 //     row per session, a revoke per row and "sign out everywhere else". These endpoints are being
 //     built in parallel, so a 404 renders "not available on this installation" and the rest of
@@ -38,6 +39,12 @@ import { ApiError, type Page } from "../lib/api";
 import { h, swap } from "../lib/dom";
 import { dateTime, relative } from "../lib/format";
 import { icon, type IconName } from "../lib/icons";
+// `mfaQrPanel` owns the whole "can this URI be drawn" question: it returns the symbol when the
+// encoder has a version for it and an honest banner when it does not, so this screen never has to
+// branch on `qrModules(...) === null` itself. It is the same helper the staff settings page uses,
+// which is the point — a customer and an operator enrolling a factor must not get two different
+// handoffs.
+import { mfaQrPanel } from "../lib/mfa";
 import type { Ctx } from "../lib/types";
 import { bindForm, openDialog } from "../ui/dialog";
 import {
@@ -457,8 +464,18 @@ function openEnrolment(
     h(
       "p",
       { class: "page-sub" },
-      "Add this account to your authenticator app — by typing the setup secret, or by copying the setup URI into an app that accepts one — then enter the six-digit code it shows.",
+      // Deliberately does not say "scan the code": whether a symbol can be drawn is
+      // `mfaQrPanel`'s decision, and it states it in its own words ("Scan with your
+      // authenticator app", or a banner explaining that the setup link is too long). A
+      // sentence here that promised scanning would contradict the banner in exactly the case
+      // where the fallback matters most.
+      "Add this account to your authenticator app, then enter the six-digit code it shows. The " +
+        "setup secret and the setup URI below work with any app.",
     ),
+    // The symbol first, because scanning is the easy path, and the secret and URI stay below it
+    // in full: they are the same credential, they work when the code cannot be drawn, and they
+    // are what somebody on a desktop without a camera actually uses.
+    mfaQrPanel(setup),
     h(
       "div",
       { class: "settings-secret" },

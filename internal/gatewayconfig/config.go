@@ -129,6 +129,22 @@ func (c Config) Env() []string {
 	return out
 }
 
+// WithEnvironment returns a copy of the configuration carrying an explicit environment.
+//
+// It is what the resolver produces internally, exposed because two callers outside this package
+// legitimately need to build one: a test that asserts the environment reaches a child process, and
+// a deployment that supplies the whole configuration from its own secret store rather than from
+// the settings table. Both would otherwise reach into an unexported field, and a test that does
+// that stops testing the thing it claims to.
+//
+// It copies rather than aliases, so the caller cannot mutate a configuration already in use.
+func (c Config) WithEnvironment(env []string) Config {
+	out := make([]string, len(env))
+	copy(out, env)
+	c.env = out
+	return c
+}
+
 // Value returns a credential's real text. It is the in-process path the extension host and
 // the webhook verifier use; it is not, and must not become, an HTTP response.
 func (c Config) Value(key string) (string, bool) {

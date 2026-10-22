@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/catalyst/billing/internal/dunning"
 	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/fulfilment"
+	"github.com/catalyst/billing/internal/gatewayconfig"
 	"github.com/catalyst/billing/internal/httpapi"
 	"github.com/catalyst/billing/internal/lifecycle"
 	"github.com/catalyst/billing/internal/money"
@@ -64,7 +66,7 @@ func buildJobs(pool *store.Pool, logger *slog.Logger, apiServer *httpapi.Server)
 	// including the idempotency records that make a retried create safe. The
 	// process is supervised (see client.go): a crash is detected, the pending call
 	// fails with ErrCrashed, and the next use launches a fresh process.
-	clients := &extensionCache{ctx: context.Background()}
+	clients := &extensionCache{ctx: context.Background(), pool: pool}
 
 	// ---- payments: turn inbox events into applied payments -------------------
 	if !killSwitch("BILLING_DISABLE_PAYMENTS") {
@@ -323,12 +325,17 @@ func notifySender(logger *slog.Logger) (notify.Sender, error) {
 // extensionCache keeps one client per configured extension for the life of the
 // worker process.
 type extensionCache struct {
-	ctx context.Context
-	mu  sync.Mutex
-	gw  *gatewayExtension
-	gwC *extproto.Client
-	pr  *provExtension
-	prC *extproto.Client
+	ctx  context.Context
+	pool *store.Pool
+	// launchOverride, when set, replaces the configuration resolution. It exists so a test can
+	// assert on the launch without standing up a settings table, which is the only way to test
+	// "the environment reaches the child" as a property of this type rather than of the resolver.
+	launchOverride *gatewayconfig.Config
+	mu             sync.Mutex
+	gw             *gatewayExtension
+	gwC            *extproto.Client
+	pr             *provExtension
+	prC            *extproto.Client
 }
 
 func (c *extensionCache) gateway() (*gatewayExtension, error) {
@@ -344,12 +351,17 @@ func (c *extensionCache) gateway() (*gatewayExtension, error) {
 		_ = c.gwC.Close()
 		c.gw, c.gwC = nil, nil
 	}
-	path := envOr("BILLING_GATEWAY_EXTENSION", "")
-	if path == "" {
-		return nil, errMissingConfig("BILLING_GATEWAY_EXTENSION")
+	cfg, err := c.integration(gatewayconfig.GatewayKind)
+	if err != nil {
+		return nil, err
 	}
 	client, err := extproto.Launch(c.ctx, extproto.Spec{
-		Path:        path,
+		Path: cfg.ExtensionPath,
+		// The child inherits PATH and exactly these entries, nothing else. Without this the
+		// adapter starts with no credentials at all: a gateway that is configured in the panel
+		// and correct in every other respect would fail every charge with "STRIPE_SECRET_KEY is
+		// required", and the panel would be reporting a configuration the worker never sees.
+		Env:         cfg.Env(),
 		CoreVersion: version,
 		CallTimeout: 30 * time.Second,
 	})
@@ -371,12 +383,15 @@ func (c *extensionCache) provisioner() (*provExtension, error) {
 		_ = c.prC.Close()
 		c.pr, c.prC = nil, nil
 	}
-	path := envOr("BILLING_PROVISIONER_EXTENSION", "")
-	if path == "" {
-		return nil, errMissingConfig("BILLING_PROVISIONER_EXTENSION")
+	cfg, err := c.integration(gatewayconfig.ServerKind)
+	if err != nil {
+		return nil, err
 	}
 	client, err := extproto.Launch(c.ctx, extproto.Spec{
-		Path:        path,
+		Path: cfg.ExtensionPath,
+		// See gateway(): the environment is the only channel an extension has for its
+		// credentials, and a provisioner without them cannot build anything.
+		Env:         cfg.Env(),
 		CoreVersion: version,
 		CallTimeout: 60 * time.Second,
 	})
@@ -386,6 +401,50 @@ func (c *extensionCache) provisioner() (*provExtension, error) {
 	c.prC = client
 	c.pr = &provExtension{client: client}
 	return c.pr, nil
+}
+
+// integration resolves the configuration the worker must launch.
+//
+// The panel's Test button resolves the same thing through the same package, which is the point:
+// a test that passes and a worker that fails would mean two answers to one question. The
+// resolver reads the environment first and the settings table second, so a container deployment
+// can still override what an operator saved.
+//
+// A configuration that names a provider but no binary is a hard error rather than a silent
+// fall-through to the fixture. Launching the wrong gateway is worse than refusing to take a
+// payment, and the fixture would happily accept one.
+func (c *extensionCache) integration(kind gatewayconfig.Kind) (gatewayconfig.Config, error) {
+	if c.launchOverride != nil {
+		cfg := *c.launchOverride
+		if cfg.ExtensionPath == "" {
+			return gatewayconfig.Config{}, fmt.Errorf("%w: %s provider %q has no extension binary",
+				gatewayconfig.ErrNotConfigured, kind, cfg.Provider)
+		}
+		return cfg, nil
+	}
+	cfg, err := gatewayconfig.New(c.pool).Load(c.ctx, kind)
+	if err != nil {
+		return gatewayconfig.Config{}, fmt.Errorf("resolve %s configuration: %w", kind, err)
+	}
+	if !cfg.Configured() {
+		return gatewayconfig.Config{}, errMissingConfig(envNameFor(kind))
+	}
+	if cfg.ExtensionPath == "" {
+		return gatewayconfig.Config{}, fmt.Errorf("%w: %s provider %q has no extension binary",
+			gatewayconfig.ErrNotConfigured, kind, cfg.Provider)
+	}
+	return cfg, nil
+}
+
+// envNameFor names the variable an operator sets when nothing is configured at all, so the error
+// tells them what to do rather than only what is missing.
+func envNameFor(kind gatewayconfig.Kind) string {
+	switch kind {
+	case gatewayconfig.GatewayKind:
+		return "BILLING_GATEWAY_EXTENSION"
+	default:
+		return "BILLING_PROVISIONER_EXTENSION"
+	}
 }
 
 // Close shuts down every extension client this process started.

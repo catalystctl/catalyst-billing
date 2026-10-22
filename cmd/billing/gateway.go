@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"github.com/catalyst/billing/internal/gatewayconfig"
+	"github.com/catalyst/billing/internal/store"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -20,6 +23,11 @@ import (
 // broken until restart".
 type gatewayAdapter struct {
 	provider string
+	// path is the extension binary and env is the environment it starts with. They are resolved
+	// once, at startup, so the checkout path never reads settings: a configuration change takes
+	// effect on the next boot, which is the honest behaviour for the component that takes money.
+	path string
+	env  []string
 
 	mu     sync.Mutex
 	client *extproto.Client
@@ -28,6 +36,18 @@ type gatewayAdapter struct {
 // newGatewayAdapter constructs the adapter for a provider name.
 func newGatewayAdapter(provider string) *gatewayAdapter {
 	return &gatewayAdapter{provider: provider}
+}
+
+// withLaunch tells the adapter which binary to launch and what to start it with.
+//
+// Without this the adapter launches whatever BILLING_GATEWAY_EXTENSION names and nothing else,
+// which is a gateway with no credentials: every charge fails with "SECRET_KEY is required" while
+// the panel's own configuration screen reports a working gateway, because that screen resolves
+// the configuration through internal/gatewayconfig and this path did not.
+func (g *gatewayAdapter) withLaunch(path string, env []string) *gatewayAdapter {
+	g.path = path
+	g.env = env
+	return g
 }
 
 // Name implements the checkout gateway interface.
@@ -46,12 +66,18 @@ func (g *gatewayAdapter) clientOrLaunch(ctx context.Context) (*extproto.Client, 
 		g.client = nil
 	}
 
-	path := envOr("BILLING_GATEWAY_EXTENSION", "")
+	path := g.path
+	if path == "" {
+		path = envOr("BILLING_GATEWAY_EXTENSION", "")
+	}
 	if path == "" {
 		return nil, errMissingConfig("BILLING_GATEWAY_EXTENSION")
 	}
 	client, err := extproto.Launch(ctx, extproto.Spec{
-		Path:        path,
+		Path: path,
+		// The child inherits PATH and exactly these entries. This is the only channel an
+		// extension has for its credentials.
+		Env:         g.env,
 		CoreVersion: version,
 		CallTimeout: 30 * time.Second,
 	})
@@ -97,3 +123,27 @@ func (g *gatewayAdapter) Refund(ctx context.Context, p extproto.RefundParams) (e
 var (
 	_ refunds.Gateway = (*gatewayAdapter)(nil)
 )
+
+// configuredGateway builds the adapter with the launch configuration the operator saved.
+//
+// Resolution failure is logged and the adapter falls back to the environment alone rather than
+// stopping the server: a panel that will not start because its gateway settings are half-filled
+// cannot be used to fix them. The fallback is visible — the log line names what could not be
+// resolved — and a charge attempted in that state fails with a clear message rather than a
+// mysterious provider error.
+func configuredGateway(ctx context.Context, pool *store.Pool, logger *slog.Logger, provider string) *gatewayAdapter {
+	adapter := newGatewayAdapter(provider)
+	if pool == nil {
+		return adapter
+	}
+	cfg, err := gatewayconfig.New(pool).Load(ctx, gatewayconfig.GatewayKind)
+	if err != nil {
+		logger.Warn("gateway configuration could not be resolved; falling back to the environment",
+			"error", err)
+		return adapter
+	}
+	if cfg.Provider != "" {
+		adapter.provider = cfg.Provider
+	}
+	return adapter.withLaunch(cfg.ExtensionPath, cfg.Env())
+}

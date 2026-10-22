@@ -269,7 +269,7 @@ func cmdServe(args []string) error {
 		Cookies:        httpapi.CookieConfig{Secure: cfg.secureCookies},
 		SessionTTL:     authCfg.SessionLifetime,
 		TrustedProxies: nets,
-	}).WithPortal(portal.New(pool)).WithGateway(newGatewayAdapter(cfg.gatewayProvider)).
+	}).WithPortal(portal.New(pool)).WithGateway(configuredGateway(ctx, pool, logger, cfg.gatewayProvider)).
 		WithCheckoutURLs(
 			envOr("BILLING_CHECKOUT_SUCCESS_URL", publicBaseURL()+"/checkout/complete"),
 			envOr("BILLING_CHECKOUT_CANCEL_URL", publicBaseURL()+"/checkout/cancelled"))

@@ -1319,6 +1319,28 @@ func (c *Client) GetStaffGatewaysTest(ctx context.Context, query url.Values, bod
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffImports calls GET /api/v1/staff/imports.
+//
+// # List recorded import runs
+//
+// Permission: import:write. Staff only.
+func (c *Client) GetStaffImports(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/imports"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffImportsById calls GET /api/v1/staff/imports/{id}.
+//
+// # Read one import run
+//
+// Permission: import:write. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffImportsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/imports/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffInvoices calls GET /api/v1/staff/invoices.
 //
 // # Invoice list across all customers
@@ -2312,6 +2334,18 @@ func (c *Client) PostStaffCustomersByIdCredit(ctx context.Context, id string, qu
 func (c *Client) PostStaffCustomersByIdCreditApply(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/customers/{id}/credit/apply"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffImports calls POST /api/v1/staff/imports.
+//
+// Run an import from another billing panel (dry run by default)
+//
+// Permission: import:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffImports(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/imports"
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 

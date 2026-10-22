@@ -89,6 +89,13 @@ type Operation struct {
 	ProductID       string
 	CustomerID      string
 	Config          map[string]any
+	// ServerID, ServerRegion and ServerNode are the product's provisioner target as it
+	// stood when the operation was claimed. The region is a *fallback*: a price version
+	// that names its own region still wins, so an existing plan keeps provisioning
+	// exactly where it did. See CreateRequest.Region below.
+	ServerID     string
+	ServerRegion string
+	ServerNode   string
 }
 
 // Worker executes provisioning operations.
@@ -190,9 +197,12 @@ func (w *Worker) claim(ctx context.Context) (Operation, error) {
 	err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `
 			SELECT o.id, o.service_id, o.kind, o.operation_key, o.generation, o.status, o.attempts,
-			       s.status, COALESCE(s.external_id, ''), s.product_id, s.customer_id, s.config
+			       s.status, COALESCE(s.external_id, ''), s.product_id, s.customer_id, s.config,
+			       COALESCE(srv.id::text, ''), COALESCE(srv.region, ''), COALESCE(srv.node, '')
 			FROM service_operations o
 			JOIN services s ON s.id = o.service_id
+			LEFT JOIN products p ON p.id = s.product_id
+			LEFT JOIN servers srv ON srv.id = p.server_id
 			WHERE o.status IN ('queued', 'retry_wait')
 		   OR (o.status = 'running' AND o.started_at < $1)
 			ORDER BY o.created_at
@@ -200,7 +210,7 @@ func (w *Worker) claim(ctx context.Context) (Operation, error) {
 			LIMIT 1`, w.Now().Add(-w.LeaseDuration)).
 			Scan(&op.ID, &op.ServiceID, &op.Kind, &op.OperationKey, &op.Generation, &op.Status,
 				&op.Attempts, &op.ServiceStatus, &op.ServiceExternal, &op.ProductID,
-				&op.CustomerID, &op.Config)
+				&op.CustomerID, &op.Config, &op.ServerID, &op.ServerRegion, &op.ServerNode)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNoWork
 		}
@@ -259,7 +269,7 @@ func (w *Worker) execute(ctx context.Context, op Operation) (Result, error) {
 			PlanID:       op.planID(),
 			Region:       op.region(),
 			Quantity:     1,
-			Metadata:     map[string]string{"service_id": op.ServiceID, "customer_id": op.CustomerID},
+			Metadata:     op.metadata(),
 		})
 		if err != nil {
 			return w.recordFailure(ctx, op, res, err)
@@ -363,11 +373,38 @@ func (o Operation) planID() string {
 	return ""
 }
 
+// region is where the adapter is told to provision.
+//
+// The order is deliberate and it is the whole of the product → server feature on this side:
+// a price version that names a region wins, because that is what it did before 0049 and a plan
+// must keep provisioning exactly where it did. When the plan names none, the product's server
+// supplies one. A product with no server — every product before 0049 — therefore produces an
+// empty region, exactly as before.
+//
+// There is no second lookup and no second field: this is the same CreateRequest.Region the
+// price version has always filled, and the panel's server selector is the only new way to fill
+// it. It is read at claim time rather than at queue time so a product's server is honoured for
+// an operation queued before the assignment; the value is metadata about *where*, never
+// evidence about *whether*, so re-reading it cannot break fencing.
 func (o Operation) region() string {
-	if v, ok := o.Config["region"].(string); ok {
+	if v, ok := o.Config["region"].(string); ok && v != "" {
 		return v
 	}
-	return ""
+	return o.ServerRegion
+}
+
+// metadata is what the adapter is told about the resource, beyond its target. The product's
+// server is named here as well as in Region because the providers that address a target by node
+// id read the node from the environment rather than from the region label.
+func (o Operation) metadata() map[string]string {
+	out := map[string]string{"service_id": o.ServiceID, "customer_id": o.CustomerID}
+	if o.ServerID != "" {
+		out["server_id"] = o.ServerID
+	}
+	if o.ServerNode != "" {
+		out["server_node"] = o.ServerNode
+	}
+	return out
 }
 
 // finish writes the operation outcome and the service transition atomically.

@@ -325,6 +325,20 @@ func (c *Client) DeleteStaffCatalogProductsById(ctx context.Context, id string, 
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffCatalogServersById calls DELETE /api/v1/staff/catalog/servers/{id}.
+//
+// # Delete a provisioner target
+//
+// Permission: catalog:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeleteStaffCatalogServersById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/servers/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffConfigoptionsById calls DELETE /api/v1/staff/config-options/{id}.
 //
 // # Delete a configurable option
@@ -627,6 +641,24 @@ func (c *Client) GetCatalog(ctx context.Context, query url.Values, body any) (*R
 // slug is the slug path parameter.
 func (c *Client) GetCatalogBySlug(ctx context.Context, slug string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/catalog/{slug}"
+	path = strings.ReplaceAll(path, "{slug}", url.PathEscape(slug))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetCatalogCategories calls GET /api/v1/catalog/categories.
+//
+// The storefront's category tree
+func (c *Client) GetCatalogCategories(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/catalog/categories"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetCatalogCategoryBySlug calls GET /api/v1/catalog/category/{slug}.
+//
+// One storefront category page
+// slug is the slug path parameter.
+func (c *Client) GetCatalogCategoryBySlug(ctx context.Context, slug string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/catalog/category/{slug}"
 	path = strings.ReplaceAll(path, "{slug}", url.PathEscape(slug))
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
@@ -1215,6 +1247,16 @@ func (c *Client) GetStaffCatalogCategories(ctx context.Context, query url.Values
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffCatalogCategoriesTree calls GET /api/v1/staff/catalog/categories/tree.
+//
+// # Read the category tree
+//
+// Permission: invoice:read:all. Staff only.
+func (c *Client) GetStaffCatalogCategoriesTree(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/categories/tree"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffCatalogProducts calls GET /api/v1/staff/catalog/products.
 //
 // # Catalog with price versions
@@ -1234,6 +1276,28 @@ func (c *Client) GetStaffCatalogProducts(ctx context.Context, query url.Values, 
 func (c *Client) GetStaffCatalogProductsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/catalog/products/{id}"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCatalogProductsByIdPlacement calls GET /api/v1/staff/catalog/products/{id}/placement.
+//
+// # Read where a product sits
+//
+// Permission: invoice:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffCatalogProductsByIdPlacement(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/products/{id}/placement"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCatalogServers calls GET /api/v1/staff/catalog/servers.
+//
+// # List provisioner targets
+//
+// Permission: invoice:read:all. Staff only.
+func (c *Client) GetStaffCatalogServers(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/servers"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -2689,6 +2753,18 @@ func (c *Client) PostStaffCatalogProductsByIdPrices(ctx context.Context, id stri
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffCatalogServers calls POST /api/v1/staff/catalog/servers.
+//
+// # Create a provisioner target
+//
+// Permission: catalog:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffCatalogServers(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/servers"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffConfigoptions calls POST /api/v1/staff/config-options.
 //
 // # Create a configurable option
@@ -3429,6 +3505,20 @@ func (c *Client) PutStaffCatalogCategoriesById(ctx context.Context, id string, q
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }
 
+// PutStaffCatalogCategoriesByIdParent calls PUT /api/v1/staff/catalog/categories/{id}/parent.
+//
+// # Move a category
+//
+// Permission: catalog:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutStaffCatalogCategoriesByIdParent(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/categories/{id}/parent"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
 // PutStaffCatalogProductsById calls PUT /api/v1/staff/catalog/products/{id}.
 //
 // # Edit a product
@@ -3453,6 +3543,34 @@ func (c *Client) PutStaffCatalogProductsById(ctx context.Context, id string, que
 // id is the id path parameter.
 func (c *Client) PutStaffCatalogProductsByIdPlansOrder(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/catalog/products/{id}/plans/order"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffCatalogProductsByIdServer calls PUT /api/v1/staff/catalog/products/{id}/server.
+//
+// # Assign a product to a server
+//
+// Permission: catalog:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutStaffCatalogProductsByIdServer(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/products/{id}/server"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffCatalogServersById calls PUT /api/v1/staff/catalog/servers/{id}.
+//
+// # Edit a provisioner target
+//
+// Permission: catalog:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutStaffCatalogServersById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/servers/{id}"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }

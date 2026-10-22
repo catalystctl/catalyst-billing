@@ -297,7 +297,16 @@ func (s *Store) DeleteCategory(ctx context.Context, id string) error {
 }
 
 // DeleteCategoryTx removes a category inside a caller's transaction.
+//
+// A category with sub-categories is refused before the delete is attempted, by the guard in
+// nesting.go: 0049 chose refusal over silent reparenting, because moving a child to the root
+// changes a URL a customer may have bookmarked and a grouping an operator chose. The database
+// refuses it too (`ON DELETE RESTRICT`); the guard is what makes the answer a sentence and a
+// stable `in_use` code instead of a foreign-key violation.
 func (s *Store) DeleteCategoryTx(ctx context.Context, q querier, id string) error {
+	if err := s.refuseCategoryWithChildren(ctx, q, id); err != nil {
+		return err
+	}
 	var n int
 	if err := q.QueryRow(ctx, `SELECT count(*) FROM products WHERE category_id = $1`, id).Scan(&n); err != nil {
 		return fmt.Errorf("catalog: count products: %w", err)
@@ -636,28 +645,35 @@ func (s *Store) List(ctx context.Context) ([]Product, error) {
 // The EXISTS on price_versions is load-bearing. A product with no price is not something anyone
 // can buy, and showing it in a storefront produces a card whose button fails. Filtering in SQL
 // rather than in the client also means the API cannot be asked for it.
+//
+// The hidden_branches CTE is what makes hiding a category hide what is under it: with a tree, a
+// visible child under a hidden parent would keep selling a branch an operator had stopped
+// offering. The fragment lives in nesting.go so this read and `PublicProduct` cannot drift.
 func (s *Store) Public(ctx context.Context) ([]Product, error) {
-	return s.query(ctx, `
+	return s.query(ctx, hiddenBranchesCTE+`
 		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
 		       p.category_id, c.name, c.slug, p.image_id, p.hidden, p.sort_order,
 		       p.created_at, p.updated_at, 0, p.email_template
 		  FROM products p
 		  JOIN categories c ON c.id = p.category_id AND NOT c.hidden
 		 WHERE NOT p.hidden
+		   AND p.category_id NOT IN (SELECT id FROM hidden_branches)
 		   AND EXISTS (SELECT 1 FROM price_versions pv WHERE pv.product_id = p.id)
 		 ORDER BY c.sort_order, c.name, p.sort_order, p.name`)
 }
 
 // PublicProduct reads one visible product by slug, or ErrNotFound. The predicate is the same
-// as Public's: a hidden product is indistinguishable from a missing one to a visitor.
+// as Public's: a hidden product is indistinguishable from a missing one to a visitor, and so is
+// a product under a hidden branch.
 func (s *Store) PublicProduct(ctx context.Context, slug string) (Product, error) {
-	rows, err := s.query(ctx, `
+	rows, err := s.query(ctx, hiddenBranchesCTE+`
 		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
 		       p.category_id, c.name, c.slug, p.image_id, p.hidden, p.sort_order,
 		       p.created_at, p.updated_at, 0, p.email_template
 		  FROM products p
 		  JOIN categories c ON c.id = p.category_id AND NOT c.hidden
 		 WHERE NOT p.hidden AND lower(p.slug) = lower($1)
+		   AND p.category_id NOT IN (SELECT id FROM hidden_branches)
 		   AND EXISTS (SELECT 1 FROM price_versions pv WHERE pv.product_id = p.id)`, slug)
 	if err != nil {
 		return Product{}, err

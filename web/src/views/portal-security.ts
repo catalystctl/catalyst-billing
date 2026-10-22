@@ -7,13 +7,14 @@
 //  1. **Password.** `POST /api/v1/auth/password/change` takes the current password and the new
 //     one. It revokes every *other* session and keeps this one, and the response says how many
 //     went, so the screen can report it rather than implying it.
-//  2. **Two-factor.** The same enrolment flow the staff settings page uses: enrol returns a TOTP
-//     secret (never a QR image — the CSP forbids third-party requests), confirm returns recovery
-//     codes exactly once, and the dialog holding them cannot be dismissed until they are
-//     acknowledged. That flow is duplicated here rather than imported because `securitySection`
-//     is not exported from settings.ts and that file belongs to another package; the *behaviour*
-//     is the same on purpose, because a customer and an operator enrolling a factor must not get
-//     two different dialogs.
+//  2. **Two-factor.** `GET /api/v1/portal/mfa` reports whether a factor is confirmed, how many
+//     recovery codes are left, and whether an operator reset the factor — in which case the account
+//     *owes* the panel a new one and this page says so before anything else. Enrolment returns a
+//     TOTP secret (never a QR image — the CSP forbids third-party requests), confirmation returns
+//     the recovery codes exactly once in a dialog that cannot be dismissed until they are
+//     acknowledged, and turning it off demands the password *and* a current code. That last rule
+//     is the server's (`DisableMFA`), not a screen convention: a stolen session alone must not
+//     remove a second factor, and neither must a stolen password alone.
 //  3. **Sessions.** `GET /api/v1/portal/sessions` lists where the account is signed in, with one
 //     row per session, a revoke per row and "sign out everywhere else". These endpoints are being
 //     built in parallel, so a 404 renders "not available on this installation" and the rest of
@@ -21,17 +22,21 @@
 //     yet.
 //  4. **Login history.** `GET /api/v1/portal/login-history` is the audit trail of sign-ins. Same
 //     defensive treatment: 404 is a state, not an error.
+//  5. **Closing the account.** `GET/POST /api/v1/portal/account-closure`. The preflight supplies
+//     the statement, the effects and the blockers, so the confirmation dialog promises exactly
+//     what the handler does: the login stops working, the records stay, and a live service or an
+//     unpaid invoice refuses the close by name.
 //
-// Nothing here draws a "two-factor is on" badge. `/api/v1/auth/me` does not report MFA state, so
-// a green badge would be a guess; the page says so and lets the server refuse a double enrolment
-// with `mfa_already_enrolled`, which is a fact.
+// Every status on this page is read from the API. An earlier version drew no "two-factor is on"
+// badge at all, on the grounds that `/api/v1/auth/me` does not report MFA state and a green badge
+// would be a guess; the answer was a route that reports it, not a page that shrugs.
 
 import { ApiError, type Page } from "../lib/api";
 import { h, swap } from "../lib/dom";
 import { dateTime, relative } from "../lib/format";
 import { icon, type IconName } from "../lib/icons";
 import type { Ctx } from "../lib/types";
-import { openDialog } from "../ui/dialog";
+import { bindForm, openDialog } from "../ui/dialog";
 import {
   badge,
   banner,
@@ -64,6 +69,42 @@ interface MFASetup {
 interface MFAConfirmation {
   recovery_codes: string[];
   shown_once: boolean;
+}
+
+/** What `GET /api/v1/portal/mfa` reports about this account's second factor. */
+interface MFAState {
+  has_mfa: boolean;
+  enrolled_at: string | null;
+  recovery_codes_remaining: number;
+  /** Set by an operator's reset: the account owes the panel a new factor. */
+  enrolment_required: boolean;
+  reset_at: string | null;
+  reset_by: string | null;
+}
+
+/** One reason the account cannot be closed. */
+interface ClosureBlocker {
+  kind: string;
+  id: string;
+  label: string;
+  status: string;
+  detail: string;
+}
+
+/** What `GET /api/v1/portal/account-closure` reports, and what the confirmation dialog states. */
+interface ClosureState {
+  customer_id: string;
+  closed: boolean;
+  can_close: boolean;
+  blockers: ClosureBlocker[] | null;
+  statement: string;
+  confirm_phrase: string;
+  effects: {
+    portal_access: { revoked: boolean; detail: string };
+    services: { terminated: boolean; detail: string };
+    invoices: { written_off: boolean; detail: string };
+    record: { retained: boolean; detail: string };
+  };
 }
 
 /** One session, as `sessionJSON` emits it. `current` is computed by the server against the
@@ -102,6 +143,7 @@ export default async function portalSecurityPage(ctx: Ctx): Promise<Node> {
     { id: "two-factor", label: "Two-factor", icon: "shield", body: twoFactorSection(ctx) },
     { id: "sessions", label: "Sessions", icon: "wifi", body: sessionsSection(ctx) },
     { id: "history", label: "Login history", icon: "clock", body: historySection(ctx) },
+    { id: "close", label: "Close account", icon: "trash", body: closureSection(ctx) },
   ];
 
   const links = new Map<string, HTMLAnchorElement>();
@@ -271,49 +313,129 @@ function passwordFailure(err: unknown): HTMLElement {
 
 // -------------------------------------------------------------- two-factor --
 
+/** The two-factor section.
+ *
+ *  The state comes from `/api/v1/portal/mfa`, so the page can say "on" or "off" as a fact. When an
+ *  operator has reset the factor the account owes the panel a new one: the demand is shown first
+ *  and the enrolment dialog opens by itself, because a customer who has just been told their
+ *  second factor was removed needs to act on it, not to find a button.
+ */
 function twoFactorSection(ctx: Ctx): HTMLElement {
   const noticeHost = h("div");
+  const host = h("div", { class: "stack" }, skeletonTable(2, 2));
+  let demanded = false;
 
-  const enrol = btn("Set up an authenticator app", { variant: "primary", icon: "shieldCheck", size: "sm" }) as HTMLButtonElement;
-  enrol.addEventListener("click", () => {
-    void withBusy(ctx, enrol, async () => {
-      let setup: MFASetup;
+  const load = () => {
+    void (async () => {
+      let state: MFAState;
       try {
-        setup = await ctx.api.post<MFASetup>("/api/v1/auth/mfa/enrol", {});
+        state = await ctx.api.get<MFAState>("/api/v1/portal/mfa", { cache: false });
       } catch (err) {
-        noticeHost.replaceChildren(mfaBanner(err, "Enrolment could not start"));
+        // A 404 is a build without the route, not a failure of this account.
+        swap(host, mfaBanner(err, "Your second factor could not be read"));
         return;
       }
-      openEnrolment(ctx, setup, noticeHost);
-    });
-  });
+      swap(host, twoFactorBody(ctx, state, noticeHost, load));
+      if (state.enrolment_required && !state.has_mfa && !demanded) {
+        demanded = true;
+        void beginEnrolment(ctx, noticeHost, load);
+      }
+    })();
+  };
+  load();
 
-  const disable = btn("Turn off two-factor", { variant: "ghost", icon: "x", size: "sm" }) as HTMLButtonElement;
-  disable.addEventListener("click", () => openDisable(ctx, noticeHost));
+  return h("div", { class: "stack" }, noticeHost, host);
+}
+
+/** Starts an enrolment and opens the confirm dialog. */
+async function beginEnrolment(ctx: Ctx, noticeHost: HTMLElement, reload: () => void): Promise<void> {
+  let setup: MFASetup;
+  try {
+    setup = await ctx.api.post<MFASetup>("/api/v1/auth/mfa/enrol", {});
+  } catch (err) {
+    noticeHost.replaceChildren(mfaBanner(err, "Enrolment could not start"));
+    return;
+  }
+  openEnrolment(ctx, setup, noticeHost, reload);
+}
+
+function twoFactorBody(
+  ctx: Ctx,
+  state: MFAState,
+  noticeHost: HTMLElement,
+  reload: () => void,
+): Node {
+  const status = state.has_mfa
+    ? badge("On", "success", { dot: true })
+    : state.enrolment_required
+      ? badge("Removed by support", "warning", { dot: true })
+      : badge("Off", "neutral", { dot: true });
+
+  const meta = state.has_mfa
+    ? h(
+        "div",
+        { class: "stack-sm" },
+        kv("Status", status),
+        kv("Enrolled", state.enrolled_at ? dateTime(state.enrolled_at) : "an earlier date the panel does not record"),
+        kv(
+          "Recovery codes left",
+          state.recovery_codes_remaining > 0
+            ? h("span", null, `${state.recovery_codes_remaining} unused`)
+            : h("span", null, "none — if you lose the app you will need support"),
+        ),
+      )
+    : kv("Status", status);
+
+  const actions = h("div", { class: "row-wrap" });
+  if (state.has_mfa) {
+    actions.appendChild(
+      btn("Turn off two-factor", {
+        variant: "ghost",
+        icon: "x",
+        size: "sm",
+        onclick: () => openDisable(ctx, noticeHost, reload),
+      }),
+    );
+  } else {
+    const enrol = btn("Set up an authenticator app", {
+      variant: "primary",
+      icon: "shieldCheck",
+      size: "sm",
+    }) as HTMLButtonElement;
+    enrol.addEventListener("click", () => {
+      void withBusy(ctx, enrol, () => beginEnrolment(ctx, noticeHost, reload));
+    });
+    actions.appendChild(enrol);
+  }
 
   return h(
     "div",
     { class: "stack" },
-    noticeHost,
-    banner(
-      "info",
-      "This page cannot tell you whether a second factor is already on",
-      "The identity endpoint does not report MFA state, so a status here would be a guess. Enrolling will tell you: the server refuses with “already enrolled” if one exists.",
-    ),
+    state.enrolment_required
+      ? banner(
+          "danger",
+          "Your second factor was reset by support",
+          "An operator removed your authenticator" +
+            (state.reset_at ? ` on ${dateTime(state.reset_at)}` : "") +
+            ", so this account now signs in with a password alone. Set up a new factor now — the enrolment dialog is open below.",
+        )
+      : null,
     h(
-      "div",
-      { class: "stack-sm" },
-      h(
-        "p",
-        { class: "page-sub" },
-        "Two-factor authentication asks for a six-digit code from your authenticator app as well as your password. Recovery codes get you back in if you lose the app — and they are shown once, at enrolment.",
-      ),
-      h("div", { class: "row-wrap" }, enrol, disable),
+      "p",
+      { class: "page-sub" },
+      "Two-factor authentication asks for a six-digit code from your authenticator app as well as your password. Recovery codes get you back in if you lose the app — and they are shown once, at enrolment. Turning it off needs your password and a current code, because a stolen session must not be able to remove it.",
     ),
+    meta,
+    actions,
   );
 }
 
-function openEnrolment(ctx: Ctx, setup: MFASetup, noticeHost: HTMLElement): void {
+function openEnrolment(
+  ctx: Ctx,
+  setup: MFASetup,
+  noticeHost: HTMLElement,
+  reload: () => void,
+): void {
   const code = input({
     id: "portal-mfa-code",
     inputmode: "numeric",
@@ -347,13 +469,32 @@ function openEnrolment(ctx: Ctx, setup: MFASetup, noticeHost: HTMLElement): void
       h(
         "span",
         { class: "field-hint" },
-        `${setup.digits} digits, a new code every ${setup.period} seconds, ${setup.algorithm}. There is no QR image: the panel may not call an image service.`,
+        `${setup.digits} digits, a new code every ${setup.period} seconds, ${setup.algorithm}. ` +
+          "There is no QR image: this panel's Content-Security-Policy forbids loading one from another " +
+          "origin, and a QR drawn by hand would be a code nobody verified. The setup URI below is the " +
+          "same handoff, and on a phone it opens the app directly.",
       ),
     ),
-    h("div", { class: "row-wrap" }, copyButton(ctx, setup.otpauth_url, "setup URI")),
+    h(
+      "div",
+      { class: "row-wrap" },
+      copyButton(ctx, setup.otpauth_url, "setup URI"),
+      // A plain link to the otpauth:// URI. On a phone the OS hands it to the authenticator app;
+      // on a desktop with no handler it does nothing, which is why the secret is above it.
+      btn("Open in my authenticator app", {
+        href: setup.otpauth_url,
+        size: "sm",
+        variant: "ghost",
+        icon: "external",
+      }),
+    ),
     field({ label: "Six-digit code", control: code, id: "portal-mfa-code", hint: "From the app, after adding this account." }),
     errorHost,
   );
+
+  // The footer is a sibling of the body, not a child of the <form>, so without this the primary
+  // button is inert: enabled, clickable, and associated with nothing. It was, before this line.
+  bindForm(form, confirm);
 
   const handle = openDialog({
     title: "Set up two-factor authentication",
@@ -393,6 +534,12 @@ function openEnrolment(ctx: Ctx, setup: MFASetup, noticeHost: HTMLElement): void
         ),
       );
       ctx.toast("Two-factor authentication is on", { tone: "success", detail: "Store your recovery codes somewhere safe." });
+      // The state is re-read so the section stops saying "Off" and starts reporting the recovery
+      // codes the server just issued, and the *session* is re-read because the shell redirects a
+      // customer whose account owes a factor back to this page: without this refresh the flag
+      // would stay set and every navigation would bounce back here.
+      reload();
+      await ctx.refreshSession();
       showRecoveryCodes(ctx, res);
     })();
   });
@@ -436,7 +583,7 @@ function showRecoveryCodes(ctx: Ctx, res: MFAConfirmation): void {
   done.addEventListener("click", () => handle.close());
 }
 
-function openDisable(ctx: Ctx, noticeHost: HTMLElement): void {
+function openDisable(ctx: Ctx, noticeHost: HTMLElement, reload: () => void): void {
   const password = input({ id: "portal-mfa-disable-password", type: "password", autocomplete: "current-password" });
   const code = input({
     id: "portal-mfa-disable-code",
@@ -464,6 +611,9 @@ function openDisable(ctx: Ctx, noticeHost: HTMLElement): void {
     banner("warning", "This lowers the security of your account", "Only your password will be needed to sign in."),
     errorHost,
   );
+
+  // Same reason as the enrolment dialog: a footer submit button needs the `form` attribute.
+  bindForm(form, submit);
 
   const handle = openDialog({
     title: "Turn off two-factor authentication",
@@ -499,6 +649,7 @@ function openDisable(ctx: Ctx, noticeHost: HTMLElement): void {
         banner("success", "Two-factor authentication is off", "Only your password is needed to sign in now."),
       );
       ctx.toast("Two-factor authentication is off", { tone: "success" });
+      reload();
     })();
   });
 }
@@ -845,4 +996,149 @@ function eventIcon(event: string): IconName {
   if (event === "logout") return "logout";
   if (event === "login" || event === "login_succeeded") return "checkCircle";
   return "clock";
+}
+
+// ----------------------------------------------------------- close account --
+
+/** Closing the account.
+ *
+ *  Everything the confirmation says comes from `GET /api/v1/portal/account-closure`: the statement,
+ *  the four effects and the blockers. That is deliberate — a dialog with its own wording drifts
+ *  from the handler, and the one thing a customer must be able to trust here is what will happen to
+ *  their services and their invoices.
+ *
+ *  Closing is not a delete. The record, the invoices and the audit trail stay (accounting retention
+ *  outlives the customer's wish to leave); what stops is the login. A live service or an unpaid
+ *  invoice refuses the close by name, because walking away from a running server or a debt is
+ *  exactly what this must not become a shortcut for.
+ */
+function closureSection(ctx: Ctx): HTMLElement {
+  const host = h("div", { class: "stack" }, skeletonTable(2, 2));
+
+  const load = () => {
+    void (async () => {
+      let state: ClosureState;
+      try {
+        state = await ctx.api.get<ClosureState>("/api/v1/portal/account-closure", { cache: false });
+      } catch (err) {
+        swap(host, errorState(err, load));
+        return;
+      }
+      swap(host, closureBody(ctx, state));
+    })();
+  };
+  load();
+
+  return host;
+}
+
+function closureBody(ctx: Ctx, state: ClosureState): Node {
+  const blockers = state.blockers ?? [];
+
+  const close = btn("Close my account", { variant: "danger", icon: "trash", size: "sm" }) as HTMLButtonElement;
+  close.disabled = !state.can_close;
+  close.title = state.can_close
+    ? "Close this account for good"
+    : "Settle or cancel the records below first: the server refuses to close an account that still has them.";
+  close.addEventListener("click", () => void openClosure(ctx, state));
+
+  return h(
+    "div",
+    { class: "stack" },
+    state.closed
+      ? banner(
+          "warning",
+          "This account is closed",
+          "The login no longer works. Your invoices and records are kept for accounting.",
+        )
+      : null,
+    h("p", { class: "page-sub" }, state.statement),
+    h(
+      "div",
+      { class: "stack-sm" },
+      kv("Your portal access", state.effects.portal_access.detail),
+      kv("Your services", state.effects.services.detail),
+      kv("Your invoices", state.effects.invoices.detail),
+      kv("Your records", state.effects.record.detail),
+    ),
+    blockers.length > 0
+      ? banner(
+          "danger",
+          "You cannot close your account yet",
+          h(
+            "ul",
+            { class: "stack-sm" },
+            ...blockers.map((blocker) =>
+              h(
+                "li",
+                null,
+                blocker.kind === "live_service"
+                  ? h("a", { class: "linkish", href: `/portal/services/${blocker.id}` }, blocker.detail)
+                  : h("a", { class: "linkish", href: `/portal/invoices/${blocker.id}` }, blocker.detail),
+              ),
+            ),
+          ),
+        )
+      : null,
+    h("div", { class: "row-wrap" }, close),
+  );
+}
+
+/** The confirmation. The phrase and the effects come from the server; the reason is optional. */
+async function openClosure(ctx: Ctx, state: ClosureState): Promise<void> {
+  const phrase = input({
+    id: "portal-close-phrase",
+    name: "phrase",
+    autocomplete: "off",
+    placeholder: state.confirm_phrase,
+  });
+  const reason = input({
+    id: "portal-close-reason",
+    name: "reason",
+    placeholder: "Optional: why are you leaving?",
+  });
+
+  await ctx.formDialog({
+    title: "Close your account?",
+    subtitle: "This cannot be undone from your side.",
+    submitLabel: "Close my account",
+    danger: true,
+    body: h(
+      "div",
+      { class: "stack" },
+      banner("warning", "What closing does", state.statement),
+      kv("Your portal access", state.effects.portal_access.detail),
+      kv("Your services", state.effects.services.detail),
+      kv("Your invoices", state.effects.invoices.detail),
+      kv("Your records", state.effects.record.detail),
+      field({
+        label: `Type “${state.confirm_phrase}” to confirm`,
+        control: phrase,
+        required: true,
+      }),
+      field({
+        label: "Anything you want to tell us?",
+        control: reason,
+        hint: "Optional. It is recorded on the closure, not published anywhere.",
+      }),
+    ),
+    onSubmit: async () => {
+      if (phrase.value.trim().toLowerCase() !== state.confirm_phrase) {
+        return `Type “${state.confirm_phrase}” exactly.`;
+      }
+      try {
+        await ctx.api.post("/api/v1/portal/account-closure", {
+          confirm: phrase.value.trim(),
+          reason: reason.value.trim(),
+        });
+      } catch (err) {
+        if (err instanceof ApiError) return err.detail || `The account was not closed (${err.code}).`;
+        return "The server could not be reached, so nothing changed.";
+      }
+      // The handler revoked every session, including this one, and cleared the cookies. A
+      // client-side navigation would keep a dead session in memory, so the page is reloaded.
+      window.location.assign("/login");
+      return undefined;
+    },
+  });
 }

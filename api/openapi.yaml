@@ -1661,6 +1661,240 @@ paths:
             x-permission: report:read
             x-rate-class: read
             x-staff-only: true
+    /api/v1/portal/account-closure:
+        get:
+            description: |-
+                The preflight the confirmation dialog is built from. `effects` states what happens to the customer's portal access, services, invoices and records, and `blockers` names every live service and unpaid invoice standing in the way. `can_close` is the server's own answer, not a client-side guess.
+
+                Closing is a soft delete: the record, its invoices and its audit trail are kept, and only the login stops working. A hard delete is not available even in principle — invoices, orders, services and audit rows reference the customer with NO ACTION.
+            operationId: GetPortalAccountclosure
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    blockers:
+                                        items:
+                                            properties:
+                                                detail:
+                                                    description: One sentence naming the thing, used verbatim in the refusal.
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                kind:
+                                                    description: Why the account cannot be closed. A service that is not `terminated`, or an issued invoice (`open` or `disputed`) with more total than has been paid.
+                                                    enum:
+                                                        - live_service
+                                                        - unpaid_invoice
+                                                    type: string
+                                                label:
+                                                    description: The product name, or the invoice number.
+                                                    type: string
+                                                status:
+                                                    type: string
+                                            required:
+                                                - kind
+                                                - id
+                                                - label
+                                                - status
+                                                - detail
+                                            type: object
+                                        type: array
+                                    can_close:
+                                        description: True when nothing blocks the close.
+                                        type: boolean
+                                    closed:
+                                        type: boolean
+                                    closed_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    closed_by:
+                                        format: email
+                                        type:
+                                            - string
+                                            - "null"
+                                    closed_kind:
+                                        enum:
+                                            - self
+                                            - staff
+                                            - null
+                                        type:
+                                            - string
+                                            - "null"
+                                    confirm_phrase:
+                                        description: The phrase the customer types to confirm. Served so the dialog and the server's check cannot drift apart.
+                                        type: string
+                                    customer_id:
+                                        format: uuid
+                                        type: string
+                                    effects:
+                                        description: 'What closing the account actually does. The confirmation dialog must render these rather than its own prose: they come from the same facts the handler enforces.'
+                                        properties:
+                                            invoices:
+                                                properties:
+                                                    detail:
+                                                        type: string
+                                                    written_off:
+                                                        description: Always false. Closing an account never writes off a debt.
+                                                        type: boolean
+                                                type: object
+                                            portal_access:
+                                                properties:
+                                                    detail:
+                                                        type: string
+                                                    revoked:
+                                                        type: boolean
+                                                type: object
+                                            record:
+                                                properties:
+                                                    detail:
+                                                        type: string
+                                                    retained:
+                                                        description: 'Always true: the customer row, its invoices and the audit trail are kept.'
+                                                        type: boolean
+                                                type: object
+                                            services:
+                                                properties:
+                                                    detail:
+                                                        type: string
+                                                    terminated:
+                                                        description: Always false. Closing an account never terminates a service, which is why it is refused while one is live.
+                                                        type: boolean
+                                                type: object
+                                        type: object
+                                    statement:
+                                        type: string
+                                type: object
+                    description: The closure state
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller has no customer record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: What closing your own account would do, and what currently stops it
+            x-permission: customer:read:self
+            x-rate-class: read
+        post:
+            description: |-
+                Refused with 409 `account_close_blocked` while the account has a live service (any service state but `terminated`) or an unpaid invoice (`open` or `disputed` with more total than paid). The refusal's `detail` names the service or the invoice, because a generic refusal is a support ticket.
+
+                `confirm` must be the phrase `GET /api/v1/portal/account-closure` serves; a client that forgets the dialog cannot close an account by accident. On success the customer's sessions are revoked and the cookies are cleared, so the response is the last thing this session can do.
+            operationId: PostPortalAccountclosure
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                confirm:
+                                    description: The phrase from the preflight, verbatim.
+                                    type: string
+                                reason:
+                                    description: Optional. Recorded on the closure and in the audit trail.
+                                    maxLength: 500
+                                    type: string
+                            required:
+                                - confirm
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: The account is closed
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A live service or an unpaid invoice blocks it (`account_close_blocked`)
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The confirmation phrase did not match (`confirmation_mismatch`)
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Close your own account
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
     /api/v1/portal/affiliate:
         get:
             description: 'Resolved from the session, never from the URL, and the referral rows are fetched by that affiliate id, so a caller can only see their own. A customer who is not an affiliate gets 404 `not_an_affiliate`: enrolment is not implied by having an account.'
@@ -3881,6 +4115,55 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: The caller's authentication history
+            x-permission: customer:read:self
+            x-rate-class: read
+    /api/v1/portal/mfa:
+        get:
+            description: Whether a factor is confirmed, how many recovery codes are left, and whether an operator's reset has left an enrolment demand outstanding. The identity endpoint does not report this, so without it the security screen can only guess — and a "two-factor is on" badge that is a guess is worse than no badge.
+            operationId: GetPortalMfa
+            responses:
+                2XX:
+                    description: The second-factor state
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Your own second-factor state
             x-permission: customer:read:self
             x-rate-class: read
     /api/v1/portal/notifications:
@@ -14940,6 +15223,87 @@ paths:
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/customers/{id}:
+        delete:
+            description: |-
+                A soft close, and the response says so. `deleted_at` is set, the portal logins behind the customer are disabled and their sessions revoked, and every invoice, service and audit row is kept: nothing cascades. A hard delete is not available even in principle, because invoices, orders, services and audit rows reference the customer with NO ACTION — a delete would either fail on a foreign key or succeed only by destroying the evidence an auditor needs.
+
+                Refused with 409 `account_close_blocked` while a service is live (any state but `terminated`) or an invoice is unpaid (`open` or `disputed` with more total than paid); the `detail` names them. A second delete is 409 `already_closed` rather than a silent repeat. A reason is required: an audit row that does not say why is an audit row nobody can act on.
+            operationId: DeleteStaffCustomersById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                reason:
+                                    description: Why the record is being closed. Recorded in the audit trail.
+                                    maxLength: 500
+                                    type: string
+                            required:
+                                - reason
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: The record is closed; nothing was deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The reason is missing or too long (`reason_required`)
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such customer
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A live service or an unpaid invoice blocks it, or it is already closed
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Close a customer record
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:all
+            x-rate-class: mutation
+            x-staff-only: true
         get:
             description: Joins billing, services, subscriptions, holds, the last invoices and recent authentication events in one response.
             operationId: GetStaffCustomersById
@@ -15157,6 +15521,173 @@ paths:
                 required: true
             x-permission: customer:write:all
             x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/customers/{id}/account-state:
+        get:
+            description: 'One request for the customer overview''s security panel: whether the record is closed, what would stop it being closed, and the second-factor state of every login attached to it. `can_close` mirrors what `DELETE /api/v1/staff/customers/{id}` would answer, so the button can be offered honestly.'
+            operationId: GetStaffCustomersByIdAccountstate
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    blockers:
+                                        items:
+                                            properties:
+                                                detail:
+                                                    description: One sentence naming the thing, used verbatim in the refusal.
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                kind:
+                                                    description: Why the account cannot be closed. A service that is not `terminated`, or an issued invoice (`open` or `disputed`) with more total than has been paid.
+                                                    enum:
+                                                        - live_service
+                                                        - unpaid_invoice
+                                                    type: string
+                                                label:
+                                                    description: The product name, or the invoice number.
+                                                    type: string
+                                                status:
+                                                    type: string
+                                            required:
+                                                - kind
+                                                - id
+                                                - label
+                                                - status
+                                                - detail
+                                            type: object
+                                        type: array
+                                    can_close:
+                                        type: boolean
+                                    closed:
+                                        type: boolean
+                                    closed_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    closed_by:
+                                        format: email
+                                        type:
+                                            - string
+                                            - "null"
+                                    closed_kind:
+                                        enum:
+                                            - self
+                                            - staff
+                                            - null
+                                        type:
+                                            - string
+                                            - "null"
+                                    closed_reason:
+                                        type: string
+                                    confirm_phrase:
+                                        type: string
+                                    customer_id:
+                                        format: uuid
+                                        type: string
+                                    delete_statement:
+                                        type: string
+                                    logins:
+                                        items:
+                                            properties:
+                                                email:
+                                                    format: email
+                                                    type: string
+                                                enrolled_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                enrolment_required:
+                                                    description: An operator reset the factor and the account owes the panel a new one.
+                                                    type: boolean
+                                                has_mfa:
+                                                    description: A *confirmed* TOTP credential. An unconfirmed enrolment is not a second factor.
+                                                    type: boolean
+                                                recovery_codes_remaining:
+                                                    minimum: 0
+                                                    type: integer
+                                                reset_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                reset_by:
+                                                    description: The operator who last reset the factor, or null.
+                                                    format: uuid
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                status:
+                                                    enum:
+                                                        - active
+                                                        - disabled
+                                                        - pending
+                                                    type: string
+                                                user_id:
+                                                    format: uuid
+                                                    type: string
+                                            required:
+                                                - user_id
+                                                - email
+                                                - status
+                                                - has_mfa
+                                            type: object
+                                        type: array
+                                type: object
+                    description: Closure state, blockers and login security
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such customer
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: A customer's closure state and the security of each login
+            x-permission: customer:read:all
+            x-rate-class: read
             x-staff-only: true
     /api/v1/staff/customers/{id}/billing-profile:
         get:
@@ -33236,6 +33767,77 @@ paths:
             x-permission: staff:manage
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/users/{id}/mfa/reset:
+        post:
+            description: |-
+                The staff-side answer to "I lost my phone and my recovery codes". It is deliberately not `POST /api/v1/auth/mfa/disable`: that route is self-service and demands the account's own password and a current code, which support cannot supply.
+
+                The reset *removes* an enrolment — credential, recovery codes and any live challenge — and never reveals it, so an operator cannot learn the customer's secret or generate a code. It leaves `enrolment_required` behind, so the account's next session is told to enrol a new factor rather than quietly dropping to password-only, and it is audited as `user.mfa_reset` naming the operator and the target. Sessions are not revoked: a lost phone is not a compromised session.
+
+                409 `mfa_not_enrolled` when there is no confirmed factor to remove.
+            operationId: PostStaffUsersByIdMfaReset
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The factor was removed and an enrolment demand is outstanding
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such account
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No confirmed second factor to reset (`mfa_not_enrolled`)
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Remove another account's second factor
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: staff:manage
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/users/{id}/password:
         post:
             description: |-
@@ -33317,6 +33919,62 @@ paths:
                 required: true
             x-permission: staff:manage
             x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/users/{id}/security:
+        get:
+            description: The same three facts for any account, so the customer overview can offer "Reset two-factor" only when there is a factor to reset. A screen that guessed would produce a 409 an operator reads as a bug.
+            operationId: GetStaffUsersByIdSecurity
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The second-factor state
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such account
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: An account's second-factor state
+            x-permission: staff:manage
+            x-rate-class: read
             x-staff-only: true
     /api/v1/staff/webhooks:
         get:

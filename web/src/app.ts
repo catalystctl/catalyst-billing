@@ -143,6 +143,24 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       return;
     }
 
+    // An account that owes a second factor is sent to the screen that enrols one, and stays there
+    // until it does. `mfaEnrolmentRequired` is set by an operator's MFA reset (the customer lost
+    // their phone and their recovery codes), and it is deliberately a redirect rather than a
+    // banner: a reset that only *suggested* enrolling would leave the account on password-only
+    // access for ever, which is a silent downgrade of the customer's security.
+    //
+    // The security page itself is excluded, so this cannot loop. `ctx.refreshSession()` there
+    // re-reads the identity after a confirmed enrolment, which clears the flag and lets the
+    // customer navigate away.
+    if (
+      !session.user.is_staff &&
+      session.mfaEnrolmentRequired &&
+      match.path !== "/portal/security"
+    ) {
+      router.navigate("/portal/security", { replace: true });
+      return;
+    }
+
     const content = ensureShell().content;
     content.replaceChildren(skeletonPage());
     window.scrollTo({ top: 0 });

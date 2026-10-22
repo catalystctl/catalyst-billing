@@ -558,7 +558,11 @@ def build_og_architecture() -> str:
     body += rule(72, 140, w - 72, EDGE)
 
     body += eyebrow(72, 192, "architecture", size=11, tracking=0.18)
-    body += text("One binary, three trust boundaries.", 72, 246, 38, family=DISPLAY, weight=600, color=CHALK, tracking=-0.026)
+    # The site anchors every section heading with one tan phrase ("built on containerd.").
+    # A heading that is all-white reads as a spec sheet rather than as this product.
+    body += text("One binary, ", 72, 246, 38, family=DISPLAY, weight=600, color=CHALK, tracking=-0.026)
+    body += text("three trust boundaries.", 72 + text_width("One binary, ", 38, DISPLAY, 600, -0.026),
+                 246, 38, family=DISPLAY, weight=600, color=SIGNAL, tracking=-0.026)
     body += text("The core is the authority. A provider is never the last word on what happened.",
                  72, 278, 15.5, color=MUTED)
 

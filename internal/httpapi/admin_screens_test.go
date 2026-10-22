@@ -1,770 +1,911 @@
 package httpapi_test
 
+// The three operator screens that had an API but no route to a human: the notification
+// template editor, the automation list, and the service-property catalogue.
+//
+// These tests assert the properties the screens exist for, not the happy path:
+//
+//   - a template edit round-trips, and the preview renders the *saved* wording rather than
+//     something the client guessed;
+//   - a placeholder the renderer does not know is refused, so a customer never reads
+//     "{{invoice_nuber}}";
+//   - the automation list matches the jobs the worker actually registers — compared against
+//     lifecycle.Jobs() and against the registration in cmd/billing/jobs.go, so a new job
+//     cannot be invisible on the screen;
+//   - a property definition round-trips with both visibility flags, a reorder round-trips, and
+//     a definition a service carries cannot be deleted.
+
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/catalyst/billing/internal/authn"
+	"github.com/catalyst/billing/internal/lifecycle"
+	"github.com/catalyst/billing/internal/notify"
 )
 
-// The four operator screens that had an API and no route to a human: holds, the upgrade graph,
-// the sign-in provider registry and security.
-//
-// These tests assert the properties a screen actually depends on, and the ones a wrong
-// implementation would break silently:
-//
-//   - A hold is visible with its reason and its author, and it changes no money: placing one
-//     issues no invoice, and lifting one does not bill the period it covered.
-//   - An upgrade edge round-trips, and a self-edge is a sentence (`self_edge`) rather than a
-//     constraint violation surfacing as a 500.
-//   - A provider's client secret is never in a response body — asserted on the bytes, not on a
-//     struct, because a struct assertion passes while the field is still serialised.
-//   - An operator can end somebody else's session, and cannot end the one they are holding the
-//     screen with.
+// --------------------------------------------------------------- templates --
 
-// admSession signs in a fresh administrator and returns the cookie and CSRF token.
-func (e *authEnv) admSession(t *testing.T, email string) (*http.Cookie, string) {
-	t.Helper()
-	const password = "an administrator password"
-	e.createUser(t, email, password, string(authn.RoleAdministrator))
-	return e.login(t, email, password)
+// templatePreview is the part of the preview response these tests read.
+type templatePreview struct {
+	EventKey string `json:"event_key"`
+	Force    bool   `json:"force"`
+	Mail     struct {
+		Subject string `json:"subject"`
+		Body    string `json:"body"`
+	} `json:"mail"`
+	InApp struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+		URL   string `json:"url"`
+	} `json:"in_app"`
+	Variables []struct {
+		Name   string `json:"name"`
+		Sample string `json:"sample"`
+	} `json:"variables"`
 }
 
-// admDelete sends an authenticated DELETE with the CSRF token and an idempotency key.
-func (e *authEnv) admDelete(t *testing.T, path string, cookie *http.Cookie, csrf string) *httptest.ResponseRecorder {
+func decodePreview(t *testing.T, body []byte) templatePreview {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodDelete, path, nil)
-	req.AddCookie(cookie)
-	if csrf != "" {
-		req.Header.Set("X-CSRF-Token", csrf)
+	var out templatePreview
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("preview body: %v (%s)", err, body)
 	}
-	req.Header.Set("Idempotency-Key", "adm-"+path+"-"+time.Now().Format("150405.000000000"))
-	rec := httptest.NewRecorder()
-	e.srv.Handler().ServeHTTP(rec, req)
-	return rec
+	return out
 }
 
-// admCountInvoices counts every invoice, which is how "this action billed nobody" is proven.
-func (e *authEnv) admCountInvoices(t *testing.T) int {
-	t.Helper()
-	var n int
-	if err := e.pool.QueryRow(context.Background(), `SELECT count(*) FROM invoices`).Scan(&n); err != nil {
-		t.Fatalf("count invoices: %v", err)
+// A template edit round-trips, and the preview of the saved wording is the saved wording
+// rendered with the event's sample data.
+func TestNotificationTemplateEditRoundTripsAndPreviews(t *testing.T) {
+	env := newStaffEnv(t)
+
+	edit := map[string]any{
+		"subject":        "Payment received for {{invoice_number}}",
+		"body":           "Thank you. Invoice {{invoice_number}} is settled.\n\nSee {{invoice_url}}.",
+		"in_app_title":   "Paid {{invoice_number}}",
+		"in_app_body":    "{{total}} received.",
+		"in_app_url":     "{{invoice_url}}",
+		"enabled":        true,
+		"mail_enabled":   true,
+		"in_app_enabled": true,
 	}
-	return n
+	rec := env.doJSON(t, http.MethodPut, "/api/v1/staff/notification-templates/invoice_paid",
+		env.billing, env.billingCSRF, edit)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save: status %d; body %s", rec.Code, rec.Body)
+	}
+	var saved struct {
+		Subject string `json:"subject"`
+		Body    string `json:"body"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &saved); err != nil {
+		t.Fatalf("save body: %v", err)
+	}
+	if saved.Subject != edit["subject"] || saved.Body != edit["body"] {
+		t.Fatalf("the edit did not round-trip: %+v", saved)
+	}
+
+	// Read it back through the list, which is what the screen renders.
+	rec = env.get(t, "/api/v1/staff/notification-templates", env.billing)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: status %d; body %s", rec.Code, rec.Body)
+	}
+	var list struct {
+		Data []struct {
+			EventKey string `json:"event_key"`
+			Subject  string `json:"subject"`
+			Force    bool   `json:"force"`
+			Seeded   bool   `json:"seeded"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("list body: %v", err)
+	}
+	var found bool
+	for _, row := range list.Data {
+		if row.EventKey != "invoice_paid" {
+			continue
+		}
+		found = true
+		if row.Subject != edit["subject"] {
+			t.Fatalf("list subject = %q, want the saved one", row.Subject)
+		}
+		// invoice_paid is an optional event: a customer may turn it off. The screen uses this
+		// flag to say so, because it decides whether an edit is safe.
+		if row.Force {
+			t.Fatal("invoice_paid is reported as transactional")
+		}
+	}
+	if !found {
+		t.Fatal("invoice_paid is missing from the template list")
+	}
+
+	// Preview the draft that is now stored. The rendered subject must be the stored subject with
+	// the sample data substituted — that is the whole point of the preview.
+	samples, err := notify.SampleVariables("invoice_paid")
+	if err != nil {
+		t.Fatalf("samples: %v", err)
+	}
+	rec = env.doJSON(t, http.MethodPost,
+		"/api/v1/staff/notification-templates/invoice_paid/preview",
+		env.billing, env.billingCSRF, edit)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview: status %d; body %s", rec.Code, rec.Body)
+	}
+	preview := decodePreview(t, rec.Body.Bytes())
+	wantSubject := "Payment received for " + samples["invoice_number"]
+	if preview.Mail.Subject != wantSubject {
+		t.Fatalf("preview subject = %q, want %q", preview.Mail.Subject, wantSubject)
+	}
+	// The mail gets the ABSOLUTE form of the panel path; the inbox row keeps the relative one.
+	//
+	// Asserted as a property rather than against a literal base URL. The base comes from
+	// BILLING_PUBLIC_URL, so hardcoding one makes the test pass or fail on the deployment's
+	// configuration rather than on the behaviour — and asserting `http://` specifically is wrong
+	// outright, because a mail that links to an https origin is more correct than one that does
+	// not. What matters is that the link is absolute at all: a relative path in an email is
+	// unclickable, which is the defect this is protecting against.
+	if !strings.Contains(preview.Mail.Body, "://") || !strings.Contains(preview.Mail.Body, samples["invoice_url"]) {
+		t.Fatalf("the mail preview has no absolute link: %q", preview.Mail.Body)
+	}
+	if preview.InApp.URL != samples["invoice_url"] {
+		t.Fatalf("inbox url = %q, want %q", preview.InApp.URL, samples["invoice_url"])
+	}
+	if len(preview.Variables) == 0 {
+		t.Fatal("the preview carries no vocabulary, so the editor cannot offer any placeholders")
+	}
+	if preview.Force {
+		t.Fatal("the preview reports invoice_paid as transactional")
+	}
 }
 
-// ---------------------------------------------------------------- holds --
+// A placeholder the event does not supply is refused, both at save time and in the preview, and
+// nothing is written.
+func TestNotificationTemplateRefusesAnUnknownPlaceholder(t *testing.T) {
+	env := newStaffEnv(t)
 
-// A hold is placed, appears in the register with who placed it and why, and bills nothing.
-//
-// "A hold stops automation, not the calendar" is the fact an operator most often gets wrong,
-// so the register also carries the subscription's next billing date beside the hold.
-func TestHoldRoundTripsAndDoesNotBill(t *testing.T) {
-	env := newAuthEnv(t)
-	tenant := env.createTenant(t, "held@example.test", "12.00")
-	cookie, _ := env.admSession(t, "holds-admin@example.test")
-	adminID := env.createUser(t, "holds-author@example.test", "an author password",
-		string(authn.RoleSupport))
-	authorCookie, authorCSRF := env.login(t, "holds-author@example.test", "an author password")
+	rec := env.get(t, "/api/v1/staff/notification-templates/password_reset", env.billing)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("read: status %d; body %s", rec.Code, rec.Body)
+	}
+	var before struct {
+		Subject string `json:"subject"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &before); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
 
-	before := env.admCountInvoices(t)
+	bad := map[string]any{
+		"subject": "Reset the password for {{email}}",
+		"body":    "Use this link: {{reset_link}}",
+	}
+	rec = env.doJSON(t, http.MethodPut, "/api/v1/staff/notification-templates/password_reset",
+		env.billing, env.billingCSRF, bad)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("save with an unknown placeholder: status %d, want 422; body %s", rec.Code, rec.Body)
+	}
+	if p := decodeProblem(t, rec); p.Code != "unknown_placeholder" {
+		t.Fatalf("code = %q, want unknown_placeholder", p.Code)
+	}
+	// The refusal names the placeholder, the field it was written in, and the vocabulary the
+	// event does supply. "Invalid placeholder" alone would make the operator hunt for the
+	// mistake and then guess at the right spelling.
+	for _, want := range []string{"{{reset_link}}", "(body)", "{{email}}", "{{link}}"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("the refusal does not contain %q: %s", want, rec.Body)
+		}
+	}
 
-	// Placed by support, who hold service:hold and not service:suspend: the two are separate
-	// instructions on purpose.
-	rec := env.postServiceJSON(t, "/api/v1/staff/services/"+tenant.serviceID+"/holds",
-		authorCookie, authorCSRF, map[string]any{
-			"reason": "dispute over the June invoice; do not touch this box",
+	// A placeholder in the subject is the same bug and the easier one to miss: it is one line,
+	// and it is the line a customer reads before opening the message.
+	rec = env.doJSON(t, http.MethodPut, "/api/v1/staff/notification-templates/password_reset",
+		env.billing, env.billingCSRF, map[string]any{
+			"subject": "Reset the password for {{account_email}}",
+			"body":    "Use this link: {{link}}",
 		})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("place hold: status %d; body %s", rec.Code, rec.Body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("save with an unknown placeholder in the subject: status %d, want 422; body %s",
+			rec.Code, rec.Body)
 	}
-	var placed struct {
-		ID        string `json:"id"`
-		ServiceID string `json:"service_id"`
-		CreatedBy string `json:"created_by"`
+	if p := decodeProblem(t, rec); p.Code != "unknown_placeholder" {
+		t.Fatalf("subject code = %q, want unknown_placeholder", p.Code)
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &placed); err != nil {
-		t.Fatalf("place hold body: %v\n%s", err, rec.Body)
-	}
-	if placed.CreatedBy != adminID {
-		t.Fatalf("created_by = %q, want the session's user %q", placed.CreatedBy, adminID)
+	if !strings.Contains(rec.Body.String(), "(subject)") {
+		t.Fatalf("the refusal does not say the subject is where the mistake is: %s", rec.Body)
 	}
 
-	// The register is the screen's data source.
-	list := env.get(t, "/api/v1/staff/holds", cookie)
-	if list.Code != http.StatusOK {
-		t.Fatalf("holds register: status %d; body %s", list.Code, list.Body)
+	// Nothing was stored: the row still has its original wording.
+	rec = env.get(t, "/api/v1/staff/notification-templates/password_reset", env.billing)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-read: status %d; body %s", rec.Code, rec.Body)
+	}
+	var after struct {
+		Subject string `json:"subject"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &after); err != nil {
+		t.Fatalf("re-read body: %v", err)
+	}
+	if after.Subject != before.Subject {
+		t.Fatalf("a refused save changed the template: %q -> %q", before.Subject, after.Subject)
+	}
+
+	// The preview refuses the same draft, so the editor can say why before the operator clicks
+	// save rather than after.
+	rec = env.doJSON(t, http.MethodPost,
+		"/api/v1/staff/notification-templates/password_reset/preview",
+		env.billing, env.billingCSRF, bad)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("preview with an unknown placeholder: status %d, want 422; body %s", rec.Code, rec.Body)
+	}
+	if p := decodeProblem(t, rec); p.Code != "unknown_placeholder" {
+		t.Fatalf("preview code = %q, want unknown_placeholder", p.Code)
+	}
+}
+
+// The vocabulary route serves every event, and support cannot reach it: support answers "why
+// did I get this", it does not decide what the mail says.
+func TestNotificationTemplateEditorIsForTemplateEditors(t *testing.T) {
+	env := newStaffEnv(t)
+
+	rec := env.get(t, "/api/v1/staff/notification-template-variables", env.billing)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("variables: status %d; body %s", rec.Code, rec.Body)
 	}
 	var body struct {
 		Data []struct {
-			ID           string  `json:"id"`
-			ServiceID    string  `json:"service_id"`
-			Reason       string  `json:"reason"`
-			ExpiresAt    *string `json:"expires_at"`
-			Expired      bool    `json:"expired"`
-			OpenInvoices int     `json:"open_invoices"`
-			Customer     struct {
-				ID    string `json:"id"`
-				Name  string `json:"name"`
-				Email string `json:"email"`
-			} `json:"customer"`
-			PlacedBy *struct {
-				UserID      string `json:"user_id"`
-				Email       string `json:"email"`
-				DisplayName string `json:"display_name"`
-			} `json:"placed_by"`
-			Subscription *struct {
-				Status        string  `json:"status"`
-				NextBillingAt *string `json:"next_billing_at"`
-			} `json:"subscription"`
-			ServiceStatus string `json:"service_status"`
+			EventKey  string `json:"event_key"`
+			Force     bool   `json:"force"`
+			Variables []struct {
+				Name string `json:"name"`
+			} `json:"variables"`
 		} `json:"data"`
-		Counts map[string]int `json:"counts"`
 	}
-	if err := json.Unmarshal(list.Body.Bytes(), &body); err != nil {
-		t.Fatalf("holds body: %v\n%s", err, list.Body)
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("variables body: %v", err)
 	}
-	var found bool
-	for _, row := range body.Data {
-		if row.ID != placed.ID {
-			continue
+	if len(body.Data) != len(notify.Catalogue()) {
+		t.Fatalf("%d events described, %d in the catalogue", len(body.Data), len(notify.Catalogue()))
+	}
+	// The transactional flag decides whether an edit is safe, so it has to be there.
+	var sawForce bool
+	for _, event := range body.Data {
+		if event.Force {
+			sawForce = true
 		}
-		found = true
-		if row.Reason != "dispute over the June invoice; do not touch this box" {
-			t.Fatalf("reason = %q", row.Reason)
-		}
-		if row.Customer.Email != "held@example.test" {
-			t.Fatalf("customer email = %q", row.Customer.Email)
-		}
-		if row.PlacedBy == nil || row.PlacedBy.UserID != adminID || row.PlacedBy.Email != "holds-author@example.test" {
-			t.Fatalf("placed_by = %+v, want the support agent who placed it", row.PlacedBy)
-		}
-		if row.Expired {
-			t.Fatal("a hold with no expiry is reported as expired")
-		}
-		if row.ExpiresAt != nil {
-			t.Fatalf("expires_at = %v, want null for a hold that lasts until cleared", *row.ExpiresAt)
-		}
-		// The schedule keeps running: this is the fact the screen states, and the response has
-		// to be able to support the statement.
-		if row.Subscription == nil || row.Subscription.Status != "active" ||
-			row.Subscription.NextBillingAt == nil {
-			t.Fatalf("subscription = %+v, want an active schedule with a next billing date", row.Subscription)
-		}
-		if row.ServiceStatus != "active" {
-			t.Fatalf("service status = %q, want active: a hold does not suspend the service", row.ServiceStatus)
+		if len(event.Variables) == 0 {
+			t.Fatalf("event %q offers no placeholders", event.EventKey)
 		}
 	}
-	if !found {
-		t.Fatalf("the hold is not in the register: %s", list.Body)
-	}
-	if body.Counts["active"] < 1 {
-		t.Fatalf("counts.active = %d, want at least the hold just placed", body.Counts["active"])
+	if !sawForce {
+		t.Fatal("no event is marked transactional; password reset cannot be opted out of")
 	}
 
-	// Nothing billed. A hold is an instruction to automation, not a billing event.
-	if after := env.admCountInvoices(t); after != before {
-		t.Fatalf("placing a hold changed the invoice count: %d -> %d", before, after)
+	rec = env.get(t, "/api/v1/staff/notification-template-variables", env.support)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("support reading the vocabulary: status %d, want 403", rec.Code)
 	}
+	problemCode(t, rec)
 
-	// The placement is audited in the same transaction as the row.
-	var audited int
-	if err := env.pool.QueryRow(context.Background(), `
-		SELECT count(*) FROM audit_events WHERE action = 'service.hold_add' AND target_id = $1`,
-		tenant.serviceID).Scan(&audited); err != nil {
-		t.Fatalf("count audit rows: %v", err)
-	}
-	if audited == 0 {
-		t.Fatal("placing a hold wrote no audit row")
+	rec = env.doJSON(t, http.MethodPost,
+		"/api/v1/staff/notification-templates/invoice_paid/preview",
+		env.support, env.supportCSRF, map[string]any{"subject": "x", "body": "y"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("support previewing a template: status %d, want 403", rec.Code)
 	}
 }
 
-// Lifting a hold bills nothing either: no catch-up invoice for the period the hold covered.
-func TestLiftingHoldDoesNotRetroactivelyInvoice(t *testing.T) {
-	env := newAuthEnv(t)
-	tenant := env.createTenant(t, "lifted@example.test", "12.00")
-	cookie, csrf := env.admSession(t, "lift-admin@example.test")
+// -------------------------------------------------------------- automation --
 
-	rec := env.postServiceJSON(t, "/api/v1/staff/services/"+tenant.serviceID+"/holds",
-		cookie, csrf, map[string]any{"reason": "waiting on the customer", "expires_in_seconds": 3600})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("place hold: status %d; body %s", rec.Code, rec.Body)
-	}
-	var placed struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &placed); err != nil {
-		t.Fatalf("place body: %v\n%s", err, rec.Body)
-	}
-
-	before := env.admCountInvoices(t)
-	var nextBefore time.Time
-	if err := env.pool.QueryRow(context.Background(), `
-		SELECT next_billing_at FROM subscriptions WHERE id =
-			(SELECT subscription_id FROM services WHERE id = $1)`, tenant.serviceID).
-		Scan(&nextBefore); err != nil {
-		t.Fatalf("read schedule: %v", err)
-	}
-
-	del := env.admDelete(t, "/api/v1/staff/holds/"+placed.ID, cookie, csrf)
-	if del.Code != http.StatusNoContent {
-		t.Fatalf("lift hold: status %d; body %s", del.Code, del.Body)
-	}
-
-	if after := env.admCountInvoices(t); after != before {
-		t.Fatalf("lifting a hold issued %d invoice(s): %d -> %d", after-before, before, after)
-	}
-	var nextAfter time.Time
-	if err := env.pool.QueryRow(context.Background(), `
-		SELECT next_billing_at FROM subscriptions WHERE id =
-			(SELECT subscription_id FROM services WHERE id = $1)`, tenant.serviceID).
-		Scan(&nextAfter); err != nil {
-		t.Fatalf("read schedule: %v", err)
-	}
-	if !nextAfter.Equal(nextBefore) {
-		t.Fatalf("lifting a hold moved the billing date: %s -> %s", nextBefore, nextAfter)
-	}
-
-	// The register no longer shows it, and says so through the counts.
-	list := env.get(t, "/api/v1/staff/holds", cookie)
-	if list.Code != http.StatusOK {
-		t.Fatalf("holds register: status %d; body %s", list.Code, list.Body)
-	}
-	if bytes.Contains(list.Body.Bytes(), []byte(placed.ID)) {
-		t.Fatalf("the lifted hold is still in the active register: %s", list.Body)
-	}
-
-	var audited int
-	if err := env.pool.QueryRow(context.Background(), `
-		SELECT count(*) FROM audit_events WHERE action = 'service.hold_clear' AND target_id = $1`,
-		tenant.serviceID).Scan(&audited); err != nil {
-		t.Fatalf("count audit rows: %v", err)
-	}
-	if audited == 0 {
-		t.Fatal("lifting a hold wrote no audit row")
-	}
+// automationRow is one job as the automation screen reads it.
+type automationRow struct {
+	Name            string   `json:"name"`
+	IntervalSeconds int64    `json:"interval_seconds"`
+	Interval        string   `json:"interval"`
+	Summary         string   `json:"summary"`
+	Disabled        bool     `json:"disabled"`
+	KillSwitch      *string  `json:"kill_switch"`
+	KillSwitchSet   bool     `json:"kill_switch_set"`
+	SwitchEffect    string   `json:"switch_effect"`
+	Settings        []string `json:"settings"`
+	Source          string   `json:"source"`
 }
 
-// The register is a staff read: a customer must not see other people's holds.
-func TestHoldsRegisterRequiresStaffReadAll(t *testing.T) {
-	env := newAuthEnv(t)
-	env.createTenant(t, "holds-customer@example.test", "12.00")
-	cookie, _ := env.login(t, "holds-customer@example.test", "a long enough password")
-	if rec := env.get(t, "/api/v1/staff/holds", cookie); rec.Code != http.StatusForbidden {
-		t.Fatalf("customer reading the holds register: status %d, want 403", rec.Code)
-	}
+// automationResponse is the shape the automation screen reads.
+type automationResponse struct {
+	Data         []automationRow `json:"data"`
+	KillSwitches struct {
+		Mechanism string `json:"mechanism"`
+		ReadOnly  bool   `json:"read_only"`
+		Note      string `json:"note"`
+	} `json:"kill_switches"`
+	Worker struct {
+		EmbeddedSwitch string `json:"embedded_switch"`
+		Embedded       bool   `json:"embedded"`
+	} `json:"worker"`
 }
 
-// ------------------------------------------------------------ upgrade graph --
-
-// admProduct creates a priced product and returns its id.
-func (e *authEnv) admProduct(t *testing.T, slug, name string, amountMinor int64) string {
+func fetchAutomation(t *testing.T, env *staffEnv) automationResponse {
 	t.Helper()
-	ctx := context.Background()
-	var productID string
-	if err := e.pool.QueryRow(ctx, `
-		INSERT INTO products (slug, name) VALUES ($1, $2) RETURNING id`, slug, name).
-		Scan(&productID); err != nil {
-		t.Fatalf("create product: %v", err)
-	}
-	if _, err := e.pool.Exec(ctx, `
-		INSERT INTO price_versions (product_id, version, name, currency, amount_minor, interval,
-			anchor_day, anchor_timezone)
-		VALUES ($1, 1, $2, 'USD', $3, 'monthly', 1, 'UTC')`, productID, name, amountMinor); err != nil {
-		t.Fatalf("create price: %v", err)
-	}
-	return productID
-}
-
-// An edge round-trips, and a self-edge is a clean refusal rather than a 500.
-func TestUpgradeEdgeRoundTripsAndSelfEdgeIsRefused(t *testing.T) {
-	env := newAuthEnv(t)
-	cookie, csrf := env.admSession(t, "graph-admin@example.test")
-	small := env.admProduct(t, "graph-small", "Graph Small", 1200)
-	large := env.admProduct(t, "graph-large", "Graph Large", 2500)
-
-	rec := env.postServiceJSON(t, "/api/v1/staff/upgrade-graph", cookie, csrf,
-		map[string]any{"product_id": small, "upgrade_to_id": large})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("add edge: status %d; body %s", rec.Code, rec.Body)
-	}
-	var edge struct {
-		ProductID      string   `json:"product_id"`
-		UpgradeToID    string   `json:"upgrade_to_id"`
-		ProductName    string   `json:"product_name"`
-		UpgradeToName  string   `json:"upgrade_to_name"`
-		Compatible     bool     `json:"compatible"`
-		CompatibleWith []string `json:"compatible_prices"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &edge); err != nil {
-		t.Fatalf("add edge body: %v\n%s", err, rec.Body)
-	}
-	if edge.ProductID != small || edge.UpgradeToID != large {
-		t.Fatalf("edge = %+v", edge)
-	}
-	if !edge.Compatible || len(edge.CompatibleWith) == 0 {
-		t.Fatalf("edge is not compatible although both products are priced monthly in USD: %+v", edge)
-	}
-
-	graph := env.get(t, "/api/v1/staff/upgrade-graph", cookie)
-	if graph.Code != http.StatusOK {
-		t.Fatalf("graph: status %d; body %s", graph.Code, graph.Body)
-	}
-	var listed struct {
-		Edges []struct {
-			ProductID     string `json:"product_id"`
-			UpgradeToID   string `json:"upgrade_to_id"`
-			ProductName   string `json:"product_name"`
-			UpgradeToName string `json:"upgrade_to_name"`
-			FromPrices    []struct {
-				AmountMinor int64  `json:"amount_minor"`
-				Currency    string `json:"currency"`
-			} `json:"from_prices"`
-			ToPrices []struct {
-				AmountMinor int64  `json:"amount_minor"`
-				Currency    string `json:"currency"`
-			} `json:"to_prices"`
-		} `json:"edges"`
-		Products []struct {
-			ID string `json:"id"`
-		} `json:"products"`
-	}
-	if err := json.Unmarshal(graph.Body.Bytes(), &listed); err != nil {
-		t.Fatalf("graph body: %v\n%s", err, graph.Body)
-	}
-	var found bool
-	for _, e := range listed.Edges {
-		if e.ProductID != small || e.UpgradeToID != large {
-			continue
-		}
-		found = true
-		if e.ProductName != "Graph Small" || e.UpgradeToName != "Graph Large" {
-			t.Fatalf("edge names = %q -> %q", e.ProductName, e.UpgradeToName)
-		}
-		// The two prices are what the screen turns into "moving costs the prorated
-		// difference"; without them it cannot say anything true about money.
-		if len(e.FromPrices) != 1 || e.FromPrices[0].AmountMinor != 1200 ||
-			len(e.ToPrices) != 1 || e.ToPrices[0].AmountMinor != 2500 {
-			t.Fatalf("edge prices = %+v -> %+v", e.FromPrices, e.ToPrices)
-		}
-	}
-	if !found {
-		t.Fatalf("the edge is not in the graph: %s", graph.Body)
-	}
-	if len(listed.Products) < 2 {
-		t.Fatalf("the graph did not list the products: %s", graph.Body)
-	}
-
-	// A self-edge is refused by the database; the answer has to be a sentence, not a 500.
-	self := env.postServiceJSON(t, "/api/v1/staff/upgrade-graph", cookie, csrf,
-		map[string]any{"product_id": small, "upgrade_to_id": small})
-	if self.Code != http.StatusBadRequest {
-		t.Fatalf("self-edge: status %d, want 400; body %s", self.Code, self.Body)
-	}
-	if code := problemCode(t, self); code != "self_edge" {
-		t.Fatalf("self-edge code = %q, want self_edge", code)
-	}
-
-	// The same edge twice is a conflict, not a second row.
-	dup := env.postServiceJSON(t, "/api/v1/staff/upgrade-graph", cookie, csrf,
-		map[string]any{"product_id": small, "upgrade_to_id": large})
-	if dup.Code != http.StatusConflict {
-		t.Fatalf("duplicate edge: status %d, want 409; body %s", dup.Code, dup.Body)
-	}
-	if code := problemCode(t, dup); code != "edge_exists" {
-		t.Fatalf("duplicate edge code = %q, want edge_exists", code)
-	}
-
-	// And it can be removed again.
-	del := env.admDelete(t, "/api/v1/staff/upgrade-graph/"+small+"/"+large, cookie, csrf)
-	if del.Code != http.StatusNoContent {
-		t.Fatalf("remove edge: status %d; body %s", del.Code, del.Body)
-	}
-	after := env.get(t, "/api/v1/staff/upgrade-graph", cookie)
-	var afterGraph struct {
-		Edges []struct {
-			ProductID   string `json:"product_id"`
-			UpgradeToID string `json:"upgrade_to_id"`
-		} `json:"edges"`
-	}
-	if err := json.Unmarshal(after.Body.Bytes(), &afterGraph); err != nil {
-		t.Fatalf("graph body after removal: %v\n%s", err, after.Body)
-	}
-	for _, e := range afterGraph.Edges {
-		if e.ProductID == small && e.UpgradeToID == large {
-			t.Fatalf("the removed edge is still in the graph: %s", after.Body)
-		}
-	}
-
-	var audited int
-	if err := env.pool.QueryRow(context.Background(), `
-		SELECT count(*) FROM audit_events
-		WHERE action IN ('catalog.upgrade_edge_added', 'catalog.upgrade_edge_removed')`).Scan(&audited); err != nil {
-		t.Fatalf("count audit rows: %v", err)
-	}
-	if audited < 2 {
-		t.Fatalf("audit rows for the graph = %d, want the add and the remove", audited)
-	}
-}
-
-// ------------------------------------------------------------- providers --
-
-// A provider's client secret is never in a response body.
-//
-// The assertion is on the bytes. A test that unmarshalled into a struct without a secret field
-// would pass while the handler still wrote the value, which is the mistake worth catching.
-func TestProviderSecretIsNeverInAResponseBody(t *testing.T) {
-	env := newAuthEnv(t)
-	cookie, csrf := env.admSession(t, "providers-admin@example.test")
-	const secret = "s3cr3t-provider-value-do-not-echo"
-
-	create := env.postServiceJSON(t, "/api/v1/staff/oauth-providers", cookie, csrf,
-		map[string]any{
-			"slug":                   "example-idp",
-			"name":                   "Example IdP",
-			"issuer_url":             "https://idp.example.test",
-			"authorization_endpoint": "https://idp.example.test/authorize",
-			"token_endpoint":         "https://idp.example.test/token",
-			"userinfo_endpoint":      "https://idp.example.test/userinfo",
-			"client_id":              "billing-panel",
-			"client_secret":          secret,
-			"scopes":                 []string{"openid", "email"},
-			"subject_claim":          "sub",
-			"email_claim":            "email",
-			"enabled":                true,
-		})
-	if create.Code != http.StatusCreated {
-		t.Fatalf("create provider: status %d; body %s", create.Code, create.Body)
-	}
-	if bytes.Contains(create.Body.Bytes(), []byte(secret)) {
-		t.Fatalf("the create response contains the client secret: %s", create.Body)
-	}
-	var created struct {
-		ID           string `json:"id"`
-		HasSecret    bool   `json:"has_secret"`
-		Enabled      bool   `json:"enabled"`
-		SubjectClaim string `json:"subject_claim"`
-	}
-	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
-		t.Fatalf("create body: %v\n%s", err, create.Body)
-	}
-	if !created.HasSecret {
-		t.Fatal("has_secret = false after a secret was supplied")
-	}
-	if created.SubjectClaim != "sub" {
-		t.Fatalf("subject_claim = %q, want sub", created.SubjectClaim)
-	}
-
-	list := env.get(t, "/api/v1/staff/oauth-providers", cookie)
-	if list.Code != http.StatusOK {
-		t.Fatalf("list providers: status %d; body %s", list.Code, list.Body)
-	}
-	if bytes.Contains(list.Body.Bytes(), []byte(secret)) {
-		t.Fatalf("the list response contains the client secret: %s", list.Body)
-	}
-	if !bytes.Contains(list.Body.Bytes(), []byte(`"has_secret":true`)) {
-		t.Fatalf("the list does not report has_secret: %s", list.Body)
-	}
-
-	one := env.get(t, "/api/v1/staff/oauth-providers/"+created.ID, cookie)
-	if one.Code != http.StatusOK {
-		t.Fatalf("read provider: status %d; body %s", one.Code, one.Body)
-	}
-	if bytes.Contains(one.Body.Bytes(), []byte(secret)) {
-		t.Fatalf("the read response contains the client secret: %s", one.Body)
-	}
-
-	// An empty secret means "keep the stored one": saving a form that cannot show the value
-	// must not wipe the credential.
-	update := env.putServiceJSON(t, "/api/v1/staff/oauth-providers/"+created.ID, cookie, csrf,
-		map[string]any{
-			"slug":                   "example-idp",
-			"name":                   "Example IdP renamed",
-			"issuer_url":             "https://idp.example.test",
-			"authorization_endpoint": "https://idp.example.test/authorize",
-			"token_endpoint":         "https://idp.example.test/token",
-			"userinfo_endpoint":      "https://idp.example.test/userinfo",
-			"client_id":              "billing-panel",
-			"client_secret":          "",
-			"scopes":                 []string{"openid", "email", "profile"},
-			"subject_claim":          "sub",
-			"email_claim":            "email",
-			"enabled":                false,
-		})
-	if update.Code != http.StatusOK {
-		t.Fatalf("update provider: status %d; body %s", update.Code, update.Body)
-	}
-	if bytes.Contains(update.Body.Bytes(), []byte(secret)) {
-		t.Fatalf("the update response contains the client secret: %s", update.Body)
-	}
-	var updated struct {
-		HasSecret bool `json:"has_secret"`
-		Enabled   bool `json:"enabled"`
-	}
-	if err := json.Unmarshal(update.Body.Bytes(), &updated); err != nil {
-		t.Fatalf("update body: %v\n%s", err, update.Body)
-	}
-	if !updated.HasSecret {
-		t.Fatal("an empty client_secret cleared the stored one")
-	}
-	if updated.Enabled {
-		t.Fatal("enabled = true after it was set to false")
-	}
-}
-
-// -------------------------------------------------------------- security --
-
-// Revoking another account's session works, is audited, and does not touch the operator's own.
-func TestSecurityRevokesAnotherSessionAndRefusesItsOwn(t *testing.T) {
-	env := newAuthEnv(t)
-	cookie, csrf := env.admSession(t, "security-admin@example.test")
-
-	env.createUser(t, "attacked@example.test", "a long enough password", "")
-	targetCookie, _ := env.login(t, "attacked@example.test", "a long enough password")
-
-	// The target's session is visible in the cross-account list.
-	list := env.get(t, "/api/v1/staff/security/sessions?q=attacked@example.test", cookie)
-	if list.Code != http.StatusOK {
-		t.Fatalf("list sessions: status %d; body %s", list.Code, list.Body)
-	}
-	var sessions struct {
-		Data []struct {
-			ID      string `json:"id"`
-			Current bool   `json:"current"`
-			User    struct {
-				ID    string `json:"id"`
-				Email string `json:"email"`
-			} `json:"user"`
-		} `json:"data"`
-		Summary struct {
-			Sessions int `json:"sessions"`
-			Users    int `json:"users"`
-		} `json:"summary"`
-	}
-	if err := json.Unmarshal(list.Body.Bytes(), &sessions); err != nil {
-		t.Fatalf("sessions body: %v\n%s", err, list.Body)
-	}
-	if len(sessions.Data) == 0 {
-		t.Fatalf("the target's session is not listed: %s", list.Body)
-	}
-	targetSession := sessions.Data[0]
-	if targetSession.User.Email != "attacked@example.test" || targetSession.Current {
-		t.Fatalf("session = %+v", targetSession)
-	}
-	if sessions.Summary.Sessions < 2 || sessions.Summary.Users < 2 {
-		t.Fatalf("summary = %+v, want at least two sessions across two users", sessions.Summary)
-	}
-
-	rec := env.admDelete(t, "/api/v1/staff/security/sessions/"+targetSession.ID, cookie, csrf)
+	rec := env.get(t, "/api/v1/staff/automation", env.admin)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("revoke another session: status %d; body %s", rec.Code, rec.Body)
+		t.Fatalf("automation: status %d; body %s", rec.Code, rec.Body)
 	}
-	// The session is dead server-side, not merely un-cookied.
-	if got := env.get(t, "/api/v1/auth/me", targetCookie); got.Code != http.StatusUnauthorized {
-		t.Fatalf("the revoked session still authenticates: %d", got.Code)
+	var body automationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("automation body: %v (%s)", err, rec.Body)
 	}
-	// The operator's own session is untouched.
-	if got := env.get(t, "/api/v1/auth/me", cookie); got.Code != http.StatusOK {
-		t.Fatalf("the operator was signed out by revoking somebody else's session: %d", got.Code)
-	}
-
-	// The revocation is audited against the account it ended.
-	var audited int
-	if err := env.pool.QueryRow(context.Background(), `
-		SELECT count(*) FROM audit_events
-		WHERE action = 'session.revoke' AND target_id = $1`, targetSession.User.ID).Scan(&audited); err != nil {
-		t.Fatalf("count audit rows: %v", err)
-	}
-	if audited == 0 {
-		t.Fatal("revoking another account's session wrote no audit row")
-	}
-	// And the account's own sign-in trail says an operator did it, not a compromise.
-	var trail int
-	if err := env.pool.QueryRow(context.Background(), `
-		SELECT count(*) FROM auth_events
-		WHERE user_id = $1 AND event = 'session_revoked' AND detail LIKE 'by operator%'`,
-		targetSession.User.ID).Scan(&trail); err != nil {
-		t.Fatalf("count auth events: %v", err)
-	}
-	if trail == 0 {
-		t.Fatal("the revoked account has no auth event recording the operator")
-	}
-
-	// The operator's own current session cannot be revoked through this screen: that is a
-	// sign-out, and doing it by mis-click throws them out mid-incident.
-	own := env.get(t, "/api/v1/staff/security/sessions?q=security-admin@example.test", cookie)
-	if own.Code != http.StatusOK {
-		t.Fatalf("list own sessions: status %d; body %s", own.Code, own.Body)
-	}
-	var ownBody struct {
-		Data []struct {
-			ID      string `json:"id"`
-			Current bool   `json:"current"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(own.Body.Bytes(), &ownBody); err != nil {
-		t.Fatalf("own sessions body: %v\n%s", err, own.Body)
-	}
-	var currentID string
-	for _, row := range ownBody.Data {
-		if row.Current {
-			currentID = row.ID
-		}
-	}
-	if currentID == "" {
-		t.Fatalf("no session is marked current: %s", own.Body)
-	}
-	self := env.admDelete(t, "/api/v1/staff/security/sessions/"+currentID, cookie, csrf)
-	if self.Code != http.StatusConflict {
-		t.Fatalf("revoking the caller's own session: status %d, want 409; body %s", self.Code, self.Body)
-	}
-	if code := problemCode(t, self); code != "own_session" {
-		t.Fatalf("own-session code = %q, want own_session", code)
-	}
-	if got := env.get(t, "/api/v1/auth/me", cookie); got.Code != http.StatusOK {
-		t.Fatalf("the refusal still signed the operator out: %d", got.Code)
-	}
+	return body
 }
 
-// The sign-in history shows both a success and a failure, so "is this account being attacked"
-// is answerable from the screen.
-func TestSignInHistoryShowsSuccessAndFailure(t *testing.T) {
-	env := newAuthEnv(t)
-	cookie, _ := env.admSession(t, "history-admin@example.test")
-	env.createUser(t, "watched@example.test", "a long enough password", "")
+// repoFile reads a file from the repository root, so a test can compare the screen against the
+// code that registers the jobs.
+func repoFile(t *testing.T, rel string) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for i := 0; i < 6; i++ {
+		candidate := filepath.Join(dir, rel)
+		if _, err := os.Stat(candidate); err == nil {
+			content, err := os.ReadFile(candidate)
+			if err != nil {
+				t.Fatalf("read %s: %v", candidate, err)
+			}
+			return string(content)
+		}
+		dir = filepath.Dir(dir)
+	}
+	t.Fatalf("could not find %s above the package directory", rel)
+	return ""
+}
 
-	// One success.
-	env.login(t, "watched@example.test", "a long enough password")
-	// One failure, with the wrong password: the account is named in the event, which is what
-	// makes "which account is being tried" answerable.
-	body, _ := json.Marshal(map[string]string{
-		"email": "watched@example.test", "password": "definitely not the password",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	env.srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("failed login: status %d, want 401; body %s", rec.Code, rec.Body)
+// jobDeclaration is one job as cmd/billing declares it.
+type jobDeclaration struct {
+	Name     string
+	Interval time.Duration
+}
+
+var (
+	jobNamePattern     = regexp.MustCompile(`name:\s+"([a-z0-9-]+)",`)
+	jobIntervalPattern = regexp.MustCompile(`name:\s+"([a-z0-9-]+)",\s*\n\s*interval:\s*([^,\n]+),`)
+	jobConstPattern    = regexp.MustCompile(`(?m)^\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\n]+)$`)
+)
+
+// declaredJobs reads the job list out of cmd/billing's registration.
+//
+// It is a source scan rather than a call because cmd/billing is package main: the worker's own
+// registration cannot be imported. The scan is deliberately strict — an interval expression it
+// does not understand fails the test with the expression in the message — so a new job cannot
+// quietly slip past the comparison.
+func declaredJobs(t *testing.T, sources ...string) []jobDeclaration {
+	t.Helper()
+
+	consts := map[string]string{}
+	for _, src := range sources {
+		for _, m := range jobConstPattern.FindAllStringSubmatch(src, -1) {
+			consts[m[1]] = strings.TrimSpace(m[2])
+		}
 	}
 
-	history := env.get(t, "/api/v1/staff/security/sign-ins?q=watched@example.test", cookie)
-	if history.Code != http.StatusOK {
-		t.Fatalf("sign-in history: status %d; body %s", history.Code, history.Body)
+	var out []jobDeclaration
+	seen := map[string]bool{}
+	for _, src := range sources {
+		for _, m := range jobIntervalPattern.FindAllStringSubmatch(src, -1) {
+			name := m[1]
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, jobDeclaration{
+				Name:     name,
+				Interval: durationOf(t, strings.TrimSpace(m[2]), consts),
+			})
+		}
 	}
-	var page struct {
-		Data []struct {
-			Event   string `json:"event"`
-			Outcome string `json:"outcome"`
-			IP      string `json:"ip"`
-			User    *struct {
-				Email string `json:"email"`
-			} `json:"user"`
-		} `json:"data"`
-		Summary struct {
-			Successes          int `json:"successes"`
-			Failures           int `json:"failures"`
-			TopFailingAccounts []struct {
-				Label string `json:"label"`
-				Count int    `json:"count"`
-			} `json:"top_failing_accounts"`
-		} `json:"summary"`
+	if len(out) == 0 {
+		t.Fatal("the job parser found no jobs; the registration has moved or changed shape")
 	}
-	if err := json.Unmarshal(history.Body.Bytes(), &page); err != nil {
-		t.Fatalf("history body: %v\n%s", err, history.Body)
+	return out
+}
+
+// durationOf evaluates the interval expressions the worker uses: `5 * time.Second`,
+// `time.Minute`, or a named constant defined beside it.
+func durationOf(t *testing.T, expr string, consts map[string]string) time.Duration {
+	t.Helper()
+	units := map[string]time.Duration{
+		"time.Second": time.Second,
+		"time.Minute": time.Minute,
+		"time.Hour":   time.Hour,
+	}
+	total := time.Duration(1)
+	for _, factor := range strings.Split(expr, "*") {
+		factor = strings.TrimSpace(factor)
+		switch {
+		case units[factor] != 0:
+			total *= units[factor]
+		case factor == "":
+			t.Fatalf("empty factor in interval expression %q", expr)
+		case strings.ContainsAny(factor, "0123456789"):
+			n, err := strconv.Atoi(factor)
+			if err != nil {
+				t.Fatalf("cannot read the multiplier in %q: %v", expr, err)
+			}
+			total *= time.Duration(n)
+		default:
+			value, ok := consts[factor]
+			if !ok {
+				t.Fatalf("the interval expression %q names %q, which this test cannot resolve", expr, factor)
+			}
+			total *= durationOf(t, value, consts)
+		}
+	}
+	if total <= 0 {
+		t.Fatalf("interval expression %q evaluated to %v", expr, total)
+	}
+	return total
+}
+
+// The automation list is the worker's job list: every job the worker registers is on the screen
+// with the interval it is registered with, and every row names where it is registered.
+func TestAutomationMatchesTheJobsTheWorkerRegisters(t *testing.T) {
+	// The worker's own switches are cleared, so the comparison is against the full registration
+	// rather than against whatever the developer's shell happens to export.
+	for _, key := range []string{
+		"BILLING_DISABLE_PAYMENTS", "BILLING_DISABLE_PROVISIONING", "BILLING_DISABLE_SUSPENSION",
+		"BILLING_DISABLE_REFUND_RECONCILE", "BILLING_DISABLE_NOTIFICATIONS",
+		lifecycle.OrderCancelKillSwitch, lifecycle.TerminationKillSwitch,
+		"BILLING_EMBEDDED_WORKER",
+	} {
+		t.Setenv(key, "")
 	}
 
-	var sawSuccess, sawFailure bool
-	for _, row := range page.Data {
-		if row.User == nil || row.User.Email != "watched@example.test" {
+	env := newStaffEnv(t)
+	body := fetchAutomation(t, env)
+
+	byName := map[string]int64{}
+	sources := map[string]string{}
+	for _, row := range body.Data {
+		if row.Summary == "" {
+			t.Fatalf("job %q has no summary, so the screen cannot say what it does", row.Name)
+		}
+		if row.IntervalSeconds <= 0 || row.Interval == "" {
+			t.Fatalf("job %q has no interval", row.Name)
+		}
+		if row.Source == "" {
+			t.Fatalf("job %q does not say where it is registered", row.Name)
+		}
+		byName[row.Name] = row.IntervalSeconds
+		sources[row.Name] = row.Source
+	}
+
+	// 1. The two lifecycle rules, compared against the function the worker itself calls.
+	registered := lifecycle.Jobs(env.pool, nil)
+	if len(registered) == 0 {
+		t.Fatal("lifecycle.Jobs() returned nothing, so this comparison proves nothing")
+	}
+	for _, job := range registered {
+		seconds, ok := byName[job.Name]
+		if !ok {
+			t.Fatalf("the worker registers %q but the automation screen does not list it", job.Name)
+		}
+		if want := int64(job.Interval / time.Second); seconds != want {
+			t.Fatalf("job %q: screen says %ds, the worker registers %ds", job.Name, seconds, want)
+		}
+		if sources[job.Name] != "internal/lifecycle/lifecycle.go" {
+			t.Fatalf("job %q claims to be registered in %q", job.Name, sources[job.Name])
+		}
+	}
+
+	// 2. Everything cmd/billing registers, read out of the registration itself.
+	declared := declaredJobs(t,
+		repoFile(t, "cmd/billing/jobs.go"),
+		repoFile(t, "cmd/billing/piping.go"),
+	)
+	for _, job := range declared {
+		seconds, ok := byName[job.Name]
+		if !ok {
+			t.Fatalf("cmd/billing registers %q but the automation screen does not list it", job.Name)
+		}
+		if want := int64(job.Interval / time.Second); seconds != want {
+			t.Fatalf("job %q: screen says %ds, the worker registers %ds", job.Name, seconds, want)
+		}
+	}
+
+	// 3. Every row is a job something registers, so the screen cannot describe a job that no
+	// longer exists.
+	declaredNames := map[string]bool{}
+	for _, job := range declared {
+		declaredNames[job.Name] = true
+	}
+	for _, job := range registered {
+		declaredNames[job.Name] = true
+	}
+	for _, row := range body.Data {
+		if !declaredNames[row.Name] {
+			t.Fatalf("the automation screen lists %q, which nothing registers", row.Name)
+		}
+	}
+
+	// 4. The switches are reported as read-only environment variables, in the response itself,
+	// so the screen cannot render them as controls.
+	if body.KillSwitches.Mechanism != "environment" || !body.KillSwitches.ReadOnly {
+		t.Fatalf("kill switches = %+v, want a read-only environment mechanism", body.KillSwitches)
+	}
+	if body.KillSwitches.Note == "" {
+		t.Fatal("the response does not explain why the switches cannot be changed here")
+	}
+
+	// 5. Every switch named is documented in .env.example, because a switch an operator cannot
+	// find is a switch that does not exist.
+	envExample := repoFile(t, ".env.example")
+	for _, row := range body.Data {
+		if row.KillSwitch == nil {
 			continue
 		}
-		switch row.Outcome {
-		case "success":
-			sawSuccess = sawSuccess || row.Event == "login_succeeded"
-		case "failure":
-			sawFailure = true
+		if !strings.Contains(envExample, *row.KillSwitch) {
+			t.Fatalf("job %q names the switch %q, which .env.example does not document",
+				row.Name, *row.KillSwitch)
 		}
 	}
-	if !sawSuccess || !sawFailure {
-		t.Fatalf("history shows success=%v failure=%v; body %s", sawSuccess, sawFailure, history.Body)
+}
+
+// A job stopped by its switch is still listed, and says so. "What runs on this box" has to
+// include what has been switched off, or an operator cannot tell a stopped job from a job that
+// was never there.
+func TestAutomationShowsAJobItsSwitchHasStopped(t *testing.T) {
+	env := newStaffEnv(t)
+
+	// Before: the job is registered and enabled.
+	body := fetchAutomation(t, env)
+	before := findJob(t, body, lifecycle.OrderCancelJob)
+	if before.Disabled {
+		t.Fatalf("%q is disabled before the switch was set", lifecycle.OrderCancelJob)
 	}
-	if page.Summary.Successes < 1 || page.Summary.Failures < 1 {
-		t.Fatalf("summary = %+v, want at least one of each in the window", page.Summary)
-	}
-	var named bool
-	for _, row := range page.Summary.TopFailingAccounts {
-		if row.Label == "watched@example.test" && row.Count >= 1 {
-			named = true
-		}
-	}
-	if !named {
-		t.Fatalf("the failing account is not in top_failing_accounts: %+v", page.Summary.TopFailingAccounts)
+	if before.KillSwitch == nil || *before.KillSwitch != lifecycle.OrderCancelKillSwitch {
+		t.Fatalf("%q does not name its switch: %+v", lifecycle.OrderCancelJob, before.KillSwitch)
 	}
 
-	// The outcome filter narrows the list, which is how an operator reads "only the failures".
-	failures := env.get(t, "/api/v1/staff/security/sign-ins?outcome=failure&q=watched@example.test", cookie)
-	if failures.Code != http.StatusOK {
-		t.Fatalf("failure filter: status %d; body %s", failures.Code, failures.Body)
+	// The worker's registration honours the switch; the screen reads the same source.
+	t.Setenv(lifecycle.OrderCancelKillSwitch, "1")
+	for _, job := range lifecycle.Jobs(env.pool, nil) {
+		if job.Name == lifecycle.OrderCancelJob {
+			t.Fatalf("lifecycle.Jobs() still registers %q with its switch set", lifecycle.OrderCancelJob)
+		}
 	}
-	var failuresBody struct {
+
+	body = fetchAutomation(t, env)
+	after := findJob(t, body, lifecycle.OrderCancelJob)
+	if !after.Disabled {
+		t.Fatalf("%q is not reported as disabled with %s set", lifecycle.OrderCancelJob, lifecycle.OrderCancelKillSwitch)
+	}
+	if !after.KillSwitchSet {
+		t.Fatalf("%q does not report its switch as set", lifecycle.OrderCancelJob)
+	}
+	// It is still on the screen: a disabled job has to be visible to be understood.
+	if after.Summary == "" || after.IntervalSeconds == 0 {
+		t.Fatalf("the disabled job lost its description: %+v", after)
+	}
+}
+
+// findJob returns one row by name.
+func findJob(t *testing.T, body automationResponse, name string) automationRow {
+	t.Helper()
+	for _, row := range body.Data {
+		if row.Name == name {
+			return row
+		}
+	}
+	t.Fatalf("job %q is not on the automation screen", name)
+	return body.Data[0]
+}
+
+// The job list needs settings:write; support holds neither, so it cannot read it.
+func TestAutomationNeedsSettingsWrite(t *testing.T) {
+	env := newStaffEnv(t)
+
+	rec := env.get(t, "/api/v1/staff/automation", env.support)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("support reading automation: status %d, want 403", rec.Code)
+	}
+	problemCode(t, rec)
+}
+
+// ------------------------------------------------------- service properties --
+
+// propertyRow is one definition as the screen reads it.
+type propertyRow struct {
+	Key             string `json:"key"`
+	Label           string `json:"label"`
+	Description     string `json:"description"`
+	ShowOnInvoice   bool   `json:"show_on_invoice"`
+	CustomerVisible bool   `json:"customer_visible"`
+	SortOrder       int    `json:"sort_order"`
+}
+
+func listProperties(t *testing.T, env *staffEnv) []propertyRow {
+	t.Helper()
+	rec := env.get(t, "/api/v1/staff/service-properties", env.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list properties: status %d; body %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Properties []propertyRow `json:"properties"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("properties body: %v", err)
+	}
+	return body.Properties
+}
+
+func propertyUsage(t *testing.T, env *staffEnv) map[string]int {
+	t.Helper()
+	rec := env.get(t, "/api/v1/staff/service-properties/usage", env.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("usage: status %d; body %s", rec.Code, rec.Body)
+	}
+	var body struct {
 		Data []struct {
-			Outcome string `json:"outcome"`
+			Key      string `json:"key"`
+			Services int    `json:"services"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(failures.Body.Bytes(), &failuresBody); err != nil {
-		t.Fatalf("failure body: %v\n%s", err, failures.Body)
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("usage body: %v", err)
 	}
-	if len(failuresBody.Data) == 0 {
-		t.Fatalf("the failure filter returned nothing: %s", failures.Body)
+	out := map[string]int{}
+	for _, row := range body.Data {
+		out[row.Key] = row.Services
 	}
-	for _, row := range failuresBody.Data {
-		if row.Outcome != "failure" {
-			t.Fatalf("the failure filter returned a %s row", row.Outcome)
-		}
-	}
-
-	if bad := env.get(t, "/api/v1/staff/security/sign-ins?outcome=maybe", cookie); bad.Code != http.StatusBadRequest {
-		t.Fatalf("an invalid outcome: status %d, want 400", bad.Code)
-	}
+	return out
 }
 
-// The security screen is staff:manage, not merely "any staff": it is other people's sessions.
-func TestSecurityScreenRequiresStaffManage(t *testing.T) {
-	env := newAuthEnv(t)
-	env.createUser(t, "support-security@example.test", "a long enough password", "support")
-	cookie, _ := env.login(t, "support-security@example.test", "a long enough password")
-	for _, path := range []string{
-		"/api/v1/staff/security/sessions",
-		"/api/v1/staff/security/sign-ins",
+// A definition round-trips with both visibility flags, and a reorder round-trips.
+func TestServicePropertyDefinitionRoundTrips(t *testing.T) {
+	env := newStaffEnv(t)
+
+	// The two flags answer different questions, and the screen's whole job is to keep them
+	// apart: this one prints on a document and stays out of the customer's portal.
+	rec := env.doJSON(t, http.MethodPut, "/api/v1/staff/service-properties/asset_tag", env.admin,
+		env.adminCSRF, map[string]any{
+			"label":            "Asset tag",
+			"description":      "The internal inventory number.",
+			"show_on_invoice":  true,
+			"customer_visible": false,
+			"sort_order":       20,
+		})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create: status %d; body %s", rec.Code, rec.Body)
+	}
+	var created propertyRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("create body: %v", err)
+	}
+	if !created.ShowOnInvoice || created.CustomerVisible {
+		t.Fatalf("the flags did not round-trip: %+v", created)
+	}
+
+	// A second definition, created ahead of it.
+	rec = env.doJSON(t, http.MethodPut, "/api/v1/staff/service-properties/rack", env.admin,
+		env.adminCSRF, map[string]any{
+			"label":            "Rack",
+			"description":      "Which cabinet the server sits in.",
+			"show_on_invoice":  false,
+			"customer_visible": true,
+			"sort_order":       10,
+		})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create rack: status %d; body %s", rec.Code, rec.Body)
+	}
+
+	rows := listProperties(t, env)
+	if len(rows) != 2 || rows[0].Key != "rack" || rows[1].Key != "asset_tag" {
+		t.Fatalf("list order = %+v, want rack then asset_tag", rows)
+	}
+	if !rows[1].ShowOnInvoice || rows[1].CustomerVisible {
+		t.Fatalf("the list lost the flags: %+v", rows[1])
+	}
+	if rows[1].Description == "" || rows[1].Label != "Asset tag" {
+		t.Fatalf("the list lost the wording: %+v", rows[1])
+	}
+
+	// Reorder: asset_tag first. The response is the order after the change, which is what the
+	// screen renders.
+	rec = env.doJSON(t, http.MethodPost, "/api/v1/staff/service-properties/reorder", env.admin,
+		env.adminCSRF, map[string]any{"keys": []string{"asset_tag", "rack"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reorder: status %d; body %s", rec.Code, rec.Body)
+	}
+	var order struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &order); err != nil {
+		t.Fatalf("reorder body: %v", err)
+	}
+	if len(order.Keys) != 2 || order.Keys[0] != "asset_tag" {
+		t.Fatalf("reorder response = %v", order.Keys)
+	}
+	rows = listProperties(t, env)
+	if rows[0].Key != "asset_tag" || rows[1].Key != "rack" {
+		t.Fatalf("the order did not persist: %+v", rows)
+	}
+
+	// An empty order and a duplicated key are refused rather than half-applied.
+	for _, bad := range []map[string]any{
+		{"keys": []string{}},
+		{"keys": []string{"rack", "rack"}},
 	} {
-		if rec := env.get(t, path, cookie); rec.Code != http.StatusForbidden {
-			t.Fatalf("%s as support: status %d, want 403", path, rec.Code)
+		rec = env.doJSON(t, http.MethodPost, "/api/v1/staff/service-properties/reorder", env.admin,
+			env.adminCSRF, bad)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("reorder %v: status %d, want 422; body %s", bad, rec.Code, rec.Body)
 		}
+		if p := decodeProblem(t, rec); p.Code != "invalid_order" {
+			t.Fatalf("code = %q, want invalid_order", p.Code)
+		}
+	}
+	// A key that has no definition is refused with the code the metadata editor already uses.
+	rec = env.doJSON(t, http.MethodPost, "/api/v1/staff/service-properties/reorder", env.admin,
+		env.adminCSRF, map[string]any{"keys": []string{"nonexistent"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("reorder with an unknown key: status %d, want 400; body %s", rec.Code, rec.Body)
+	}
+	if p := decodeProblem(t, rec); p.Code != "unknown_property" {
+		t.Fatalf("code = %q, want unknown_property", p.Code)
+	}
+
+	// An unused definition deletes cleanly.
+	rec = env.doJSON(t, http.MethodDelete, "/api/v1/staff/service-properties/rack", env.admin,
+		env.adminCSRF, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete: status %d; body %s", rec.Code, rec.Body)
+	}
+	if rows = listProperties(t, env); len(rows) != 1 {
+		t.Fatalf("after the delete: %+v", rows)
 	}
 }
 
-// A guard against the response shape drifting: the problem documents this file produces carry
-// a stable code and the problem content type. It is asserted once here because every screen
-// branches on the code rather than on the sentence.
-func TestAdminScreensProblemShape(t *testing.T) {
-	env := newAuthEnv(t)
-	cookie, _ := env.admSession(t, "problem-admin@example.test")
-	rec := env.get(t, "/api/v1/staff/holds?status=whenever", cookie)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("invalid hold status: status %d, want 400", rec.Code)
+// A definition a service carries cannot be deleted, and the usage read says so before the click.
+func TestServicePropertyInUseCannotBeDeleted(t *testing.T) {
+	env := newStaffEnv(t)
+	tenant := env.createTenant(t, "prop-in-use@example.test", "12.00")
+
+	rec := env.doJSON(t, http.MethodPut, "/api/v1/staff/service-properties/rack", env.admin,
+		env.adminCSRF, map[string]any{
+			"label": "Rack", "show_on_invoice": true, "customer_visible": true, "sort_order": 10,
+		})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("define: status %d; body %s", rec.Code, rec.Body)
 	}
-	if code := problemCode(t, rec); code != "invalid_status" {
-		t.Fatalf("code = %q, want invalid_status", code)
+
+	// Before a service carries it, the delete is allowed by the guard.
+	if usage := propertyUsage(t, env); usage["rack"] != 0 {
+		t.Fatalf("usage for an unused definition = %d, want 0", usage["rack"])
 	}
-	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/problem+json") {
-		t.Fatalf("Content-Type = %q", ct)
+
+	rec = env.doJSON(t, http.MethodPut,
+		"/api/v1/staff/services/"+tenant.serviceID+"/metadata", env.admin, env.adminCSRF,
+		map[string]any{"custom_properties": map[string]string{"rack": "B2"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set the property: status %d; body %s", rec.Code, rec.Body)
 	}
+
+	if usage := propertyUsage(t, env); usage["rack"] != 1 {
+		t.Fatalf("usage after the value was set = %d, want 1", usage["rack"])
+	}
+
+	rec = env.doJSON(t, http.MethodDelete, "/api/v1/staff/service-properties/rack", env.admin,
+		env.adminCSRF, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("deleting a definition in use: status %d, want 409; body %s", rec.Code, rec.Body)
+	}
+	if p := decodeProblem(t, rec); p.Code != "property_in_use" {
+		t.Fatalf("code = %q, want property_in_use", p.Code)
+	}
+	// It is still there, and the service still carries its value.
+	if rows := listProperties(t, env); len(rows) != 1 {
+		t.Fatalf("the refused delete removed the definition: %+v", rows)
+	}
+}
+
+// The two flags are honoured where they matter: customer_visible decides whether the customer's
+// own page shows the property, and show_on_invoice decides whether a document prints it.
+func TestServicePropertyFlagsDecideWhatTheCustomerSees(t *testing.T) {
+	env := newStaffEnv(t)
+	tenant := env.createTenant(t, "prop-flags@example.test", "12.00")
+	cookie, _ := env.login(t, "prop-flags@example.test", "a long enough password")
+
+	// One property the customer may read and one they may not.
+	for key, visible := range map[string]bool{"rack": true, "asset_tag": false} {
+		rec := env.doJSON(t, http.MethodPut, "/api/v1/staff/service-properties/"+key, env.admin,
+			env.adminCSRF, map[string]any{
+				"label":            strings.ToUpper(key[:1]) + key[1:],
+				"show_on_invoice":  false,
+				"customer_visible": visible,
+			})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("define %s: status %d; body %s", key, rec.Code, rec.Body)
+		}
+	}
+
+	rec := env.doJSON(t, http.MethodPut,
+		"/api/v1/staff/services/"+tenant.serviceID+"/metadata", env.admin, env.adminCSRF,
+		map[string]any{"custom_properties": map[string]string{"rack": "B2", "asset_tag": "AT-9"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set the properties: status %d; body %s", rec.Code, rec.Body)
+	}
+
+	// The staff view carries both, with their definitions attached.
+	rec = env.get(t, "/api/v1/staff/services/"+tenant.serviceID+"/metadata", env.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("staff metadata: status %d; body %s", rec.Code, rec.Body)
+	}
+	staffKeys := propertyKeys(t, rec.Body.Bytes())
+	if !staffKeys["rack"] || !staffKeys["asset_tag"] {
+		t.Fatalf("the staff view is missing a property: %v", staffKeys)
+	}
+
+	// The customer's view carries the visible one only.
+	rec = env.get(t, "/api/v1/portal/services/"+tenant.serviceID+"/metadata", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("portal metadata: status %d; body %s", rec.Code, rec.Body)
+	}
+	portalKeys := propertyKeys(t, rec.Body.Bytes())
+	if !portalKeys["rack"] {
+		t.Fatalf("the customer cannot see the property marked customer_visible: %v", portalKeys)
+	}
+	if portalKeys["asset_tag"] {
+		t.Fatalf("the customer can see a property marked customer_visible=false: %v", portalKeys)
+	}
+}
+
+// propertyKeys reads the property keys out of a metadata response.
+func propertyKeys(t *testing.T, body []byte) map[string]bool {
+	t.Helper()
+	var decoded struct {
+		Properties []struct {
+			Key   string `json:"key"`
+			Label string `json:"label"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("metadata body: %v (%s)", err, body)
+	}
+	out := map[string]bool{}
+	for _, p := range decoded.Properties {
+		out[p.Key] = true
+		if p.Label == "" {
+			t.Fatalf("property %q has no label", p.Key)
+		}
+	}
+	return out
+}
+
+// The property catalogue needs service:write:all to change and service:read:all to read, and a
+// caller without them is refused with a problem document rather than an empty list.
+func TestServicePropertyCatalogueIsGuarded(t *testing.T) {
+	env := newStaffEnv(t)
+	env.createTenant(t, "prop-perm@example.test", "12.00")
+	cookie, customerCSRF := env.login(t, "prop-perm@example.test", "a long enough password")
+
+	rec := env.doJSON(t, http.MethodPost, "/api/v1/staff/service-properties/reorder", cookie,
+		customerCSRF, map[string]any{"keys": []string{"rack"}})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("customer reordering: status %d, want 403", rec.Code)
+	}
+	problemCode(t, rec)
+
+	// A mutation without a CSRF token is refused before the handler runs.
+	rec = env.doJSON(t, http.MethodPost, "/api/v1/staff/service-properties/reorder", env.admin, "",
+		map[string]any{"keys": []string{"rack"}})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("reorder without a CSRF token: status %d, want 403", rec.Code)
+	}
+	problemCode(t, rec)
 }

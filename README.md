@@ -1,9 +1,16 @@
+<p align="center">
+  <img src="assets/brand/png/banner-readme.png" alt="Catalyst Billing — billing and service automation for hosting providers" width="900">
+</p>
+
 # catalyst-billing
 
 **A self-hosted billing and service-automation panel for hosting providers.**
 One Go binary, PostgreSQL, and a dependency-free TypeScript frontend — built so that
 money is exact, the subledger always balances, and a remote provider is never the last
 word on what happened.
+
+Part of the [Catalyst](https://catalystctl.com) ecosystem. The mark, palette and typefaces
+are the parent's; see [`assets/brand/`](assets/brand/README.md).
 
 ---
 

@@ -555,6 +555,11 @@ func (s *Server) writeNotifyError(w http.ResponseWriter, r *http.Request, err er
 	case errors.Is(err, notify.ErrUnknownEvent):
 		writeProblem(w, http.StatusUnprocessableEntity, "unknown_event",
 			"there is no such notification event")
+	case errors.Is(err, notify.ErrUnknownPlaceholder):
+		// A template that uses a word its event does not supply would reach a customer with the
+		// plumbing showing, so the save is refused rather than stored. The detail names the
+		// placeholders: the operator's next action is to fix the spelling.
+		writeProblem(w, http.StatusUnprocessableEntity, "unknown_placeholder", err.Error())
 	case errors.Is(err, paginate.ErrInvalidCursor):
 		writeProblem(w, http.StatusBadRequest, "invalid_cursor", "the cursor is invalid")
 	default:

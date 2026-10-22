@@ -3,7 +3,7 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help dev dev-stop dev-config dev-reset seed seed-reset db-up db-ensure db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test brand brand-render brand-audit brand-verify
+.PHONY: help dev dev-stop dev-config dev-reset seed seed-reset db-up db-ensure db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test brand brand-render brand-audit brand-regress brand-verify
 
 help:
 	@echo "dev        database + schema + fixtures + demo data + a staff account, then serve (Ctrl-C stops)"
@@ -232,6 +232,7 @@ brand-render:
 # Runs in the same target as the browser half, because either one alone is a false green.
 brand-audit:
 	$(PYTHON) scripts/brand/audit.py assets/brand/png/*.png
+	$(PYTHON) scripts/brand/regress.py
 
 brand-verify:
 	@$(MAKE) --no-print-directory brand-audit

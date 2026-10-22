@@ -147,6 +147,7 @@ export const routes: Route[] = [
   route("/holds", () => import("./views/holds")),
   route("/upgrades", () => import("./views/upgrades")),
   route("/providers", () => import("./views/providers")),
+  route("/ticket-fields", () => import("./views/ticket-fields")),
 ];
 
 /** True when a route for `path` is declared.
@@ -213,4 +214,5 @@ export const SEGMENT_LABELS: Record<string, string> = {
   holds: "Holds",
   upgrades: "Upgrades",
   providers: "Sign-in providers",
+  "ticket-fields": "Ticket fields",
 };

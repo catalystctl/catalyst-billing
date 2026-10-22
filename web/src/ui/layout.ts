@@ -76,12 +76,16 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
     });
     groups.push({
       label: "Support",
-      items: [{ label: "Tickets", href: "/support", icon: "message", permission: "ticket:read:all" }],
+      items: [
+        { label: "Tickets", href: "/support", icon: "message", permission: "ticket:read:all" },
+        { label: "Ticket fields", href: "/ticket-fields", icon: "sliders", permission: "ticket:read:all" },
+      ],
     });
     groups.push({
       label: "Configuration",
       items: [
         { label: "Catalog", href: "/catalog-management", icon: "box", permission: "invoice:read:all" },
+        { label: "Upgrades", href: "/upgrades", icon: "trendUp", permission: "catalog:write" },
         { label: "Config options", href: "/config-options", icon: "sliders", permission: "config:write" },
         { label: "Tax rates", href: "/tax-rates", icon: "percent", permission: "tax:write" },
         { label: "Currencies", href: "/currencies", icon: "globe", permission: "currency:write" },
@@ -108,7 +112,6 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
         { label: "Updates", href: "/settings/updates", icon: "sparkles", permission: "update:manage" },
         { label: "Service properties", href: "/service-properties", icon: "tag", permission: "service:write:all" },
         { label: "Holds", href: "/holds", icon: "pauseCircle", permission: "service:read:all" },
-        { label: "Upgrades", href: "/upgrades", icon: "trendUp", permission: "catalog:write" },
         { label: "Notification templates", href: "/notification-templates", icon: "mail", permission: "notification:write" },
         { label: "Automation", href: "/automation", icon: "refresh", permission: "settings:write" },
         { label: "Sign-in providers", href: "/providers", icon: "key", permission: "oauth:manage" },

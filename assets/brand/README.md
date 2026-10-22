@@ -13,7 +13,8 @@ Everything here is generated. Do not hand-edit an SVG; edit `scripts/brand/build
 |---|---|
 | Mark | Traced from `https://catalystctl.com/logo-512.png`, stored as path data in `scripts/brand/mark.path` |
 | Orange | `#F97301`, sampled from that logo |
-| Palette | The site's own tokens: `--ink 30 10% 6%`, `--background 30 10% 8%`, `--panel 36 10% 10%`, `--panel-2 34 10% 13%`, `--edge 44 10% 21%`, `--chalk 40 12% 93%`, `--dust 38 8% 62%`, `--signal 29 47% 56%`, plus `--success 152 67% 42%`, `--warning 38 82% 48%`, `--danger 0 67% 55%`, `--info 217 67% 55%` |
+| Palette | **Measured off a rendered screenshot of the site**, not read from its stylesheet — the two differ, because `--edge` is used at partial opacity, so the border that actually draws is `#1E1D19` rather than `#3B3830` |
+| Accent | `#C48D5A` (tan). `#F97301` is **logo-only** — see the rule below |
 | Display type | **Oxanium** — identified as the site's `font-display` by glyph-shape matching against its own OG image (distance 0.156, next best 0.380) |
 | Body type | **DM Sans** |
 | Labels and figures | **JetBrains Mono** |
@@ -68,10 +69,21 @@ cd web && npm run build                                    # copy icons into the
 
 ## Verifying
 
+Two gates, because either one alone is a false green.
+
 ```bash
-make dev                                    # or any running panel
-node scripts/brand/verify.mjs               # BASE=http://127.0.0.1:8791 by default
+make brand-audit    # offline: colour + composition, straight off the PNGs
+make brand-verify   # both: the audit, then a real browser against a served panel
 ```
+
+`scripts/brand/audit.py` asserts, per asset: orange never below the lockup band and never in
+the card column; the ground is flat across ≥98% of the top and bottom edges; and the tan
+accent is actually present. It classifies assets by kind, because a transparent glyph has no
+ground and no accent by design.
+
+`scripts/brand/regress.py` then **proves the audit works**: it takes a known-good asset,
+reintroduces each mistake above (an orange button, an orange wash, the accent removed) and
+asserts the audit rejects it. An audit nobody has seen fail is a green light with no wiring.
 
 This drives a real headless Chromium against a real server and asserts what only a browser
 can: every brand asset responds 2xx, the favicon **decodes as an image**, the manifest names
@@ -80,15 +92,36 @@ the 192 and 512 icons, `og:image` is 1200x630, `mark.svg` still carries the trac
 uncaught exception. A valid SVG that a browser refuses is still a broken asset, and reading
 the file cannot prove otherwise.
 
+## The measured language
+
+Every value here was taken off the site, because the first draft of these assets used the
+correct logo and the correct tokens and still looked like a different product. What was
+wrong, and what the site actually does:
+
+| First draft | The site |
+|---|---|
+| `#F97301` as the accent — eyebrow squares, CTA, accent words, rules | Orange appears **nowhere but inside the mark**. The accent is tan `#C48D5A` |
+| An orange radial wash on every ground | The ground is **flat** `#161412`, edge to edge |
+| 8px radii, coloured top edges, segmented bars | **4px** radii, hairline dividers, thin meters on a track |
+| Three separate cards with coloured borders | **One** bordered box divided by **vertical hairlines** |
+| An all-white headline | One **tan phrase** anchors every section heading |
+| No CTA on the cards | A tan primary button, 34px tall, near-black label, arrow after |
+| Free-form composition | Eyebrow → headline → body → mono meta → panel, in that order |
+
 ## Rules
 
 1. **The mark is the parent's.** Same path, same orange, never redrawn or recoloured. A
    sub-brand that restyles its parent's logo is claiming to be a different company.
-2. **`Billing` is a word, not a colour.** It is set in mono caps beside or beneath the
+2. **Orange is logo-only.** `#F97301` may appear inside the mark and in the `BILLING`
+   product word of a lockup — nowhere else. Not a button, not a rule, not an eyebrow, not an
+   accent word, not a bar. This is the single rule that decides whether an asset looks like
+   Catalyst or like a generic dark poster.
+3. **One accent: the tan.** `#C48D5A` for eyebrows, CTAs, accent phrases and emphasis.
+   Cobalt, green, amber and red are only ever the semantic hues — settled, due, failed,
+   informational — never decoration.
+4. **The ground is flat.** No gradient, no wash, no glow. Depth comes from the `#1C1A17`
+   card surface and a `#1E1D19` hairline, nothing else.
+5. **`Billing` is a word, not a colour.** Mono caps, wide tracking, beside or beneath the
    wordmark. Two-colour wordmarks read as two products.
-3. **One accent.** Orange carries the brand. Cobalt, green, amber and red are only ever the
-   semantic hues — settled, due, failed, informational — never decoration.
-4. **No gradients on the logo.** The page wash is a soft radial on the *ground*; the mark
-   itself is flat.
-5. **Figures are mono and right-aligned.** Money in a proportional face does not line up,
+6. **Figures are mono and right-aligned.** Money in a proportional face does not line up,
    which is the one thing a billing brand cannot get wrong.

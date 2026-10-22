@@ -40,30 +40,27 @@ cleanup() {
   # run, and eventually changes what the next run sees — a test that mutates the fixture it
   # asserts on stops being a test.
   #
-  # The order matters and it is not obvious, so it is written down here:
+  # The split of responsibility is deliberate, because getting it wrong hides a real bug:
   #
-  #   1. Delete the rows this script added that `admin purge-test-data` does not know about.
-  #      Its step list predates the commerce tables, so a ticket pointing at the customer
-  #      blocks `DELETE FROM customers` with a foreign-key error, and that aborts the whole
-  #      purge transaction — which is how three runs in a row leaked a staff account, a
-  #      customer and a product catalogue entry while the script reported `|| true`.
-  #   2. Purge the accounts, which also removes the journal rows the credit posting wrote
-  #      (those tables refuse DELETE by trigger, so purge is the only thing that can do it).
-  #   3. Delete the catalog, whose price versions are referenced by the cart line and must
-  #      therefore go after the cart.
+  #   * `admin purge-test-data` owns everything scoped to a customer or a user — accounts,
+  #     invoices, the journal, tickets, carts, redemptions. Those tables refuse DELETE by
+  #     trigger (the journal, the audit log, issued invoices), so purge is the only thing that
+  #     can remove them, and it is the product's own reviewed command rather than a DELETE
+  #     this script invented.
+  #   * This script owns the *installation-wide configuration* it added — a coupon, a tax
+  #     rate, a currency, an announcement, a config option. Those hang from no customer, so
+  #     purge cannot reach them by design, and they are this script's to clean.
+  #
+  # The purge is NOT silenced. An earlier version ran it with `|| true` and a missing step in
+  # its list (no `tickets` entry) aborted its transaction on the foreign key, so three runs in
+  # a row leaked a staff account, a customer and a catalogue entry while the script reported
+  # success. A cleanup that cannot fail is a cleanup that cannot tell you it stopped working,
+  # so a purge failure is now printed with its output and the leftover rows are counted and
+  # named at the end.
   if [[ -n "${SEEDED:-}" ]]; then
+    # 1. The configuration fixtures. Children before parents: a config option's prices and a
+    #    coupon's product restrictions and redemptions are all keyed to the row above them.
     psql "$BILLING_DATABASE_URL" -q -v ON_ERROR_STOP=0 >/dev/null 2>&1 <<SQL || true
--- Rows the purge does not know about. Children before parents throughout.
-DELETE FROM ticket_messages WHERE ticket_id IN (
-  SELECT id FROM tickets WHERE subject LIKE 'e2e-ticket-%');
-DELETE FROM tickets WHERE subject LIKE 'e2e-ticket-%';
--- The cart belongs to the customer and cascades, but its *item* is what blocks deleting a
--- price version, so the item goes first and the cart with it.
-DELETE FROM cart_items WHERE cart_id IN (
-  SELECT c.id FROM carts c JOIN customers cu ON cu.id = c.customer_id
-  WHERE cu.email LIKE 'e2e-%@example.test');
-DELETE FROM carts WHERE customer_id IN (
-  SELECT id FROM customers WHERE email LIKE 'e2e-%@example.test');
 DELETE FROM config_option_prices WHERE config_option_id IN (
   SELECT id FROM config_options WHERE name LIKE 'e2e-option-%');
 DELETE FROM config_options WHERE name LIKE 'e2e-option-%';
@@ -76,9 +73,21 @@ DELETE FROM tax_rates WHERE name LIKE 'e2e-tax-%';
 DELETE FROM announcements WHERE title LIKE 'e2e-announcement-%';
 DELETE FROM currencies WHERE code LIKE 'ZZ%';
 SQL
-    # --force is required because a developer's database is usually not named "test"; the
-    # pattern is what scopes the deletion, and it only matches this script's own accounts.
-    ./bin/billing admin purge-test-data --pattern "e2e-%@example.test" --yes --force >/dev/null 2>&1 || true
+
+    # 2. The accounts and everything scoped to them. --force is required because a
+    #    developer's database is usually not named "test"; the pattern is what scopes the
+    #    deletion, and it only matches this script's own accounts.
+    local purge_log
+    if ! purge_log="$(./bin/billing admin purge-test-data --pattern "e2e-%@example.test" --yes --force 2>&1)"; then
+      echo "WARNING: admin purge-test-data failed; the seed was not fully removed" >&2
+      printf '%s\n' "$purge_log" | tail -5 >&2
+    fi
+
+    # 3. The catalog. Its price versions are referenced by cart items, and the cart is
+    #    customer-scoped so purge has already removed it above — that ordering is why this
+    #    block can run at all. Deleting a price version a live cart still points at is
+    #    refused by the foreign key, which is the correct behaviour and not something to
+    #    bypass.
     psql "$BILLING_DATABASE_URL" -q -v ON_ERROR_STOP=0 >/dev/null 2>&1 <<SQL || true
 DELETE FROM services WHERE external_id LIKE 'e2e-svc-%';
 DELETE FROM price_versions WHERE product_id IN (
@@ -86,6 +95,29 @@ DELETE FROM price_versions WHERE product_id IN (
 DELETE FROM products WHERE slug LIKE 'e2e-hosting-%' OR slug LIKE 'e2e-product-%' OR slug LIKE 'e2e-hidden-%';
 DELETE FROM categories WHERE slug LIKE 'e2e-category-%';
 SQL
+
+    # 4. Prove it. A leak is reported by table and count, so a regression in the purge shows
+    #    up as a named leftover row rather than as a database that quietly grows a product
+    #    per run until something unrelated fails.
+    local leftovers
+    leftovers="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=0 2>/dev/null <<'SQL' || true
+SELECT format('%s=%s', 'products', count(*)) FROM products WHERE slug LIKE 'e2e-%'
+UNION ALL SELECT format('%s=%s', 'users', count(*)) FROM users WHERE email LIKE 'e2e-%@example.test'
+UNION ALL SELECT format('%s=%s', 'customers', count(*)) FROM customers WHERE email LIKE 'e2e-%@example.test'
+UNION ALL SELECT format('%s=%s', 'tickets', count(*)) FROM tickets WHERE subject LIKE 'e2e-ticket-%'
+UNION ALL SELECT format('%s=%s', 'carts', count(*)) FROM carts c JOIN customers cu ON cu.id = c.customer_id
+  WHERE cu.email LIKE 'e2e-%@example.test'
+UNION ALL SELECT format('%s=%s', 'coupons', count(*)) FROM coupons WHERE code LIKE 'E2E-%'
+UNION ALL SELECT format('%s=%s', 'currencies', count(*)) FROM currencies WHERE code LIKE 'ZZ%'
+UNION ALL SELECT format('%s=%s', 'announcements', count(*)) FROM announcements WHERE title LIKE 'e2e-announcement-%'
+UNION ALL SELECT format('%s=%s', 'config_options', count(*)) FROM config_options WHERE name LIKE 'e2e-option-%'
+SQL
+)"
+    local leaked
+    leaked="$(printf '%s\n' "$leftovers" | grep -v '=0$' | tr '\n' ' ' || true)"
+    if [[ -n "$leaked" ]]; then
+      echo "WARNING: the seed was not fully cleaned up: $leaked" >&2
+    fi
   fi
 }
 trap cleanup EXIT

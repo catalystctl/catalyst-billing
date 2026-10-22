@@ -240,3 +240,65 @@ func TestMixedCartSchedulesOnlyTheRecurringLine(t *testing.T) {
 		t.Fatalf("invoice subscription = %q, want the recurring line's subscription", linked)
 	}
 }
+
+// A 100% coupon on an all-one-time cart is the corner where the zero-total path and the
+// non-recurring path meet: there is a discount to record, and there is no subscription to record
+// it against. It is the combination that used to be `subscriptionIDs[0]` on a slice of empty
+// strings, so it is asserted explicitly rather than left to the type system.
+func TestFreeFromACouponOnAOneTimeCartStillActivates(t *testing.T) {
+	f := newFixture(t, noTax())
+	customerID, userID := f.customer(t, "full-discount@example.test")
+	_, priceID := f.planProduct(t, "paid-one-time", "one_time", 9000)
+	f.coupon(t, "ALLFREE", "percentage", "100")
+
+	res, err := f.checkout.Checkout(context.Background(), register.CheckoutRequest{
+		UserID:     userID,
+		CouponCode: "allfree",
+		Lines:      []register.CheckoutLine{{PriceVersionID: priceID}},
+	})
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	ctx := context.Background()
+
+	// The coupon took the whole price, so there is nothing to pay and nothing to invoice, but a
+	// discount *was* granted and has to be recorded.
+	if !res.Activated || res.Status != "paid" {
+		t.Fatalf("result = %+v, want activated and paid", res)
+	}
+	if res.InvoiceID != "" {
+		t.Fatalf("a fully discounted order issued invoice %q, want none", res.InvoiceNumber)
+	}
+	if len(res.SubscriptionIDs) != 0 {
+		t.Fatalf("subscription ids = %v, want none", res.SubscriptionIDs)
+	}
+	if len(res.ServiceIDs) != 1 {
+		t.Fatalf("services = %v, want one", res.ServiceIDs)
+	}
+
+	var redemptions int
+	var redemptionSubscription *string
+	if err := f.pool.QueryRow(ctx, `
+		SELECT count(*), max(subscription_id::text)
+		  FROM coupon_redemptions WHERE customer_id = $1`, customerID).
+		Scan(&redemptions, &redemptionSubscription); err != nil {
+		t.Fatal(err)
+	}
+	if redemptions != 1 {
+		t.Fatalf("redemptions = %d, want 1: a free order is still a use of the coupon", redemptions)
+	}
+	if redemptionSubscription != nil {
+		t.Fatalf("redemption subscription = %v, want NULL: there is no schedule to name", redemptionSubscription)
+	}
+
+	// And the service is still a service with no schedule, so nothing can bill it again.
+	var subscription *string
+	var status string
+	if err := f.pool.QueryRow(ctx, `SELECT subscription_id, status FROM services WHERE id = $1`,
+		res.ServiceIDs[0]).Scan(&subscription, &status); err != nil {
+		t.Fatal(err)
+	}
+	if subscription != nil || status != "pending" {
+		t.Fatalf("service subscription=%v status=%q, want NULL and pending", subscription, status)
+	}
+}

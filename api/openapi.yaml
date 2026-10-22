@@ -881,6 +881,61 @@ paths:
                 required: true
             x-permission: customer:write:self
             x-rate-class: mutation
+    /api/v1/portal/credit-notes/{id}/pdf:
+        get:
+            description: A credit note is the counter-document that corrects an invoice, and it is immutable once issued. It renders with negative amounts, its own CN-series number, and the number of the invoice it corrects. Scoped in SQL exactly like the invoice download.
+            operationId: GetPortalCreditnotesByIdPdf
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: 'The credit note, served as application/pdf with `Content-Disposition: attachment` and a filename derived from the document number.'
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such document, or it is not the caller's
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Download a credit note as a PDF
+            x-permission: invoice:read:self
+            x-rate-class: read
     /api/v1/portal/invoices:
         get:
             description: 'Scoped in SQL: substituting another customer''s identifier returns not_found, identical to a nonexistent id.'
@@ -1078,6 +1133,61 @@ paths:
                 required: true
             x-permission: invoice:pay:self
             x-rate-class: mutation
+    /api/v1/portal/invoices/{id}/pdf:
+        get:
+            description: 'The same document the staff endpoint serves, scoped to the caller: the ownership predicate is `customer_accounts.user_id` in the SQL, so another customer''s identifier selects no row and answers 404, byte-identical to an id that never existed. A draft is not a document and is also 404. The page carries the merchant block, the bill-to block (including `billing_profiles.bill_to_text`), the number, the issue and due dates, one row per line with quantity/unit/net/tax/total, the subtotal, the tax with its jurisdiction and rate, the total, the client-visible note when enabled, and the terms. A proforma prints as a proforma and says its number is not yet assigned.'
+            operationId: GetPortalInvoicesByIdPdf
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: 'The invoice, served as application/pdf with `Content-Disposition: attachment` and a filename derived from the document number.'
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such document, or it is not the caller's
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Download an invoice as a PDF
+            x-permission: invoice:read:self
+            x-rate-class: read
     /api/v1/portal/overview:
         get:
             description: Balance per currency, upcoming renewals, open and recent invoices. The customer is resolved from the session, never from the URL.
@@ -2357,6 +2467,62 @@ paths:
             x-permission: catalog:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/credit-notes/{id}/pdf:
+        get:
+            description: 'The operator''s copy of a credit note. A goodwill credit that corrects no invoice is still printable: its letterhead comes from the installation settings rather than from an invoice snapshot.'
+            operationId: GetStaffCreditnotesByIdPdf
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: 'The credit note, served as application/pdf with `Content-Disposition: attachment` and a filename derived from the document number.'
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such document, or it is not the caller's
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Download any credit note as a PDF
+            x-permission: invoice:read:all
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/customers:
         get:
             description: Searches email and name; reports open invoices, outstanding per currency, service count and whether the customer has a login.
@@ -3085,6 +3251,85 @@ paths:
             x-permission: invoice:read:all
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/invoices/{id}/client-note:
+        put:
+            description: 'The note is printed on the customer''s PDF when `invoices.notes_client_visible` is on. It is stored even when that setting is off: the setting decides what a customer sees, not what an operator may record, and a note written today appears when the setting is turned on. An empty `note` clears it. A void document refuses a note, so the void statement stays the last word on the page.'
+            operationId: PutStaffInvoicesByIdClientnote
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                note:
+                                    description: Empty clears the note.
+                                    maxLength: 2000
+                                    type: string
+                            required:
+                                - note
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: The stored note
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such invoice
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The invoice is void
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Set or clear the client-visible note on an invoice
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: invoice:write:all
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/invoices/{id}/credit-notes:
         post:
             description: An immutable counter-document with its own gap-free number series. Total credits against an invoice may not exceed its total.
@@ -3217,6 +3462,152 @@ paths:
             x-permission: invoice:write:all
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/invoices/{id}/pdf:
+        get:
+            description: 'The operator''s copy, from the same renderer and the same frozen snapshot as the customer''s. A draft answers 409 `not_issued` rather than 404: for an operator the difference between ''a typo'' and ''not issued yet'' is actionable. A void invoice prints the recorded reason on the page.'
+            operationId: GetStaffInvoicesByIdPdf
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The invoice as application/pdf, as an attachment
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such invoice
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The invoice has not been issued
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Download any invoice as a PDF
+            x-permission: invoice:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/invoices/{id}/proforma:
+        post:
+            description: 'A proforma is issued to the customer and payable, but carries no number: `invoices.proforma` is set and `number` stays NULL, which the `invoices_proforma_unnumbered` CHECK enforces. The receivable is posted now, because the customer owes it now; conversion later posts nothing, because conversion is a numbering event and not a money event. The number is assigned in the single UPDATE that clears the flag when the invoice is paid. The response reports `number: null` explicitly — the absence is the point. `due_in_days` defaults to the configured `invoices.due_days` (7).'
+            operationId: PostStaffInvoicesByIdProforma
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                due_in_days:
+                                    description: Defaults to the configured payment terms.
+                                    maximum: 3650
+                                    minimum: 1
+                                    type: integer
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: The provisional document, with no number
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such invoice
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Not a draft, or already numbered
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Issuance is not configured
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Issue a draft as a provisional, unnumbered invoice
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: invoice:write:all
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/invoices/{id}/void:
         post:
             description: Does not delete the invoice and does not reverse its posting. A paid invoice cannot become void; the correction is a credit note.
@@ -3276,6 +3667,84 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Void an invoice
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: invoice:void
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/invoices/{id}/void-reason:
+        post:
+            description: 'The same transition as `POST /api/v1/staff/invoices/{id}/void`, with the reason additionally written to `invoices.void_reason` so it travels with the document: a customer who downloads a voided invoice reads why it was cancelled. Status and reason are written by one statement, so no reader sees a void invoice with an empty reason. A paid or partially paid invoice still cannot be voided — the money moved, and the correction is a credit note.'
+            operationId: PostStaffInvoicesByIdVoidreason
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                reason:
+                                    maxLength: 255
+                                    type: string
+                            required:
+                                - reason
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: The void invoice and its reason
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The reason is missing or too long
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such invoice
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Paid, or already void
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Void an invoice and record the reason on it
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key

@@ -12,7 +12,7 @@ import { createRouter, type RouteMatch } from "./lib/router";
 import { homeFor, loadSession } from "./lib/session";
 import { initTheme, toggleTheme, type Theme } from "./lib/theme";
 import type { AuthCtx, Crumb, Ctx, PageMeta, Session } from "./lib/types";
-import { SEGMENT_LABELS, isCustomerPath, isPublicPath, routes } from "./routes";
+import { SEGMENT_LABELS, isCustomerPath, isPublicPath, isStorefrontPath, routes } from "./routes";
 import { confirmDialog, formDialog } from "./ui/dialog";
 import { createShell, openPalette, type Shell } from "./ui/layout";
 import { skeletonPage } from "./ui/kit";
@@ -121,7 +121,17 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       return;
     }
 
-    // The other public pages (sign-in, reset, the product index) are meaningless once you are
+    // The storefront is the one public surface that stays open once you are signed in. It is
+    // where a customer buys from, and the shell has no place for it: it is a whole-page layout
+    // with its own header, not a screen inside the rail. Rendering it through the public path
+    // is what makes "product page -> cart" a step a signed-in customer can actually take;
+    // before this, every storefront URL bounced them to the portal, so nothing could be bought.
+    if (isStorefrontPath(path)) {
+      await renderPublic(path, match);
+      return;
+    }
+
+    // The other public pages (sign-in, reset, registration) are meaningless once you are
     // signed in, so they send you home.
     if (path !== "/" && isPublicPath(path)) {
       router.navigate(homeFor(session), { replace: true });

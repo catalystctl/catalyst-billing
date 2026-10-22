@@ -19,13 +19,25 @@ import { route, type Route } from "./lib/router";
  *  behind a login is not a storefront. */
 export const PUBLIC_PATHS = new Set(["/", "/login", "/register", "/forgot-password", "/reset-password", "/verify", "/products"]);
 
+/** True when `path` is a storefront page: the product index or one product.
+ *
+ *  This is a predicate of its own, not a detail of `isPublicPath`, because the two audiences
+ *  differ in one way that matters: the storefront must stay reachable *after* signing in. It is
+ *  the only place a customer can put something in their cart, so sending a signed-in customer
+ *  "home" from `/products` — which is what "the public pages are meaningless once you are
+ *  signed in" did — left the purchase funnel with no first step. Sign-in and registration are
+ *  still redirected; a product page is not. */
+export function isStorefrontPath(path: string): boolean {
+  return path === "/products" || path.startsWith("/products/");
+}
+
 /** True when `path` is public, including the storefront's subtrees.
  *
  *  Written as a prefix test rather than a second set so `/products/anything` cannot fall
  *  through to the signed-in branch and bounce a visitor to a login screen. */
 export function isPublicPath(path: string): boolean {
   if (PUBLIC_PATHS.has(path)) return true;
-  return path === "/products" || path.startsWith("/products/");
+  return isStorefrontPath(path);
 }
 
 /** Prefixes a signed-in *customer* may reach. Everything else is staff-only.

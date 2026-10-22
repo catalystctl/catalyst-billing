@@ -517,6 +517,82 @@ func TestPortalCartHappyPathAndScoping(t *testing.T) {
 	}
 }
 
+// Adding the same plan twice has one of two answers, and both are the customer's to understand.
+//
+//   - a price that allows a quantity **merges**: one line, a larger quantity, one price;
+//   - a product sold one at a time is **refused** with `already_in_cart`, and the line stays at
+//     one.
+//
+// The refusal is the interesting half. The cart used to accept the second add and merge it, so a
+// double-clicked "Order this plan" left the customer holding a line of quantity 2 that the
+// checkout rejects with `quantity_not_allowed` — a cart that cannot be paid for, produced by two
+// clicks on the same button, with nothing on screen explaining it.
+func TestPortalCartDoubleAdd(t *testing.T) {
+	env := newAuthEnv(t)
+	env.srv.WithPortal(portal.New(env.pool))
+	env.seedCommerceCustomer(t, "double-add@example.test")
+	cookie, csrf := env.login(t, "double-add@example.test", "customer password 1")
+
+	type cartPayload struct {
+		Items []struct {
+			ID             string `json:"id"`
+			PriceVersionID string `json:"price_version_id"`
+			Quantity       int    `json:"quantity"`
+		} `json:"items"`
+	}
+	readCart := func() cartPayload {
+		t.Helper()
+		rec := env.get(t, "/api/v1/portal/cart", cookie)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get cart: %d %s", rec.Code, rec.Body)
+		}
+		var cart cartPayload
+		if err := json.Unmarshal(rec.Body.Bytes(), &cart); err != nil {
+			t.Fatalf("decode cart: %v", err)
+		}
+		return cart
+	}
+
+	// One at a time: the second add is refused, and the line it already holds is untouched.
+	_, singleID := env.seedCartPrice(t, "cart-single", 1000, 0, "disabled")
+	rec := env.doJSON(t, http.MethodPost, "/api/v1/portal/cart/items", cookie, csrf,
+		map[string]any{"price_version_id": singleID, "quantity": 1})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("first add: %d %s", rec.Code, rec.Body)
+	}
+	rec = env.doJSON(t, http.MethodPost, "/api/v1/portal/cart/items", cookie, csrf,
+		map[string]any{"price_version_id": singleID, "quantity": 1})
+	if code := commerceProblem(t, rec, http.StatusConflict); code != "already_in_cart" {
+		t.Fatalf("second add: code = %q, want already_in_cart", code)
+	}
+	for _, item := range readCart().Items {
+		if item.PriceVersionID == singleID && item.Quantity != 1 {
+			t.Fatalf("one-at-a-time line quantity = %d, want 1", item.Quantity)
+		}
+	}
+
+	// A price that allows a quantity merges into one line instead.
+	_, combinedID := env.seedCartPrice(t, "cart-combined", 1200, 0, "combined")
+	for attempt := 1; attempt <= 2; attempt++ {
+		rec = env.doJSON(t, http.MethodPost, "/api/v1/portal/cart/items", cookie, csrf,
+			map[string]any{"price_version_id": combinedID, "quantity": 1})
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("add %d of the combined price: %d %s", attempt, rec.Code, rec.Body)
+		}
+	}
+	lines := 0
+	quantity := 0
+	for _, item := range readCart().Items {
+		if item.PriceVersionID == combinedID {
+			lines++
+			quantity = item.Quantity
+		}
+	}
+	if lines != 1 || quantity != 2 {
+		t.Fatalf("combined price = %d line(s) of %d, want 1 line of 2", lines, quantity)
+	}
+}
+
 // Applying a coupon returns the live total, and an unknown code is a 404 with the envelope.
 func TestPortalCartApplyCoupon(t *testing.T) {
 	env := newStaffEnv(t)

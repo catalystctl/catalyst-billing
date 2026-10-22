@@ -83,6 +83,12 @@ func (s *Server) cartCustomer(w http.ResponseWriter, r *http.Request) (string, b
 // the coupon-specific codes stay with the coupon surface.
 func (s *Server) cartError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case errors.Is(err, commerce.ErrAlreadyInCart):
+		// 409, not 422: the request was well formed and true when it was made; it conflicts with
+		// what is already in the cart. The code is its own so the storefront can say "it is
+		// already in your cart" and offer the cart, rather than the currency message that
+		// `not_applicable` carries.
+		writeProblem(w, http.StatusConflict, "already_in_cart", err.Error())
 	case errors.Is(err, commerce.ErrNotApplicable):
 		writeProblem(w, http.StatusUnprocessableEntity, "not_applicable", err.Error())
 	case errors.Is(err, commerce.ErrExpired):

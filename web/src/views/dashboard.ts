@@ -736,7 +736,10 @@ function exceptionQueueCard(widgets: DashboardWidgets): HTMLElement {
             "div",
             { class: "cell-main" },
             h("div", { class: "primary" }, item.number || "Invoice"),
-            h("div", { class: "secondary" }, `${item.email} · ${moneyEl(item.total)}`),
+            // A node interpolated into a template string renders as "[object HTMLSpanElement]",
+            // so the amount is a child of the row rather than part of the string. The browser
+            // harness caught this the moment the "paid, but not running" queue had a row in it.
+            h("div", { class: "secondary" }, item.email, " · ", moneyEl(item.total)),
           ),
           h(
             "div",

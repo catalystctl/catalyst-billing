@@ -1112,6 +1112,14 @@ try {
 
     const portal = await assertScreen("portal", { expect: ["Outstanding"] });
     check("portal: greets the customer", /Good (morning|afternoon|evening)|Working late/.test(portal));
+    // The funnel has to be reachable from where a customer starts. Before this, the storefront
+    // and the cart had no link anywhere in the panel, so buying meant typing a URL.
+    const portalDoors = await evaluate(`(() => {
+      const hrefs = [...document.querySelectorAll('.portal-hero a')].map((a) => a.getAttribute('href'));
+      return { products: hrefs.includes('/products'), cart: hrefs.includes('/cart') };
+    })()`);
+    check("portal: offers a way to the storefront", portalDoors.products, JSON.stringify(portalDoors));
+    check("portal: offers a way to the cart", portalDoors.cart, JSON.stringify(portalDoors));
     for (const [name, path] of [
       ["portal-invoices", "/portal/invoices"],
       ["portal-services", "/portal/services"],
@@ -1140,6 +1148,135 @@ try {
       expect: ["Checkout"],
       absent: ["There is nothing to check out"],
     });
+
+    // ------------------------------------------------ the purchase funnel --
+    //
+    // Storefront -> add to cart -> cart -> checkout -> invoice -> paid, entirely through the
+    // browser. This is the path the panel did not have: the product page's only call to action
+    // was `href="/login?next=/portal"`, which forgot the product, and nothing in the frontend
+    // ever called `POST /api/v1/portal/cart/items`, so a customer could not buy anything without
+    // an operator typing the order into /orders/new.
+    //
+    // Every step is a click or a keystroke. The harness reads the URL it landed on and the text
+    // the screen rendered; it never calls the API to make the funnel work.
+    //
+    // The last step has two honest shapes and the assertion covers both: a customer holding
+    // credit has it applied at issuance (`credits.auto_use`), and an installation that leaves
+    // that off leaves the invoice payable, where "Pay with credit" settles it in one click.
+    // Neither needs a payment gateway. A gateway payment cannot be completed here — the
+    // fixture gateway's hosted page is `https://fakegateway.invalid/...` — so the funnel stops
+    // at a paid invoice and the card charge stays the provider's boundary.
+    const funnelSlug = arg("expect-product-slug");
+    const funnelProduct = arg("expect-product");
+    if (funnelSlug) {
+      // The seed puts a line in the cart so the cart screen has content. This test adds its own,
+      // so it starts by emptying it — through the control a customer would use.
+      await visit("/cart");
+      const removed = await evaluate(`(() => {
+        const b = document.querySelector('.cart-line-side button[aria-label^="Remove"]');
+        if (!b) return false;
+        b.click();
+        return true;
+      })()`);
+      check("funnel: the cart can be emptied from the cart", removed, "no remove control on the seeded line");
+      const emptied = await until("the cart to empty", "/your cart is empty/i.test(document.body.innerText)", 10_000).catch(() => false);
+      check("funnel: removing its only line empties the cart", Boolean(emptied));
+
+      // A signed-in customer must be able to reach the storefront: it is the first step of the
+      // funnel, and the shell used to send them to the portal from every storefront URL.
+      await goto(`/products/${funnelSlug}`);
+      const productPath = await evaluate("location.pathname");
+      check("funnel: a signed-in customer stays on the product page", productPath === `/products/${funnelSlug}`, productPath);
+      const productText = await pageText();
+      check("funnel: the product page names the product", productText.includes(funnelProduct), productText.slice(0, 300));
+      check("funnel: the product page offers to order", await evaluate("document.querySelector('#product-order') !== null"), "no #product-order");
+      await screenshot("funnel-product-page");
+
+      // Add *that* plan. The button used to send the customer to the client area and forget it.
+      await click("#product-order");
+      const landedOnCart = await until("the cart after ordering", "location.pathname === '/cart'", 15_000).catch(() => false);
+      check("funnel: ordering a plan lands on the cart", Boolean(landedOnCart), await evaluate("location.pathname"));
+      await until("the cart to render its line", "document.querySelector('.cart-line') !== null", 15_000).catch(() => {});
+      const cartAfterAdd = await pageText();
+      check("funnel: the cart holds the plan that was ordered", cartAfterAdd.includes(funnelProduct), cartAfterAdd.slice(0, 300));
+      const cartQty = await evaluate("document.querySelector('.cart-qty-value')?.innerText ?? ''");
+      check("funnel: the ordered plan is one line of one", cartQty.trim() === "1", `quantity=${cartQty}`);
+      // The amount the cart shows is the server's. It is captured here so the invoice can be
+      // compared against it rather than against a number this test invented.
+      const cartTotal = await evaluate(
+        "document.querySelector('.cart-total-row--strong .cart-total-value')?.innerText ?? ''",
+      );
+      const cartTotalNumber = String(cartTotal).match(/[0-9][0-9.,]*/)?.[0] ?? "";
+      check("funnel: the cart shows a priced total", cartTotalNumber !== "", cartTotal);
+      await screenshot("funnel-cart");
+
+      // The same plan a second time. A product sold one at a time is refused with a message that
+      // says so; a product that allows a quantity merges into one line (proved in the Go tests,
+      // internal/httpapi TestPortalCartDoubleAdd). Either way the customer is never left with a
+      // cart the checkout will reject.
+      await goto(`/products/${funnelSlug}`);
+      await click("#product-order");
+      const refused = await until(
+        "the refusal for a second add",
+        "/already in your cart/i.test(document.body.innerText)",
+        12_000,
+      ).catch(() => false);
+      check("funnel: adding the same plan twice is refused with a clear message", Boolean(refused));
+      const stayedPut = await evaluate("location.pathname");
+      check("funnel: the refused add does not navigate away", stayedPut === `/products/${funnelSlug}`, stayedPut);
+      await screenshot("funnel-double-add-refused");
+
+      // Checkout: the cart's own button, then the order's own button.
+      await goto("/cart");
+      const offersCheckout = await evaluate("document.querySelector('a[href=\"/checkout\"]') !== null");
+      check("funnel: the cart offers checkout", offersCheckout, "no link to /checkout");
+      await click('a[href="/checkout"]');
+      await until("the checkout screen", "location.pathname === '/checkout' && document.querySelector('.cart-totals') !== null", 15_000);
+      const checkoutText = await pageText();
+      check("funnel: checkout shows the order it is about to place", checkoutText.includes(funnelProduct), checkoutText.slice(0, 300));
+      check("funnel: checkout offers to place the order", await evaluate("document.querySelector('#place-order') !== null"), "no #place-order");
+      // The terms box is ticked when it is rendered: the server, not this test, decides whether
+      // it is required, and a refusal here is reported as the refusal it is.
+      if (await evaluate("document.querySelector('#checkout-tos') !== null")) await click("#checkout-tos");
+      await click("#place-order");
+      const onInvoice = await until(
+        "the invoice after placing the order",
+        "location.pathname.startsWith('/portal/invoices/')",
+        25_000,
+      ).catch(() => false);
+      check("funnel: placing the order opens the invoice", Boolean(onInvoice), await evaluate("location.pathname"));
+      await until("the invoice document", "document.querySelector('.invoice-doc') !== null", 15_000).catch(() => {});
+      const invoiceText = await pageText();
+      check("funnel: the invoice has a number", /INV-[0-9]+/.test(invoiceText), invoiceText.slice(0, 300));
+      check(
+        "funnel: the invoice is for the amount the cart showed",
+        cartTotalNumber !== "" && invoiceText.includes(cartTotalNumber),
+        `cart=${cartTotalNumber}`,
+      );
+
+      // Paid. Credit on the account settles it at issuance when `credits.auto_use` is on; when it
+      // is off the invoice stays payable and the customer spends the balance with one click.
+      let paid = /paid in full/i.test(invoiceText);
+      if (!paid) {
+        const creditOffered = await evaluate("document.querySelector('#invoice-pay-with-credit') !== null");
+        check("funnel: a payable invoice offers to be paid from credit", creditOffered, "no #invoice-pay-with-credit");
+        if (creditOffered) {
+          await click("#invoice-pay-with-credit");
+          paid = await until("the invoice to be paid", "/paid in full/i.test(document.body.innerText)", 20_000).catch(() => false);
+        }
+      }
+      check("funnel: the invoice ends up paid", paid, invoiceText.slice(0, 400));
+      const invoiceBadge = await evaluate("document.querySelector('.page-head .badge')?.innerText ?? ''");
+      check("funnel: the invoice badge says paid", /paid/i.test(invoiceBadge), invoiceBadge);
+      await screenshot("funnel-invoice-paid");
+
+      // And the portal lists it as paid, which is what the customer will look at tomorrow.
+      await goto("/portal/invoices");
+      const portalInvoices = await pageText();
+      check("funnel: the portal lists the new invoice", /INV-[0-9]+/.test(portalInvoices), portalInvoices.slice(0, 300));
+      check("funnel: the portal shows it as paid", /paid/i.test(portalInvoices), portalInvoices.slice(0, 300));
+      await screenshot("funnel-portal-invoices");
+    }
 
     await assertNewScreen("tickets", {
       path: "/tickets",
@@ -1197,6 +1334,95 @@ try {
       await visit(staffPath);
       const landed = await evaluate("location.pathname");
       check(`portal: a customer cannot reach ${staffPath}`, landed.startsWith("/portal"), landed);
+    }
+
+    // ---------------------------------------- the funnel for a visitor --
+    //
+    // The same first step, from the other audience. The product page is public and its buy
+    // button has to survive the sign-in round trip: the defect this replaces was
+    // `href="/login?next=/portal"`, which dropped the product entirely, so a visitor who
+    // clicked "Order this plan" arrived at an empty portal with nothing in the cart and no way
+    // to add one. The chosen plan now travels in `next`, and the product page adds it on the
+    // way back.
+    if (funnelSlug) {
+      // The order placed above consumed the cart, so this starts from an empty one. If the cart
+      // still held the line, the add below would be refused as a duplicate — which is the
+      // behaviour proved earlier, not a failure of this step.
+      await visit("/cart");
+      const stillHeld = await evaluate(`(() => {
+        const b = document.querySelector('.cart-line-side button[aria-label^="Remove"]');
+        if (!b) return false;
+        b.click();
+        return true;
+      })()`);
+      if (stillHeld) {
+        await until("the cart to empty", "/your cart is empty/i.test(document.body.innerText)", 10_000).catch(() => {});
+      }
+
+      // Sign out, the way a customer does.
+      await goto("/");
+      await click(".sidebar-foot .who");
+      await click(".menu-item--danger");
+      await until("the sign-in screen", "document.querySelector('.auth-panel') !== null", 8000);
+
+      await goto(`/products/${funnelSlug}`);
+      const visitorPath = await evaluate("location.pathname");
+      check("funnel-visitor: the product page is public", visitorPath === `/products/${funnelSlug}`, visitorPath);
+      await click("#product-order");
+      const onSignIn = await until("the sign-in page for a visitor", "location.pathname === '/login'", 12_000).catch(() => false);
+      check("funnel-visitor: ordering as a visitor asks for a sign-in", Boolean(onSignIn), await evaluate("location.pathname"));
+      const next = await evaluate("new URLSearchParams(location.search).get('next') ?? ''");
+      check(
+        "funnel-visitor: the sign-in page remembers which plan was chosen",
+        next.includes(funnelSlug) && /add=/.test(next),
+        next,
+      );
+
+      // The sign-in screen is a module the router loads on demand, so its form can be replaced
+      // once more after the first paint. Waiting for the form itself — not just for the pathname —
+      // is what keeps the keystrokes and the click on the same instance.
+      await until(
+        "the sign-in form for a visitor",
+        "document.querySelector('.auth-panel form.auth-form #email') !== null && document.querySelector('.skeleton') === null",
+        15_000,
+      ).catch(() => {});
+      await new Promise((r) => setTimeout(r, 200));
+
+      await typeInto("#email", customerEmail);
+      await typeInto("#password", customerPassword);
+      // The sign-in screen is a module the router loads on demand, so it can be replaced once
+      // more after its first paint. Checking what the form actually holds — rather than assuming
+      // the keystrokes landed — turns that into a named failure instead of a mysterious one.
+      const typed = await evaluate(
+        "[document.querySelector('#email')?.value ?? '', document.querySelector('#password')?.value ?? '']",
+      );
+      check(
+        "funnel-visitor: the sign-in form holds what was typed",
+        typed[0] === customerEmail && typed[1] === customerPassword,
+        JSON.stringify(typed),
+      );
+      await click(".auth-form .btn--primary");
+      const backToCart = await until("the cart after signing in", "location.pathname === '/cart'", 25_000).catch(() => false);
+      check("funnel-visitor: signing in adds the plan and opens the cart", Boolean(backToCart), await evaluate("location.pathname"));
+      if (!backToCart) {
+        // The most likely reason a password sign-in stops here is not the funnel: the customer
+        // account has a second factor enrolled, left behind by the MFA block that runs just above
+        // (or by an interrupted earlier run). Saying so turns a confusing "landed on /login" into
+        // the state that actually needs clearing.
+        const challenged = await evaluate("document.querySelectorAll('.otp-digit').length > 0");
+        if (challenged) {
+          console.log(
+            "     note: this customer account has a second factor enrolled, so the password sign-in " +
+              "was challenged for a code. The MFA block above is expected to remove the factor; a " +
+              "leftover one fails this step, not the funnel.",
+          );
+        }
+        console.log(`     note: after sign-in the screen reads: ${(await pageText()).slice(0, 300)}`);
+      }
+      await until("the cart to render its line", "document.querySelector('.cart-line') !== null", 15_000).catch(() => {});
+      const visitorCart = await pageText();
+      check("funnel-visitor: the cart holds the plan the visitor chose", visitorCart.includes(funnelProduct), visitorCart.slice(0, 300));
+      await screenshot("funnel-visitor-cart");
     }
   }
 

@@ -146,6 +146,7 @@ function render(ctx: Ctx, view: CheckoutView, repaint: () => void): Node {
   const termsKnown = view.terms.trim() !== "";
   const tos = h("input", { type: "checkbox", id: "checkout-tos" });
   const place = btn("Place order", {
+    id: "place-order",
     variant: "primary",
     size: "lg",
     block: true,
@@ -300,6 +301,12 @@ function render(ctx: Ctx, view: CheckoutView, repaint: () => void): Node {
         // customer's behalf would make the acceptance meaningless.
         tos_accepted: tos.checked,
       });
+      ctx.api.invalidate("/api/v1/portal");
+      // The order consumed the cart, so the cart is emptied. Leaving it would offer the same
+      // selection for a second order, and the storefront would then refuse to add the plan again
+      // ("already in your cart") for a purchase that has already been placed. Best effort: a cart
+      // that will not clear is a nuisance, not a reason to fail an order that was written.
+      await ctx.api.del("/api/v1/portal/cart").catch(() => {});
       ctx.api.invalidate("/api/v1/portal");
       // A free order activates with no invoice, so there is no document to open. Saying so is
       // better than routing to an empty invoice id.

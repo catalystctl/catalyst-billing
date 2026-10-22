@@ -108,6 +108,7 @@ export default async function invoicesPage(ctx: Ctx): Promise<Node> {
       from: timestamp(filters.from, "start") ?? null,
       to: timestamp(filters.to, "end") ?? null,
     });
+    exportLink.href = exportHref(filters);
     void table.reload(tableQuery(filters));
     syncChrome();
   };
@@ -220,6 +221,23 @@ export default async function invoicesPage(ctx: Ctx): Promise<Node> {
   }, 250);
   ctx.onDispose(() => customerSearch?.abort());
 
+  // The export is a link, not a fetch. The response is text/csv with Content-Disposition,
+  // so the browser saves it directly and a hundred thousand invoices never pass through
+  // JavaScript. The href carries the same filters as the list, so the file is the list the
+  // operator is looking at; `download=""` keeps the server's timestamped filename rather
+  // than inventing one here.
+  const exportLink = h(
+    "a",
+    {
+      class: "btn btn--sm",
+      href: exportHref(filters),
+      download: "",
+      title: "Download every invoice matching these filters as CSV",
+    },
+    icon("download", 14),
+    "Export CSV",
+  );
+
   const chipHost = h("div", { class: "toolbar" });
   const clearButton = btn("Clear filters", { variant: "ghost", size: "sm", icon: "x", onclick: () => clearAll() });
 
@@ -301,9 +319,14 @@ export default async function invoicesPage(ctx: Ctx): Promise<Node> {
     pageHead({
       title: "Invoices",
       sub: "Every document the engine has issued, in number order per page. Overdue is a state, not a status: it is computed from the due date.",
-      actions: ctx.can("invoice:write:all")
-        ? btn("New invoice", { href: "/invoices/new", variant: "primary", size: "sm", icon: "plus" })
-        : null,
+      actions: h(
+        "div",
+        { class: "row" },
+        exportLink,
+        ctx.can("invoice:write:all")
+          ? btn("New invoice", { href: "/invoices/new", variant: "primary", size: "sm", icon: "plus" })
+          : null,
+      ),
     }),
     summaryHost,
     filterBar,
@@ -455,6 +478,19 @@ function tableQuery(filters: Filters): Record<string, string | undefined> {
     from: timestamp(filters.from, "start"),
     to: timestamp(filters.to, "end"),
   };
+}
+
+/** The CSV export path for the current filters.
+ *
+ *  It is built from the same `tableQuery` the list sends, so the file cannot contain a
+ *  different set of rows than the screen: one filter vocabulary, two renderings of it. */
+function exportHref(filters: Filters): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(tableQuery(filters))) {
+    if (value !== undefined && value !== "") params.set(key, value);
+  }
+  const query = params.toString();
+  return `/api/v1/staff/exports/invoices.csv${query ? `?${query}` : ""}`;
 }
 
 /** A date input's value as the RFC3339 instant handleStaffInvoices parses. */

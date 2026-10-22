@@ -20,6 +20,7 @@ import { h } from "../lib/dom";
 import type { Page } from "../lib/api";
 import { dateTime, money, relative, shortId, truncate } from "../lib/format";
 import type { Amount } from "../lib/format";
+import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import { bindForm, openDialog } from "../ui/dialog";
 import { badge, btn, cellMain, errorState, field, input, mono, pageHead, select, statusBadge } from "../ui/kit";
@@ -62,6 +63,19 @@ const OPEN_OPTIONS = [
 function serviceStatusBadge(status: string): HTMLElement {
   if (status === "error") return badge("Error", "danger", { dot: true });
   return statusBadge(status, { dot: true });
+}
+
+/** The CSV export path for a set of list filters.
+ *
+ *  It is built from the same filter object `buildQuery` sends, so the file cannot contain a
+ *  different set of services than the screen: one filter vocabulary, two renderings of it. */
+function exportHref(query: Record<string, string | undefined>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== "") params.set(key, value);
+  }
+  const search = params.toString();
+  return `/api/v1/staff/exports/services.csv${search ? `?${search}` : ""}`;
 }
 
 export default async function servicesPage(ctx: Ctx): Promise<Node> {
@@ -117,6 +131,21 @@ export default async function servicesPage(ctx: Ctx): Promise<Node> {
   });
   clearButton.hidden = !hasFilters();
 
+  // The export is a link with `download`, not a fetch: the server streams text/csv with
+  // Content-Disposition, so the browser saves it and no page of the table passes through
+  // JavaScript. The href carries the same filters the list sends.
+  const exportLink = h(
+    "a",
+    {
+      class: "btn btn--sm",
+      href: exportHref(filters),
+      download: "",
+      title: "Download every service matching these filters as CSV",
+    },
+    icon("download", 14),
+    "Export CSV",
+  );
+
   const apply = () => {
     ctx.replaceQuery({
       status: filters.status || null,
@@ -124,6 +153,7 @@ export default async function servicesPage(ctx: Ctx): Promise<Node> {
       customer_id: filters.customer_id || null,
       has_open_operation: filters.has_open_operation || null,
     });
+    exportLink.href = exportHref(filters);
     clearButton.hidden = !hasFilters();
     void table.reload(buildQuery());
   };
@@ -549,6 +579,7 @@ export default async function servicesPage(ctx: Ctx): Promise<Node> {
       actions: h(
         "div",
         { class: "row" },
+        exportLink,
         btn("Operations queue", { size: "sm", icon: "activity", href: "/operations" }),
         canCreate
           ? btn("New service", { size: "sm", variant: "primary", icon: "plus", onclick: () => void newServiceDialog() })

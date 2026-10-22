@@ -19,6 +19,7 @@
 import { h } from "../lib/dom";
 import type { Amount } from "../lib/format";
 import { dateTime, relative } from "../lib/format";
+import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import { bindForm, openDialog } from "../ui/dialog";
 import {
@@ -69,6 +70,18 @@ const DEFAULT_SORT = SORTS[0] as SortChoice;
  *  table, so a one-character term is not sent at all. */
 const MIN_SEARCH = 2;
 
+/** The CSV export path for the current search.
+ *
+ *  Only `q` travels. The sort the operator picked on screen is a view preference, not a
+ *  filter: an export that silently reordered itself because somebody clicked "Email A–Z"
+ *  would be a different file with the same name, and the server refuses a parameter it
+ *  does not honour rather than ignoring it. A one-character term is dropped for the same
+ *  reason the list drops it — the server refuses to scan on it. */
+function exportHref(term: string): string {
+  const q = term.length >= MIN_SEARCH ? term : "";
+  return `/api/v1/staff/exports/customers.csv${q ? `?q=${encodeURIComponent(q)}` : ""}`;
+}
+
 export default async function customersPage(ctx: Ctx): Promise<Node> {
   if (!ctx.can("customer:read:all")) {
     ctx.navigate("/", { replace: true });
@@ -91,6 +104,21 @@ export default async function customersPage(ctx: Ctx): Promise<Node> {
   );
 
   const canWrite = ctx.can("customer:write:all");
+
+  // The export is a link with `download`, not a fetch: the server streams text/csv with
+  // Content-Disposition, so the browser saves it and the table never passes through
+  // JavaScript. The search term travels with it, so the file is the list on screen.
+  const exportLink = h(
+    "a",
+    {
+      class: "btn btn--sm",
+      href: exportHref(term),
+      download: "",
+      title: "Download every customer matching this search as CSV",
+    },
+    icon("download", 14),
+    "Export CSV",
+  );
 
   const columns: Column<CustomerRow>[] = [
     {
@@ -199,6 +227,7 @@ export default async function customersPage(ctx: Ctx): Promise<Node> {
   const applySearch = (value: string) => {
     term = value.trim();
     hint.hidden = term.length !== 1;
+    exportLink.href = exportHref(term);
     if (timer !== undefined) window.clearTimeout(timer);
     timer = window.setTimeout(() => {
       // The query string keeps the filter across a refresh and makes the URL shareable.
@@ -458,6 +487,7 @@ export default async function customersPage(ctx: Ctx): Promise<Node> {
       actions: h(
         "div",
         { class: "row" },
+        exportLink,
         btn("Audit log", { href: "/audit", icon: "shield", size: "sm" }),
         canWrite
           ? btn("New customer", {

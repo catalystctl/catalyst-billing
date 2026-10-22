@@ -547,6 +547,20 @@ try {
   // Sign in through the form, which is what proves the login screen works rather than just
   // the API behind it.
   await goto("/login");
+
+  // The sign-in page must offer the way to sign up. This is the defect the register screen was
+  // hiding behind: /register worked and was public, and nothing pointed at it, so self-registration
+  // was reachable only by someone who already knew the URL. Asserted on the anonymous login screen
+  // because that is where a visitor lands — and it is invisible to anyone who already has an
+  // account, which is why it survived so long.
+  {
+    const signup = await evaluate(`(() => {
+      const a = Array.from(document.querySelectorAll('a')).find((x) => /create an account/i.test(x.textContent || ''));
+      return a ? a.getAttribute('href') : null;
+    })()`);
+    check("login: offers a link to create an account", signup === "/register", `href=${signup}`);
+  }
+
   await typeInto("#email", staffEmail);
   await typeInto("#password", staffPassword);
   await click('.auth-form .btn--primary');

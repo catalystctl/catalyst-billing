@@ -149,7 +149,17 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
         "div",
         { class: "auth-links" },
         h("a", { href: "/forgot-password" }, "Forgot your password?"),
-        h("span", null, ""),
+        // The way to create an account.
+        //
+        // `/register` has existed and worked as a public route for a while, and nothing on this
+        // page pointed at it — so self-registration was reachable only by someone who already
+        // knew the URL. A sign-in page with no way to sign up is the first thing a new visitor
+        // hits and the last thing an operator would notice, because they already have an account.
+        //
+        // It is rendered unconditionally: whether a shop accepts registrations is the server's
+        // decision (POST /api/v1/auth/register answers `registration_unavailable` when it does
+        // not), and hiding the link on a guess would make the page lie in the other direction.
+        h("a", { href: "/register" }, "Create an account"),
       ),
     );
 

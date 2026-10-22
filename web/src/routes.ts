@@ -138,6 +138,15 @@ export const routes: Route[] = [
   route("/oauth-clients", () => import("./views/oauth-clients")),
   route("/settings/updates", () => import("./views/updates")),
   route("/marketplace", () => import("./views/marketplace")),
+  route("/users", () => import("./views/users")),
+  route("/roles", () => import("./views/roles")),
+  route("/security", () => import("./views/security")),
+  route("/notification-templates", () => import("./views/notification-templates")),
+  route("/automation", () => import("./views/automation")),
+  route("/service-properties", () => import("./views/service-properties")),
+  route("/holds", () => import("./views/holds")),
+  route("/upgrades", () => import("./views/upgrades")),
+  route("/providers", () => import("./views/providers")),
 ];
 
 /** True when a route for `path` is declared.
@@ -196,4 +205,12 @@ export const SEGMENT_LABELS: Record<string, string> = {
   "oauth-clients": "OAuth clients",
   updates: "Updates",
   marketplace: "Marketplace",
+  users: "Users",
+  roles: "Roles",
+  "notification-templates": "Notification templates",
+  automation: "Automation",
+  "service-properties": "Service properties",
+  holds: "Holds",
+  upgrades: "Upgrades",
+  providers: "Sign-in providers",
 };

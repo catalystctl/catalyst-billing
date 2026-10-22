@@ -57,6 +57,14 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
       ],
     });
     groups.push({
+      label: "People",
+      items: [
+        { label: "Users", href: "/users", icon: "users", permission: "staff:manage" },
+        { label: "Roles", href: "/roles", icon: "shield", permission: "staff:manage" },
+        { label: "Security", href: "/security", icon: "lock", permission: "staff:manage" },
+      ],
+    });
+    groups.push({
       label: "Operations",
       items: [
         { label: "Services", href: "/services", icon: "server", permission: "service:read:all" },
@@ -97,6 +105,12 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
         { label: "Locales", href: "/locales", icon: "globe", permission: "i18n:write" },
         { label: "OAuth clients", href: "/oauth-clients", icon: "key", permission: "oauth:manage" },
         { label: "Updates", href: "/settings/updates", icon: "sparkles", permission: "update:manage" },
+        { label: "Service properties", href: "/service-properties", icon: "tag", permission: "service:write:all" },
+        { label: "Holds", href: "/holds", icon: "pauseCircle", permission: "service:read:all" },
+        { label: "Upgrades", href: "/upgrades", icon: "trendUp", permission: "catalog:write" },
+        { label: "Notification templates", href: "/notification-templates", icon: "mail", permission: "notification:write" },
+        { label: "Automation", href: "/automation", icon: "refresh", permission: "settings:write" },
+        { label: "Sign-in providers", href: "/providers", icon: "key", permission: "oauth:manage" },
       ],
     });
     groups.push({

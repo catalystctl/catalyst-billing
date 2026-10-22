@@ -1090,6 +1090,138 @@ paths:
             x-permission: report:read
             x-rate-class: read
             x-staff-only: true
+    /api/v1/portal/affiliate:
+        get:
+            description: 'Resolved from the session, never from the URL, and the referral rows are fetched by that affiliate id, so a caller can only see their own. A customer who is not an affiliate gets 404 `not_an_affiliate`: enrolment is not implied by having an account.'
+            operationId: GetPortalAffiliate
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    balances:
+                                        items:
+                                            properties:
+                                                currency:
+                                                    type: string
+                                                owed:
+                                                    $ref: '#/components/schemas/Amount'
+                                                paid:
+                                                    $ref: '#/components/schemas/Amount'
+                                            required:
+                                                - currency
+                                                - owed
+                                                - paid
+                                            type: object
+                                        type: array
+                                    code:
+                                        type: string
+                                    commission_rate:
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    payout_method:
+                                        enum:
+                                            - credit
+                                            - paypal
+                                            - bank_transfer
+                                            - manual
+                                        type: string
+                                    referrals:
+                                        items:
+                                            properties:
+                                                affiliate_id:
+                                                    format: uuid
+                                                    type: string
+                                                attributed_at:
+                                                    format: date-time
+                                                    type: string
+                                                commission:
+                                                    $ref: '#/components/schemas/Amount'
+                                                customer_id:
+                                                    format: uuid
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                order_id:
+                                                    description: Present only on a commission row. An attribution row (written at signup) has no order.
+                                                    format: uuid
+                                                    type: string
+                                                paid_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                rate:
+                                                    description: The rate captured when the commission was recorded, so a later rate change cannot rewrite it.
+                                                    type: string
+                                                status:
+                                                    enum:
+                                                        - pending
+                                                        - approved
+                                                        - paid
+                                                    type: string
+                                            required:
+                                                - id
+                                                - affiliate_id
+                                                - customer_id
+                                                - status
+                                                - attributed_at
+                                            type: object
+                                        type: array
+                                    referred_count:
+                                        type: integer
+                                required:
+                                    - code
+                                    - commission_rate
+                                    - balances
+                                    - referrals
+                                type: object
+                    description: The caller's affiliate view
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: This account is not an affiliate
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The caller's own affiliate code and earnings
+            x-permission: customer:read:self
+            x-rate-class: read
     /api/v1/portal/billing-profile:
         get:
             operationId: GetPortalBillingprofile
@@ -2380,6 +2512,169 @@ paths:
             summary: Download a credit note as a PDF
             x-permission: invoice:read:self
             x-rate-class: read
+    /api/v1/portal/credits:
+        get:
+            description: The balance is derived from the `customer_credit` subledger account, never from a stored column, so it cannot disagree with the journal. The settings block is returned with it so the deposit form can show the real minimum and maximum instead of a guess, and so a disabled installation can hide the form rather than fail the submission.
+            operationId: GetPortalCredits
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    balances:
+                                        items:
+                                            $ref: '#/components/schemas/Amount'
+                                        type: array
+                                    customer_id:
+                                        format: uuid
+                                        type: string
+                                    settings:
+                                        properties:
+                                            auto_use:
+                                                type: boolean
+                                            enabled:
+                                                type: boolean
+                                            maximum_credit_minor:
+                                                format: int64
+                                                type: integer
+                                            maximum_deposit_minor:
+                                                format: int64
+                                                type: integer
+                                            minimum_deposit_minor:
+                                                format: int64
+                                                type: integer
+                                        type: object
+                                required:
+                                    - customer_id
+                                    - balances
+                                    - settings
+                                type: object
+                    description: Balances per currency, and the credits settings
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller has no billing account
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The customer's credit balance and the top-up limits
+            x-permission: customer:read:self
+            x-rate-class: read
+    /api/v1/portal/credits/deposit:
+        post:
+            description: 'Creates a deposit invoice and opens a gateway session, then returns the redirect URL. The amount is validated against `credits.enabled`, `credits.minimum_deposit_minor`, `credits.maximum_deposit_minor` and `credits.maximum_credit_minor` *before* anything is created, so a refused top-up leaves no open invoice behind, and an unsettled deposit already started counts against the maximum so two top-ups cannot both pass the limit. A deposit is an ordinary invoice carrying `snapshot.catalyst_deposit = "credit"` and no order: the gateway path, its recorded attempt and its amount verification are the existing ones, unchanged, and the operator dashboard''s paid-not-provisioned check does not mistake it for an undelivered purchase. The credit is granted when the settled webhook arrives, not when this call returns.'
+            operationId: PostPortalCreditsDeposit
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                amount_minor:
+                                    format: int64
+                                    minimum: 1
+                                    type: integer
+                                currency:
+                                    pattern: ^[A-Z0-9]{2,12}$
+                                    type: string
+                            required:
+                                - amount_minor
+                                - currency
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: A deposit invoice and the gateway redirect
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The amount is outside the configured deposit range
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Credit is disabled, or the top-up would exceed the maximum balance
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No payment gateway is configured, or the gateway is unavailable
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Start a credit top-up through the gateway
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: invoice:pay:self
+            x-rate-class: mutation
     /api/v1/portal/impersonation/stop:
         post:
             description: 'Ends the borrowed session and rotates the operator''s own session token back into the cookie. Rotation is deliberate: the impersonated token was in a browser that may have been shared, and a token that outlives the impersonation is the one thing that must not happen. If the operator''s own session ended meanwhile, the cookie is cleared and the answer is 401 rather than a session that looks alive.'
@@ -2630,6 +2925,206 @@ paths:
                 required: true
             x-permission: invoice:pay:self
             x-rate-class: mutation
+    /api/v1/portal/invoices/{id}/pay-with-credit:
+        post:
+            description: 'Applies `min(available balance, what the invoice owes)` and answers with the new remaining balance. Scoped to the session: another customer''s invoice is reported as not_found, identically to a nonexistent one. Idempotent — a replayed request finds the existing application and spends nothing more, which is what makes a double-click safe.'
+            operationId: PostPortalInvoicesByIdPaywithcredit
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    already_applied:
+                                        type: boolean
+                                    amount:
+                                        $ref: '#/components/schemas/Amount'
+                                    application_id:
+                                        format: uuid
+                                        type: string
+                                    credit_balance:
+                                        items:
+                                            $ref: '#/components/schemas/Amount'
+                                        type: array
+                                    invoice_id:
+                                        format: uuid
+                                        type: string
+                                    invoice_paid:
+                                        type: boolean
+                                    paid:
+                                        $ref: '#/components/schemas/Amount'
+                                    remaining:
+                                        $ref: '#/components/schemas/Amount'
+                                    total:
+                                        $ref: '#/components/schemas/Amount'
+                                type: object
+                    description: The application, the invoice's new totals and the remaining credit
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such invoice, or it belongs to someone else
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: 'Nothing to apply: no credit, nothing owed, or credit is disabled'
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Pay an invoice with the customer's credit
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: invoice:pay:self
+            x-rate-class: mutation
+    /api/v1/portal/invoices/{id}/payment-status:
+        get:
+            description: 'Reports the newest checkout attempt''s status plus two facts the UI can wait on: `settled` (an allocation exists, which only a verified webhook creates) and `remaining` (what is still owed). It deliberately does not call the provider: a browser polling this endpoint must not become one provider API call per poll, and the local state is what decides whether the invoice is paid. A redirect returning to the success URL is not evidence of payment; `settled` is.'
+            operationId: GetPortalInvoicesByIdPaymentstatus
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    attempt:
+                                        properties:
+                                            amount:
+                                                $ref: '#/components/schemas/Amount'
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            gateway:
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            provider_ref:
+                                                type: string
+                                            redirect_url:
+                                                type: string
+                                            status:
+                                                type: string
+                                            updated_at:
+                                                format: date-time
+                                                type: string
+                                        type: object
+                                    invoice_id:
+                                        format: uuid
+                                        type: string
+                                    paid:
+                                        $ref: '#/components/schemas/Amount'
+                                    remaining:
+                                        $ref: '#/components/schemas/Amount'
+                                    settled:
+                                        type: boolean
+                                    status:
+                                        enum:
+                                            - none
+                                            - created
+                                            - pending
+                                            - requires_action
+                                            - succeeded
+                                            - failed
+                                            - cancelled
+                                        type: string
+                                    total:
+                                        $ref: '#/components/schemas/Amount'
+                                required:
+                                    - invoice_id
+                                    - status
+                                    - settled
+                                    - remaining
+                                type: object
+                    description: The attempt's status and whether the invoice is settled
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such invoice, or it belongs to someone else
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Poll the local state of an invoice's payment attempt
+            x-permission: invoice:read:self
+            x-rate-class: read
     /api/v1/portal/invoices/{id}/pdf:
         get:
             description: 'The same document the staff endpoint serves, scoped to the caller: the ownership predicate is `customer_accounts.user_id` in the SQL, so another customer''s identifier selects no row and answers 404, byte-identical to an id that never existed. A draft is not a document and is also 404. The page carries the merchant block, the bill-to block (including `billing_profiles.bill_to_text`), the number, the issue and due dates, one row per line with quantity/unit/net/tax/total, the subtotal, the tax with its jurisdiction and rate, the total, the client-visible note when enabled, and the terms. A proforma prints as a proforma and says its number is not yet assigned.'
@@ -3537,6 +4032,85 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: The customer landing page
+            x-permission: customer:read:self
+            x-rate-class: read
+    /api/v1/portal/payment-methods:
+        get:
+            description: 'Reports the configured gateway with the display metadata the pay dialog needs. This build has exactly one gateway — the extension named by `BILLING_GATEWAY_PROVIDER` — so the list has one entry when one is configured and is empty when none is. There is no gateway registry to invent: a gateway that does not exist cannot be offered. `brand_hint` describes the shape of the flow (a hosted card page), not a logo the panel cannot honestly supply.'
+            operationId: GetPortalPaymentmethods
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    payment_methods:
+                                        items:
+                                            properties:
+                                                brand_hint:
+                                                    type: string
+                                                currencies:
+                                                    items:
+                                                        type: string
+                                                    type: array
+                                                enabled:
+                                                    type: boolean
+                                                id:
+                                                    type: string
+                                                methods:
+                                                    items:
+                                                        type: object
+                                                    type: array
+                                                name:
+                                                    type: string
+                                                provider:
+                                                    type: string
+                                                supports_refunds:
+                                                    type: boolean
+                                            type: object
+                                        type: array
+                                type: object
+                    description: The configured gateways
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The payment gateways this installation offers
             x-permission: customer:read:self
             x-rate-class: read
     /api/v1/portal/services:
@@ -5551,6 +6125,456 @@ paths:
             summary: The ticket form's configuration
             x-permission: ticket:read:self
             x-rate-class: read
+    /api/v1/staff/affiliates:
+        get:
+            description: Every affiliate, newest first, with per-currency balances and the number of customers they referred. Balances are a materialised total maintained in the same transaction as each commission, so this list does not sum history to answer "what do we owe".
+            operationId: GetStaffAffiliates
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                balances:
+                                                    items:
+                                                        properties:
+                                                            currency:
+                                                                type: string
+                                                            owed:
+                                                                $ref: '#/components/schemas/Amount'
+                                                            paid:
+                                                                $ref: '#/components/schemas/Amount'
+                                                        required:
+                                                            - currency
+                                                            - owed
+                                                            - paid
+                                                        type: object
+                                                    type: array
+                                                code:
+                                                    description: Upper-case referral code. It appears in the referral link as `?ref=<code>`.
+                                                    type: string
+                                                commission_rate:
+                                                    description: 'Exact rational: `0.1`, `10%` or `1/10`. Stored canonically as `1/10` so a later recomputation lands on the same minor units. Never a float.'
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                email:
+                                                    format: email
+                                                    type: string
+                                                enabled:
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                payout_method:
+                                                    enum:
+                                                        - credit
+                                                        - paypal
+                                                        - bank_transfer
+                                                        - manual
+                                                    type: string
+                                                referred_count:
+                                                    type: integer
+                                                user_id:
+                                                    format: uuid
+                                                    type: string
+                                            required:
+                                                - id
+                                                - user_id
+                                                - code
+                                                - commission_rate
+                                                - payout_method
+                                                - enabled
+                                            type: object
+                                        type: array
+                                type: object
+                    description: The affiliates
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List affiliates and what each is owed
+            x-permission: report:read
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: Fixes the commission rate at which money will later leave the business, which is why it requires credit:write rather than a reporting permission. The code is upper-cased and must be unique; the rate is an exact rational (`0.1`, `10%`, `1/10`) and is stored canonically. One affiliate per user, one code per affiliate.
+            operationId: PostStaffAffiliates
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                code:
+                                    pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{2,31}$
+                                    type: string
+                                commission_rate:
+                                    description: 'Exact rational in [0, 1]: `0.1`, `10%` or `1/10`. A float is not accepted.'
+                                    type: string
+                                payout_method:
+                                    default: credit
+                                    enum:
+                                        - credit
+                                        - paypal
+                                        - bank_transfer
+                                        - manual
+                                    type: string
+                                user_id:
+                                    format: uuid
+                                    type: string
+                            required:
+                                - user_id
+                                - code
+                                - commission_rate
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    balances:
+                                        items:
+                                            properties:
+                                                currency:
+                                                    type: string
+                                                owed:
+                                                    $ref: '#/components/schemas/Amount'
+                                                paid:
+                                                    $ref: '#/components/schemas/Amount'
+                                            required:
+                                                - currency
+                                                - owed
+                                                - paid
+                                            type: object
+                                        type: array
+                                    code:
+                                        description: Upper-case referral code. It appears in the referral link as `?ref=<code>`.
+                                        type: string
+                                    commission_rate:
+                                        description: 'Exact rational: `0.1`, `10%` or `1/10`. Stored canonically as `1/10` so a later recomputation lands on the same minor units. Never a float.'
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    email:
+                                        format: email
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    payout_method:
+                                        enum:
+                                            - credit
+                                            - paypal
+                                            - bank_transfer
+                                            - manual
+                                        type: string
+                                    referred_count:
+                                        type: integer
+                                    user_id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - id
+                                    - user_id
+                                    - code
+                                    - commission_rate
+                                    - payout_method
+                                    - enabled
+                                type: object
+                    description: The affiliate
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The code or the user is already an affiliate
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The rate or the code is not valid
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Enrol a customer as an affiliate
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: credit:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/affiliates/{id}/payout:
+        post:
+            description: Marks the pending commissions paid and moves the balance to lifetime paid, in one transaction. A second call finds a zero balance and returns 409 `nothing_to_pay`, so a double-click pays once even without the idempotency layer. Audited with the operator as actor.
+            operationId: PostStaffAffiliatesByIdPayout
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                currency:
+                                    description: The currency of the balance to settle.
+                                    pattern: ^[A-Za-z0-9]{2,12}$
+                                    type: string
+                            required:
+                                - currency
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    affiliate_id:
+                                        format: uuid
+                                        type: string
+                                    amount:
+                                        $ref: '#/components/schemas/Amount'
+                                    commissions:
+                                        type: integer
+                                    currency:
+                                        type: string
+                                required:
+                                    - affiliate_id
+                                    - currency
+                                    - amount
+                                    - commissions
+                                type: object
+                    description: Settled
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Nothing outstanding in that currency
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Pay out one affiliate's balance in one currency
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: credit:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/affiliates/payouts:
+        get:
+            description: Every affiliate with an outstanding balance, per currency, plus the totals per currency. A balance is per currency because commission is earned in the order's currency and there is no conversion rate in this system, so summing across currencies would be meaningless.
+            operationId: GetStaffAffiliatesPayouts
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                affiliate_id:
+                                                    format: uuid
+                                                    type: string
+                                                code:
+                                                    type: string
+                                                currency:
+                                                    type: string
+                                                email:
+                                                    format: email
+                                                    type: string
+                                                lifetime_paid:
+                                                    $ref: '#/components/schemas/Amount'
+                                                owed:
+                                                    $ref: '#/components/schemas/Amount'
+                                                pending_commissions:
+                                                    description: Commission rows that make up `owed`, so a reconciler can compare summary with detail.
+                                                    type: integer
+                                                user_id:
+                                                    format: uuid
+                                                    type: string
+                                            required:
+                                                - affiliate_id
+                                                - code
+                                                - currency
+                                                - owed
+                                                - lifetime_paid
+                                                - pending_commissions
+                                            type: object
+                                        type: array
+                                    totals:
+                                        description: The sum of `owed` per currency.
+                                        items:
+                                            $ref: '#/components/schemas/Amount'
+                                        type: array
+                                type: object
+                    description: The report
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The payout report
+            x-permission: report:read
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/announcements:
         get:
             description: Every announcement, newest first, with `live` derived from `published` and `expires_at`.
@@ -9657,6 +10681,87 @@ paths:
             x-permission: customer:write:all
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/customers/{id}/credit:
+        post:
+            description: Issues a numbered credit note and posts an adjustment (debit revenue, credit customer_credit). The number comes from the same credit-note series as a correcting note, so a grant cannot take a number a document later repeats. A reason is required and reaches the audit row. The request's idempotency key also becomes the note's identity, so a replay returns the existing grant instead of minting a second one.
+            operationId: PostStaffCustomersByIdCredit
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                amount_minor:
+                                    format: int64
+                                    minimum: 1
+                                    type: integer
+                                currency:
+                                    pattern: ^[A-Z0-9]{2,12}$
+                                    type: string
+                                reason:
+                                    minLength: 1
+                                    type: string
+                            required:
+                                - amount_minor
+                                - currency
+                                - reason
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: The issued credit note and the balance after it
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The amount, currency or reason is missing or invalid
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such customer
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Grant credit to a customer
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: credit:write
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/customers/{id}/credit/apply:
         post:
             description: 'Posts an adjustment (debit customer_credit, credit receivable) and may settle the invoice. Idempotent per application: a replay is a no-op.'
@@ -10094,6 +11199,187 @@ paths:
             summary: Dashboard figures for a period
             x-permission: report:read
             x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/discord:
+        get:
+            description: Returns the enabled flag, the selected events and whether a webhook is stored. The webhook URL is a credential and is never returned; `webhook_configured` is the only thing a settings screen needs in order to render "configured".
+            operationId: GetStaffDiscord
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    available_events:
+                                        description: Every event key the notifier understands, for rendering the selection.
+                                        items:
+                                            type: string
+                                        type: array
+                                    enabled:
+                                        type: boolean
+                                    events:
+                                        description: The selected event keys. An empty array means nothing is posted.
+                                        items:
+                                            type: string
+                                        type: array
+                                    webhook_configured:
+                                        description: 'Whether a webhook URL is stored. The URL itself is never returned: it is a credential, and a settings read that echoes it is a leak.'
+                                        type: boolean
+                                required:
+                                    - enabled
+                                    - events
+                                    - webhook_configured
+                                type: object
+                    description: The configuration
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The Discord notification configuration
+            x-permission: report:read
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: 'The webhook URL is write-only: omitting it keeps the stored credential, because the operator cannot see the old value to send it back. `clear_webhook` removes it explicitly. Unknown event keys are dropped rather than stored, so the selection can never name an event the notifier does not understand. Audited without the URL.'
+            operationId: PutStaffDiscord
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                clear_webhook:
+                                    description: Remove the stored URL. Separate from an empty `webhook_url` so saving the event selection cannot delete the secret by accident.
+                                    type: boolean
+                                enabled:
+                                    type: boolean
+                                events:
+                                    description: Event keys to post. An empty array posts nothing.
+                                    items:
+                                        type: string
+                                    type: array
+                                webhook_url:
+                                    description: Discord webhook URL. Stored as a secret; never returned.
+                                    format: uri
+                                    type: string
+                                    writeOnly: true
+                            required:
+                                - enabled
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    available_events:
+                                        description: Every event key the notifier understands, for rendering the selection.
+                                        items:
+                                            type: string
+                                        type: array
+                                    enabled:
+                                        type: boolean
+                                    events:
+                                        description: The selected event keys. An empty array means nothing is posted.
+                                        items:
+                                            type: string
+                                        type: array
+                                    webhook_configured:
+                                        description: 'Whether a webhook URL is stored. The URL itself is never returned: it is a credential, and a settings read that echoes it is a leak.'
+                                        type: boolean
+                                required:
+                                    - enabled
+                                    - events
+                                    - webhook_configured
+                                type: object
+                    description: The updated configuration
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The configuration could not be saved
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Update the Discord notification configuration
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: settings:write
+            x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/holds/{hold_id}:
         delete:
@@ -11930,6 +13216,122 @@ paths:
             summary: Payment history
             x-permission: payment:reconcile
             x-rate-class: read
+            x-staff-only: true
+        post:
+            description: 'Creates a payment with provider `manual` and the caller''s reference as its provider payment id, then allocates it through the same `billing.ApplyPayment` every other path uses: the ledger posting, the invoice transition and the idempotency are that function''s, not a copy. Presenting the same reference twice finds the existing payment instead of recording it again. `fee_minor` (PAY-13) is stored on the payment for reconciliation and is not posted: the ledger records the gross the customer paid, and the fee is a cost of collecting it that a report nets off. A reason is required and reaches the audit row.'
+            operationId: PostStaffPayments
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                amount_minor:
+                                    format: int64
+                                    minimum: 1
+                                    type: integer
+                                currency:
+                                    pattern: ^[A-Z0-9]{2,12}$
+                                    type: string
+                                fee_minor:
+                                    format: int64
+                                    minimum: 0
+                                    type: integer
+                                invoice_id:
+                                    format: uuid
+                                    type: string
+                                reason:
+                                    minLength: 1
+                                    type: string
+                                reference:
+                                    minLength: 1
+                                    type: string
+                            required:
+                                - invoice_id
+                                - amount_minor
+                                - reference
+                                - reason
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    already_recorded:
+                                        type: boolean
+                                    amount:
+                                        $ref: '#/components/schemas/Amount'
+                                    fee:
+                                        $ref: '#/components/schemas/Amount'
+                                    invoice_id:
+                                        format: uuid
+                                        type: string
+                                    invoice_paid:
+                                        type: boolean
+                                    payment_id:
+                                        format: uuid
+                                        type: string
+                                    provider:
+                                        type: string
+                                    reference:
+                                        type: string
+                                    remaining:
+                                        $ref: '#/components/schemas/Amount'
+                                type: object
+                    description: The recorded payment and the invoice's remaining balance
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The amount, reference or reason is missing, or the currency does not match
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such invoice
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The amount exceeds what is owed, or the reference is already used
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Record a payment that arrived outside the gateway
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: payment:reconcile
+            x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/payments/{id}:
         get:

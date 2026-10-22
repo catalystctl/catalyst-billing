@@ -267,6 +267,27 @@ function check(name, condition, detail = "") {
 /** Asserts a screen rendered its content: a heading, no error block, and expected text. */
 async function assertScreen(name, { path, expect = [], absent = [], allowEmptyState = true }) {
   if (path) await goto(path);
+
+  // Wait for the screen to finish loading before reading it.
+  //
+  // A view renders a skeleton first and replaces it when its data arrives, so reading
+  // innerText immediately after navigation sees the skeleton — and the assertions then pass
+  // or fail on the nav rail's text rather than the page's. That is how this harness missed a
+  // dashboard regression for a while: "Overview" matched the rail label, "Needs attention"
+  // did not exist yet, and the screen was fine.
+  //
+  // The condition is deliberately about the *absence of a skeleton* rather than the presence
+  // of a particular string: waiting for an expected string would make a genuinely missing
+  // element wait until timeout and then report a timeout instead of the missing text.
+  await until(
+    `${name}: the screen finishes loading`,
+    `document.querySelector('.skeleton, [aria-busy="true"]') === null`,
+    15_000,
+  ).catch(() => {
+    // A screen with no skeleton is already settled; a stuck skeleton is reported by the
+    // assertions below rather than as a timeout, so the failure names the real problem.
+  });
+
   const text = await pageText();
   const html = await evaluate("document.body.innerHTML");
 

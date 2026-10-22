@@ -70,10 +70,10 @@ func (e *authEnv) postWithKey(t *testing.T, path string, cookie *http.Cookie, cs
 
 // importReport is the subset of the report these tests assert on.
 type importReport struct {
-	Source  string `json:"source"`
-	DryRun  bool   `json:"dry_run"`
-	RunID   string `json:"run_id"`
-	Totals  struct {
+	Source string `json:"source"`
+	DryRun bool   `json:"dry_run"`
+	RunID  string `json:"run_id"`
+	Totals struct {
 		RowsRead  int `json:"rows_read"`
 		Created   int `json:"created"`
 		Updated   int `json:"updated"`

@@ -18,6 +18,7 @@
 // them reveals whether a given address exists.
 
 import { ApiError } from "../lib/api";
+import { mountCaptcha, type CaptchaWidget } from "../lib/captcha";
 import { fill, h, swap } from "../lib/dom";
 import { brandMark, icon } from "../lib/icons";
 import type { AuthCtx } from "../lib/types";
@@ -125,7 +126,20 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
       required: true,
     });
     const tos = h("input", { type: "checkbox", id: "tos" });
+    const captchaHost = h("div", { class: "captcha-host" });
     const submit = btn("Create account", { variant: "primary", type: "submit", block: true });
+
+    // Mounted once, after the form is on screen. A failure to load the provider's script is
+    // reported rather than swallowed: a page that submitted anyway would earn a captcha_required
+    // refusal the visitor cannot act on.
+    let captcha: CaptchaWidget | null = null;
+    void (async () => {
+      try {
+        captcha = await mountCaptcha(ctx.api, captchaHost);
+      } catch (err) {
+        showError(err instanceof Error ? err.message : "The security check could not be loaded.");
+      }
+    })();
 
     const form = h(
       "form",
@@ -145,6 +159,10 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
         tos,
         h("span", null, "I accept this installation's terms of service."),
       ),
+      // The challenge sits immediately above the button that submits it, so the order of
+      // "solve this, then press that" is the visual order. It renders nothing at all when no
+      // provider is configured — the common case — rather than an empty box.
+      captchaHost,
       submit,
       h(
         "div",
@@ -183,6 +201,8 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
               password: password.value,
               display_name: displayName,
               accept_tos: tos.checked,
+              // Null when no challenge is configured, which is what the server expects then.
+              captcha_token: captcha?.token() ?? undefined,
             },
             // A public entry point: there is no session to bind a CSRF token to, and the
             // handler enforces same-origin itself.
@@ -191,6 +211,10 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
           showAccepted(address, Boolean(res?.verification_required));
         } catch (err) {
           showError(registerMessage(err), err instanceof ApiError ? err.code : undefined);
+          // A token is single-use, so a refusal spends it. Asking for a fresh challenge is what
+          // makes the retry possible; without it the second attempt fails for the same reason
+          // and the visitor concludes the form is broken.
+          captcha?.reset();
         } finally {
           if (submit instanceof HTMLButtonElement) submit.disabled = false;
         }

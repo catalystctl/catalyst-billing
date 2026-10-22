@@ -180,24 +180,15 @@ func (e *captchaEnv) postWithChallenge(t *testing.T, handler http.HandlerFunc, p
 	// A body the handler itself will reject is left to the handler: the gate is not a JSON
 	// validator, and refusing a malformed body with captcha_required would be a worse
 	// answer than invalid_json.
-	if err := json.Unmarshal(raw, &probe); err == nil {
-		if !e.srv.requireCaptcha(rec, req, probe.CaptchaToken) {
-			return rec
-		}
-	}
+	// The gate is NOT called here. The handlers call requireCaptcha themselves now, so calling it
+	// here as well would ask the provider twice and assert on a response the handler then
+	// overwrote. What these tests check is the end-to-end behaviour of the real handler.
+	_ = probe
 
-	// The request structs in register.go and auth_lifecycle.go do not declare a
-	// captcha_token field yet, and their decoder refuses unknown fields, so the mirror
-	// strips the token from the body it hands on. Declaring that field is the integrator's
-	// other half of the wiring; what these tests are about is the gate in front of the
-	// handler, not the handler's JSON guard.
-	handled := make(map[string]any, len(body))
-	for key, value := range body {
-		if key == "captcha_token" {
-			continue
-		}
-		handled[key] = value
-	}
+	// The body is handed on unchanged. The handlers now declare `captcha_token` themselves and
+	// call requireCaptcha, so stripping it here would test a handler that no longer exists: the
+	// token would arrive empty and every solved challenge would be refused.
+	handled := body
 	handlerBody, err := json.Marshal(handled)
 	if err != nil {
 		t.Fatalf("marshal handler body: %v", err)

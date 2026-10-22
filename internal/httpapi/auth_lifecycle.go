@@ -106,11 +106,20 @@ func (s *Server) handleResetRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Email string `json:"email"`
+		Email        string `json:"email"`
+		CaptchaToken string `json:"captcha_token"`
 	}
 	if !s.decodeJSON(w, r, &req, 4<<10) {
 		return
 	}
+
+	// The challenge is enforced before the address is looked up, and it must not become an
+	// enumeration oracle: a failed challenge is refused for every address alike, so the answer
+	// says nothing about whether the account exists. With no provider configured this is a no-op.
+	if !s.requireCaptcha(w, r, req.CaptchaToken) {
+		return
+	}
+
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	if email == "" || !strings.Contains(email, "@") {
 		// A malformed address is refused, because it is a client bug rather than a

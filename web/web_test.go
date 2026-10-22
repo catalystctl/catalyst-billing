@@ -127,6 +127,53 @@ func TestTraversalDoesNotEscape(t *testing.T) {
 	}
 }
 
+// A captcha provider's origins are the only thing that may widen the policy, and only the three
+// directives a widget needs.
+//
+// This is the test that keeps the widening honest. The panel renders customer-supplied text
+// inside an authenticated origin, so `script-src 'self'` with no 'unsafe-inline' is load-bearing;
+// a feature that needed a looser policy would otherwise quietly loosen all of it. Here the
+// widening is bounded: the provider's hosts are added to script-src, frame-src and connect-src,
+// `frame-ancestors` stays 'none', and every other directive is byte-identical.
+func TestChallengeOriginsWidenOnlyWhatAWidgetNeeds(t *testing.T) {
+	h := newHandler(t, false).WithChallengeOrigins([]string{"https://challenges.cloudflare.com"})
+	csp := get(t, h, "/").Header().Get("Content-Security-Policy")
+
+	for _, want := range []string{
+		"script-src 'self' https://challenges.cloudflare.com",
+		"frame-src https://challenges.cloudflare.com",
+		"connect-src 'self' https://challenges.cloudflare.com",
+		// Untouched, and these are the ones that matter.
+		"frame-ancestors 'none'",
+		"object-src 'none'",
+		"base-uri 'none'",
+		"form-action 'self'",
+	} {
+		if !strings.Contains(csp, want) {
+			t.Fatalf("CSP missing %q: %s", want, csp)
+		}
+	}
+	if strings.Contains(csp, "unsafe-inline") || strings.Contains(csp, "unsafe-eval") {
+		t.Fatalf("CSP contains an unsafe exemption: %s", csp)
+	}
+	// style-src and img-src must not have moved: a challenge widget needs neither.
+	if strings.Contains(csp, "style-src 'self' https://challenges") ||
+		strings.Contains(csp, "img-src 'self' data: https://challenges") {
+		t.Fatalf("the policy was widened further than the widget needs: %s", csp)
+	}
+}
+
+// With no provider configured the policy is exactly as strict as it was, which is the common case:
+// most shops do not run a challenge, and they must not pay for the feature's policy.
+func TestNoChallengeKeepsTheStrictestPolicy(t *testing.T) {
+	csp := get(t, newHandler(t, false), "/").Header().Get("Content-Security-Policy")
+	for _, want := range []string{"script-src 'self'", "frame-src 'none'", "connect-src 'self'"} {
+		if !strings.Contains(csp, want) {
+			t.Fatalf("CSP missing %q: %s", want, csp)
+		}
+	}
+}
+
 // The documented CSP must be present, and must not contain an exemption that would let
 // an injected script run.
 func TestSecurityHeaders(t *testing.T) {

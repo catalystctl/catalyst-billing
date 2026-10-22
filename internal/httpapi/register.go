@@ -107,8 +107,18 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Password    string `json:"password"`
 		DisplayName string `json:"display_name"`
 		AcceptTOS   bool   `json:"accept_tos"`
+		// CaptchaToken is the challenge's answer. It is empty when no provider is configured,
+		// and requireCaptcha then makes no outbound call at all.
+		CaptchaToken string `json:"captcha_token"`
 	}
 	if !s.decodeJSON(w, r, &req, 8<<10) {
+		return
+	}
+
+	// The challenge is checked after the body is read (the token is in it) and before the account
+	// is touched, so a bot never reaches the user table. With no provider configured this is a
+	// no-op: no challenge, no outbound call, no behaviour change.
+	if !s.requireCaptcha(w, r, req.CaptchaToken) {
 		return
 	}
 

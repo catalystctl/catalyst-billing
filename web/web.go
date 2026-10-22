@@ -46,6 +46,10 @@ type Handler struct {
 	secure bool
 	// apiPrefixes are the path prefixes that must never fall back to the SPA.
 	apiPrefixes []string
+	// challengeOrigins are the extra script and frame origins a configured captcha provider
+	// needs. Empty — the default, and the case with no provider — leaves the policy exactly as
+	// strict as it was.
+	challengeOrigins []string
 }
 
 // New constructs a Handler over the embedded assets.
@@ -64,6 +68,22 @@ func New(secure bool) (*Handler, error) {
 		secure:      secure,
 		apiPrefixes: []string{"/api/", "/webhooks/"},
 	}, nil
+}
+
+// WithChallengeOrigins permits a captcha provider's script and frame origins.
+//
+// The policy below is deliberately strict: `script-src 'self'` with no 'unsafe-inline' is what
+// stops an injected <script> running inside an authenticated origin. A challenge widget cannot
+// work under it — it loads a script from the provider's own host and renders their iframe — so
+// the policy is widened by exactly the origins of the *configured* provider, and by nothing at
+// all when none is configured.
+//
+// That is the smallest widening that makes the feature work. It is applied at startup from the
+// same setting the verifier reads, so a provider that is switched off does not leave a hole open,
+// and it is never derived from a request.
+func (h *Handler) WithChallengeOrigins(origins []string) *Handler {
+	h.challengeOrigins = origins
+	return h
 }
 
 // IsAPIPath reports whether a path belongs to the API surface rather than the SPA.
@@ -150,13 +170,27 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request) {
 // class of plugin bypasses. There is no nonce or hash because there is no inline script
 // to allow: the frontend is a separate file.
 func (h *Handler) securityHeaders(w http.ResponseWriter) {
+	// The challenge provider's origins are appended to the three directives a widget needs, and
+	// only those three: it may load a script, show an iframe, and call back to its own verify
+	// endpoint. Nothing else in the policy moves, so the strictness that protects the panel from
+	// customer-supplied text is unchanged.
+	scriptSrc := "script-src 'self'"
+	frameSrc := "frame-src 'none'"
+	connectSrc := "connect-src 'self'"
+	if len(h.challengeOrigins) > 0 {
+		extra := " " + strings.Join(h.challengeOrigins, " ")
+		scriptSrc += extra
+		frameSrc = "frame-src" + extra
+		connectSrc += extra
+	}
 	w.Header().Set("Content-Security-Policy", strings.Join([]string{
 		"default-src 'self'",
-		"script-src 'self'",
+		scriptSrc,
 		"style-src 'self'",
 		"img-src 'self' data:",
 		"font-src 'self'",
-		"connect-src 'self'",
+		connectSrc,
+		frameSrc,
 		"frame-ancestors 'none'",
 		"base-uri 'none'",
 		"form-action 'self'",

@@ -3,9 +3,13 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test
+.PHONY: help dev dev-stop dev-config dev-reset db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test
 
 help:
+	@echo "dev        database + schema + fixtures + a staff account, then serve (Ctrl-C stops)"
+	@echo "dev-reset  destroy the dev database and start over with 'make dev'"
+	@echo "dev-config seed the fixture gateway/provisioner and a dev staff account (idempotent)"
+	@echo "dev-stop   stop a dev server that was left running in the background"
 	@echo "db-up      start the dedicated Postgres (compose.yaml, port 5442)"
 	@echo "db-down    stop it; the named volume keeps the data"
 	@echo "db-reset   destroy the volume and recreate an empty cluster"
@@ -76,6 +80,46 @@ migrate:
 
 build:
 	go build -o bin/billing ./cmd/billing
+
+# Every extension binary, under the name gatewayconfig looks for by default (bin/<extension>).
+# The two fixtures are what `make dev` launches; the real adapters are built too, so switching
+# a provider on the integrations screen works without a second build step.
+extensions:
+	@for dir in extensions/*/; do \
+		name="$$(basename "$$dir")"; \
+		echo "building bin/$$name"; \
+		go build -o "bin/$$name" "./$$dir" || exit 1; \
+	done
+
+# One command for a working local installation: the database, the schema, the binaries, the
+# fixture configuration and a staff account. It runs in the foreground, so Ctrl-C stops it and
+# the log is the terminal.
+#
+# Deliberately not part of `verify`: it starts a server and waits, which is a thing a person
+# does, not a thing CI does.
+dev: db-up migrate build extensions dev-config
+	@bash scripts/dev.sh
+
+# The fixture configuration on its own, for a database that is already running: the gateway and
+# provisioner are pointed at the conformance fixtures and a dev staff account is created. Safe
+# to run repeatedly.
+dev-config: build
+	@bash scripts/dev-config.sh
+
+# Throw the dev database away and start over. Destroys the volume, so it asks for nothing and
+# says so here: this is the target that deletes data.
+dev-reset: db-reset
+	@$(MAKE) --no-print-directory dev
+
+# scripts/dev-ui.sh starts a server in the background; this is how to stop one that outlived its
+# terminal. Matched by the pid file that script writes, never by process name.
+dev-stop:
+	@if [ -f /tmp/billing-dev.pid ]; then \
+		pid="$$(cat /tmp/billing-dev.pid)"; \
+		if kill "$$pid" 2>/dev/null; then echo "stopped dev server (pid $$pid)"; \
+		else echo "no dev server is running (stale pid $$pid)"; fi; \
+		rm -f /tmp/billing-dev.pid; \
+	else echo "no dev server is running"; fi
 
 # The frontend is a separate toolchain on purpose: `go build` never needs Node, because the
 # built dist/ is committed and embedded. These targets exist for when the frontend changes.

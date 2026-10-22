@@ -5,6 +5,7 @@
 // customer-list oracle.
 
 import { ApiError } from "../lib/api";
+import { mountCaptcha, type CaptchaWidget } from "../lib/captcha";
 import { h, swap } from "../lib/dom";
 import { brandMark, icon } from "../lib/icons";
 import type { AuthCtx } from "../lib/types";
@@ -22,14 +23,28 @@ export default async function forgotPasswordPage(ctx: AuthCtx): Promise<Node> {
     required: true,
     autofocus: true,
   });
+  const captchaHost = h("div", { class: "captcha-host" });
   const submit = btn("Send reset link", { variant: "primary", type: "submit", block: true });
   const errorHost = h("div");
+
+  // The challenge renders nothing when no provider is configured, which is the common case.
+  let captcha: CaptchaWidget | null = null;
+  void (async () => {
+    try {
+      captcha = await mountCaptcha(ctx.api, captchaHost);
+    } catch {
+      // A reset page that refused to submit because a challenge script failed to load would be
+      // worse than one that submits and is refused: the refusal carries a reason, and the
+      // per-address rate limit is still in front of it.
+    }
+  })();
 
   const form = h(
     "form",
     { class: "auth-form", novalidate: true },
     errorHost,
     field({ label: "Email", control: email, id: "email", hint: "We will send a link that expires in 30 minutes." }),
+    captchaHost,
     submit,
   );
 
@@ -45,7 +60,11 @@ export default async function forgotPasswordPage(ctx: AuthCtx): Promise<Node> {
       try {
         await ctx.api.post(
           "/api/v1/auth/password-reset/request",
-          { email: email.value.trim() },
+          {
+            email: email.value.trim(),
+            // Null when no challenge is configured, which is what the server expects then.
+            captcha_token: captcha?.token() ?? undefined,
+          },
           { noCSRF: true, noIdempotency: true },
         );
         swap(

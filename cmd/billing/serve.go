@@ -5,6 +5,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/catalyst/billing/internal/captcha"
+	"github.com/catalyst/billing/internal/settings"
 	"log/slog"
 	"net"
 	"os"
@@ -281,6 +283,13 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("embedded frontend is missing from this build: %w", err)
 	}
+	// A captcha widget loads a script from the provider's host and renders their iframe, which the
+	// panel's CSP forbids by default. The policy is widened by exactly the configured provider's
+	// origins and by nothing when no provider is set, so a shop that has not configured a
+	// challenge keeps the strictest policy available.
+	if provider := captchaProvider(ctx, pool); provider != captcha.ProviderNone {
+		webHandler.WithChallengeOrigins(captcha.ChallengeOrigins(provider))
+	}
 	srv.WithWeb(webHandler)
 
 	errCh := make(chan error, 2)
@@ -338,4 +347,26 @@ func cmdWorker(args []string) error {
 	defer pool.Close()
 
 	return runWorkerLoop(ctx, pool, logger, nil)
+}
+
+// captchaProvider reads the configured provider, defaulting to none.
+//
+// A failure to read the setting is treated as none rather than stopping startup: the panel must
+// come up so an operator can fix the setting, and a challenge that silently does not appear is a
+// smaller problem than a panel that will not start. The server-side gate reads the same setting
+// and refuses a submission without a token, so the failure mode is "registration is refused until
+// the setting is fixed" rather than "registration is unprotected".
+func captchaProvider(ctx context.Context, pool *store.Pool) captcha.Provider {
+	if pool == nil {
+		return captcha.ProviderNone
+	}
+	raw, err := settings.New(pool).String(ctx, "captcha", "provider")
+	if err != nil {
+		return captcha.ProviderNone
+	}
+	provider, err := captcha.ParseProvider(raw)
+	if err != nil {
+		return captcha.ProviderNone
+	}
+	return provider
 }

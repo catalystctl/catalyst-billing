@@ -223,9 +223,12 @@ func (c *Client) handshake(ctx context.Context) error {
 		ctx, cancel = context.WithTimeout(ctx, c.spec.HandshakeTimeout)
 		defer cancel()
 	}
+	// Every version the core speaks is offered, newest first. An extension that only
+	// knows version 1 picks it and is accepted; it simply never sees the version-2
+	// surface (event emission), because the core only offers what it can deliver.
 	params := &InitializeParams{
 		Protocol:    Protocol,
-		Versions:    []int{Version},
+		Versions:    SupportedVersions(),
 		CoreVersion: c.spec.CoreVersion,
 	}
 	return c.initialize(ctx, params, nil)
@@ -269,8 +272,12 @@ func (c *Client) initialize(ctx context.Context, params, out any) error {
 	if err := c.call(ctx, MethodInitialize, p, &res); err != nil {
 		return fmt.Errorf("extproto: handshake failed: %w", err)
 	}
-	if res.Version != Version {
-		return fmt.Errorf("%w: extension selected version %d, core offers %d", ErrVersionMismatch, res.Version, Version)
+	if !SupportsVersion(res.Version) {
+		// A version the core never offered is a protocol violation, not a
+		// negotiation failure the core can paper over: the payloads of that version
+		// are unknown, so every later call would be a guess.
+		return fmt.Errorf("%w: extension selected version %d, core offers %v",
+			ErrVersionMismatch, res.Version, SupportedVersions())
 	}
 	if res.Name == "" {
 		return fmt.Errorf("%w: initialize result has no name", ErrProtocol)

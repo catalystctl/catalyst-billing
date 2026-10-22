@@ -1,5 +1,25 @@
 # Paymenter feature parity — the complete backlog
 
+> **STATUS COLUMN IS HISTORICAL — READ `docs/parity-status.md` FIRST.**
+>
+> The ✅/🟡/❌/⛔ markers below describe the tree as it stood when this backlog was written. A
+> large parity round has since landed, and the markers were not regenerated: at the time of
+> writing, 249 items still read ❌ of which most are now built and browser-verified (cart,
+> coupons, tax rates, currencies, product upgrades, credit deposits, ticket attachments,
+> invoice PDFs, editable notification templates, role CRUD, gateways, servers, imports, locales,
+> OAuth clients, updates, marketplace, affiliates, web push, email piping, the cPanel and
+> Pterodactyl and Stripe adapters).
+>
+> Treat this file as the **feature inventory** — it is still the only place every Paymenter
+> feature is enumerated with an ID and a phase — and treat `docs/parity-status.md` as the
+> **authoritative status**, including its "Not done, and why" and "The management surface is
+> incomplete" sections. Regenerating the markers here is deliberately not attempted by hand: a
+> 249-row hand-edit would be a new source of error, and the honest record is the status file.
+>
+> One marker in particular was wrong in the optimistic direction and is corrected in the status
+> file: i18n is marked done, and its *backend* is, but nothing in the frontend renders a
+> translation.
+
 This is the exhaustive list of what stands between Catalyst Billing and
 [Paymenter](https://paymenter.org). It is written to be worked from: every feature Paymenter
 has is an item, every item has a status, an ID and a phase, and the items that are decisions

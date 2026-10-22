@@ -240,6 +240,28 @@ decision with a test behind it, not a checkbox:
 - **An importer** whose dry run is the default and whose money parsing is exact for a 0-decimal
   and a 3-decimal currency as well as a 2-decimal one.
 
+## The management surface is incomplete
+
+This is a separate class of gap from the epic backlog, and it was found by comparing the route
+table against the view table rather than by reading the epics. The panel is **read-heavy**: it
+lists customers, services, orders, invoices and payments, and it acts on them (credit, cancel,
+upgrade, impersonate), but an operator cannot *create* most of the things it manages.
+
+Measured, not assumed: there are 66 view modules and 65 routes, and the following have **no
+staff API and no screen at all**:
+
+| Missing capability | What exists today | Why it matters |
+|---|---|---|
+| **Create a staff user** | nothing — `billing admin create-user` in the CLI is the only path | An administrator cannot onboard a support agent without shell access to the host |
+| **Manage roles** | `GET/POST/PUT/DELETE /api/v1/staff/roles` are served and tested | The API is there and **no view or nav entry uses it**, so assigning a role is a curl command |
+| **Create a customer** | `GET /api/v1/staff/customers` (list) plus billing-profile and credit | A phone order, a manually onboarded account, or a comped customer needs SQL |
+| **Create a service** | `GET /api/v1/staff/services`; metadata edit; upgrade; cancel | An operator cannot add a service to an existing customer outside checkout |
+| **Register from the login screen** | `/register` exists and is public and working | `web/src/views/login.ts` contains no link to it, so self-registration is unreachable by anyone who lands on the sign-in page |
+
+The last row is the cheapest and the most embarrassing: the feature works, and nothing points at
+it. The first two are the ones that make the panel a demo rather than an admin tool — a product
+whose onboarding story is "ssh in and run a CLI command" is not finished.
+
 ## Not done, and why
 
 Still recorded rather than hidden:
@@ -254,9 +276,14 @@ Still recorded rather than hidden:
   download's SHA-256 before it is trusted, but there is no hosted index of extensions to point at,
   and no signature beyond the digest — a compromised index can still serve a matching malicious
   binary. Pinning is the mitigation available today; a real signature chain is not.
-- **Translations beyond the shell.** The mechanism, the catalog, the resolution chain and the
-  `/locales` editor are real, and the panel shell and storefront are translated. The long tail of
-  screens still renders English text inline. That is a translation task, not an engineering one.
+- **Translations are not rendered by the frontend at all.** This corrects an earlier entry here
+  that claimed the panel shell and storefront were translated; they are not. The backend is
+  complete and real — `locales`, `message_catalog`, the resolution chain, coverage, 88 seeded
+  keys, ten routes, and a working `/locales` editor — but **no frontend module consumes it**:
+  `web/src/lib/i18n.ts` does not exist, and zero of the 66 view modules call a translation
+  helper. Switching a locale therefore changes nothing on screen. The work that remains is a
+  translation helper plus threading `t()` through the views, which is engineering, not just
+  translation.
 
 ## The never-regress list, checked
 

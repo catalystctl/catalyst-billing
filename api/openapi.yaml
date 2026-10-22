@@ -147,6 +147,73 @@ paths:
                     description: An internal error occurred
             summary: Published announcements for the storefront and dashboard
             x-rate-class: ""
+    /api/v1/auth/captcha:
+        get:
+            description: |-
+                Public, because the registration, sign-in and password-reset screens render before anyone has a session. It answers `{"provider": "none", "site_key": "", "enabled": false}` when no challenge is configured, so a page renders no widget rather than guessing.
+
+                A configured provider does not replace the per-source rate limit on the endpoints that consume a token: the challenge is a second control, and a solved challenge is still bounded by the credential budget.
+
+                The `secret_key` setting is not part of this shape and is redacted on every read path. 503 means the configuration could not be read; a client renders no widget and the server still refuses an unverified request.
+            operationId: GetAuthCaptcha
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    enabled:
+                                        description: Whether a widget can be rendered at all (a provider *and* a site key). `false` means the form submits without a token.
+                                        type: boolean
+                                    provider:
+                                        description: The widget to render. `none` means no challenge is configured and the form must not render one.
+                                        enum:
+                                            - none
+                                            - turnstile
+                                            - recaptcha
+                                            - hcaptcha
+                                        type: string
+                                    site_key:
+                                        description: The provider's public key, used to initialise the widget. Public by design; the secret key is never in a response.
+                                        type: string
+                                required:
+                                    - provider
+                                    - site_key
+                                    - enabled
+                                type: object
+                    description: The provider and its public site key
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The challenge configuration could not be read
+            summary: The human-challenge configuration for this installation
+            x-rate-class: ""
     /api/v1/auth/login:
         post:
             description: Sets an HttpOnly session cookie and returns the CSRF token. When a confirmed MFA credential exists the response is 200 with `mfa_required` and a challenge token instead, and no session cookie is set.

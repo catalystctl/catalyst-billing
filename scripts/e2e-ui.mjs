@@ -428,6 +428,9 @@ async function driveEnrolment({
   codeFieldId,
   requireQr = true,
   requireDownload = true,
+  // Distinct names per audience: both drives open the same dialog, and one file name would leave the
+  // second screenshot overwriting the first.
+  shotPrefix = "mfa",
 }) {
   const opened = await evaluate(`(() => {
     const button = Array.from(document.querySelectorAll('button')).find((b) =>
@@ -480,6 +483,7 @@ async function driveEnrolment({
 
   const hasCopy = await evaluate("document.querySelector('.settings-secret .copy') !== null");
   check("mfa: the setup secret can be copied", hasCopy);
+  await screenshot(`${shotPrefix}-enrolment-dialog`);
 
   // A real code, from the secret the page showed.
   const code = await freshTotp(secret);
@@ -497,6 +501,7 @@ async function driveEnrolment({
   check("mfa: confirming shows the recovery codes", Boolean(shown), "no recovery-code dialog appeared");
   if (!shown) return { secret, codes: [] };
 
+  await screenshot(`${shotPrefix}-recovery-codes`);
   const codes = await evaluate(`(() => {
     const pre = document.querySelector('.settings-recovery');
     return pre ? pre.textContent.split(/\\s+/).filter(Boolean) : [];
@@ -1578,6 +1583,7 @@ try {
             codeFieldId: "portal-mfa-code",
             requireQr: false,
             requireDownload: false,
+            shotPrefix: "portal-mfa",
           });
           if (enrolled?.secret) {
             await until("the portal status to say On", `(() => { const b = document.querySelector('#two-factor .badge'); return b && b.textContent.trim() === 'On'; })()`, 10_000).catch(() => {});

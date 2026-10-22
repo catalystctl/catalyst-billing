@@ -1,0 +1,809 @@
+/* View-specific styles: commerce and operator screens.
+ *
+ * One file for the twelve screens this package owns, so a shape shared by two of them — the
+ * cart line, the totals block, the matrix cell — is written once. Shared components stay in
+ * components.css and pages.css; nothing here redefines a `.card`, a `.btn` or a `.table`.
+ *
+ * Three rules are respected throughout:
+ *
+ *  - No inline styles and no width/height set from script. A proportional bar uses a
+ *    `data-*` attribute with a rule here, because the CSP has no `unsafe-inline` for style.
+ *  - A table cell's `display` is only ever changed inside a media query, and only to `none`
+ *    (rule 10 in web/README.md). Below 780px the shared `.table-wrap--cards` turns a row into
+ *    a card; the `[data-label]` rules that label those cells are in tables.css.
+ *  - Every colour comes from a token in tokens.css. A screen that invented a hex value would
+ *    break the light theme, which is the theme most operators use in daylight.
+ */
+
+/* ------------------------------------------------------- the hidden attribute -- */
+
+/* The `hidden` attribute is a user-agent rule with the lowest possible specificity, so any
+ * `display` declaration beats it. `.field` and `.form-grid` both set one, which means
+ * `field.hidden = true` did nothing: a form that swaps a percentage field for an amount field
+ * showed both. This is the smallest rule that makes the attribute mean what it says, scoped to
+ * the two shapes this package hides and shows while a form changes. */
+.field[hidden],
+.form-grid[hidden] {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- the cart -- */
+
+.cart-lines {
+  display: flex;
+  flex-direction: column;
+}
+
+.cart-line {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.cart-line:last-child {
+  border-bottom: 0;
+}
+
+.cart-line-main {
+  flex: 1;
+  min-width: 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cart-line-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  font-weight: 550;
+}
+
+.cart-line-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.cart-line-dot {
+  color: var(--text-faint);
+}
+
+/* The tax line is evidence, not a warning: it says which rate and which jurisdiction applied,
+ * which is the question a customer asks when a total looks higher than they expected. */
+.cart-line-tax {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.cart-qty {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.cart-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.cart-step:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.cart-step:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.cart-qty-value {
+  min-width: 2.25rem;
+  padding: 0 2px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: var(--text-sm);
+  line-height: 30px;
+}
+
+/* A quantity on a read-only summary (checkout) is the same shape without the controls, so the
+ * two screens line up rather than looking like different products. */
+.cart-qty--static {
+  padding: 0 10px;
+  border-style: dashed;
+}
+
+.cart-line-side {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-left: auto;
+  align-self: center;
+}
+
+.cart-line-amount {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+
+.cart-line-unit {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* A summary line on the checkout screen is denser than the cart's: the same row shape, less
+ * padding, because the customer has already reviewed the detail once. */
+.cart-lines--compact .cart-line {
+  padding: var(--s-2) var(--s-4);
+}
+
+/* ----------------------------------------------------------------- totals -- */
+
+.cart-totals {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.cart-total-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+  font-size: var(--text-sm);
+}
+
+.cart-total-label {
+  color: var(--text-dim);
+}
+
+.cart-total-value {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.cart-total-row--strong {
+  font-size: var(--text-lg);
+  font-weight: 650;
+}
+
+.cart-total-row--strong .cart-total-label {
+  color: var(--text);
+}
+
+.cart-total-divider {
+  height: 1px;
+  background: var(--line);
+  margin: var(--s-1) 0;
+}
+
+/* ----------------------------------------------------------------- coupon -- */
+
+.cart-coupon-form {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s-2);
+}
+
+.cart-coupon-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.cart-coupon-applied {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+/* --------------------------------------------------------------- currency -- */
+
+.cart-currency-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.cart-currency-code {
+  font-weight: 650;
+  font-size: var(--text-lg);
+}
+
+.cart-currency-row .select {
+  flex: 1;
+  min-width: 10rem;
+}
+
+/* --------------------------------------------------------------- checkout -- */
+
+.checkout-terms {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  max-height: 18rem;
+  overflow: auto;
+}
+
+.checkout-terms-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+}
+
+.checkout-terms-text p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.checkout-step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+}
+
+.checkout-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: var(--accent-soft, var(--surface-3));
+  color: var(--accent, var(--text));
+  font-size: var(--text-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- coupons -- */
+
+/* A product restriction is a set of checkboxes, not a multi-select: an operator ticking three
+ * of six products needs to see which three, and a multi-select hides that behind a scroll. */
+.coupon-products {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: var(--s-2);
+  max-height: 16rem;
+  overflow: auto;
+  padding: var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.coupon-product {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 4px 6px;
+  border-radius: var(--r-sm);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.coupon-product:hover {
+  background: var(--surface-3);
+}
+
+.coupon-product input {
+  flex: 0 0 auto;
+}
+
+/* -------------------------------------------------------------- tax rates -- */
+
+.tax-summary,
+.cur-summary,
+.ann-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  padding: 0 var(--s-1);
+  font-size: var(--text-sm);
+}
+
+/* ------------------------------------------------------------- currencies -- */
+
+/* The live preview in the currency editor. It is the one control on the screen whose effect
+ * cannot be checked by reading the form, so it gets the size of a number rather than a hint. */
+.cur-preview {
+  padding: var(--s-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.cur-preview-value {
+  font-size: var(--text-xl);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+/* --------------------------------------------------------- config options -- */
+
+.config-picker {
+  max-width: 32rem;
+}
+
+.config-option-body {
+  padding: var(--s-3) var(--s-4) var(--s-4);
+}
+
+.config-option-desc {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+
+.config-option-note {
+  margin: 0;
+}
+
+/* The matrix: one row per choice, one column per price version. It scrolls sideways rather
+ * than wrapping, because a matrix that wraps stops being a matrix. */
+.config-matrix {
+  overflow-x: auto;
+}
+
+.config-table {
+  min-width: 32rem;
+}
+
+.config-version-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  line-height: 1.3;
+}
+
+/* A price cell is a button: clicking it is how an operator sets or changes the amount for that
+ * (choice, version) pair, and a button that reads as a number is what makes the matrix feel
+ * like a spreadsheet rather than a form. */
+.config-amount {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.config-amount:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+}
+
+.config-amount--unset {
+  color: var(--text-faint);
+  border-style: dashed;
+  border-color: var(--line);
+}
+
+.config-amount-setup {
+  font-size: 0.6875rem;
+  color: var(--text-faint);
+}
+
+/* ------------------------------------------------------- system settings -- */
+
+.settings-group {
+  scroll-margin-top: 5rem;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+  gap: var(--s-4);
+}
+
+.settings-field--wide {
+  grid-column: 1 / -1;
+}
+
+.settings-control {
+  min-width: 0;
+}
+
+.settings-field-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+.settings-field-head .field-label {
+  margin: 0;
+}
+
+/* ---------------------------------------------------------- announcements -- */
+
+.ann-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.ann-card {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A live announcement gets a left edge, because "is this showing right now" is the question
+ * the list is scanned for and a badge alone is easy to skim past. */
+.ann-card--live {
+  border-left: 3px solid var(--success, var(--accent));
+}
+
+.ann-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--s-4) var(--s-2);
+  flex-wrap: wrap;
+}
+
+.ann-head-text {
+  flex: 1;
+  min-width: 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ann-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+.ann-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.ann-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.ann-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.ann-body {
+  padding: 0 var(--s-4) var(--s-3);
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.ann-body p {
+  margin: 0 0 var(--s-2);
+}
+
+.ann-body p:last-child {
+  margin-bottom: 0;
+}
+
+.ann-body--empty {
+  font-style: italic;
+  color: var(--text-faint);
+}
+
+.ann-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  padding: var(--s-2) var(--s-4);
+  border-top: 1px solid var(--line);
+  font-size: var(--text-xs);
+}
+
+/* ------------------------------------------------------------------- logs -- */
+
+.log-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: var(--s-3);
+  align-items: end;
+}
+
+/* The cancellation queue reuses the filter grid inside a toolbar, where it must not stretch. */
+.log-filters--inline {
+  grid-template-columns: minmax(14rem, 22rem);
+  flex: 1;
+}
+
+.log-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding-bottom: 2px;
+}
+
+/* An error string in a table cell: one line, ellipsised, with the full text in the title. A
+ * multi-line stack trace in a table row makes every other row unreadable. */
+.log-error {
+  display: block;
+  max-width: 34rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+
+.log-slow {
+  color: var(--warning, var(--text));
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------- cancellations -- */
+
+.cancel-reason {
+  display: block;
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.cancel-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+/* ----------------------------------------------------------------- credit -- */
+
+.credit-hero {
+  display: flex;
+  align-items: stretch;
+  gap: var(--s-4);
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  flex-wrap: wrap;
+}
+
+.credit-hero-main {
+  flex: 1;
+  min-width: 14rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.credit-hero-label {
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.credit-hero-amounts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.credit-hero-amount {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+
+.credit-hero-code {
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  font-weight: 600;
+}
+
+.credit-hero-none {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.credit-hero-note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  max-width: 42rem;
+}
+
+.credit-hero-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: var(--s-2);
+  text-align: right;
+}
+
+.credit-deposit-form {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) 8rem auto;
+  gap: var(--s-3);
+  align-items: end;
+}
+
+.credit-deposit-action {
+  padding-bottom: 2px;
+}
+
+.credit-history {
+  display: flex;
+  flex-direction: column;
+}
+
+.credit-history-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.credit-history-row:last-child {
+  border-bottom: 0;
+}
+
+.credit-history-main {
+  flex: 1;
+  min-width: 12rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.credit-history-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  font-weight: 550;
+}
+
+.credit-history-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.credit-history-dot {
+  color: var(--text-faint);
+}
+
+.credit-history-side {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.credit-history-note {
+  margin: 0;
+}
+
+/* ------------------------------------------------------------- responsive -- */
+
+@media (max-width: 780px) {
+  .cart-line {
+    align-items: stretch;
+  }
+
+  .cart-line-side {
+    margin-left: 0;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .cart-qty {
+    align-self: flex-start;
+  }
+
+  .cart-coupon-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .credit-deposit-form {
+    grid-template-columns: 1fr;
+  }
+
+  .credit-hero-side {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ann-head,
+  .ann-foot {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .credit-history-side {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+/* A phone is a layout, not a squeeze: the matrix keeps its horizontal scroll (it is a table of
+ * numbers and wrapping it would destroy the comparison), while everything else stacks. */
+@media (max-width: 520px) {
+  .config-table {
+    min-width: 26rem;
+  }
+
+  .cart-qty-value {
+    min-width: 1.75rem;
+  }
+}

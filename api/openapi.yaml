@@ -13484,6 +13484,93 @@ paths:
             x-permission: credit:read:all
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/credit/debits:
+        get:
+            description: 'Every `credit_debit` posting, read from the journal rather than from a table of deductions: the deduction *is* the posting, and a list assembled from a second table could disagree with the balance it is meant to explain. Each row carries the reason (the entry''s memo, the same text the customer sees) and the operator from the audit row written with the posting, which is empty rather than absent when that row cannot be found. Filter with `customer_id` for one account''s history.'
+            operationId: GetStaffCreditDebits
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    debits:
+                                        items:
+                                            properties:
+                                                amount:
+                                                    $ref: '#/components/schemas/Amount'
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                created_by:
+                                                    type: string
+                                                created_by_email:
+                                                    type: string
+                                                customer_email:
+                                                    type: string
+                                                customer_id:
+                                                    format: uuid
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                reason:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - customer_id
+                                                - amount
+                                                - reason
+                                                - created_at
+                                            type: object
+                                        type: array
+                                required:
+                                    - debits
+                                type: object
+                    description: The deductions
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`limit` is out of range'
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`customer_id` is not a customer id'
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Staff credit deductions, newest first
+            x-permission: credit:read:all
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/credit/grants:
         get:
             description: 'The credit notes issued with no invoice behind them, read from the note''s frozen snapshot (`snapshot.kind = "grant"`): the snapshot is what the document was issued with, so it cannot drift from the note it describes, and a correction to a specific invoice has a different kind and belongs on that invoice. Filter with `customer_id` for one account''s history. Keyset-paginated on `(created_at, id)`.'
@@ -15052,6 +15139,134 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: invoice:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/customers/{id}/credit/debit:
+        post:
+            description: 'Deducts from the customer''s credit balance and records it as an append-only journal entry of kind `credit_debit` (debit `customer_credit`, credit `revenue`) — never an edit of an existing entry, so the balance stays the sum of its entries. `reason` is required: it becomes the memo on the customer-credit entry, which is what the customer''s own credit history renders, and it is copied into the audit row written inside the same transaction. A debit larger than the balance is **refused** with `insufficient_credit` (409) rather than clamped, so the balance can never go negative and the operator''s intent and the books cannot silently differ. The `Idempotency-Key` is required and becomes the entry''s identity: a double-submit replays the original deduction instead of taking the credit twice, and the same key presented with different content is refused with `idempotency_key_reused`. Requires `credit:write` — this is a money movement, not a read.'
+            operationId: PostStaffCustomersByIdCreditDebit
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    amount:
+                                        $ref: '#/components/schemas/Amount'
+                                    audit:
+                                        properties:
+                                            action:
+                                                description: a dotted verb, e.g. credit.grant
+                                                type: string
+                                            actor_email:
+                                                type: string
+                                            actor_id:
+                                                type: string
+                                            changes:
+                                                description: the redacted diff, as stored
+                                                type: object
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            id:
+                                                format: int64
+                                                type: integer
+                                            outcome:
+                                                enum:
+                                                    - success
+                                                    - failure
+                                                    - denied
+                                                type: string
+                                        required:
+                                            - id
+                                            - action
+                                            - outcome
+                                            - created_at
+                                        type: object
+                                    balance:
+                                        $ref: '#/components/schemas/Amount'
+                                    customer_id:
+                                        format: uuid
+                                        type: string
+                                    id:
+                                        description: the journal entry's reference id, derived from the Idempotency-Key
+                                        format: uuid
+                                        type: string
+                                    kind:
+                                        enum:
+                                            - credit_debit
+                                        type: string
+                                    reason:
+                                        type: string
+                                    replayed:
+                                        type: boolean
+                                required:
+                                    - id
+                                    - customer_id
+                                    - amount
+                                    - balance
+                                    - reason
+                                    - kind
+                                    - replayed
+                                type: object
+                    description: The deduction, the balance it left and its audit row
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The amount is not positive, the reason is missing, or the currency is unknown
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such customer
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`insufficient_credit` (the balance cannot support the debit) or `idempotency_key_reused`'
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Take credit away from a customer
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: credit:write
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/customers/{id}/portal:

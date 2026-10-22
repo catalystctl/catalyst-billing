@@ -1,9 +1,10 @@
 // Credit, for staff (CRD-07, E5.2).
 //
-// One question, answered in two halves: **who holds credit**, and **what did we grant**. The
-// customer's own screen (portal-credits.ts) answers "how much do I have"; this one exists because
-// an operator needs the other direction — find a customer, add goodwill credit, and be able to show
-// afterwards what was granted, by whom, and what the balance became.
+// One question, answered in three halves: **who holds credit**, **what did we grant**, and
+// **what did we take away**. The customer's own screen (portal-credits.ts) answers "how much do I
+// have"; this one exists because an operator needs the other direction — find a customer, add
+// goodwill credit, deduct credit that was granted in error, and be able to show afterwards what
+// was done, by whom, and what the balance became.
 //
 // Three facts shape the page, and each is the server's rather than the page's:
 //
@@ -14,18 +15,26 @@
 //   - **A grant is a document.** `POST /api/v1/staff/customers/{id}/credit` issues a numbered credit
 //     note with a reason that reaches the audit row. The dialog requires the reason for that
 //     reason: a grant with no reason is a balance change nobody can explain in six months.
-//   - **The evidence is read back, not assumed.** After a grant the page reads
-//     `GET /api/v1/staff/credit/grants/{id}` and shows the note, its audit rows and the balance it
-//     left. A toast that said "granted" would be the page's word for it; the note number, the
-//     operator and the audit row are the server's.
+//   - **A deduction is an entry, and it needs a reason even more.**
+//     `POST /api/v1/staff/customers/{id}/credit/debit` appends a journal entry of kind
+//     `credit_debit`; nothing is edited, the balance can never be taken below zero (the server
+//     refuses rather than clamps), and the reason is what the customer reads beside the negative
+//     amount in their own credit history. A silent deduction is indistinguishable from a bug to
+//     the person whose balance moved, so the dialog will not submit without one.
+//
+// The evidence is read back, not assumed. After a grant the page reads
+// `GET /api/v1/staff/credit/grants/{id}` and shows the note, its audit rows and the balance it
+// left. After a deduction it shows the audit row the server returned with the 201, because that
+// row was written inside the posting's transaction and is the record rather than a description
+// of it. A toast that said "done" would be the page's word for it.
 //
 // Two permissions, deliberately separate: `credit:read:all` reads the ledger and `credit:write`
 // moves money. Support holds the first and not the second, so the screen renders for them and the
-// grant buttons do not.
+// grant and debit buttons do not.
 //
-// The idempotency key is minted once per grant dialog and reused across retries. That is what makes
-// "the network dropped, press it again" safe: the same key is the same grant, and the server
-// replays the note it already issued instead of minting a second one.
+// The idempotency key is minted once per dialog and reused across retries. That is what makes
+// "the network dropped, press it again" safe: the same key is the same grant (or the same
+// deduction), and the server replays what it already recorded instead of moving the money twice.
 
 import { ApiError } from "../lib/api";
 import { h, swap } from "../lib/dom";
@@ -113,6 +122,22 @@ interface AuditRow {
   changes: Record<string, unknown> | null;
 }
 
+/** The 201 from `POST /api/v1/staff/customers/{id}/credit/debit`.
+ *
+ *  `balance` is the balance the entry left behind, and `audit` is the row written inside the
+ *  posting's transaction. Both come from the server; neither is computed here.
+ */
+interface DebitIssued {
+  id: string;
+  customer_id: string;
+  amount: Amount;
+  balance: Amount;
+  reason: string;
+  kind: string;
+  replayed: boolean;
+  audit: AuditRow | null;
+}
+
 /** `GET /api/v1/staff/credit/grants/{id}` — the note, its evidence and the balance now. */
 interface GrantEvidence {
   grant: CreditGrant;
@@ -131,7 +156,9 @@ export default async function creditsPage(ctx: Ctx): Promise<Node> {
     ctx.navigate("/", { replace: true });
     return h("div");
   }
-  const canGrant = ctx.can("credit:write");
+  // Both directions of a balance change need credit:write: a grant mints credit, a deduction
+  // takes it away, and they are the same money movement from opposite ends.
+  const canWrite = ctx.can("credit:write");
 
   let term = (ctx.route.query.get("q") ?? "").trim();
   let onlyWithCredit = ctx.route.query.get("with_credit") === "true";
@@ -189,13 +216,25 @@ export default async function creditsPage(ctx: Ctx): Promise<Node> {
     },
   ];
 
-  if (canGrant) {
+  if (canWrite) {
     columns.push({
       key: "grant",
       label: "",
       align: "right",
       width: "1%",
-      render: (row) => btn("Grant", { size: "sm", variant: "ghost", icon: "plus", onclick: () => void openGrantDialog(row) }),
+      // Two actions, deliberately both visible rather than one behind a menu: an operator who
+      // needs to take credit away is usually looking at the row that holds it, and hiding the
+      // action is how the SQL workaround starts. The debit is offered only when there is a
+      // balance to take from — a button that can only be refused is worse than an absent one.
+      render: (row) =>
+        h(
+          "div",
+          { class: "row-wrap" },
+          btn("Grant", { size: "sm", variant: "ghost", icon: "plus", onclick: () => void openGrantDialog(row) }),
+          (row.balances ?? []).length > 0
+            ? btn("Debit", { size: "sm", variant: "ghost", icon: "minus", onclick: () => void openDebitDialog(row) })
+            : null,
+        ),
     });
   }
 
@@ -389,6 +428,171 @@ export default async function creditsPage(ctx: Ctx): Promise<Node> {
     });
   }
 
+  // ------------------------------------------------------------ the deduction --
+
+  /** Opens the deduction dialog for one customer.
+   *
+   *  Three things are stated in the dialog rather than discovered afterwards: the deduction is
+   *  permanent (a correction is another entry, not an undo), the balance cannot go below zero, and
+   *  the reason is what the customer will read. The amount is validated here against the
+   *  currency's scale so the operator is told before the round trip; the server validates it
+   *  again, and the server is the one that decides.
+   */
+  async function openDebitDialog(row: CreditCustomer): Promise<void> {
+    const held = row.balances ?? [];
+    // Only currencies the customer actually holds are offered: a debit is taken from a balance,
+    // and offering a currency they hold nothing in would produce a request the server must refuse.
+    const codes = held.map((amount) => amount.currency);
+    const preferred = codes[0] ?? currencies.find((c) => c.is_default)?.code ?? "USD";
+    const heldText = held
+      .map((amount) => `${amount.display || amount.currency}`)
+      .join(", ");
+
+    const amount = input({
+      id: "debit-amount",
+      placeholder: "10.00",
+      inputmode: "decimal",
+      class: "input--mono",
+      required: true,
+    });
+    const currency = select(
+      codes.map((code) => ({ value: code, label: code })),
+      { id: "debit-currency", value: preferred },
+    );
+    const reason = textarea({
+      id: "debit-reason",
+      placeholder: "Why is this credit being taken away? The customer sees this on their own credit history.",
+      maxlength: 500,
+    });
+    // One key per dialog, not per attempt: a retry after a dropped connection is the same
+    // deduction, and the server replays the entry it already recorded.
+    const key = idempotencyKey();
+
+    await ctx.formDialog({
+      title: "Take credit away",
+      subtitle: `${row.name || row.email} · holds ${heldText}. A deduction is a new ledger entry; the customer sees the reason.`,
+      submitLabel: "Debit credit",
+      danger: true,
+      body: h(
+        "div",
+        { class: "stack" },
+        h(
+          "div",
+          { class: "banner banner--warning" },
+          icon("info", 15),
+          h(
+            "span",
+            null,
+            "This posts a debit against the customer's credit balance. It cannot be undone from this screen — a mistake is corrected with another entry — and it is refused if it would take the balance below zero.",
+          ),
+        ),
+        h(
+          "div",
+          { class: "credit-deposit-form" },
+          field({ label: "Amount", control: amount, id: "debit-amount", required: true }),
+          field({ label: "Currency", control: currency, id: "debit-currency" }),
+        ),
+        field({
+          label: "Reason",
+          control: reason,
+          id: "debit-reason",
+          required: true,
+          hint: "Recorded on the ledger entry and in the audit row, and shown to the customer in their credit history. Write it for them, not for us.",
+        }),
+      ),
+      onSubmit: async () => {
+        const code = currency.value.toUpperCase();
+        const scale = scaleOf(currencies, code);
+        const minor = amountFromInput(amount.value, scale);
+        if (minor === null || minor <= 0) {
+          return `Enter an amount greater than zero, e.g. ${scale === 0 ? "500" : "10.00"}.`;
+        }
+        const why = reason.value.trim();
+        if (!why) {
+          return "A deduction needs a reason: the customer sees it, and the audit row carries it.";
+        }
+
+        let issued: DebitIssued;
+        try {
+          issued = await ctx.api.post<DebitIssued>(
+            `/api/v1/staff/customers/${encodeURIComponent(row.id)}/credit/debit`,
+            { amount_minor: minor, currency: code, reason: why },
+            { idempotencyKey: key },
+          );
+        } catch (err) {
+          if (!(err instanceof ApiError)) {
+            return "The server could not be reached, so no credit was taken.";
+          }
+          switch (err.code) {
+            case "insufficient_credit":
+              // The server's message quotes the balance it refused against, which is the number
+              // the operator needs. Replacing it with "not enough credit" would lose it.
+              return err.detail || "The balance cannot support that deduction.";
+            case "reason_required":
+              return "A deduction needs a reason.";
+            case "invalid_amount":
+              return "The amount must be positive.";
+            case "invalid_currency":
+              return "Choose a currency for the deduction.";
+            case "not_found":
+              return "This customer no longer exists, so nothing was taken.";
+            case "idempotency_key_reused":
+              return "That request was already used for a different deduction. Close this dialog and start again.";
+            case "forbidden":
+              return "Your account cannot move credit (credit:write).";
+            default:
+              return err.detail || `The deduction was refused (${err.code}).`;
+          }
+        }
+
+        ctx.toast(issued.replayed ? "That deduction was already recorded" : "Credit taken away", {
+          tone: "success",
+          detail: `${issued.amount.display || issued.amount.currency} · balance ${issued.balance.display || issued.balance.currency}`,
+        });
+        // The list first: its balance is now wrong, and a stale row beside a fresh confirmation is
+        // the disagreement this screen exists to avoid.
+        void table.reload(queryOf(term, onlyWithCredit));
+        showDebitEvidence(issued, row);
+        return undefined;
+      },
+    });
+  }
+
+  /** Renders the deduction the server recorded, from the response it returned.
+   *
+   *  No second read: the 201 carries the balance it left and the audit row written inside the
+   *  posting's transaction, so what is shown is what the server committed rather than what this
+   *  page hoped it did.
+   */
+  const showDebitEvidence = (issued: DebitIssued, row: CreditCustomer): void => {
+    const audit = issued.audit;
+    swap(
+      evidenceHost,
+      card({
+        title: "Credit deducted",
+        sub: `${row.name || row.email} · the entry is permanent and the reason is on the customer's own statement`,
+        actions: btn("Dismiss", { size: "sm", variant: "ghost", icon: "x", onclick: () => swap(evidenceHost, h("div")) }),
+        body: h(
+          "div",
+          { class: "stack" },
+          metaGrid([
+            { label: "Taken", value: moneyEl(issued.amount, { size: "lg", signed: true }) },
+            { label: "Balance after", value: moneyEl(issued.balance, { size: "lg" }) },
+            { label: "Entry", value: h("span", { class: "mono" }, issued.kind) },
+            { label: "Reason", value: h("span", null, issued.reason) },
+          ]),
+          h(
+            "p",
+            { class: "field-hint" },
+            audit
+              ? `Audit row #${audit.id} · ${audit.action} · ${audit.actor_email || "system"} · ${dateTime(audit.created_at)}`
+              : "The deduction is committed. Its audit row could not be read back just now, so it is not shown here; it is in the audit log.",
+          ),
+        ),
+      }),
+    );
+  };
+
   // ------------------------------------------------------------ the evidence --
 
   /** Reads one grant back and renders its note, its audit rows and the balance it left. */
@@ -490,8 +694,8 @@ export default async function creditsPage(ctx: Ctx): Promise<Node> {
     { class: "page" },
     pageHead({
       title: "Credit",
-      sub: "Customer credit balances, and goodwill credit granted to them. A balance is the ledger's, per currency; a grant is a numbered note.",
-      actions: canGrant
+      sub: "Customer credit balances, and both directions of movement: goodwill credit granted, and credit taken away. A balance is the ledger's, per currency; a grant is a numbered note and a deduction is a ledger entry with a reason.",
+      actions: canWrite
         ? btn("Audit log", { href: "/audit", icon: "shield", size: "sm" })
         : btn("Customers", { href: "/customers", icon: "users", size: "sm" }),
     }),

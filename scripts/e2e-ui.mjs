@@ -861,9 +861,56 @@ try {
     expect: ["Cancellations"],
   });
 
-  // The staff credit screen is the one that has not landed: it is a placeholder module. It is
-  // in the list deliberately so the report says so rather than omitting it.
-  await assertNewScreen("credits-staff", { path: "/credits", expect: ["Credit"] });
+  // The staff credit screen lists balances and moves credit in both directions. The debit action
+  // is the half that a read-only balance screen leaves to SQL, so it is checked by name: a screen
+  // that renders a balance and offers no way to correct one is the gap this screen closed.
+  const creditsScreen = await assertNewScreen("credits-staff", {
+    path: "/credits",
+    expect: ["Credit", ...(customerEmail ? [customerEmail] : [])],
+  });
+  if (creditsScreen.status === "present" && customerEmail) {
+    // The seeded customer holds credit, so the row that carries it must offer the deduction. The
+    // controls are read from the DOM rather than assumed: a handler with no button is a feature
+    // no operator can reach.
+    const controls = await evaluate(
+      "[...document.querySelectorAll('button')].map((b) => (b.textContent || '').trim())",
+    );
+    check(
+      "credits-staff: offers a debit action",
+      Array.isArray(controls) && controls.some((label) => /^debit$/i.test(String(label))),
+      JSON.stringify(controls),
+    );
+    // And the dialog behind it must open with the fields the server requires, or the action is a
+    // button that cannot do anything. The button is clicked by its label rather than by position:
+    // the page head has actions of its own and "the first button" is not the debit one.
+    const clickedDebit = await evaluate(`(() => {
+      const el = [...document.querySelectorAll('button')]
+        .find((b) => /^debit$/i.test((b.textContent || '').trim()));
+      if (!el) return false;
+      el.click();
+      return true;
+    })()`);
+    if (clickedDebit) {
+      const opened = await until(
+        "the debit dialog",
+        "document.querySelector('[role=dialog]') !== null",
+        3_000,
+      )
+        .then(() => true)
+        .catch(() => false);
+      check("credits-staff: the debit action opens a dialog", opened, "no dialog appeared");
+      if (opened) {
+        const dialog = await pageText();
+        check(
+          "credits-staff: the debit dialog asks for a reason",
+          /reason/i.test(dialog),
+          dialog.slice(0, 200),
+        );
+        await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+        await until("the debit dialog to close", "document.querySelector('[role=dialog]') === null", 3_000).catch(() => {});
+      }
+    }
+  }
   await assertNewScreen("affiliates", { path: "/affiliates", expect: ["Affiliates"] });
   await assertNewScreen("locales", { path: "/locales", expect: ["Locales", "Languages"] });
   await assertNewScreen("imports", { path: "/imports", expect: ["Imports", "The dump"] });

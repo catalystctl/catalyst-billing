@@ -80,6 +80,10 @@ var (
 	ErrNoGateway = errors.New("credit: no payment gateway is configured")
 	// ErrInvalidRequest is returned for a malformed request.
 	ErrInvalidRequest = errors.New("credit: invalid request")
+	// ErrKeyReused is returned when an idempotency key that already belongs to one debit is
+	// presented again with different content. A replay must return the original debit, not
+	// silently become a second one, and it must not be answered as if it had been recorded.
+	ErrKeyReused = errors.New("credit: that idempotency key was already used for a different debit")
 )
 
 // Settings is the credits.* group of the settings table, with code-side defaults.
@@ -268,7 +272,12 @@ func (s *Service) Balance(ctx context.Context, customerID string) ([]money.Amoun
 // the balance is derived from: a transaction list assembled from anywhere else could disagree with
 // the number above it, and the customer would be right to trust neither.
 type Entry struct {
-	ID       string
+	ID string
+	// Kind is the journal transaction kind — "credit_debit", "adjustment", "payment_received" —
+	// so a statement can say what sort of movement a row is instead of only how much it was. A
+	// deduction an operator made is a different thing from one the customer chose, and the
+	// customer is entitled to see which.
+	Kind     string
 	Currency string
 	// Amount is signed: positive when credit was added, negative when it was spent.
 	Amount    money.Amount
@@ -287,10 +296,12 @@ func TransactionsFor(ctx context.Context, q Querier, customerID string, limit in
 		limit = 50
 	}
 	rows, err := q.Query(ctx, `
-		SELECT id::text, currency, credit_minor - debit_minor, memo, created_at
-		FROM journal_entries
-		WHERE customer_id = $1 AND account_code = $2
-		ORDER BY created_at DESC, id DESC
+		SELECT je.id::text, jt.kind, je.currency, je.credit_minor - je.debit_minor, je.memo,
+		       je.created_at
+		FROM journal_entries je
+		JOIN journal_transactions jt ON jt.id = je.transaction_id
+		WHERE je.customer_id = $1 AND je.account_code = $2
+		ORDER BY je.created_at DESC, je.id DESC
 		LIMIT $3`, customerID, ledger.AccountCredit, limit)
 	if err != nil {
 		return nil, fmt.Errorf("credit: read transactions: %w", err)
@@ -303,7 +314,7 @@ func TransactionsFor(ctx context.Context, q Querier, customerID string, limit in
 			e     Entry
 			minor int64
 		)
-		if err := rows.Scan(&e.ID, &e.Currency, &minor, &e.Memo, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.Kind, &e.Currency, &minor, &e.Memo, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("credit: scan transaction: %w", err)
 		}
 		cur, ok := money.LookupCurrency(e.Currency)

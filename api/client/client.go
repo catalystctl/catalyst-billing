@@ -1365,6 +1365,16 @@ func (c *Client) GetStaffCreditCustomers(ctx context.Context, query url.Values, 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffCreditDebits calls GET /api/v1/staff/credit/debits.
+//
+// # Staff credit deductions, newest first
+//
+// Permission: credit:read:all. Staff only.
+func (c *Client) GetStaffCreditDebits(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/credit/debits"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffCreditGrants calls GET /api/v1/staff/credit/grants.
 //
 // # Goodwill credit grants, newest first
@@ -2837,6 +2847,20 @@ func (c *Client) PostStaffCustomersByIdCredit(ctx context.Context, id string, qu
 // id is the id path parameter.
 func (c *Client) PostStaffCustomersByIdCreditApply(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/customers/{id}/credit/apply"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffCustomersByIdCreditDebit calls POST /api/v1/staff/customers/{id}/credit/debit.
+//
+// # Take credit away from a customer
+//
+// Permission: credit:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffCustomersByIdCreditDebit(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/customers/{id}/credit/debit"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }

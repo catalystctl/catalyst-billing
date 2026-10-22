@@ -59,7 +59,17 @@ func registerCredits(r *router) {
 
 // creditService builds the credit service with the configured gateway and auditor.
 func (s *Server) creditService(r *http.Request) *credit.Service {
-	svc := credit.New(s.pool).WithAuditor(s.auditorFor(r, ""))
+	return s.creditServiceWithReason(r, "")
+}
+
+// creditServiceWithReason builds the credit service with an auditor that records a reason on
+// every audit row it writes.
+//
+// It exists so a money movement's audit row explains itself even when the domain method's changes
+// map does not carry the reason: the auditor stamps the request's actor, correlation id and source
+// address, and a reason it is given is added rather than overwritten.
+func (s *Server) creditServiceWithReason(r *http.Request, reason string) *credit.Service {
+	svc := credit.New(s.pool).WithAuditor(s.auditorFor(r, reason))
 	if s.gateway != nil {
 		svc = svc.WithGateway(s.gateway, s.account, s.checkoutSuccessURL, s.checkoutCancelURL)
 	}
@@ -289,6 +299,13 @@ func (s *Server) handleStaffGrantCredit(w http.ResponseWriter, r *http.Request) 
 //
 // It is scoped in SQL by the session's customer id, so substituting another customer's id is not
 // possible: there is no id in the request to substitute.
+//
+// Each row carries `kind` (the journal transaction's kind) and `description` (the entry's memo)
+// beside the amount, because a statement that shows only numbers cannot answer the question the
+// customer actually has. A debit an operator made is memoed with their reason, and that memo is
+// the only place the "why" can reach the person whose balance moved; without it, a deduction is
+// indistinguishable from a bug. The fields are additive: a client that reads only `amount` and
+// `memo` is unaffected.
 func (s *Server) handlePortalCreditTransactions(w http.ResponseWriter, r *http.Request) {
 	if s.pool == nil {
 		writeProblem(w, http.StatusServiceUnavailable, "storage_unavailable", "no database configured")
@@ -315,10 +332,12 @@ func (s *Server) handlePortalCreditTransactions(w http.ResponseWriter, r *http.R
 	out := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, map[string]any{
-			"id":         e.ID,
-			"amount":     amountJSON(e.Amount),
-			"memo":       e.Memo,
-			"created_at": e.CreatedAt.UTC().Format(time.RFC3339),
+			"id":          e.ID,
+			"kind":        e.Kind,
+			"amount":      amountJSON(e.Amount),
+			"memo":        e.Memo,
+			"description": e.Memo,
+			"created_at":  e.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"transactions": out})

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/growth"
 	"github.com/catalyst/billing/internal/invoicepdf"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/notify"
@@ -107,6 +108,15 @@ func (a *Applier) ApplySettledPayment(ctx context.Context, tx pgx.Tx, p payments
 		// registering has no address to send to, and that must not stop their payment landing.
 		if err := a.notifyInvoicePaid(ctx, tx, p.InvoiceID); err != nil {
 			return payments.ApplyResult{}, err
+		}
+
+		// Pay the affiliate who referred this customer, in the same transaction that took the
+		// money. Commission is a liability the moment the payment settles, so recording it later
+		// would leave a window in which the books say the shop earned the full amount and it did
+		// not. An invoice with no referral is a no-op, which is the overwhelmingly common case.
+		if _, err := growth.RecordCommissionForPaidInvoice(ctx, tx, p.InvoiceID); err != nil &&
+			!errors.Is(err, growth.ErrNotReferred) {
+			return payments.ApplyResult{}, fmt.Errorf("record affiliate commission: %w", err)
 		}
 
 		if err := a.activateSubscription(ctx, tx, p.InvoiceID); err != nil {

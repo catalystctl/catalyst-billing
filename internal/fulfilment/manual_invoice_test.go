@@ -443,3 +443,133 @@ func TestPaidInvoiceNotifiesTheCustomerOnce(t *testing.T) {
 		t.Fatalf("after a replayed webhook: %d inbox rows, want 1", inboxed)
 	}
 }
+
+// A settled referred invoice pays the affiliate, once.
+//
+// Commission is a liability the moment the money arrives, so it is recorded inside the
+// settlement transaction. The replay half is the important half: providers retry webhooks, and
+// paying an affiliate twice for one order is a real loss that a reconciliation finds only after
+// the payout has gone out.
+func TestSettlingAReferredInvoicePaysCommissionOnce(t *testing.T) {
+	pool := storetest.DB(t)
+	ctx := context.Background()
+	invoiceID, _, _, customerID := seedManualInvoice(t, pool, true)
+
+	// An affiliate with a 10% rate, and a referral tying this customer to them. Both are created
+	// explicitly so the fixture does not depend on whatever users happen to exist.
+	var affiliateUserID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO users (email, password_hash, display_name)
+		VALUES ('affiliate-smoke@example.test', 'x', 'Affiliate') RETURNING id::text`).Scan(&affiliateUserID); err != nil {
+		t.Fatalf("insert affiliate user: %v", err)
+	}
+	var affiliateID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO affiliates (user_id, code, commission_rate)
+		VALUES ($1, 'SMOKE10', '10%') RETURNING id::text`, affiliateUserID).Scan(&affiliateID); err != nil {
+		t.Fatalf("insert affiliate: %v", err)
+	}
+
+	// The referral carries the currency and the rate it was agreed at, so a later change to the
+	// affiliate's rate does not retroactively reprice an existing attribution.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO affiliate_referrals (affiliate_id, customer_id, currency, commission_rate)
+		VALUES ($1, $2, 'USD', '10%')`,
+		affiliateID, customerID); err != nil {
+		t.Fatalf("insert referral: %v", err)
+	}
+
+	// Commission is paid on a signup, so the invoice must come from an order — a renewal has no
+	// signup to attribute, and a recurring commission is a policy decision the growth package
+	// deliberately does not make silently. The order therefore has to exist before the invoice is
+	// issued: an issued invoice is immutable by trigger, so attaching one afterwards is refused,
+	// which is the rule doing its job.
+	//
+	// The invoice from seedManualInvoice has no order, so this test builds its own referred pair
+	// through the same issuer the other tests use.
+	var orderID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO orders (customer_id, status, currency, total_minor)
+		VALUES ($1, 'pending_payment', 'USD', 2500) RETURNING id::text`, customerID).Scan(&orderID); err != nil {
+		t.Fatalf("insert order: %v", err)
+	}
+	if err := pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		issuer := billing.NewIssuer(billing.FixedTaxPricer{
+			Rate: money.MustParseRatio("0%"), Rounding: money.RoundHalfUp, Policy: "none",
+		})
+		id, _, _, err := issuer.CreateDraft(ctx, tx, billing.IssueRequest{
+			CustomerID: customerID,
+			OrderID:    orderID,
+			DueAt:      time.Now().AddDate(0, 0, 7),
+			Lines: []billing.Line{{
+				Description:   "Referred plan",
+				QuantityMilli: 1000,
+				UnitPrice:     money.New(2500, usd(t)),
+			}},
+			Customer: billing.CustomerDetails{ID: customerID},
+			Merchant: billing.Merchant{Name: "Test"},
+		})
+		if err != nil {
+			return err
+		}
+		issued, err := issuer.Issue(ctx, tx, id, billing.DefaultSeries)
+		if err != nil {
+			return err
+		}
+		invoiceID = issued.InvoiceID
+		return nil
+	}); err != nil {
+		t.Fatalf("issue referred invoice: %v", err)
+	}
+
+	settle := func() {
+		t.Helper()
+		if err := pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := fulfilment.NewApplier(pool).ApplySettledPayment(ctx, tx, payments.SettledPayment{
+				Provider:          "manual",
+				ProviderAccount:   "acct",
+				ProviderPaymentID: "manual-commission-" + invoiceID,
+				InvoiceID:         invoiceID,
+				AmountMinor:       2500,
+				Currency:          "USD",
+			})
+			return err
+		}); err != nil {
+			t.Fatalf("settle: %v", err)
+		}
+	}
+
+	settle()
+
+	// 10% of 2500 is exactly 250. Written as a number rather than a percentage so a float
+	// creeping into the money path shows up here as 249 or 251.
+	// The commission is recorded on a row that carries the order id: the open attribution (the
+	// one with a NULL order) is the signup record, and the commission row is the earning. Reading
+	// the open row would report zero forever, which is exactly the mistake this comment prevents.
+	var commission int64
+	var currency string
+	if err := pool.QueryRow(ctx, `
+		SELECT commission_minor, currency FROM affiliate_referrals
+		 WHERE affiliate_id = $1 AND customer_id = $2 AND order_id IS NOT NULL`,
+		affiliateID, customerID).Scan(&commission, &currency); err != nil {
+		t.Fatalf("read commission row: %v", err)
+	}
+	if commission != 250 {
+		t.Fatalf("commission = %d, want exactly 250 (10%% of 2500)", commission)
+	}
+	if currency != "USD" {
+		t.Fatalf("commission currency = %q, want USD", currency)
+	}
+
+	settle()
+
+	if err := pool.QueryRow(ctx, `
+		SELECT commission_minor FROM affiliate_referrals
+		 WHERE affiliate_id = $1 AND customer_id = $2 AND order_id IS NOT NULL`,
+		affiliateID, customerID).Scan(&commission); err != nil {
+		t.Fatalf("read commission row after replay: %v", err)
+	}
+	if commission != 250 {
+		t.Fatalf("after a replayed webhook commission = %d, want still 250", commission)
+	}
+}

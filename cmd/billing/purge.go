@@ -174,6 +174,30 @@ func purgeSteps() []purgeStep {
 		{"staff_roles", `user_id` + users},
 		{"approvals", `requested_by` + users + ` OR approved_by` + users},
 
+		// Support. Attachments hang off messages and messages off tickets, so the order matters:
+		// deleting a ticket first would be refused by the foreign key. Tickets are keyed by customer
+		// rather than by user, because a ticket can outlive the login that opened it.
+		{"ticket_attachments", `message_id IN (SELECT id FROM ticket_messages WHERE ticket_id IN
+			(SELECT id FROM tickets WHERE customer_id` + customers + `))`},
+		{"ticket_messages", `ticket_id IN (SELECT id FROM tickets WHERE customer_id` + customers + `)`},
+		{"tickets", `customer_id` + customers},
+		{"ticket_mail_logs", `to_address LIKE $1 OR from_address LIKE $1`},
+
+		// Cart. A cart item references a price version, so it goes before the catalog is touched.
+		{"cart_items", `cart_id IN (SELECT id FROM carts WHERE customer_id` + customers + `)`},
+		{"carts", `customer_id` + customers},
+
+		// Commerce configuration and growth. These are keyed by the records above, so they go after
+		// them: a coupon redemption names the invoice it discounted, and a commission names the
+		// order it was earned on.
+		{"coupon_redemptions", `customer_id` + customers},
+		{"service_cancellations", `service_id IN (SELECT id FROM services WHERE customer_id` + customers + `)`},
+		{"service_upgrades", `service_id IN (SELECT id FROM services WHERE customer_id` + customers + `)`},
+		{"service_configs", `service_id IN (SELECT id FROM services WHERE customer_id` + customers + `)`},
+		{"affiliate_referrals", `customer_id` + customers},
+		{"notifications", `user_id` + users},
+		{"notification_preferences", `user_id` + users},
+
 		// Rows with no foreign key. They cannot be reached by a join, so they are matched on their
 		// own columns: an idempotency key outlives its principal by design (it is scoped to a bare
 		// uuid), which is why it has to be swept by the id set rather than left behind.

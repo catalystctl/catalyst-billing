@@ -3,15 +3,19 @@
 // Six sections, one page, a sticky index. Everything here is about the *account* — the billing
 // screens are elsewhere — and every claim on it is something the API actually told us:
 //
-//   - The identity block comes from /api/v1/auth/me, which reports email, display name, roles
-//     and email_verified. It does **not** report whether a second factor is confirmed, so this
-//     page says that plainly instead of drawing a green "MFA on" badge from a guess.
-//   - Enrolment returns the TOTP secret, not a QR image. The CSP forbids third-party requests
-//     (`img-src`/`connect-src` are self), so a QR service is not an option; the secret is shown
-//     in mono and can be copied.
+//   - The identity block comes from /api/v1/auth/me, which reports email, display name, roles,
+//     email_verified and the caller's own second-factor state.
+//   - **Security** shows that state — "on since <date>" or "off" — and is where an operator
+//     enrols an authenticator, replaces an abandoned setup, or turns the factor off. The flow
+//     itself lives in web/src/lib/mfa.ts, because the customer portal needs the identical thing
+//     and two copies of a security dialog drift.
+//   - A staff account with no factor is told why it matters: its role can change every
+//     customer's account, so a stolen staff password is not one customer's problem. The prompt
+//     is a warning, not a lock-out — an operator on call must not be shut out of the panel by a
+//     policy this build does not actually have.
 //   - Recovery codes are returned exactly once, with `shown_once: true`. They are displayed in
-//     a dialog that cannot be dismissed until the customer confirms they have saved them,
-//     because a dialog that closes on Escape is how recovery codes get lost.
+//     a dialog that cannot be dismissed until they are acknowledged, and the dialog offers a
+//     download as well as a copy button: a clipboard is not a backup.
 //
 // The theme is not here: it lives in the top bar, where it is one click away on every screen.
 
@@ -19,35 +23,11 @@ import { ApiError } from "../lib/api";
 import { h } from "../lib/dom";
 import { dateTime, relative, titleCase } from "../lib/format";
 import { icon, type IconName } from "../lib/icons";
+import { twoFactorSection } from "../lib/mfa";
 import type { Ctx } from "../lib/types";
-import { openDialog } from "../ui/dialog";
-import {
-  badge,
-  banner,
-  btn,
-  card,
-  copyButton,
-  field,
-  input,
-  kv,
-  pageHead,
-  withBusy,
-} from "../ui/kit";
+import { badge, banner, btn, card, kv, pageHead, withBusy } from "../ui/kit";
 
 export const meta = { title: "Account settings", crumb: "Settings" };
-
-interface MFASetup {
-  secret: string;
-  otpauth_url: string;
-  digits: number;
-  period: number;
-  algorithm: string;
-}
-
-interface MFAConfirmation {
-  recovery_codes: string[];
-  shown_once: boolean;
-}
 
 interface Section {
   id: string;
@@ -177,6 +157,19 @@ function identitySection(ctx: Ctx): HTMLElement {
           : h("span", { class: "faint" }, "No roles"),
       ),
       kv("Account", user.is_staff ? badge("Staff", "accent") : badge("Customer", "neutral")),
+      // The second factor, on the same list as the address and the roles, because "is my account
+      // protected" is an identity question and this is where an operator looks for one. The link
+      // jumps to the section that changes it: an answer with no way to act on it is a status page,
+      // not a settings page.
+      kv(
+        "Two-factor",
+        h(
+          "span",
+          { class: "row-wrap" },
+          twoFactorBadge(ctx.session.mfa),
+          h("a", { class: "link", href: "#security" }, ctx.session.mfa.has_mfa ? "Manage" : "Set up"),
+        ),
+      ),
     ),
     verified
       ? h("p", { class: "field-hint" }, "Your address is verified. Receipts and payment reminders reach you.")
@@ -193,296 +186,31 @@ function identitySection(ctx: Ctx): HTMLElement {
   );
 }
 
+/** One word for the second factor, from the state the server reported. */
+function twoFactorBadge(state: Ctx["session"]["mfa"]): HTMLElement {
+  if (state.has_mfa) return badge("On", "success", { dot: true });
+  if (state.enrolment_required) return badge("Required", "warning", { dot: true });
+  return badge("Off", state.available ? "warning" : "neutral", { dot: true });
+}
+
 // ----------------------------------------------------------------- security --
 
 function securitySection(ctx: Ctx): HTMLElement {
-  const noticeHost = h("div");
-
-  const enrol = btn("Set up an authenticator app", {
-    variant: "primary",
-    icon: "shieldCheck",
-    size: "sm",
-  }) as HTMLButtonElement;
-  enrol.addEventListener("click", () => {
-    void withBusy(ctx, enrol, async () => {
-      let setup: MFASetup;
-      try {
-        setup = await ctx.api.post<MFASetup>("/api/v1/auth/mfa/enrol", {});
-      } catch (err) {
-        noticeHost.replaceChildren(mfaBanner(err, "Enrolment could not start"));
-        return;
-      }
-      openEnrolment(ctx, setup, noticeHost);
-    });
-  });
-
-  const disable = btn("Turn off two-factor", { variant: "ghost", icon: "x", size: "sm" }) as HTMLButtonElement;
-  disable.addEventListener("click", () => openDisable(ctx, noticeHost));
-
-  return h(
-    "div",
-    { class: "stack" },
-    noticeHost,
-    banner(
-      "info",
-      "This page cannot tell you whether a second factor is already on",
-      "The identity endpoint does not report MFA state, so showing a status here would be a guess. Enrolling will tell you: the server refuses with “already enrolled” if one exists.",
-    ),
-    h(
-      "div",
-      { class: "stack-sm" },
-      h(
-        "p",
-        { class: "page-sub" },
-        "Two-factor authentication asks for a six-digit code from your authenticator app in addition to your password. Recovery codes get you back in if you lose the app.",
-      ),
-      h("div", { class: "row-wrap" }, enrol, disable),
-    ),
-  );
-}
-
-function openEnrolment(ctx: Ctx, setup: MFASetup, noticeHost: HTMLElement): void {
-  const code = input({
-    id: "mfa-code",
-    inputmode: "numeric",
-    maxlength: 6,
-    autocomplete: "one-time-code",
-    placeholder: "000000",
-    class: "input--mono",
-  });
-  const errorHost = h("div");
-  const confirm = btn("Confirm and turn on", { variant: "primary", type: "submit" }) as HTMLButtonElement;
-  const cancel = btn("Cancel", { variant: "ghost" });
-
-  const form = h(
-    "form",
-    { class: "stack", novalidate: true },
-    h(
-      "p",
-      { class: "page-sub" },
-      "Add this account to your authenticator app — by typing the setup secret below, or by copying the setup URI into an app that accepts one — then enter the six-digit code it shows.",
-    ),
-    h(
-      "div",
-      { class: "settings-secret" },
-      h("span", { class: "field-label" }, "Setup secret"),
-      h(
-        "div",
-        { class: "settings-secret-row" },
-        h("code", { class: "code-block settings-secret-value" }, setup.secret),
-        copyButton(ctx, setup.secret, "secret"),
-      ),
-      h(
-        "span",
-        { class: "field-hint" },
-        `${setup.digits} digits, a new code every ${setup.period} seconds, ${setup.algorithm}. There is no QR image: the panel may not call an image service.`,
-      ),
-    ),
-    h("div", { class: "row-wrap" }, copyButton(ctx, setup.otpauth_url, "setup URI")),
-    field({ label: "Six-digit code", control: code, id: "mfa-code", hint: "From the app, after adding this account." }),
-    errorHost,
-  );
-
-  const handle = openDialog({
-    title: "Set up two-factor authentication",
-    subtitle: "Nothing changes until you confirm a code.",
-    body: form,
-    footer: h("div", { class: "row spacer" }, cancel, confirm),
-    // A request in flight must not be interrupted by Escape or a stray backdrop click.
-    locked: () => confirm.disabled,
-  });
-
-  cancel.addEventListener("click", () => handle.close());
-
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    void (async () => {
-      errorHost.replaceChildren();
-      const value = code.value.replace(/\s+/g, "");
-      if (!/^\d{6}$/.test(value)) {
-        errorHost.replaceChildren(
-          banner("danger", "Enter the six-digit code", "The code is six digits, with no spaces."),
-        );
-        return;
-      }
-      confirm.disabled = true;
-      let res: MFAConfirmation;
-      try {
-        res = await ctx.api.post<MFAConfirmation>("/api/v1/auth/mfa/confirm", { code: value });
-      } catch (err) {
-        errorHost.replaceChildren(mfaBanner(err, "The code could not be confirmed"));
-        return;
-      } finally {
-        confirm.disabled = false;
-      }
-      // The dialog refuses to close while a request is in flight, so it is unlocked above
-      // before closing here; otherwise a successful confirm would leave it on screen.
-      handle.close();
-      noticeHost.replaceChildren(
-        banner(
-          "success",
-          "Two-factor authentication is on",
-          "Keep your recovery codes somewhere safe: they are the only way in if you lose the app.",
-        ),
-      );
-      ctx.toast("Two-factor authentication is on", {
-        tone: "success",
-        detail: "Store your recovery codes somewhere safe.",
-      });
-      showRecoveryCodes(ctx, res);
-    })();
-  });
-}
-
-function showRecoveryCodes(ctx: Ctx, res: MFAConfirmation): void {
-  const codes = res.recovery_codes ?? [];
-  const joined = codes.join("\n");
-
-  const done = btn("I have saved them", { variant: "primary" }) as HTMLButtonElement;
-  done.disabled = true;
-  const saved = h("input", {
-    type: "checkbox",
-    onchange: () => {
-      done.disabled = !saved.checked;
+  // One implementation, shared with the customer portal's security page (web/src/lib/mfa.ts).
+  // The operator is told that their role is privileged, because a stolen staff password is not
+  // one customer's problem; a customer is not, because there is no policy in this build that says
+  // they must have a factor and inventing one in a view would be a decision disguised as a warning.
+  //
+  // `onChanged` re-renders the identity row above, so "Two-factor: On" cannot go stale after an
+  // enrolment on the same page. The shared component has already refreshed the session by then,
+  // so the badge is built from the server's answer rather than from a local flag.
+  return twoFactorSection(ctx, {
+    privileged: true,
+    onChanged: () => {
+      const row = document.querySelector("#identity .kv:last-child .kv-value");
+      if (row) row.replaceChildren(twoFactorBadge(ctx.session.mfa), h("a", { class: "link", href: "#security" }, ctx.session.mfa.has_mfa ? "Manage" : "Set up"));
     },
   });
-
-  const handle = openDialog({
-    title: "Save your recovery codes",
-    subtitle: res.shown_once
-      ? "Shown once. They cannot be retrieved later."
-      : "These codes are displayed now; copy them before closing.",
-    body: h(
-      "div",
-      { class: "stack" },
-      banner(
-        "warning",
-        "These codes will not be shown again",
-        "Each code signs you in once if you lose your authenticator app. Store them somewhere you will still have when your phone is gone.",
-      ),
-      codes.length > 0
-        ? h("pre", { class: "code-block settings-recovery" }, joined)
-        : h(
-            "p",
-            { class: "page-sub" },
-            "The server returned no recovery codes. Contact support before you rely on this second factor.",
-          ),
-      codes.length > 0
-        ? h("div", { class: "row-wrap" }, copyButton(ctx, joined, "all codes"))
-        : null,
-      h("label", { class: "checkbox" }, saved, h("span", null, "I have saved these codes somewhere safe")),
-    ),
-    footer: h("div", { class: "row spacer" }, done),
-    // Locked until acknowledged: closing this dialog is how the codes are lost.
-    locked: () => !saved.checked,
-  });
-
-  done.addEventListener("click", () => handle.close());
-}
-
-// Built on openDialog rather than ctx.formDialog so this flow controls its own lock: the
-// dialog is unlocked before it closes on success, and a request in flight still cannot be
-// dismissed. (The shared form dialog keeps its own lock while the submit button is disabled.)
-function openDisable(ctx: Ctx, noticeHost: HTMLElement): void {
-  const password = input({ id: "mfa-disable-password", type: "password", autocomplete: "current-password" });
-  const code = input({
-    id: "mfa-disable-code",
-    inputmode: "numeric",
-    maxlength: 6,
-    autocomplete: "one-time-code",
-    placeholder: "000000",
-    class: "input--mono",
-  });
-  const errorHost = h("div");
-  const submit = btn("Turn off", { variant: "danger-solid", type: "submit" }) as HTMLButtonElement;
-  const cancel = btn("Cancel", { variant: "ghost" });
-
-  const form = h(
-    "form",
-    { class: "stack", novalidate: true },
-    field({ label: "Password", control: password, id: "mfa-disable-password", required: true }),
-    field({
-      label: "Current code",
-      control: code,
-      id: "mfa-disable-code",
-      required: true,
-      hint: "From your authenticator app, or one of your recovery codes.",
-    }),
-    banner("warning", "This lowers the security of your account", "Only your password will be needed to sign in."),
-    errorHost,
-  );
-
-  const handle = openDialog({
-    title: "Turn off two-factor authentication",
-    subtitle: "Your password and a current code are both required.",
-    body: form,
-    footer: h("div", { class: "row spacer" }, cancel, submit),
-    locked: () => submit.disabled,
-  });
-
-  cancel.addEventListener("click", () => handle.close());
-
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    void (async () => {
-      errorHost.replaceChildren();
-      const passwordValue = password.value;
-      const codeValue = code.value.replace(/\s+/g, "");
-      if (!passwordValue || !codeValue) {
-        errorHost.replaceChildren(
-          banner("danger", "Both fields are required", "Enter your password and a current code."),
-        );
-        return;
-      }
-      submit.disabled = true;
-      try {
-        await ctx.api.post("/api/v1/auth/mfa/disable", { password: passwordValue, code: codeValue });
-      } catch (err) {
-        errorHost.replaceChildren(mfaBanner(err, "The second factor could not be turned off"));
-        return;
-      } finally {
-        submit.disabled = false;
-      }
-      handle.close();
-      noticeHost.replaceChildren(
-        banner("success", "Two-factor authentication is off", "Only your password is needed to sign in now."),
-      );
-      ctx.toast("Two-factor authentication is off", { tone: "success" });
-    })();
-  });
-}
-
-/** One plain sentence per MFA failure code. */
-function mfaBanner(err: unknown, fallbackTitle: string): HTMLElement {
-  if (!(err instanceof ApiError)) {
-    return banner("danger", fallbackTitle, "The server could not be reached. Nothing has changed.");
-  }
-  switch (err.code) {
-    case "mfa_already_enrolled":
-      return banner(
-        "warning",
-        "A second factor is already confirmed",
-        "Turn it off below before enrolling a new one. The server will not replace it silently.",
-      );
-    case "mfa_not_pending":
-      return banner("warning", "There is no enrolment to confirm", "Start the setup again from the button above.");
-    case "mfa_not_enrolled":
-      return banner("info", "No second factor is enrolled", "There is nothing to turn off on this account.");
-    case "mfa_unavailable":
-      return banner(
-        "danger",
-        "MFA is not configured on this server",
-        "Enrolment cannot work here. Contact support; do not retry.",
-      );
-    case "invalid_code":
-      return banner("danger", "That code is not valid", "Check the app and enter the current six digits.");
-    case "invalid_credentials":
-      return banner("danger", "The password is incorrect", "Nothing has changed.");
-    case "rate_limited":
-      return banner("warning", "Too many attempts", "Wait a minute before trying again.");
-    default:
-      return banner("danger", fallbackTitle, err.detail || err.code);
-  }
 }
 
 // ----------------------------------------------------------------- password --

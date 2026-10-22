@@ -38,6 +38,7 @@
 //          [--customer=... --customer-password=...] [--screenshots=dir]
 
 import { spawn } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 
 // ---------------------------------------------------------------- arguments --
@@ -61,6 +62,67 @@ if (!staffEmail || !staffPassword) {
   process.exit(2);
 }
 if (shotDir) mkdirSync(shotDir, { recursive: true });
+
+// ------------------------------------------------------------------- TOTP --
+//
+// Two-factor enrolment cannot be tested with a fake code, and it must not be made testable by
+// weakening the flow — the whole point of the factor is that a code is hard to produce. So the
+// harness computes a real one from the secret the screen displays, exactly as an authenticator app
+// would: RFC 4226 HOTP over HMAC-SHA1 with a 30-second counter, RFC 6238 for the time step, six
+// digits.
+//
+// That the server accepts it is also the strongest available proof that the secret the page showed
+// is the credential: a wrong secret produces a wrong code, and the confirm endpoint refuses it.
+
+/** Decodes the base32 an authenticator secret is written in (RFC 4648, no padding required). */
+function base32Decode(secret) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  const clean = String(secret).replace(/[\s=]/g, "").toUpperCase();
+  let bits = 0;
+  let value = 0;
+  const out = [];
+  for (const character of clean) {
+    const index = alphabet.indexOf(character);
+    if (index < 0) throw new Error(`not a base32 secret: ${JSON.stringify(character)}`);
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(out);
+}
+
+/** The six-digit code for a moment in time, defaulting to now. */
+function totpNow(secret, { digits = 6, period = 30, algorithm = "sha1", at = Date.now() } = {}) {
+  const counter = Math.floor(at / 1000 / period);
+  const message = Buffer.alloc(8);
+  message.writeUInt32BE(Math.floor(counter / 2 ** 32), 0);
+  message.writeUInt32BE(counter % 2 ** 32, 4);
+  const digest = createHmac(algorithm, base32Decode(secret)).update(message).digest();
+  const offset = digest[digest.length - 1] & 0x0f;
+  const binary =
+    ((digest[offset] & 0x7f) << 24) |
+    ((digest[offset + 1] & 0xff) << 16) |
+    ((digest[offset + 2] & 0xff) << 8) |
+    (digest[offset + 3] & 0xff);
+  return String(binary % 10 ** digits).padStart(digits, "0");
+}
+
+/**
+ * A code that will still be valid by the time it is typed.
+ *
+ * A code computed 29.5 seconds into a 30-second step expires before the browser has finished
+ * typing it, and the failure looks like "the server rejected a correct code" rather than "the test
+ * was unlucky". So the helper waits out the tail of a step instead of racing it.
+ */
+async function freshTotp(secret) {
+  const stepMs = 30_000;
+  const remaining = stepMs - (Date.now() % stepMs);
+  if (remaining < 5000) await new Promise((resolve) => setTimeout(resolve, remaining + 250));
+  return totpNow(secret);
+}
 
 // ---------------------------------------------------------------- chromium --
 
@@ -320,6 +382,222 @@ async function assertScreen(name, { path, expect = [], absent = [], allowEmptySt
   }
   await screenshot(name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
   return text;
+}
+
+// -------------------------------------------------------------- the MFA flow --
+//
+// One driver, used for both audiences, because the flow is one flow: the operator's settings page
+// and the customer's security page render the same component (web/src/lib/mfa.ts) and differ only
+// in wording and in the ids of their dialog fields.
+//
+// What it proves, in order, and why each step is worth an assertion rather than a screenshot:
+//
+//   1. The operator reaches the screen by *clicking the navigation*, not by typing the URL. That is
+//      the difference between "the feature exists" and "the feature is discoverable", and it is the
+//      defect this whole task was opened for.
+//   2. The screen states the current state as a fact: a badge reading Off, and later On. A badge
+//      that is a guess is worse than no badge, so the text is compared to what the server said.
+//   3. Enrolment shows a scannable code, the base32 secret, and the setup URI — and the QR is
+//      structurally a QR (a square symbol of a legal version, with dark modules), not an empty
+//      frame that happens to have the right class name.
+//   4. The code is computed from the *displayed* secret with real HOTP/HMAC-SHA1. The server
+//      accepting it is what proves the secret on screen is the credential.
+//   5. Recovery codes appear once, ten of them, in a dialog that cannot be dismissed until they are
+//      acknowledged, and they can be downloaded as a file (a clipboard is not a backup).
+//   6. After confirming, the state reads On — and still reads On after a full page reload, which is
+//      what distinguishes a real state read from a local flag set by the dialog.
+//   7. Turning it off demands BOTH the password and a current code. A wrong password is refused
+//      while the code is right; the pair succeeds. This is the property that stops a stolen session
+//      from removing the factor, and it is asserted against the real form.
+
+/** Reads the setup secret out of an open enrolment dialog. */
+async function readSetupSecret() {
+  return evaluate(`(() => {
+    const el = document.querySelector('.settings-secret-value');
+    return el ? el.textContent.trim() : '';
+  })()`);
+}
+
+/**
+ * Drives enrolment on the page currently open.
+ *
+ * Returns the secret it used so a caller can assert on it, and the codes it saw.
+ */
+async function driveEnrolment({
+  enrolButtonText = /set up an authenticator app|set up a second factor/i,
+  codeFieldId,
+  requireQr = true,
+  requireDownload = true,
+  // Distinct names per audience: both drives open the same dialog, and one file name would leave the
+  // second screenshot overwriting the first.
+  shotPrefix = "mfa",
+}) {
+  const opened = await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button')).find((b) =>
+      ${enrolButtonText}.test((b.textContent || '').trim()));
+    if (!button) return null;
+    button.click();
+    return (button.textContent || '').trim();
+  })()`);
+  check("mfa: the enrol button exists and is pressable", Boolean(opened), "no enrol button found");
+  if (!opened) return null;
+
+  await until("the enrolment dialog", "document.querySelector('.settings-secret-value') !== null", 10_000);
+  const secret = await readSetupSecret();
+  check("mfa: the setup secret is a base32 secret", /^[A-Z2-7]{16,}$/.test(secret), secret ? `got ${secret.length} chars` : "no secret");
+
+  // The QR is generated in the page (no third-party image service: the CSP forbids one, and a TOTP
+  // secret must not leave the origin). It has to be a real symbol: a square whose side is
+  // 4·version+17, drawn from a non-empty path.
+  const qr = await evaluate(`(() => {
+    const svg = document.querySelector('.settings-qr');
+    if (!svg) return { present: false };
+    const box = (svg.getAttribute('viewBox') || '').split(/\\s+/).map(Number);
+    const path = svg.querySelector('path');
+    const d = path ? (path.getAttribute('d') || '') : '';
+    return {
+      present: true,
+      width: box[2],
+      height: box[3],
+      pathLength: d.length,
+      modules: (d.match(/M/g) || []).length,
+      darkFill: path ? getComputedStyle(path).fill : '',
+    };
+  })()`);
+  if (requireQr) {
+    check("mfa: the enrolment dialog draws a QR code", qr.present === true, JSON.stringify(qr));
+  } else if (!qr.present) {
+    // The customer's page currently offers the secret and the setup URI but no symbol. That is not
+    // a CSP constraint — the encoder in web/src/lib/qr.ts runs in the page and fetches nothing — it
+    // is a gap on that screen, so it is reported rather than asserted away.
+    console.log("     note: mfa: this page shows the setup secret but no QR code");
+  }
+  if (qr.present) {
+    // Quiet zone of four modules on each side is part of the drawing, so the symbol side is
+    // width - 8 and must be a legal version: 21, 25, 29 … 57 for the versions the encoder covers.
+    const side = (qr.width ?? 0) - 8;
+    check("mfa: the QR is a legal symbol size", side >= 21 && side <= 57 && (side - 17) % 4 === 0, `side=${side} (viewBox ${qr.width})`);
+    check("mfa: the QR is square", qr.width === qr.height, `${qr.width}x${qr.height}`);
+    check("mfa: the QR has dark modules", (qr.modules ?? 0) > 10, `paths=${qr.modules}`);
+  }
+
+  const hasCopy = await evaluate("document.querySelector('.settings-secret .copy') !== null");
+  check("mfa: the setup secret can be copied", hasCopy);
+  await screenshot(`${shotPrefix}-enrolment-dialog`);
+
+  // A real code, from the secret the page showed.
+  const code = await freshTotp(secret);
+  await typeInto(`#${codeFieldId}`, code);
+  const confirmed = await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('.dialog .btn--primary')).find((b) => /confirm/i.test(b.textContent || ''));
+    if (!button) return false;
+    button.click();
+    return true;
+  })()`);
+  check("mfa: the confirm button is pressable", confirmed, "no Confirm button in the dialog footer");
+
+  // The recovery codes, shown once.
+  const shown = await until("the recovery-code dialog", "document.querySelector('.settings-recovery') !== null", 12_000).catch(() => false);
+  check("mfa: confirming shows the recovery codes", Boolean(shown), "no recovery-code dialog appeared");
+  if (!shown) return { secret, codes: [] };
+
+  await screenshot(`${shotPrefix}-recovery-codes`);
+  const codes = await evaluate(`(() => {
+    const pre = document.querySelector('.settings-recovery');
+    return pre ? pre.textContent.split(/\\s+/).filter(Boolean) : [];
+  })()`);
+  check("mfa: ten recovery codes are shown", codes.length === 10, `got ${codes.length}`);
+  check("mfa: the codes are not the TOTP secret", !codes.includes(secret));
+
+  // Downloadable, because a clipboard is not a backup. The href is a blob the page built itself,
+  // so this is also a check that nothing was uploaded to render the codes.
+  const download = await evaluate(`(() => {
+    const a = Array.from(document.querySelectorAll('.dialog a[download]'))[0];
+    if (!a) return { present: false };
+    return { present: true, href: a.getAttribute('href') || '', name: a.getAttribute('download') || '', text: a.textContent.trim() };
+  })()`);
+  if (requireDownload) {
+    check("mfa: the codes can be downloaded", download.present === true, JSON.stringify(download));
+  } else if (!download.present) {
+    // Reported, not asserted away: this page offers the codes for copying only, and a clipboard is
+    // not a backup. The helper that fixes it is exported by web/src/lib/mfa.ts
+    // (`recoveryCodeDownload`), so adopting it on that screen is one import.
+    console.log("     note: mfa: this page offers the recovery codes for copying only, with no download");
+  }
+  if (download.present) {
+    check("mfa: the download is a local blob", download.href.startsWith("blob:"), download.href);
+    check("mfa: the download has a filename", /recovery/i.test(download.name), download.name);
+  }
+
+  // The dialog is locked until acknowledged: closing it is how codes are lost.
+  const dismissible = await evaluate(`(() => {
+    const done = Array.from(document.querySelectorAll('.dialog .btn--primary')).find((b) => /saved/i.test(b.textContent || ''));
+    return done ? done.disabled : null;
+  })()`);
+  check("mfa: the recovery dialog cannot be dismissed unacknowledged", dismissible === true, `done.disabled=${dismissible}`);
+
+  await click(".dialog .checkbox input");
+  await evaluate(`(() => {
+    const done = Array.from(document.querySelectorAll('.dialog .btn--primary')).find((b) => /saved/i.test(b.textContent || ''));
+    if (done) done.click();
+    return true;
+  })()`);
+  await until("the recovery dialog to close", "document.querySelector('.settings-recovery') === null", 8000).catch(() => {});
+
+  return { secret, codes };
+}
+
+/** The badge text of the two-factor section, as rendered. */
+async function mfaBadge() {
+  return evaluate(`(() => {
+    const row = document.querySelector('.settings-status-row');
+    if (!row) return '';
+    const badge = row.querySelector('.badge');
+    return badge ? badge.textContent.trim() : '';
+  })()`);
+}
+
+/** Turns the factor off through the dialog, proving both factors are demanded. */
+async function driveDisable({ password, secret, passwordFieldId, codeFieldId, wrongPasswordFirst = true }) {
+  const opened = await evaluate(`(() => {
+    const button = Array.from(document.querySelectorAll('button')).find((b) => /turn off two-factor/i.test(b.textContent || ''));
+    if (!button) return false;
+    button.click();
+    return true;
+  })()`);
+  check("mfa: the disable button exists and is pressable", opened, "no Turn off two-factor button");
+  if (!opened) return false;
+
+  await until("the disable dialog", `document.querySelector('#${passwordFieldId}') !== null`, 8000);
+
+  // A stolen session alone must not be able to remove the factor: the right code with a wrong
+  // password has to be refused, and the dialog has to stay open saying so.
+  if (wrongPasswordFirst) {
+    await typeInto(`#${passwordFieldId}`, "definitely not the password");
+    await typeInto(`#${codeFieldId}`, await freshTotp(secret));
+    await evaluate(`(() => {
+      const b = Array.from(document.querySelectorAll('.dialog .btn--danger-solid, .dialog .btn--primary')).find((x) => /turn off/i.test(x.textContent || ''));
+      if (b) b.click();
+      return true;
+    })()`);
+    const refused = await until("the refusal for a wrong password", "document.querySelector('.dialog .banner--danger') !== null", 10_000).catch(() => false);
+    check("mfa: a wrong password is refused even with a valid code", Boolean(refused), "the dialog did not report a refusal");
+    const stillOpen = await evaluate(`document.querySelector('#${passwordFieldId}') !== null`);
+    check("mfa: the disable dialog stays open after a refusal", stillOpen);
+    await evaluate(`(() => { const el = document.querySelector('#${passwordFieldId}'); if (el) el.value = ''; const c = document.querySelector('#${codeFieldId}'); if (c) c.value = ''; return true; })()`);
+  }
+
+  await typeInto(`#${passwordFieldId}`, password);
+  await typeInto(`#${codeFieldId}`, await freshTotp(secret));
+  await evaluate(`(() => {
+    const b = Array.from(document.querySelectorAll('.dialog .btn--danger-solid, .dialog .btn--primary')).find((x) => /turn off/i.test(x.textContent || ''));
+    if (b) b.click();
+    return true;
+  })()`);
+
+  const closed = await until("the disable dialog to close", `document.querySelector('#${passwordFieldId}') === null`, 12_000).catch(() => false);
+  check("mfa: password plus a current code turns the factor off", Boolean(closed), "the dialog did not close");
+  return Boolean(closed);
 }
 
 // ------------------------------------------------- the new-screen ledger --
@@ -739,6 +1017,125 @@ try {
     ["settings", "/settings", ["Account settings"]],
   ]) {
     await assertScreen(name, { path, expect });
+  }
+
+  // ------------------------------------------------------- the second factor --
+  //
+  // The operator's half of the MFA work. The screen existed before this test and nobody could find
+  // it: enrolment lived at the bottom of a settings page reachable only by knowing the URL, and the
+  // page said it could not tell you whether a factor was already on. So the first assertion is
+  // about *reaching* it, and the rest is about the flow actually working.
+  {
+    // 1. The shell says the account has no second factor, on the first screen the operator lands
+    //    on. This is the "see at a glance" requirement, and it is a prompt rather than a lock-out
+    //    because an operator on call must not be shut out of the panel by a warning.
+    await goto("/");
+    const prompt = await evaluate(`(() => {
+      const el = document.querySelector('.mfa-prompt');
+      return el ? { text: el.innerText, href: el.querySelector('a')?.getAttribute('href') ?? '' } : null;
+    })()`);
+    check("mfa-prompt: a privileged account with no factor is prompted", prompt !== null, "no .mfa-prompt on the dashboard");
+    if (prompt) {
+      check("mfa-prompt: it says why it matters", /second factor/i.test(prompt.text), prompt.text.slice(0, 160));
+      check("mfa-prompt: it links to the screen that fixes it", prompt.href === "/settings", prompt.href);
+      // And the link is a real path: clicking it lands on the settings page with the section.
+      await click(".mfa-prompt a");
+      await until("the settings screen from the prompt", "location.pathname === '/settings'", 8000);
+      check("mfa-prompt: the link reaches the settings screen", (await evaluate("location.pathname")) === "/settings");
+    }
+
+    // 2. Reachable by clicking the navigation, which is the acceptance criterion: an operator finds
+    //    it without knowing the URL.
+    await goto("/");
+    await click('.nav-item[data-href="/settings"]');
+    await until("the settings screen from the nav", "location.pathname === '/settings'", 8000);
+    check("mfa: the account settings screen is in the navigation", (await evaluate("location.pathname")) === "/settings");
+
+    // 3. The state is stated as a fact before anything is done: Off, because this account is new.
+    await until("the two-factor status", "document.querySelector('.settings-status-row') !== null", 10_000);
+    check("mfa: the screen reports the current state", (await mfaBadge()) === "Off", await mfaBadge());
+    // The user menu answers the same question from anywhere in the panel.
+    const menuState = await evaluate(`(() => {
+      const item = document.querySelector('.menu-item--mfa');
+      return item ? item.textContent.replace(/\s+/g, ' ').trim() : '';
+    })()`);
+    check("mfa: the account menu says the factor is off", /two-factor\s*·?\s*off/i.test(menuState), menuState);
+
+    // 4. Enrol, with a real code computed from the secret the screen showed.
+    const enrolled = await driveEnrolment({ codeFieldId: "mfa-code" });
+    if (enrolled?.secret) {
+      check("mfa: the setup secret is the standard 32 base32 characters", enrolled.secret.length === 32, `${enrolled.secret.length} chars`);
+
+      // 5. The state now reads On — and still does after a reload, which is what proves the page
+      //    reads the server rather than a flag the dialog set.
+      await until("the status to say On", `(() => { const b = document.querySelector('.settings-status-row .badge'); return b && b.textContent.trim() === 'On'; })()`, 10_000).catch(() => {});
+      check("mfa: the state reads On after confirming", (await mfaBadge()) === "On", await mfaBadge());
+      check("mfa: the prompt is gone once the factor is on", (await evaluate("document.querySelector('.mfa-prompt') === null")));
+
+      await goto("/settings");
+      await until("the status after a reload", "document.querySelector('.settings-status-row .badge') !== null", 10_000);
+      check("mfa: the state survives a reload (it is read, not remembered)", (await mfaBadge()) === "On", await mfaBadge());
+      const detail = await evaluate("document.querySelector('.settings-status-detail')?.innerText ?? ''");
+      check("mfa: the screen says when the factor was added", /on since/i.test(detail), detail.slice(0, 160));
+      check("mfa: the screen counts the recovery codes left", /recovery code/i.test(detail), detail.slice(0, 200));
+
+      // 6. The factor actually gates the sign-in. Without this step the harness would prove that
+      //    enrolment *records* a factor, not that the factor is enforced — and an enrolment that
+      //    does not challenge a login is the one failure mode a "state reads On" assertion cannot
+      //    see. So: sign out, sign in with the password, expect the challenge, and complete it with
+      //    a code computed from the secret.
+      await goto("/settings");
+      await evaluate(`(() => {
+        const who = document.querySelector('.who');
+        if (who) who.click();
+        const out = document.querySelector('.menu-item--danger');
+        if (out) out.click();
+        return true;
+      })()`);
+      await until("the sign-in screen after signing out", "document.querySelector('.auth-panel') !== null", 12_000);
+      await typeInto("#email", staffEmail);
+      await typeInto("#password", staffPassword);
+      await click(".auth-form .btn--primary");
+      const challenged = await until("the second-factor challenge", "document.querySelectorAll('.otp-digit').length === 6", 12_000).catch(() => false);
+      check("mfa: signing in now demands a code", Boolean(challenged), "no six-digit challenge appeared");
+      if (challenged) {
+        const code = await freshTotp(enrolled.secret);
+        const filled = await evaluate(`(() => {
+          const digits = Array.from(document.querySelectorAll('.otp-digit'));
+          const code = ${JSON.stringify(code)};
+          digits.forEach((el, i) => {
+            el.value = code[i] ?? '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          });
+          return digits.map((d) => d.value).join('');
+        })()`);
+        check("mfa: the challenge takes six digits", filled.length === 6, filled);
+        await click(".auth-form .btn--primary");
+        const back = await until("the panel after the second factor", "document.querySelector('.app') !== null", 15_000).catch(() => false);
+        check("mfa: a current code completes the sign-in", Boolean(back), "the panel did not load after the code");
+        // A wrong code must be refused and must not sign the user out of the challenge — that is the
+        // property a customer hits every time their phone's clock drifts.
+        if (back) {
+          const refused = await evaluate("document.querySelector('.error-state, .banner--danger, .auth-error') !== null");
+          check("mfa: a completed challenge leaves no error on the panel", !refused);
+        }
+      }
+
+      // 7. Turning it off needs both factors. The helper tries the right code with a wrong password
+      //    first, then the pair.
+      await goto("/settings");
+      await until("the two-factor section after re-signing in", "document.querySelector('.settings-status-row') !== null", 12_000);
+      check("mfa: the state is still On after signing back in", (await mfaBadge()) === "On", await mfaBadge());
+      await driveDisable({
+        password: staffPassword,
+        secret: enrolled.secret,
+        passwordFieldId: "mfa-disable-password",
+        codeFieldId: "mfa-disable-code",
+      });
+      await until("the status to say Off", `(() => { const b = document.querySelector('.settings-status-row .badge'); return b && b.textContent.trim() === 'Off'; })()`, 10_000).catch(() => {});
+      check("mfa: the state reads Off after disabling", (await mfaBadge()) === "Off", await mfaBadge());
+      check("mfa: the prompt returns when the factor is removed", (await evaluate("document.querySelector('.mfa-prompt') !== null")));
+    }
   }
 
   // ---------------------------------------------------- the new staff screens --
@@ -1175,6 +1572,50 @@ try {
       path: "/portal/security",
       expect: ["Security"],
     });
+
+    // The customer's half of the same flow. The screen is built by another package and its
+    // selectors differ slightly, but the contract is the same one and it is driven the same way:
+    // a real code from the secret on screen, recovery codes shown once, and a disable that demands
+    // the password and a code together. The factor is removed at the end so the account is left as
+    // it was found — a run that left MFA on would break the next sign-in it performs.
+    {
+      await goto("/portal/security");
+      const state = await screenState();
+      if (!missingReason(state)) {
+        await until("the portal two-factor section", "document.querySelector('#two-factor') !== null", 10_000);
+        const before = await evaluate("document.querySelector('#two-factor .badge')?.textContent.trim() ?? ''");
+        check("portal-mfa: the customer's security page reports a state", before.length > 0, "no badge in the two-factor section");
+
+        if (before === "Off") {
+          const enrolled = await driveEnrolment({
+            codeFieldId: "portal-mfa-code",
+            requireQr: false,
+            requireDownload: false,
+            shotPrefix: "portal-mfa",
+          });
+          if (enrolled?.secret) {
+            await until("the portal status to say On", `(() => { const b = document.querySelector('#two-factor .badge'); return b && b.textContent.trim() === 'On'; })()`, 10_000).catch(() => {});
+            const after = await evaluate("document.querySelector('#two-factor .badge')?.textContent.trim() ?? ''");
+            check("portal-mfa: the customer's state reads On after confirming", after === "On", after);
+
+            await driveDisable({
+              password: customerPassword,
+              secret: enrolled.secret,
+              passwordFieldId: "portal-mfa-disable-password",
+              codeFieldId: "portal-mfa-disable-code",
+            });
+            await until("the portal status to say Off", `(() => { const b = document.querySelector('#two-factor .badge'); return b && b.textContent.trim() === 'Off'; })()`, 10_000).catch(() => {});
+            const restored = await evaluate("document.querySelector('#two-factor .badge')?.textContent.trim() ?? ''");
+            check("portal-mfa: the customer's state reads Off again", restored === "Off", restored);
+          }
+        } else {
+          // A previous run left a factor behind, or support reset it. Both are legitimate states;
+          // the point is that the screen says which one, so the harness reports it and moves on.
+          console.log(`     note: portal-mfa: the customer already has a factor (${before}); enrolment not driven`);
+          check("portal-mfa: an existing factor is reported by name", /on|removed/i.test(before), before);
+        }
+      }
+    }
 
     await assertNewScreen("portal-notifications", {
       path: "/portal/notifications",

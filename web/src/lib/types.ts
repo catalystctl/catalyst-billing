@@ -17,6 +17,24 @@ export interface SessionUser {
   is_staff: boolean;
 }
 
+/**
+ * The caller's own second-factor state, from `GET /api/v1/auth/me`.
+ *
+ * The field names are the ones `GET /api/v1/portal/mfa` uses, because both are rendered from the
+ * same `authn.MFAStatusFor` read and two carriers of one fact must not disagree about what to call
+ * it. `available` is false only when the state could not be read — a failed read is not a claim
+ * that the factor is off, so no screen may offer to enrol on top of it.
+ */
+export interface MfaState {
+  has_mfa: boolean;
+  enrolled_at: string | null;
+  recovery_codes_remaining: number;
+  enrolment_required: boolean;
+  reset_at: string | null;
+  reset_by: string | null;
+  available: boolean;
+}
+
 export interface Session {
   user: SessionUser;
   permissions: Set<string>;
@@ -26,6 +44,9 @@ export interface Session {
    *  otherwise required. The shell sends the customer to the enrolment screen while it is set,
    *  and `ctx.refreshSession()` clears it once a new factor is confirmed. */
   mfaEnrolmentRequired: boolean;
+  /** The caller's own second factor, so the shell and the account screens can say on/off as a
+   *  fact rather than guessing. Refreshed by `ctx.refreshSession()` after an enrolment. */
+  mfa: MfaState;
 }
 
 export interface RouteContext {

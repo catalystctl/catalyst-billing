@@ -304,7 +304,7 @@ paths:
             x-rate-class: mutation
     /api/v1/auth/me:
         get:
-            description: The UI hides actions with this list, and the server refuses them independently.
+            description: 'The UI hides actions with this list, and the server refuses them independently. Also reports `mfa`: the caller''s own second-factor state, in the same shape as `GET /api/v1/auth/mfa`, so the shell can say whether the account is protected without a second request.'
             operationId: GetAuthMe
             responses:
                 2XX:
@@ -349,6 +349,54 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: The current identity and its permissions
+            x-rate-class: read
+    /api/v1/auth/mfa:
+        get:
+            description: 'Whether a TOTP factor is confirmed, when it was confirmed, how many recovery codes are left, whether an operator''s reset left an enrolment demand outstanding, and who performed that reset. Scoped to the caller: there is no id in the path. `available` is false when the state could not be read, so no screen offers to enrol on top of a fact it could not see. The same object is carried by `GET /api/v1/auth/me` under `mfa`, and by `GET /api/v1/portal/mfa`; all three come from one read.'
+            operationId: GetAuthMfa
+            responses:
+                2XX:
+                    description: The state
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Your own second-factor state
             x-rate-class: read
     /api/v1/auth/mfa/confirm:
         post:

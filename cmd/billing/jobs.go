@@ -20,6 +20,7 @@ import (
 	"github.com/catalyst/billing/internal/renewal"
 	"github.com/catalyst/billing/internal/retention"
 	"github.com/catalyst/billing/internal/store"
+	"github.com/catalyst/billing/internal/tickets"
 )
 
 // jobSpec is one periodic task.
@@ -129,6 +130,28 @@ func buildJobs(pool *store.Pool, logger *slog.Logger, apiServer *httpapi.Server)
 				}
 			}
 			return err
+		},
+	})
+
+	// ---- tickets: close the ones nobody replied to --------------------------
+	//
+	// A ticket that has been open for a fortnight with no reply is not a queue item, it is a
+	// liability: it looks like outstanding work and it is not. Closing it is a policy decision
+	// with a configured threshold (`tickets.autoclose_days`, 14 by default), so this job reads
+	// the setting rather than hard-coding it, and it is idempotent — the scan selects only
+	// tickets that are not already closed.
+	jobs = append(jobs, jobSpec{
+		name:     "ticket-autoclose",
+		interval: 6 * time.Hour,
+		run: func(ctx context.Context) error {
+			closed, err := tickets.CloseStale(ctx, pool, 0)
+			if err != nil {
+				return err
+			}
+			if closed > 0 {
+				logger.Info("stale tickets closed", "count", closed)
+			}
+			return nil
 		},
 	})
 

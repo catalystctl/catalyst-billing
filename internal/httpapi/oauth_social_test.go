@@ -637,3 +637,86 @@ func TestSocialSignInWithExistingEmailRefusesOverHTTP(t *testing.T) {
 		t.Fatalf("replayed state location = %q, want state_invalid", location)
 	}
 }
+
+// The documented read a third party actually makes: a token with invoice:read:self returns the
+// owner's invoices and nothing else. The customer is resolved from the credential, so another
+// customer's invoice is not addressable — there is no id in the request to substitute.
+func TestOAuthTokenReadsOnlyItsOwnersInvoices(t *testing.T) {
+	env := newOAuthEnv(t)
+	ownerID := env.createUser("owner@example.test", "correct horse battery", "")
+	otherID := env.createUser("other@example.test", "correct horse battery", "")
+
+	// Two billing customers, one invoice each, linked to the two logins.
+	seed := func(userID, email, number string) {
+		var customerID string
+		if err := env.pool.QueryRow(context.Background(), `
+			INSERT INTO customers (email, name) VALUES ($1, 'Customer') RETURNING id`, email).
+			Scan(&customerID); err != nil {
+			t.Fatalf("customer: %v", err)
+		}
+		if _, err := env.pool.Exec(context.Background(), `
+			INSERT INTO customer_accounts (user_id, customer_id) VALUES ($1, $2)`,
+			userID, customerID); err != nil {
+			t.Fatalf("link: %v", err)
+		}
+		if _, err := env.pool.Exec(context.Background(), `
+			INSERT INTO invoices (number, customer_id, status, currency, subtotal_minor,
+				tax_minor, total_minor, amount_paid_minor, issued_at, due_at, snapshot)
+			VALUES ($1, $2, 'open', 'USD', 1200, 0, 1200, 0, now(), now() + interval '7 days',
+			        '{"schema_version":1}'::jsonb)`, number, customerID); err != nil {
+			t.Fatalf("invoice: %v", err)
+		}
+	}
+	seed(ownerID, "owner@example.test", "INV-OWNER")
+	seed(otherID, "other@example.test", "INV-OTHER")
+
+	env.createUser("admin@example.test", "correct horse battery", "administrator")
+	adminCookie, adminCSRF := env.login("admin@example.test", "correct horse battery")
+	_, publicID, secret := env.registerClient(adminCookie, adminCSRF, "Portal App", true,
+		[]string{"invoice:read:self"})
+
+	ownerCookie, ownerCSRF := env.login("owner@example.test", "correct horse battery")
+	rec := env.postForm("/oauth/authorize", url.Values{
+		"response_type": {"code"},
+		"client_id":     {publicID},
+		"redirect_uri":  {"https://app.example.test/callback"},
+		"scope":         {"invoice:read:self"},
+		"decision":      {"approve"},
+		"csrf_token":    {ownerCSRF},
+	}, ownerCookie)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("consent: status %d, body %s", rec.Code, rec.Body)
+	}
+	location, _ := url.Parse(rec.Header().Get("Location"))
+	code := location.Query().Get("code")
+
+	rec = env.postForm("/oauth/token", url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {"https://app.example.test/callback"},
+		"client_id":     {publicID},
+		"client_secret": {secret},
+	}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("token: status %d, body %s", rec.Code, rec.Body)
+	}
+	var token struct {
+		AccessToken string `json:"access_token"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &token)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me/invoices", nil)
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	rec = httptest.NewRecorder()
+	env.srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("invoices: status %d, body %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "INV-OWNER") {
+		t.Fatalf("the owner's invoice is missing: %s", body)
+	}
+	if strings.Contains(body, "INV-OTHER") {
+		t.Fatalf("another customer's invoice was returned: %s", body)
+	}
+}

@@ -464,12 +464,35 @@ function showRecoveryCodes(ctx: Ctx, res: MfaConfirmation): void {
 }
 
 /**
- * A file of the recovery codes.
+ * A link that saves `body` as a file named `filename`.
+ *
+ * Generic on purpose: the recovery codes are the first caller, and another screen showing the same
+ * codes should call this rather than write its own Blob dance. The file is built in the page, so
+ * nothing is uploaded and the CSP's `connect-src 'self'` is untouched — a `blob:` URL is a local
+ * object, not a request.
+ *
+ * The object URL is revoked when the page goes away rather than on click: a click can be cancelled
+ * in the save dialog, and revoking first would leave a dead link.
+ */
+export function downloadText(
+  ctx: Ctx,
+  filename: string,
+  body: string,
+  label = "Download",
+  title = `Download ${filename}`,
+): HTMLAnchorElement {
+  const url = URL.createObjectURL(new Blob([body], { type: "text/plain;charset=utf-8" }));
+  const anchor = h("a", { class: "btn btn--sm", href: url, download: filename, title }) as HTMLAnchorElement;
+  anchor.append(label);
+  ctx.onDispose(() => URL.revokeObjectURL(url));
+  return anchor;
+}
+
+/**
+ * A file of the recovery codes, with the header a person needs when they open it a year later.
  *
  * A copy button is not a backup: the clipboard is lost on the next copy, and the codes have to
- * survive until the phone is gone. The file is built in the page from a Blob, so nothing is
- * uploaded and the CSP's `connect-src 'self'` is untouched — a `blob:` URL is a local object, not
- * a request.
+ * survive until the phone is gone.
  */
 export function recoveryCodeDownload(ctx: Ctx, codes: string[]): HTMLAnchorElement {
   const lines = [
@@ -482,19 +505,13 @@ export function recoveryCodeDownload(ctx: Ctx, codes: string[]): HTMLAnchorEleme
     ...codes,
     "",
   ];
-  const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = h("a", {
-    class: "btn btn--sm",
-    href: url,
-    download: "catalyst-billing-recovery-codes.txt",
-    title: "Download the recovery codes as a text file",
-  }) as HTMLAnchorElement;
-  anchor.append("Download as a file");
-  // The object URL is revoked when the page goes away rather than on click: a click may be
-  // cancelled in the save dialog, and revoking first would leave a dead link.
-  ctx.onDispose(() => URL.revokeObjectURL(url));
-  return anchor;
+  return downloadText(
+    ctx,
+    "catalyst-billing-recovery-codes.txt",
+    lines.join("\n"),
+    "Download as a file",
+    "Download the recovery codes as a text file",
+  );
 }
 
 // -------------------------------------------------------------------- disable --

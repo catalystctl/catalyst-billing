@@ -53,10 +53,10 @@ Migrations 0020–0024, each with the decision that shaped it recorded at the to
 | Operator surface | **merged** | System settings with secrets redacted, log viewers, cron history and heartbeat, a revenue dashboard reading the ledger rather than invoice totals, announcements. |
 | Identity depth | **merged** | Session list and revoke, audited impersonation (the audit row names both the account and the operator), editable roles with the four system roles immutable in the database, API-key CIDR allowlists enforced. |
 | Frontend commerce | **merged** | Twelve screens: cart, checkout, register, coupons, tax rates, currencies, config options, system settings, announcements, logs, cancellations, credit. |
-| Credits and pay flow | running | Credit deposits, auto-use, partial application, pay-with-credit, payment polling, manual payments. |
-| Growth and platform | running | Affiliates with exact commission, Discord notifications. |
-| Frontend support/account | in review | Tickets (both sides), the staff queue, and the customer security, notifications and payment-method screens. |
-| Verification | running | The browser harness extended to the new screens, and this document. |
+| Credits and pay flow | **merged** | A deposit is a payment with no invoice behind it, so it posts a liability rather than revenue. Auto-use spends a balance in the issuing transaction, keyed by the invoice so a replay spends nothing twice. Pay-with-credit, payment polling and manual payments. |
+| Growth and platform | **merged** | Affiliate attribution, commission recorded inside the settlement transaction with exact rational arithmetic, Discord notifications configured through settings. |
+| Frontend support/account | **merged** | Tickets on both sides (one component, because the server decides which rows each caller sees), the staff queue, and the customer security, notifications and payment-method screens. |
+| Verification | **merged** | The browser harness waits for a screen to finish loading before asserting on it, and covers the new screens. 107 assertions green. |
 
 ## Integration work done by hand
 
@@ -87,9 +87,14 @@ Recorded rather than hidden:
   hardcoded messages. Switching them gets operator-editable wording and an inbox row, but it
   changes the text a customer receives during a security flow and deserves its own review.
 - **Stock/limit reconciliation.** Checkout implements stock and per-user limits inline with a
-  sorted lock order. When the service-lifecycle package lands its helpers, one implementation
-  should win — and the inline one counts pending subscriptions, which is the stricter and
-  correct behaviour.
+  sorted lock order; `internal/service` now exports its own helpers. One implementation should
+  win — and checkout's counts pending subscriptions toward the per-user limit, which is the
+  stricter and correct behaviour, so the reconciliation should adopt it rather than the reverse.
+- **Recurring affiliate commission** (`GRW-03`). Commission is paid on a signup. A renewal
+  invoice has no signup to attribute, and a recurring commission is a policy decision the growth
+  package deliberately does not make silently.
+- **Live role refresh for the CLI.** The Authorizer reloads on a role edit through HTTP; a role
+  created directly in the database is picked up at the next boot.
 - **Real gateways and provisioners** (`PAY-01`, `SVC-18`). Still the fake fixtures. This is a
   protocol-and-adapter job, not a schema one.
 - **i18n, social login, OAuth2 server, importers, marketplace** (`P6`). Not started.
@@ -107,3 +112,24 @@ Recorded rather than hidden:
 | Customer reads are scoped in SQL | Ticket and invoice tests assert 404 for another customer's id. |
 | Every route is a table entry | `TestPermissionCoverage` passes with the new routes. |
 | Every error is problem+json | `TestEveryErrorIsProblemJSON` passes. |
+
+## Defects the verification caught
+
+Worth recording, because each was invisible to a green unit-test run:
+
+- **A credit deposit credited nobody.** Every test built its own payment applier, so the whole
+  repository passed while production wired the plain one — a settled deposit marked its invoice
+  paid and left the balance at zero, with no error. The construction is now a named function with
+  a test that asserts what the worker actually builds.
+- **The impersonation guard was dead code.** It shipped with the impersonation work and nothing
+  called it, so an operator acting as a customer could enrol an authenticator on that account: a
+  permanent takeover. A control that is not wired is worse than no control, because it is trusted.
+- **The API-key allowlist was decorative.** Stored, administered, never checked.
+- **A proforma could not become an invoice.** The immutability trigger refused the only UPDATE
+  that converts one.
+- **A coupon had nowhere to go.** `invoice_lines` refused a negative line, so a discount could only
+  be folded into unit prices — a document that shows `$80` against a `$100` price list with nothing
+  explaining the difference.
+- **The browser harness read a skeleton.** It asserted on `innerText` immediately after
+  navigation, so the dashboard checks passed or failed on the nav rail's text rather than the
+  page's.

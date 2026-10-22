@@ -809,9 +809,13 @@ try {
     requireTable: true,
   });
 
+  // The rate table is the screen; the import card is the surface that lets an installation stop
+  // typing rates by hand. Both are asserted because a screen that renders its table and silently
+  // loses its configuration card is exactly the regression a screenshot review misses: the page
+  // looks right, and there is no longer any way to configure a source.
   await assertNewScreen("tax-rates", {
     path: "/tax-rates",
-    expect: ["Tax rates", ...(seededTaxRate ? [seededTaxRate] : [])],
+    expect: ["Tax rates", "External source", ...(seededTaxRate ? [seededTaxRate] : [])],
     requireTable: true,
   });
 

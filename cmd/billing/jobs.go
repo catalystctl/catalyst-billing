@@ -24,6 +24,7 @@ import (
 	"github.com/catalyst/billing/internal/renewal"
 	"github.com/catalyst/billing/internal/retention"
 	"github.com/catalyst/billing/internal/store"
+	"github.com/catalyst/billing/internal/tax"
 	"github.com/catalyst/billing/internal/tickets"
 )
 
@@ -305,6 +306,23 @@ func buildJobs(pool *store.Pool, logger *slog.Logger, apiServer *httpapi.Server)
 			run:      lj.Run,
 		})
 	}
+
+	// ---- tax rates: refresh the jurisdiction table from its configured source -----------
+	//
+	// The tick is hourly and the *source* decides whether a tick fetches: the refresh interval
+	// stored beside the URL is the installation's answer to "how stale may a rate be", which is a
+	// business decision, while the tick is a property of the loop. Two consequences worth knowing
+	// before changing the interval below: an installation that configured a daily refresh is not
+	// polled hourly, and a source that failed is retried in fifteen minutes rather than waiting a
+	// whole interval (see tax.Importer.due).
+	//
+	// The job never overwrites a rate an operator typed. A cron job cannot ask for permission, so
+	// it does not have any: a manual rate is reported as protected in the run history instead.
+	jobs = append(jobs, jobSpec{
+		name:     "tax-rate-refresh",
+		interval: time.Hour,
+		run:      tax.RefreshJob(pool, logger),
+	})
 
 	return clients, jobs
 }

@@ -6,6 +6,7 @@
 
 import { Api, connectEvents, type EventStream, type LiveEvent } from "./lib/api";
 import { fill } from "./lib/dom";
+import { currentLocale, enabledLocales, initI18n, onLocaleChange, refreshLocales, setLocale, tx } from "./lib/i18n";
 import { icon } from "./lib/icons";
 import { createRouter, type RouteMatch } from "./lib/router";
 import { homeFor, loadSession } from "./lib/session";
@@ -34,6 +35,12 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
   let routeToken = 0;
   let palette: { close(): void } | null = null;
 
+  // The catalogue has to be in hand before the first screen renders: a view translates while it
+  // builds its nodes, so a screen built before the catalogue lands is a screen in English. The
+  // call never throws — an installation whose locale endpoint is down is a panel in English,
+  // not a panel that fails to start.
+  await initI18n(api);
+
   try {
     session = await loadSession(api);
   } catch (err) {
@@ -53,9 +60,29 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
     live?.close();
     live = null;
     disposePage();
-    toaster.push("Your session expired", { tone: "danger", detail: "Sign in again to continue." });
+    toaster.push(tx("app.session.expired", "Your session expired"), {
+      tone: "danger",
+      detail: tx("app.session.expired_detail", "Sign in again to continue."),
+    });
     router.navigate("/login", { replace: true });
   });
+
+  // A language switch is a re-render, not a reload. The rail, the crumbs and the toolbar are
+  // built once, so the shell is rebuilt too — a German menu around an English screen is the
+  // half-translated state this feature exists to remove. Public pages have no shell; the
+  // storefront subscribes on its own and re-renders in place, which keeps the scroll position
+  // and the selected category.
+  onLocaleChange(() => {
+    const match = router.current();
+    if (!session || !match) return;
+    shell = null;
+    void handleRoute(match);
+  });
+
+  /** Switches the language and lets the notification above do the re-rendering. */
+  function changeLocale(code: string): void {
+    void setLocale(code);
+  }
 
   // ------------------------------------------------------------- navigation --
 
@@ -142,24 +169,31 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
           ? h(
               "div",
               { class: "empty-state" },
-              h("p", { class: "empty-title" }, "This screen is not available in this build"),
+              h("p", { class: "empty-title" }, tx("app.chunk.missing_title", "This screen is not available in this build")),
               h(
                 "p",
                 { class: "empty-body" },
-                "The page exists in the navigation but its module is not part of the bundle that was served. Everything else in the panel still works.",
+                tx(
+                  "app.chunk.missing_body",
+                  "The page exists in the navigation but its module is not part of the bundle that was served. Everything else in the panel still works.",
+                ),
               ),
               h(
                 "a",
                 { class: "btn", href: "/", "data-link": "true" },
-                "Back to the dashboard",
+                tx("app.chunk.back", "Back to the dashboard"),
               ),
             )
           : h(
               "div",
               { class: "error-state" },
-              h("p", { class: "empty-title" }, "This screen could not be loaded"),
+              h("p", { class: "empty-title" }, tx("app.load.failed_title", "This screen could not be loaded")),
               h("p", { class: "empty-body" }, message),
-              h("button", { class: "btn", type: "button", onclick: () => window.location.reload() }, "Reload"),
+              h(
+                "button",
+                { class: "btn", type: "button", onclick: () => window.location.reload() },
+                tx("app.reload", "Reload"),
+              ),
             ),
       );
       return;
@@ -182,12 +216,16 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
         h(
           "div",
           { class: "error-state" },
-          h("p", { class: "empty-title" }, "Something went wrong rendering this screen"),
+          h("p", { class: "empty-title" }, tx("app.render.failed_title", "Something went wrong rendering this screen")),
           h("p", { class: "empty-body" }, err instanceof Error ? err.message : String(err)),
           h(
             "button",
-            { class: "btn", type: "button", onclick: () => router.navigate(window.location.pathname + window.location.search, { replace: true }) },
-            "Try again",
+            {
+              class: "btn",
+              type: "button",
+              onclick: () => router.navigate(window.location.pathname + window.location.search, { replace: true }),
+            },
+            tx("app.retry", "Try again"),
           ),
         ),
       );
@@ -216,6 +254,10 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       onSignedIn: async (next) => {
         session = next;
         api.setCSRFToken(next.csrfToken);
+        // The visitor was resolved anonymously a moment ago. Now that there is a session, the
+        // account's own stored language is part of the answer, so the catalogue is re-read
+        // before the first signed-in screen renders.
+        await refreshLocales(api);
         startLive();
         router.navigate(nextQuery() ?? homeFor(next), { replace: true });
       },
@@ -244,9 +286,9 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
           h(
             "div",
             { class: "auth-panel" },
-            h("h1", { class: "page-title" }, "Page not found"),
-            h("p", { class: "page-sub" }, `There is nothing at ${path}.`),
-            h("a", { class: "btn btn--primary", href: "/login" }, "Sign in"),
+            h("h1", { class: "page-title" }, tx("app.not_found.title", "Page not found")),
+            h("p", { class: "page-sub" }, tx("app.not_found.body", "There is nothing at {{path}}.", { path })),
+            h("a", { class: "btn btn--primary", href: "/login" }, tx("app.sign_in", "Sign in")),
           ),
         ),
       );
@@ -266,7 +308,10 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
     shell = createShell({
       session: session!,
       theme,
+      locales: enabledLocales(),
+      locale: currentLocale(),
       navigate: (p) => router.navigate(p),
+      onLocaleChange: changeLocale,
       onToggleTheme: () => {
         theme = toggleTheme(theme);
         const btn = document.getElementById("theme-toggle");
@@ -418,10 +463,18 @@ function renderFatal(root: HTMLElement, err: unknown): void {
       h(
         "div",
         { class: "auth-panel" },
-        h("h1", { class: "page-title" }, "Catalyst Billing is unreachable"),
+        h("h1", { class: "page-title" }, tx("app.fatal.title", "Catalyst Billing is unreachable")),
         h("p", { class: "page-sub" }, err instanceof Error ? err.message : String(err)),
-        h("p", { class: "auth-note" }, "The API did not answer. Check that the server is running, then reload."),
-        h("button", { class: "btn btn--primary", type: "button", onclick: () => window.location.reload() }, "Reload"),
+        h(
+          "p",
+          { class: "auth-note" },
+          tx("app.fatal.body", "The API did not answer. Check that the server is running, then reload."),
+        ),
+        h(
+          "button",
+          { class: "btn btn--primary", type: "button", onclick: () => window.location.reload() },
+          tx("app.reload", "Reload"),
+        ),
       ),
     ),
   );

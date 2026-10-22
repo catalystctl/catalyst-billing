@@ -12,7 +12,8 @@
 
 import { ApiError } from "../lib/api";
 import { h } from "../lib/dom";
-import { dateOnly, moneyWithCode, plural, safeExternalURL, shortId, type Amount } from "../lib/format";
+import { dateOnly, moneyWithCode, safeExternalURL, shortId, type Amount } from "../lib/format";
+import { tx } from "../lib/i18n";
 import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import { badge, btn, card, emptyState, moneyEl, resource, statusBadge, withBusy } from "../ui/kit";
@@ -72,13 +73,15 @@ export function payButton(
   invoice: PortalInvoice,
   opts: { size?: "sm" | "md"; block?: boolean } = {},
 ): HTMLButtonElement {
-  const label = h("span", null, "Pay ", moneyEl(invoice.due));
+  const label = h("span", null, `${tx("portal.pay.action", "Pay")} `, moneyEl(invoice.due));
   const el = btn(label, {
     variant: "primary",
     size: opts.size ?? "sm",
     icon: "card",
     block: opts.block,
-    title: invoice.number ? `Pay invoice ${invoice.number}` : "Pay this invoice",
+    title: invoice.number
+      ? tx("portal.pay.title", "Pay invoice {{number}}", { number: invoice.number })
+      : tx("portal.pay.title_plain", "Pay this invoice"),
   }) as HTMLButtonElement;
   el.addEventListener("click", () => void startCheckout(ctx, invoice, el));
   return el;
@@ -106,19 +109,26 @@ export async function startCheckout(ctx: Ctx, invoice: PortalInvoice, button: HT
     if (!target) {
       // A gateway that answers with no link is a gateway problem, not a customer problem:
       // say what happened, say that nothing was charged, and leave the invoice payable.
-      ctx.toast("The payment page could not be opened", {
+      ctx.toast(tx("portal.checkout.no_link_title", "The payment page could not be opened"), {
         tone: "danger",
         duration: 0,
-        detail:
+        detail: tx(
+          "portal.checkout.no_link_detail",
           "The payment gateway returned no usable link, so there is nowhere to send you. Nothing has been charged — try again, and contact support if it keeps happening.",
+        ),
       });
       return;
     }
 
-    ctx.toast(session.reused ? "Resuming your payment" : "Taking you to the payment page", {
-      tone: "info",
-      detail: `${moneyWithCode(session.amount)} · attempt ${shortId(session.attempt_id)}`,
-    });
+    ctx.toast(
+      session.reused
+        ? tx("portal.checkout.resuming", "Resuming your payment")
+        : tx("portal.checkout.redirecting", "Taking you to the payment page"),
+      {
+        tone: "info",
+        detail: `${moneyWithCode(session.amount)} · ${tx("portal.checkout.attempt", "attempt")} ${shortId(session.attempt_id)}`,
+      },
+    );
     window.location.assign(target);
   });
 }
@@ -126,48 +136,57 @@ export async function startCheckout(ctx: Ctx, invoice: PortalInvoice, button: HT
 /** Plain copy for each documented checkout failure. Branch on the code, never the detail. */
 function reportCheckoutError(ctx: Ctx, err: unknown): void {
   if (!(err instanceof ApiError)) {
-    ctx.toast("The payment could not be started", {
+    ctx.toast(tx("portal.checkout.failed_title", "The payment could not be started"), {
       tone: "danger",
-      detail: "The server could not be reached. Nothing has been charged.",
+      detail: tx("portal.checkout.failed_detail", "The server could not be reached. Nothing has been charged."),
     });
     return;
   }
   switch (err.code) {
     case "not_payable":
-      ctx.toast("This invoice cannot be paid right now", {
+      ctx.toast(tx("portal.checkout.not_payable_title", "This invoice cannot be paid right now"), {
         tone: "danger",
-        detail: "It may be a draft, already void, or have nothing left to pay. Reload the page to see its current state.",
+        detail: tx(
+          "portal.checkout.not_payable_detail",
+          "It may be a draft, already void, or have nothing left to pay. Reload the page to see its current state.",
+        ),
       });
       return;
     case "already_settled":
-      ctx.toast("This invoice is already paid", {
+      ctx.toast(tx("portal.checkout.settled_title", "This invoice is already paid"), {
         tone: "success",
-        detail: "There is nothing left to pay on it. Reload the page to see the payment.",
+        detail: tx("portal.checkout.settled_detail", "There is nothing left to pay on it. Reload the page to see the payment."),
       });
       return;
     case "gateway_unavailable":
-      ctx.toast("The payment gateway is not available", {
+      ctx.toast(tx("portal.checkout.gateway_title", "The payment gateway is not available"), {
         tone: "danger",
-        detail: "Nothing has been charged. Try again in a moment.",
+        detail: tx("portal.checkout.gateway_detail", "Nothing has been charged. Try again in a moment."),
       });
       return;
     case "not_found":
-      ctx.toast("That invoice is not available", {
+      ctx.toast(tx("portal.checkout.not_found_title", "That invoice is not available"), {
         tone: "danger",
-        detail: "It may belong to another account, or no longer exist.",
+        detail: tx("portal.checkout.not_found_detail", "It may belong to another account, or no longer exist."),
       });
       return;
     case "portal_unavailable":
-      ctx.toast("The customer portal is not available", {
+      ctx.toast(tx("portal.checkout.portal_title", "The customer portal is not available"), {
         tone: "danger",
-        detail: "This deployment has no portal configured. Contact support to pay an invoice.",
+        detail: tx("portal.checkout.portal_detail", "This deployment has no portal configured. Contact support to pay an invoice."),
       });
       return;
     case "rate_limited":
-      ctx.toast("Too many attempts", { tone: "danger", detail: "Wait a minute and try again." });
+      ctx.toast(tx("portal.checkout.rate_title", "Too many attempts"), {
+        tone: "danger",
+        detail: tx("portal.checkout.rate_detail", "Wait a minute and try again."),
+      });
       return;
     default:
-      ctx.toast(err.detail || "The payment could not be started", { tone: "danger", detail: err.code });
+      ctx.toast(err.detail || tx("portal.checkout.failed_title", "The payment could not be started"), {
+        tone: "danger",
+        detail: err.code,
+      });
   }
 }
 
@@ -193,7 +212,10 @@ async function loadOverview(ctx: Ctx, signal: AbortSignal): Promise<PortalOvervi
 export function portalLoadError(err: unknown): unknown {
   if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
     return new Error(
-      "This account is not linked to a billing customer, so there is nothing to show here. If you expect invoices or services, contact support.",
+      tx(
+        "portal.error.no_customer",
+        "This account is not linked to a billing customer, so there is nothing to show here. If you expect invoices or services, contact support.",
+      ),
     );
   }
   return err;
@@ -220,16 +242,25 @@ function renderOverview(ctx: Ctx, data: PortalOverview): Node {
       h(
         "p",
         null,
-        open.length > 0
-          ? `${plural(open.length, "invoice")} waiting for payment. Paying takes a minute and returns you here.`
-          : "Nothing is outstanding. Your services and recent invoices are below.",
+        open.length === 0
+          ? tx("portal.hero.nothing_open", "Nothing is outstanding. Your services and recent invoices are below.")
+          : open.length === 1
+            ? tx(
+                "portal.hero.one_open",
+                "One invoice is waiting for payment. Paying takes a minute and returns you here.",
+              )
+            : tx(
+                "portal.hero.many_open",
+                "{{count}} invoices are waiting for payment. Paying takes a minute and returns you here.",
+                { count: open.length },
+              ),
       ),
       h(
         "div",
         { class: "row-wrap" },
         oldest ? payButton(ctx, oldest, { size: "md" }) : null,
-        btn("All invoices", { href: "/portal/invoices", icon: "invoice", size: "md" }),
-        btn("Your services", { href: "/portal/services", icon: "server", size: "md" }),
+        btn(tx("portal.hero.all_invoices", "All invoices"), { href: "/portal/invoices", icon: "invoice", size: "md" }),
+        btn(tx("portal.hero.your_services", "Your services"), { href: "/portal/services", icon: "server", size: "md" }),
       ),
     ),
     h(
@@ -238,56 +269,86 @@ function renderOverview(ctx: Ctx, data: PortalOverview): Node {
       h(
         "span",
         { class: "portal-balance-label" },
-        outstanding.length > 1 ? "Outstanding, per currency" : "Outstanding",
+        outstanding.length > 1
+          ? tx("portal.balance.per_currency", "Outstanding, per currency")
+          : tx("portal.balance.outstanding", "Outstanding"),
       ),
       outstanding.length === 0
-        ? h("span", { class: "portal-balance-none" }, "Nothing due")
+        ? h("span", { class: "portal-balance-none" }, tx("portal.balance.nothing_due", "Nothing due"))
         // One line per currency: summing two currencies would be meaningless without a rate.
         : h("div", { class: "portal-balance-amounts" }, ...outstanding.map((amount) => moneyEl(amount, { size: "xl" }))),
-      ...credit.map((amount) => h("span", { class: "portal-balance-sub" }, "Credit ", moneyEl(amount))),
+      ...credit.map((amount) =>
+        h("span", { class: "portal-balance-sub" }, `${tx("portal.balance.credit", "Credit")} `, moneyEl(amount)),
+      ),
     ),
   );
 
   const openCard = card({
-    title: "Open invoices",
-    sub: open.length > 0 ? `${plural(open.length, "invoice")} awaiting payment` : undefined,
-    actions: h("a", { class: "linkish", href: "/portal/invoices" }, "All invoices", icon("chevronRight", 12)),
+    title: tx("portal.open.title", "Open invoices"),
+    sub:
+      open.length > 0
+        ? open.length === 1
+          ? tx("portal.open.sub_one", "One invoice awaiting payment")
+          : tx("portal.open.sub_many", "{{count}} invoices awaiting payment", { count: open.length })
+        : undefined,
+    actions: h(
+      "a",
+      { class: "linkish", href: "/portal/invoices" },
+      tx("portal.hero.all_invoices", "All invoices"),
+      icon("chevronRight", 12),
+    ),
     flush: true,
     body:
       open.length === 0
         ? emptyState({
-            title: "Nothing to pay",
-            body: "Every invoice sent to you is settled. New ones appear here when they are issued.",
+            title: tx("portal.open.empty_title", "Nothing to pay"),
+            body: tx(
+              "portal.open.empty_body",
+              "Every invoice sent to you is settled. New ones appear here when they are issued.",
+            ),
             icon: "checkCircle",
           })
         : h("div", { class: "portal-list" }, ...open.map((inv) => openInvoiceRow(ctx, inv))),
   });
 
   const servicesCard = card({
-    title: "Your services",
-    sub: services.length > 0 ? `${plural(services.length, "service")}` : undefined,
-    actions: h("a", { class: "linkish", href: "/portal/services" }, "All services", icon("chevronRight", 12)),
+    title: tx("portal.services.title", "Your services"),
+    sub:
+      services.length > 0
+        ? services.length === 1
+          ? tx("portal.services.sub_one", "One service")
+          : tx("portal.services.sub_many", "{{count}} services", { count: services.length })
+        : undefined,
+    actions: h(
+      "a",
+      { class: "linkish", href: "/portal/services" },
+      tx("portal.services.all", "All services"),
+      icon("chevronRight", 12),
+    ),
     flush: true,
     body:
       services.length === 0
         ? emptyState({
-            title: "No services yet",
-            body: "When you buy something, it appears here with its renewal date.",
+            title: tx("portal.services.empty_title", "No services yet"),
+            body: tx("portal.services.empty_body", "When you buy something, it appears here with its renewal date."),
             icon: "server",
           })
         : h("div", null, ...services.map((svc) => serviceRow(svc))),
   });
 
   const recentCard = card({
-    title: "Recent invoices",
-    sub: recent.length > 0 ? "Newest first" : undefined,
-    actions: h("a", { class: "linkish", href: "/portal/invoices" }, "See all", icon("chevronRight", 12)),
+    title: tx("portal.recent.title", "Recent invoices"),
+    sub: recent.length > 0 ? tx("portal.recent.sub", "Newest first") : undefined,
+    actions: h("a", { class: "linkish", href: "/portal/invoices" }, tx("portal.recent.all", "See all"), icon("chevronRight", 12)),
     flush: true,
     body:
       recent.length === 0
         ? emptyState({
-            title: "No invoices yet",
-            body: "An invoice will appear here as soon as one is issued to your account.",
+            title: tx("portal.recent.empty_title", "No invoices yet"),
+            body: tx(
+              "portal.recent.empty_body",
+              "An invoice will appear here as soon as one is issued to your account.",
+            ),
             icon: "invoice",
           })
         : h("div", { class: "portal-list" }, ...recent.map((inv) => recentInvoiceRow(inv))),
@@ -307,15 +368,17 @@ function openInvoiceRow(ctx: Ctx, inv: PortalInvoice): HTMLElement {
       h(
         "div",
         { class: "portal-row-title" },
-        h("a", { class: "row-title", href }, inv.number || "Invoice"),
-        inv.overdue ? badge("Overdue", "warning", { dot: true }) : null,
+        h("a", { class: "row-title", href }, inv.number || tx("portal.invoice.fallback", "Invoice")),
+        inv.overdue ? badge(tx("portal.invoice.overdue", "Overdue"), "warning", { dot: true }) : null,
       ),
       h(
         "div",
         { class: "portal-row-meta" },
-        h("span", null, `Issued ${dateOnly(inv.issued_at)}`),
+        h("span", null, tx("portal.row.issued", "Issued {{date}}", { date: dateOnly(inv.issued_at) })),
         inv.due_at ? h("span", { class: "portal-row-dot" }, "·") : null,
-        inv.due_at ? h("span", null, `due ${dateOnly(inv.due_at)}`) : null,
+        inv.due_at
+          ? h("span", null, tx("portal.row.due", "due {{date}}", { date: dateOnly(inv.due_at) }))
+          : null,
       ),
     ),
     h(
@@ -324,7 +387,7 @@ function openInvoiceRow(ctx: Ctx, inv: PortalInvoice): HTMLElement {
       h(
         "div",
         { class: "portal-row-amount" },
-        h("span", { class: "portal-row-label" }, "Outstanding"),
+        h("span", { class: "portal-row-label" }, tx("portal.balance.outstanding", "Outstanding")),
         moneyEl(inv.due),
       ),
       inv.payable ? payButton(ctx, inv) : null,
@@ -340,11 +403,17 @@ function recentInvoiceRow(inv: PortalInvoice): HTMLElement {
     h(
       "div",
       { class: "portal-row-main" },
-      h("div", { class: "portal-row-title" }, h("a", { class: "row-title", href }, inv.number || "Invoice")),
+      h("div", { class: "portal-row-title" }, h("a", { class: "row-title", href }, inv.number || tx("portal.invoice.fallback", "Invoice"))),
       h(
         "div",
         { class: "portal-row-meta" },
-        h("span", null, inv.issued_at ? dateOnly(inv.issued_at) : "Not issued"),
+        h(
+          "span",
+          null,
+          inv.issued_at
+            ? dateOnly(inv.issued_at)
+            : tx("portal.invoice.not_issued", "Not issued"),
+        ),
       ),
     ),
     h(
@@ -359,9 +428,9 @@ function recentInvoiceRow(inv: PortalInvoice): HTMLElement {
 function serviceRow(svc: PortalService): HTMLElement {
   const href = `/portal/services/${encodeURIComponent(svc.id)}`;
   const hint = svc.actions.includes("cancel")
-    ? "Cancellation available"
+    ? tx("portal.service.cancellable", "Cancellation available")
     : svc.actions.includes("pay_to_restore")
-      ? "Suspended — pay to restore"
+      ? tx("portal.service.suspended", "Suspended — pay to restore")
       : null;
   return h(
     "div",
@@ -369,16 +438,23 @@ function serviceRow(svc: PortalService): HTMLElement {
     h(
       "div",
       { class: "portal-service-main" },
-      h("div", { class: "portal-service-name" }, h("a", { href }, svc.name || "Service"), statusBadge(svc.status)),
+      h(
+        "div",
+        { class: "portal-service-name" },
+        h("a", { href }, svc.name || tx("portal.service.fallback", "Service")),
+        statusBadge(svc.status),
+      ),
       h(
         "div",
         { class: "portal-service-meta" },
-        svc.next_bill_at ? `Next bill ${dateOnly(svc.next_bill_at)}` : "No renewal scheduled",
+        svc.next_bill_at
+          ? tx("portal.service.next_bill", "Next bill {{date}}", { date: dateOnly(svc.next_bill_at) })
+          : tx("portal.service.no_renewal", "No renewal scheduled"),
         hint ? " · " : null,
         hint ? h("span", null, hint) : null,
       ),
     ),
-    btn("Manage", { href, size: "sm", variant: "ghost", iconAfter: "chevronRight" }),
+    btn(tx("portal.service.manage", "Manage"), { href, size: "sm", variant: "ghost", iconAfter: "chevronRight" }),
   );
 }
 
@@ -397,15 +473,15 @@ function issuedAt(inv: PortalInvoice): number {
 
 function greeting(now = new Date()): string {
   const hour = now.getHours();
-  if (hour < 5) return "Working late";
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
+  if (hour < 5) return tx("portal.greeting.late", "Working late");
+  if (hour < 12) return tx("portal.greeting.morning", "Good morning");
+  if (hour < 18) return tx("portal.greeting.afternoon", "Good afternoon");
+  return tx("portal.greeting.evening", "Good evening");
 }
 
 function firstName(name: string): string {
   const trimmed = name.trim();
-  if (!trimmed) return "there";
+  if (!trimmed) return tx("portal.greeting.there", "there");
   const local = trimmed.includes("@") ? (trimmed.split("@")[0] ?? trimmed) : trimmed;
-  return (local.split(/\s+/)[0] ?? local) || "there";
+  return (local.split(/\s+/)[0] ?? local) || tx("portal.greeting.there", "there");
 }

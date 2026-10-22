@@ -7,6 +7,7 @@
 import { ApiError } from "../lib/api";
 import { mountCaptcha, type CaptchaWidget } from "../lib/captcha";
 import { h, swap } from "../lib/dom";
+import { tx } from "../lib/i18n";
 import { brandMark, icon } from "../lib/icons";
 import type { AuthCtx } from "../lib/types";
 import { btn, field, input } from "../ui/kit";
@@ -24,7 +25,7 @@ export default async function forgotPasswordPage(ctx: AuthCtx): Promise<Node> {
     autofocus: true,
   });
   const captchaHost = h("div", { class: "captcha-host" });
-  const submit = btn("Send reset link", { variant: "primary", type: "submit", block: true });
+  const submit = btn(tx("forgot.submit", "Send reset link"), { variant: "primary", type: "submit", block: true });
   const errorHost = h("div");
 
   // The challenge renders nothing when no provider is configured, which is the common case.
@@ -43,7 +44,12 @@ export default async function forgotPasswordPage(ctx: AuthCtx): Promise<Node> {
     "form",
     { class: "auth-form", novalidate: true },
     errorHost,
-    field({ label: "Email", control: email, id: "email", hint: "We will send a link that expires in 30 minutes." }),
+    field({
+      label: tx("forgot.email.label", "Email"),
+      control: email,
+      id: "email",
+      hint: tx("forgot.email.hint", "We will send a link that expires in 30 minutes."),
+    }),
     captchaHost,
     submit,
   );
@@ -53,7 +59,15 @@ export default async function forgotPasswordPage(ctx: AuthCtx): Promise<Node> {
     void (async () => {
       errorHost.replaceChildren();
       if (!email.value.trim()) {
-        swap(errorHost, h("div", { class: "banner banner--danger" }, icon("alertCircle", 15), "Enter your email address."));
+        swap(
+          errorHost,
+          h(
+            "div",
+            { class: "banner banner--danger" },
+            icon("alertCircle", 15),
+            tx("forgot.error.email_required", "Enter your email address."),
+          ),
+        );
         return;
       }
       if (submit instanceof HTMLButtonElement) submit.disabled = true;
@@ -72,22 +86,30 @@ export default async function forgotPasswordPage(ctx: AuthCtx): Promise<Node> {
           h(
             "div",
             { class: "stack" },
-            h("div", { class: "banner banner--success" }, icon("checkCircle", 15), h("strong", null, "Check your inbox")),
+            h(
+              "div",
+              { class: "banner banner--success" },
+              icon("checkCircle", 15),
+              h("strong", null, tx("forgot.sent.title", "Check your inbox")),
+            ),
             h(
               "p",
               { class: "page-sub" },
-              "If that address belongs to an account, a reset link is on its way. The link can only be used once.",
+              tx(
+                "forgot.sent.body",
+                "If that address belongs to an account, a reset link is on its way. The link can only be used once.",
+              ),
             ),
-            h("a", { class: "btn", href: "/login" }, "Back to sign in"),
+            h("a", { class: "btn", href: "/login" }, tx("forgot.back", "Back to sign in")),
           ),
         );
       } catch (err) {
         const message =
           err instanceof ApiError
             ? err.code === "too_many_requests" || err.status === 429
-              ? "Too many reset requests. Try again later."
-              : err.detail || "The request could not be sent."
-            : "The server could not be reached.";
+              ? tx("forgot.error.too_many", "Too many reset requests. Try again later.")
+              : err.detail || tx("forgot.error.failed", "The request could not be sent.")
+            : tx("forgot.error.unreachable", "The server could not be reached.");
         swap(errorHost, h("div", { class: "banner banner--danger" }, icon("alertCircle", 15), message));
       } finally {
         if (submit instanceof HTMLButtonElement) submit.disabled = false;
@@ -112,14 +134,23 @@ export default async function forgotPasswordPage(ctx: AuthCtx): Promise<Node> {
       h(
         "div",
         { class: "auth-pitch" },
-        h("h2", null, "A reset link that only works once."),
+        h("h2", null, tx("forgot.pitch.title", "A reset link that only works once.")),
         h(
           "p",
           null,
-          "The link is single use, expires in thirty minutes, and signing in anywhere else afterwards revokes every other session.",
+          tx(
+            "forgot.pitch.body",
+            "The link is single use, expires in thirty minutes, and signing in anywhere else afterwards revokes every other session.",
+          ),
         ),
       ),
-      h("div", { class: "auth-foot" }, h("span", null, "Self-hosted"), h("span", null, "·"), h("span", null, "No third-party scripts")),
+      h(
+        "div",
+        { class: "auth-foot" },
+        h("span", null, tx("auth.foot.self_hosted", "Self-hosted")),
+        h("span", null, "·"),
+        h("span", null, tx("auth.foot.no_scripts", "No third-party scripts")),
+      ),
     ),
     h(
       "div",
@@ -130,11 +161,15 @@ export default async function forgotPasswordPage(ctx: AuthCtx): Promise<Node> {
         h(
           "div",
           { class: "auth-head" },
-          h("h1", null, "Reset your password"),
-          h("p", null, "Enter the email address on the account and we will send a link."),
+          h("h1", null, tx("forgot.title", "Reset your password")),
+          h(
+            "p",
+            null,
+            tx("forgot.subtitle", "Enter the email address on the account and we will send a link."),
+          ),
         ),
         host,
-        h("p", { class: "auth-switch" }, h("a", { href: "/login" }, "Back to sign in")),
+        h("p", { class: "auth-switch" }, h("a", { href: "/login" }, tx("forgot.back", "Back to sign in"))),
       ),
     ),
   );

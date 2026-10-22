@@ -13,6 +13,7 @@
 import type { Api } from "../lib/api";
 import { h, swap } from "../lib/dom";
 import { money, type Amount } from "../lib/format";
+import { currentLocale, enabledLocales, languageSwitcher, onLocaleChange, setLocale, tx } from "../lib/i18n";
 import { brandMark, icon } from "../lib/icons";
 import type { AuthCtx } from "../lib/types";
 import { badge, btn, emptyState, errorState, skeletonPage } from "../ui/kit";
@@ -63,6 +64,10 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
   const host = h("div", { class: "store" }, skeletonPage());
   const controller = new AbortController();
   let activeCategory = ctx.query.get("category") ?? "";
+  // The last response, kept so a language switch is a re-render rather than a refetch: the
+  // catalogue is the operator's data, not the visitor's language, so nothing about it changes
+  // when the language does.
+  let latest: CatalogResponse | null = null;
 
   const load = async () => {
     try {
@@ -70,6 +75,7 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
         cache: false,
         signal: controller.signal,
       });
+      latest = data;
       swap(host, render(data));
     } catch (err) {
       if (controller.signal.aborted) return;
@@ -100,27 +106,31 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
       h(
         "nav",
         { class: "store-nav" },
-        h("a", { href: "/products" }, "Products"),
-        h("a", { href: "/login" }, "Sign in"),
-        h("a", { class: "btn btn--primary btn--sm", href: "/login" }, "Client area"),
+        h("a", { href: "/products" }, tx("storefront.nav.products", "Products")),
+        h("a", { href: "/login" }, tx("storefront.nav.signin", "Sign in")),
+        languageSelect(),
+        h("a", { class: "btn btn--primary btn--sm", href: "/login" }, tx("storefront.nav.client_area", "Client area")),
       ),
     );
 
     const hero = h(
       "section",
       { class: "store-hero" },
-      h("p", { class: "store-kicker" }, "Infrastructure, billed honestly"),
-      h("h1", { class: "store-title" }, "Servers that come with a ledger."),
+      h("p", { class: "store-kicker" }, tx("storefront.hero.kicker", "Infrastructure, billed honestly")),
+      h("h1", { class: "store-title" }, tx("storefront.hero.title", "Servers that come with a ledger.")),
       h(
         "p",
         { class: "store-sub" },
-        "Pick a plan, pay in a currency you recognise, and watch the invoice and the server agree. No surprise renewals, no drifted totals.",
+        tx(
+          "storefront.hero.body",
+          "Pick a plan, pay in a currency you recognise, and watch the invoice and the server agree. No surprise renewals, no drifted totals.",
+        ),
       ),
       h(
         "div",
         { class: "store-hero-actions" },
-        btn("See the plans", { href: "#plans", variant: "primary", size: "lg" }),
-        btn("Client area", { href: "/login", size: "lg" }),
+        btn(tx("storefront.hero.plans", "See the plans"), { href: "#plans", variant: "primary", size: "lg" }),
+        btn(tx("storefront.nav.client_area", "Client area"), { href: "/login", size: "lg" }),
       ),
     );
 
@@ -128,7 +138,11 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
       categories.length > 0
         ? h(
             "div",
-            { class: "store-filters", role: "tablist", "aria-label": "Categories" },
+            {
+              class: "store-filters",
+              role: "tablist",
+              "aria-label": tx("storefront.categories.label", "Categories"),
+            },
             h(
               "button",
               {
@@ -138,7 +152,7 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
                 "aria-selected": activeCategory === "" ? "true" : "false",
                 onclick: () => selectCategory(""),
               },
-              "All products",
+              tx("storefront.categories.all", "All products"),
               h("span", { class: "chip-count" }, String(products.length)),
             ),
             ...categories.map((c) =>
@@ -161,13 +175,21 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
     const grid =
       shown.length === 0
         ? emptyState({
-            title: activeCategory ? "Nothing in this category yet" : "The catalog is empty",
+            title: activeCategory
+              ? tx("storefront.empty.category_title", "Nothing in this category yet")
+              : tx("storefront.empty.catalog_title", "The catalog is empty"),
             body: activeCategory
-              ? "Every product in this category is either unpublished or has no price. Try another category."
-              : "No product is published yet. An operator publishes one from the catalog screen.",
+              ? tx(
+                  "storefront.empty.category_body",
+                  "Every product in this category is either unpublished or has no price. Try another category.",
+                )
+              : tx(
+                  "storefront.empty.catalog_body",
+                  "No product is published yet. An operator publishes one from the catalog screen.",
+                ),
             icon: "box",
             action: activeCategory
-              ? btn("Show everything", {
+              ? btn(tx("storefront.empty.show_all", "Show everything"), {
                   onclick: () => selectCategory(""),
                 })
               : null,
@@ -185,8 +207,20 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
         h(
           "div",
           { class: "store-section-head" },
-          h("h2", null, activeCategory ? categories.find((c) => c.slug === activeCategory)?.name ?? "Products" : "All products"),
-          h("p", { class: "dim" }, activeCategory ? categories.find((c) => c.slug === activeCategory)?.description ?? "" : "Every plan we sell, with its starting price."),
+          h(
+            "h2",
+            null,
+            activeCategory
+              ? (categories.find((c) => c.slug === activeCategory)?.name ?? tx("storefront.nav.products", "Products"))
+              : tx("storefront.section.all", "All products"),
+          ),
+          h(
+            "p",
+            { class: "dim" },
+            activeCategory
+              ? (categories.find((c) => c.slug === activeCategory)?.description ?? "")
+              : tx("storefront.section.sub", "Every plan we sell, with its starting price."),
+          ),
         ),
         filterRow,
         grid,
@@ -221,9 +255,13 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
       h(
         "div",
         { class: "store-card-body" },
-        h("div", { class: "store-card-cat" }, p.category_name || "Product"),
+        h("div", { class: "store-card-cat" }, p.category_name || tx("storefront.card.product", "Product")),
         h("h3", { class: "store-card-name" }, p.name),
-        h("p", { class: "store-card-desc" }, p.short_description || p.description || "No description yet."),
+        h(
+          "p",
+          { class: "store-card-desc" },
+          p.short_description || p.description || tx("storefront.card.no_description", "No description yet."),
+        ),
       ),
       h(
         "div",
@@ -232,11 +270,11 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
           ? h(
               "span",
               { class: "store-price" },
-              h("span", { class: "store-price-from" }, "from"),
+              h("span", { class: "store-price-from" }, tx("storefront.card.from", "from")),
               h("span", { class: "money" }, h("span", { class: "money-code" }, price.currency), money(price.amount)),
               h("span", { class: "store-price-interval" }, `/ ${price.interval}`),
             )
-          : h("span", { class: "faint" }, "Pricing on request"),
+          : h("span", { class: "faint" }, tx("storefront.card.pricing_on_request", "Pricing on request")),
         h("span", { class: "store-card-go" }, icon("arrowRight", 14)),
       ),
     );
@@ -250,11 +288,39 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
       h(
         "span",
         { class: "store-foot-links" },
-        h("a", { href: "/login" }, "Client area"),
-        h("a", { href: "/api/v1/catalog", "data-native": "true" }, "Catalog API"),
-        h("a", { href: "/healthz", "data-native": "true" }, "Status"),
+        h("a", { href: "/login" }, tx("storefront.footer.client_area", "Client area")),
+        h("a", { href: "/api/v1/catalog", "data-native": "true" }, tx("storefront.footer.catalog_api", "Catalog API")),
+        h("a", { href: "/healthz", "data-native": "true" }, tx("storefront.footer.status", "Status")),
       ),
     );
+
+  /**
+   * The storefront's own language control (SF-19).
+   *
+   * It is here rather than only in the panel's shell because a visitor reading the storefront
+   * has no shell and no account: the header is the only place they can choose, and the choice
+   * has to survive a reload. `setLocale` persists it and notifies; the subscription below
+   * re-renders this page in place, so the visitor keeps their scroll position and the category
+   * they had filtered to.
+   */
+  const languageSelect = (): HTMLElement | null =>
+    languageSwitcher({
+      locales: enabledLocales(),
+      selected: currentLocale(),
+      label: tx("storefront.language.label", "Language"),
+      id: "storefront-locale",
+      onSelect: (code) => void setLocale(code),
+    });
+
+  const unsubscribe = onLocaleChange(() => {
+    // A page that has been replaced must stop listening: the listener set is module-level and
+    // would otherwise keep a detached tree alive and re-render it for nobody.
+    if (!host.isConnected) {
+      unsubscribe();
+      return;
+    }
+    if (latest) swap(host, render(latest));
+  });
 
   void load();
   return host;

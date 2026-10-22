@@ -632,6 +632,14 @@
   font-size: var(--text-sm);
 }
 
+/* A select that is a toolbar control rather than a form field. `.select` is full width because
+   every other use sits inside a form; a language switcher in the top bar has to size to its
+   content, and an inline style attribute would be refused by the page's `style-src 'self'`. */
+.select--auto {
+  width: auto;
+  max-width: 11rem;
+}
+
 .form-grid {
   display: grid;
   gap: var(--s-3) var(--s-3);

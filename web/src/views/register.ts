@@ -20,6 +20,7 @@
 import { ApiError } from "../lib/api";
 import { mountCaptcha, type CaptchaWidget } from "../lib/captcha";
 import { fill, h, swap } from "../lib/dom";
+import { tx } from "../lib/i18n";
 import { brandMark, icon } from "../lib/icons";
 import type { AuthCtx } from "../lib/types";
 import { btn, field, input } from "../ui/kit";
@@ -53,26 +54,29 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
       h(
         "div",
         { class: "auth-pitch" },
-        h("h2", null, "Buy something, and keep the paperwork."),
+        h("h2", null, tx("register.pitch.title", "Buy something, and keep the paperwork.")),
         h(
           "p",
           null,
-          "An account is where your invoices, your services and your payment history live. It takes a minute to create one.",
+          tx(
+            "register.pitch.body",
+            "An account is where your invoices, your services and your payment history live. It takes a minute to create one.",
+          ),
         ),
         h(
           "div",
           { class: "auth-points" },
-          point("An invoice you can download and check"),
-          point("Services that renew on a date you can see"),
-          point("Cancel from the portal, without an email"),
+          point(tx("register.pitch.point.invoice", "An invoice you can download and check")),
+          point(tx("register.pitch.point.renewal", "Services that renew on a date you can see")),
+          point(tx("register.pitch.point.cancel", "Cancel from the portal, without an email")),
         ),
       ),
       h(
         "div",
         { class: "auth-foot" },
-        h("span", null, "Self-hosted"),
+        h("span", null, tx("auth.foot.self_hosted", "Self-hosted")),
         h("span", null, "·"),
-        h("span", null, "No third-party scripts"),
+        h("span", null, tx("auth.foot.no_scripts", "No third-party scripts")),
       ),
     ),
     h("div", { class: "auth-main" }, panel),
@@ -122,12 +126,12 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
       name: "password",
       type: "password",
       autocomplete: "new-password",
-      placeholder: "At least 12 characters",
+      placeholder: tx("register.password.placeholder", "At least 12 characters"),
       required: true,
     });
     const tos = h("input", { type: "checkbox", id: "tos" });
     const captchaHost = h("div", { class: "captcha-host" });
-    const submit = btn("Create account", { variant: "primary", type: "submit", block: true });
+    const submit = btn(tx("register.submit", "Create account"), { variant: "primary", type: "submit", block: true });
 
     // Mounted once, after the form is on screen. A failure to load the provider's script is
     // reported rather than swallowed: a page that submitted anyway would earn a captcha_required
@@ -137,7 +141,7 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
       try {
         captcha = await mountCaptcha(ctx.api, captchaHost);
       } catch (err) {
-        showError(err instanceof Error ? err.message : "The security check could not be loaded.");
+        showError(err instanceof Error ? err.message : tx("register.error.captcha", "The security check could not be loaded."));
       }
     })();
 
@@ -145,19 +149,24 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
       "form",
       { class: "auth-form", novalidate: true },
       errorHost,
-      field({ label: "Name", control: name, id: "name" }),
-      field({ label: "Email", control: email, id: "email", hint: "The invoice and the service receipt go here." }),
+      field({ label: tx("register.name.label", "Name"), control: name, id: "name" }),
       field({
-        label: "Password",
+        label: tx("register.email.label", "Email"),
+        control: email,
+        id: "email",
+        hint: tx("register.email.hint", "The invoice and the service receipt go here."),
+      }),
+      field({
+        label: tx("register.password.label", "Password"),
         control: password,
         id: "password",
-        hint: "Twelve characters or more. Length beats punctuation.",
+        hint: tx("register.password.hint", "Twelve characters or more. Length beats punctuation."),
       }),
       h(
         "label",
         { class: "checkbox", for: "tos" },
         tos,
-        h("span", null, "I accept this installation's terms of service."),
+        h("span", null, tx("register.tos", "I accept this installation's terms of service.")),
       ),
       // The challenge sits immediately above the button that submits it, so the order of
       // "solve this, then press that" is the visual order. It renders nothing at all when no
@@ -167,7 +176,7 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
       h(
         "div",
         { class: "auth-links" },
-        h("a", { href: "/login" }, "Already have an account? Sign in"),
+        h("a", { href: "/login" }, tx("register.have_account", "Already have an account? Sign in")),
         h("span", null, ""),
       ),
     );
@@ -179,15 +188,15 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
         const displayName = name.value.trim();
         const address = email.value.trim();
         if (!displayName) {
-          showError("Enter the name to put on the account.");
+          showError(tx("register.error.name_required", "Enter the name to put on the account."));
           return;
         }
         if (!address) {
-          showError("Enter an email address.");
+          showError(tx("register.error.email_required", "Enter an email address."));
           return;
         }
         if (!password.value) {
-          showError("Choose a password.");
+          showError(tx("register.error.password_required", "Choose a password."));
           return;
         }
         if (submit instanceof HTMLButtonElement) submit.disabled = true;
@@ -227,8 +236,12 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
       h(
         "div",
         { class: "auth-head" },
-        h("h1", null, "Create an account"),
-        h("p", null, "One account holds your invoices, services and payment history."),
+        h("h1", null, tx("register.title", "Create an account")),
+        h(
+          "p",
+          null,
+          tx("register.subtitle", "One account holds your invoices, services and payment history."),
+        ),
       ),
       formHost,
     );
@@ -238,7 +251,7 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
   // --------------------------------------------------------- accepted state --
 
   const showAccepted = (address: string, verificationRequired: boolean): void => {
-    const signIn = btn("Sign in", {
+    const signIn = btn(tx("register.accepted.sign_in", "Sign in"), {
       variant: "primary",
       block: true,
       icon: "logoutBox",
@@ -250,13 +263,22 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
       h(
         "div",
         { class: "auth-head" },
-        h("h1", null, verificationRequired ? "Check your email" : "Check your email, then sign in"),
+        h(
+          "h1",
+          null,
+          verificationRequired
+            ? tx("register.accepted.title_verify", "Check your email")
+            : tx("register.accepted.title_signin", "Check your email, then sign in"),
+        ),
         h(
           "p",
           null,
           verificationRequired
-            ? "One more step: confirm the address before you can sign in."
-            : "Your request was accepted. Sign in with the password you just chose.",
+            ? tx("register.accepted.sub_verify", "One more step: confirm the address before you can sign in.")
+            : tx(
+                "register.accepted.sub_signin",
+                "Your request was accepted. Sign in with the password you just chose.",
+              ),
         ),
       ),
       h(
@@ -272,14 +294,24 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
             h(
               "strong",
               null,
-              verificationRequired ? "A verification link is on its way" : "The account is ready to use",
+              verificationRequired
+                ? tx("register.accepted.banner_verify", "A verification link is on its way")
+                : tx("register.accepted.banner_signin", "The account is ready to use"),
             ),
             h(
               "span",
               null,
               verificationRequired
-                ? `We sent a link to ${address}. It expires, so open it soon. If it does not arrive, check the spam folder and request another from the sign-in screen.`
-                : `If ${address} was not already registered, the account exists now. If it was, nothing changed — signing in with your existing password still works.`,
+                ? tx(
+                    "register.accepted.body_verify",
+                    "We sent a link to {{address}}. It expires, so open it soon. If it does not arrive, check the spam folder and request another from the sign-in screen.",
+                    { address },
+                  )
+                : tx(
+                    "register.accepted.body_signin",
+                    "If {{address}} was not already registered, the account exists now. If it was, nothing changed — signing in with your existing password still works.",
+                    { address },
+                  ),
             ),
           ),
         ),
@@ -288,7 +320,10 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
         h(
           "p",
           { class: "field-hint" },
-          "For privacy, this page does not say whether an address was already registered. If you already had an account, your existing password still works.",
+          tx(
+            "register.accepted.privacy",
+            "For privacy, this page does not say whether an address was already registered. If you already had an account, your existing password still works.",
+          ),
         ),
         signIn,
       ),
@@ -306,33 +341,39 @@ export default async function registerPage(ctx: AuthCtx): Promise<Node> {
  *  back to the server's detail, which is already written for a human. */
 function registerMessage(err: unknown): string {
   if (!(err instanceof ApiError)) {
-    return "The server could not be reached. Nothing was created — try again.";
+    return tx("register.error.unreachable", "The server could not be reached. Nothing was created — try again.");
   }
   switch (err.code) {
     case "registration_disabled":
-      return "Registration is closed on this installation. Contact the operator for an account.";
+      return tx(
+        "register.error.disabled",
+        "Registration is closed on this installation. Contact the operator for an account.",
+      );
     case "invalid_email":
-      return "That does not look like an email address. Check it and try again.";
+      return tx("register.error.invalid_email", "That does not look like an email address. Check it and try again.");
     case "invalid_display_name":
-      return "A name is required, up to 200 characters.";
+      return tx("register.error.invalid_name", "A name is required, up to 200 characters.");
     case "weak_password":
       // The server names the rule it applied ("at least 12 characters"), so its detail is the
       // most useful sentence available.
-      return err.detail || "That password is too weak. Use at least twelve characters.";
+      return err.detail || tx("register.error.weak_password", "That password is too weak. Use at least twelve characters.");
     case "tos_required":
-      return "Tick the box to accept the terms of service.";
+      return tx("register.error.tos", "Tick the box to accept the terms of service.");
     case "too_many_attempts":
-      return "Too many attempts from this address. Wait a few minutes and try again.";
+      return tx("register.error.too_many", "Too many attempts from this address. Wait a few minutes and try again.");
     case "overloaded":
-      return "The server is busy. Try again in a moment.";
+      return tx("register.error.overloaded", "The server is busy. Try again in a moment.");
     case "bad_origin":
-      return "The request did not come from this site. Reload the page and try again.";
+      return tx("register.error.bad_origin", "The request did not come from this site. Reload the page and try again.");
     case "registration_unavailable":
-      return "Registration is not configured on this installation. Contact the operator.";
+      return tx("register.error.unavailable", "Registration is not configured on this installation. Contact the operator.");
     case "storage_unavailable":
-      return "This installation has no database configured, so accounts cannot be created.";
+      return tx(
+        "register.error.storage",
+        "This installation has no database configured, so accounts cannot be created.",
+      );
     default:
-      return err.detail || "The account could not be created.";
+      return err.detail || tx("register.error.generic", "The account could not be created.");
   }
 }
 

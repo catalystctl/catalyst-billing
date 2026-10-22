@@ -962,6 +962,193 @@ paths:
                     description: An internal error occurred
             summary: One public product
             x-rate-class: ""
+    /api/v1/catalog/categories:
+        get:
+            description: 'The visible category tree, nested, with `product_count` reporting the whole branch below each node. A hidden category is omitted together with everything under it: hiding a branch means hiding what is under it. Cached for sixty seconds, like the rest of the anonymous storefront.'
+            operationId: GetCatalogCategories
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    categories:
+                                        items:
+                                            properties:
+                                                children:
+                                                    description: The child nodes, in display order.
+                                                    items:
+                                                        type: object
+                                                    type: array
+                                                depth:
+                                                    description: 1 for a root. Nesting deeper than 4 is refused by the database.
+                                                    maximum: 4
+                                                    minimum: 1
+                                                    type: integer
+                                                description:
+                                                    type: string
+                                                hidden:
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                name:
+                                                    type: string
+                                                parent_id:
+                                                    description: Null for a root.
+                                                    format: uuid
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                path:
+                                                    description: Slash-joined slug chain, e.g. `game-servers/minecraft`.
+                                                    type: string
+                                                product_count:
+                                                    description: Products filed directly in this category.
+                                                    type: integer
+                                                slug:
+                                                    type: string
+                                                sort_order:
+                                                    type: integer
+                                                subtree_product_count:
+                                                    description: 'Products in this category and in every category below it. This is the number a filter click needs: a product filed under a child must be findable from the parent.'
+                                                    type: integer
+                                            required:
+                                                - id
+                                                - slug
+                                                - name
+                                                - sort_order
+                                                - depth
+                                                - path
+                                                - subtree_product_count
+                                            type: object
+                                        type: array
+                                type: object
+                    description: The visible tree
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: The storefront's category tree
+            x-rate-class: ""
+    /api/v1/catalog/category/{slug}:
+        get:
+            description: 'The category, its visible children, and every product in the branch below it — which is what makes nesting worth having: clicking "Game servers" lists the Minecraft products filed under its child. The predicates are the storefront''s usual ones (not hidden, priced, in a visible category) plus one the flat read cannot express: a product whose ancestor is hidden is not offered. A hidden or absent category is 404, indistinguishable from a missing one.'
+            operationId: GetCatalogCategoryBySlug
+            parameters:
+                - in: path
+                  name: slug
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    category:
+                                        properties:
+                                            children:
+                                                description: The child nodes, in display order.
+                                                items:
+                                                    type: object
+                                                type: array
+                                            depth:
+                                                description: 1 for a root. Nesting deeper than 4 is refused by the database.
+                                                maximum: 4
+                                                minimum: 1
+                                                type: integer
+                                            description:
+                                                type: string
+                                            hidden:
+                                                type: boolean
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            name:
+                                                type: string
+                                            parent_id:
+                                                description: Null for a root.
+                                                format: uuid
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            path:
+                                                description: Slash-joined slug chain, e.g. `game-servers/minecraft`.
+                                                type: string
+                                            product_count:
+                                                description: Products filed directly in this category.
+                                                type: integer
+                                            slug:
+                                                type: string
+                                            sort_order:
+                                                type: integer
+                                            subtree_product_count:
+                                                description: 'Products in this category and in every category below it. This is the number a filter click needs: a product filed under a child must be findable from the parent.'
+                                                type: integer
+                                        required:
+                                            - id
+                                            - slug
+                                            - name
+                                            - sort_order
+                                            - depth
+                                            - path
+                                            - subtree_product_count
+                                        type: object
+                                    products:
+                                        description: The public product shape the storefront already reads.
+                                        items:
+                                            type: object
+                                        type: array
+                                type: object
+                    description: The category and its products
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such category, or it is not visible
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: One storefront category page
+            x-rate-class: ""
     /api/v1/currencies:
         get:
             description: 'Public, because the storefront''s currency switcher renders before anyone signs in. Only enabled currencies, default first. `example` renders 123456 minor units in the configured style, so the switcher can preview the format. No exchange rate is implied: prices are explicit per currency.'
@@ -9951,6 +10138,260 @@ paths:
             x-permission: catalog:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/catalog/categories/{id}/parent:
+        put:
+            description: 'Sets the category''s parent, or moves it to the root when `parent_id` is null. Two moves are refused by the database rather than by this service, because two concurrent writes can each look safe and together form a cycle: 409 `category_cycle` when the move would make a category its own ancestor, and 422 `category_too_deep` when it would push any part of the branch past four levels. The depth check is on the whole subtree, so moving a three-deep branch under a two-deep parent is refused even though the moved row itself would only sit at level three. The response is the whole tree, so the panel re-renders from the truth rather than from what it hoped happened.'
+            operationId: PutStaffCatalogCategoriesByIdParent
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                parent_id:
+                                    description: The new parent, or null to make the category a root.
+                                    format: uuid
+                                    type:
+                                        - string
+                                        - "null"
+                            required:
+                                - parent_id
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                children:
+                                                    description: The child nodes, in display order.
+                                                    items:
+                                                        type: object
+                                                    type: array
+                                                depth:
+                                                    description: 1 for a root. Nesting deeper than 4 is refused by the database.
+                                                    maximum: 4
+                                                    minimum: 1
+                                                    type: integer
+                                                description:
+                                                    type: string
+                                                hidden:
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                name:
+                                                    type: string
+                                                parent_id:
+                                                    description: Null for a root.
+                                                    format: uuid
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                path:
+                                                    description: Slash-joined slug chain, e.g. `game-servers/minecraft`.
+                                                    type: string
+                                                product_count:
+                                                    description: Products filed directly in this category.
+                                                    type: integer
+                                                slug:
+                                                    type: string
+                                                sort_order:
+                                                    type: integer
+                                                subtree_product_count:
+                                                    description: 'Products in this category and in every category below it. This is the number a filter click needs: a product filed under a child must be findable from the parent.'
+                                                    type: integer
+                                            required:
+                                                - id
+                                                - slug
+                                                - name
+                                                - sort_order
+                                                - depth
+                                                - path
+                                                - subtree_product_count
+                                            type: object
+                                        type: array
+                                    max_depth:
+                                        type: integer
+                                type: object
+                    description: The tree after the move
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such category, or no such parent
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The move would create a cycle (`category_cycle`)
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The move would exceed four levels (`category_too_deep`)
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Move a category
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: catalog:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/catalog/categories/tree:
+        get:
+            description: Returns every category, nested, with the parent it hangs from, its depth (1 for a root), its slash-joined slug path, and `subtree_product_count` — the products in the category and in every category below it. A flat catalogue comes back as a list of roots with no children, exactly as before. Hidden categories are included here (staff may see drafts); the public read prunes them.
+            operationId: GetStaffCatalogCategoriesTree
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                children:
+                                                    description: The child nodes, in display order.
+                                                    items:
+                                                        type: object
+                                                    type: array
+                                                depth:
+                                                    description: 1 for a root. Nesting deeper than 4 is refused by the database.
+                                                    maximum: 4
+                                                    minimum: 1
+                                                    type: integer
+                                                description:
+                                                    type: string
+                                                hidden:
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                name:
+                                                    type: string
+                                                parent_id:
+                                                    description: Null for a root.
+                                                    format: uuid
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                path:
+                                                    description: Slash-joined slug chain, e.g. `game-servers/minecraft`.
+                                                    type: string
+                                                product_count:
+                                                    description: Products filed directly in this category.
+                                                    type: integer
+                                                slug:
+                                                    type: string
+                                                sort_order:
+                                                    type: integer
+                                                subtree_product_count:
+                                                    description: 'Products in this category and in every category below it. This is the number a filter click needs: a product filed under a child must be findable from the parent.'
+                                                    type: integer
+                                            required:
+                                                - id
+                                                - slug
+                                                - name
+                                                - sort_order
+                                                - depth
+                                                - path
+                                                - subtree_product_count
+                                            type: object
+                                        type: array
+                                    max_depth:
+                                        description: The nesting bound the database enforces (4).
+                                        type: integer
+                                type: object
+                    description: The tree
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks `invoice:read:all`
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Read the category tree
+            x-permission: invoice:read:all
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/catalog/images:
         post:
             description: A raw body whose Content-Type is the image type (image/png, image/jpeg, image/webp or image/svg+xml), up to 256 KiB. Identical bytes collapse to one row by digest, which is what lets the media endpoint serve an immutable cache header.
@@ -10531,6 +10972,132 @@ paths:
             x-permission: catalog:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/catalog/products/{id}/placement:
+        get:
+            description: The product's provisioner target and its place in the category tree, in one read. It is separate from the product shape because the product shape is also read by the storefront, and a visitor must never be handed a node name or a server id.
+            operationId: GetStaffCatalogProductsByIdPlacement
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    category_ancestor_slugs:
+                                        description: Every category from the root down to the product's own.
+                                        items:
+                                            type: string
+                                        type: array
+                                    category_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    category_parent_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    category_path:
+                                        description: Slash-joined slug chain of the product's category, e.g. `game-servers/minecraft`.
+                                        type: string
+                                    product_id:
+                                        format: uuid
+                                        type: string
+                                    server:
+                                        description: The resolved target, or null when the product has none.
+                                        properties:
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            enabled:
+                                                description: A disabled target keeps its products and services and is not offered for a new assignment.
+                                                type: boolean
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            name:
+                                                type: string
+                                            node:
+                                                description: The provider's own node/group label, passed as `server_node` metadata.
+                                                type: string
+                                            product_count:
+                                                description: Products sold on this target.
+                                                type: integer
+                                            provider:
+                                                description: The provisioning extension that owns this target. Empty means the installation's configured extension.
+                                                type: string
+                                            region:
+                                                description: Passed to the adapter as `CreateRequest.Region` — the same field a price version's `provision_region` fills.
+                                                type: string
+                                            slug:
+                                                type: string
+                                            sort_order:
+                                                type: integer
+                                            updated_at:
+                                                format: date-time
+                                                type: string
+                                        type:
+                                            - object
+                                            - "null"
+                                    server_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - product_id
+                                    - category_path
+                                type: object
+                    description: The placement
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such product
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Read where a product sits
+            x-permission: invoice:read:all
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/catalog/products/{id}/plans/order:
         put:
             description: 'Writes `price_versions.sort_order`, which is the only column of a price version this API will UPDATE: reordering changes no amount and no issued document, while an amount change is still a new version. The body must name every plan of the product exactly once — a partial list is refused rather than leaving the unnamed plans wherever they happened to be. The storefront and the product page both read the order from this column.'
@@ -10735,6 +11302,590 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Append a price version
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: catalog:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/catalog/products/{id}/server:
+        put:
+            description: 'Sets the provisioner target a product is sold onto, or clears it when `server_id` is null. This is catalogue metadata: it decides where the *next* purchase is provisioned and changes nothing about services that already exist, whose region was copied into their own config at checkout. It is not a second routing mechanism — the value becomes the same `region` a price version''s `provision_region` already supplies, and a plan that names a region still wins.'
+            operationId: PutStaffCatalogProductsByIdServer
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                server_id:
+                                    description: The target, or null to fall back to the plan's own region.
+                                    format: uuid
+                                    type:
+                                        - string
+                                        - "null"
+                            required:
+                                - server_id
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    category_ancestor_slugs:
+                                        description: Every category from the root down to the product's own.
+                                        items:
+                                            type: string
+                                        type: array
+                                    category_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    category_parent_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    category_path:
+                                        description: Slash-joined slug chain of the product's category, e.g. `game-servers/minecraft`.
+                                        type: string
+                                    product_id:
+                                        format: uuid
+                                        type: string
+                                    server:
+                                        description: The resolved target, or null when the product has none.
+                                        properties:
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            enabled:
+                                                description: A disabled target keeps its products and services and is not offered for a new assignment.
+                                                type: boolean
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            name:
+                                                type: string
+                                            node:
+                                                description: The provider's own node/group label, passed as `server_node` metadata.
+                                                type: string
+                                            product_count:
+                                                description: Products sold on this target.
+                                                type: integer
+                                            provider:
+                                                description: The provisioning extension that owns this target. Empty means the installation's configured extension.
+                                                type: string
+                                            region:
+                                                description: Passed to the adapter as `CreateRequest.Region` — the same field a price version's `provision_region` fills.
+                                                type: string
+                                            slug:
+                                                type: string
+                                            sort_order:
+                                                type: integer
+                                            updated_at:
+                                                format: date-time
+                                                type: string
+                                        type:
+                                            - object
+                                            - "null"
+                                    server_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - product_id
+                                    - category_path
+                                type: object
+                    description: The placement after the change
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such product, or no such server
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Assign a product to a server
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: catalog:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/catalog/servers:
+        get:
+            description: The nodes a product can be sold onto, disabled ones included so the panel can re-enable one. These are targets *on* the provider the installation configures in its `servers.*` settings, not the provider configuration itself.
+            operationId: GetStaffCatalogServers
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                enabled:
+                                                    description: A disabled target keeps its products and services and is not offered for a new assignment.
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                name:
+                                                    type: string
+                                                node:
+                                                    description: The provider's own node/group label, passed as `server_node` metadata.
+                                                    type: string
+                                                product_count:
+                                                    description: Products sold on this target.
+                                                    type: integer
+                                                provider:
+                                                    description: The provisioning extension that owns this target. Empty means the installation's configured extension.
+                                                    type: string
+                                                region:
+                                                    description: Passed to the adapter as `CreateRequest.Region` — the same field a price version's `provision_region` fills.
+                                                    type: string
+                                                slug:
+                                                    type: string
+                                                sort_order:
+                                                    type: integer
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - id
+                                                - slug
+                                                - name
+                                                - region
+                                                - node
+                                                - enabled
+                                            type: object
+                                        type: array
+                                type: object
+                    description: The targets
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List provisioner targets
+            x-permission: invoice:read:all
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: Adds a node a product can be sold onto. The slug is the identity an operator reads in a report, so it is unique case-insensitively. `region` is what the adapter receives as `CreateRequest.Region`; `node` is the provider's own label and is passed as `server_node` metadata beside it.
+            operationId: PostStaffCatalogServers
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                enabled:
+                                    type: boolean
+                                name:
+                                    type: string
+                                node:
+                                    maxLength: 128
+                                    type: string
+                                provider:
+                                    maxLength: 128
+                                    type: string
+                                region:
+                                    maxLength: 128
+                                    type: string
+                                slug:
+                                    pattern: ^[a-z0-9]+(-[a-z0-9]+)*$
+                                    type: string
+                                sort_order:
+                                    type: integer
+                            required:
+                                - slug
+                                - name
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    enabled:
+                                        description: A disabled target keeps its products and services and is not offered for a new assignment.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    name:
+                                        type: string
+                                    node:
+                                        description: The provider's own node/group label, passed as `server_node` metadata.
+                                        type: string
+                                    product_count:
+                                        description: Products sold on this target.
+                                        type: integer
+                                    provider:
+                                        description: The provisioning extension that owns this target. Empty means the installation's configured extension.
+                                        type: string
+                                    region:
+                                        description: Passed to the adapter as `CreateRequest.Region` — the same field a price version's `provision_region` fills.
+                                        type: string
+                                    slug:
+                                        type: string
+                                    sort_order:
+                                        type: integer
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - slug
+                                    - name
+                                    - region
+                                    - node
+                                    - enabled
+                                type: object
+                    description: The created target
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: That slug is already in use (`slug_taken`)
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The target would not be valid
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Create a provisioner target
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: catalog:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/catalog/servers/{id}:
+        delete:
+            description: Refused while a product is still sold on the target (409 `in_use`), because deleting it would silently move those products back to their plan's region — a provisioning change nobody asked for. Disable the target instead, or clear the products' assignments first.
+            operationId: DeleteStaffCatalogServersById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such target
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Products are still sold on it (`in_use`)
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete a provisioner target
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: catalog:write
+            x-rate-class: mutation
+            x-staff-only: true
+        put:
+            description: Changes a target's name, region, node or enabled state. A change affects where the next purchase provisions; existing services keep the target they were created with. Disabling is how an operator stops selling onto a node without disturbing what is already there.
+            operationId: PutStaffCatalogServersById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                enabled:
+                                    type: boolean
+                                name:
+                                    type: string
+                                node:
+                                    maxLength: 128
+                                    type: string
+                                provider:
+                                    maxLength: 128
+                                    type: string
+                                region:
+                                    maxLength: 128
+                                    type: string
+                                slug:
+                                    pattern: ^[a-z0-9]+(-[a-z0-9]+)*$
+                                    type: string
+                                sort_order:
+                                    type: integer
+                            required:
+                                - slug
+                                - name
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    enabled:
+                                        description: A disabled target keeps its products and services and is not offered for a new assignment.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    name:
+                                        type: string
+                                    node:
+                                        description: The provider's own node/group label, passed as `server_node` metadata.
+                                        type: string
+                                    product_count:
+                                        description: Products sold on this target.
+                                        type: integer
+                                    provider:
+                                        description: The provisioning extension that owns this target. Empty means the installation's configured extension.
+                                        type: string
+                                    region:
+                                        description: Passed to the adapter as `CreateRequest.Region` — the same field a price version's `provision_region` fills.
+                                        type: string
+                                    slug:
+                                        type: string
+                                    sort_order:
+                                        type: integer
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - slug
+                                    - name
+                                    - region
+                                    - node
+                                    - enabled
+                                type: object
+                    description: The updated target
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such target
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: That slug is already in use (`slug_taken`)
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The target would not be valid
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Edit a provisioner target
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key

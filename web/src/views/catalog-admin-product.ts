@@ -32,6 +32,7 @@ import {
   kv,
   metaGrid,
   pageHead,
+  select,
   skeletonPage,
   withBusy,
 } from "../ui/kit";
@@ -76,6 +77,35 @@ interface Product {
   prices: Price[];
 }
 
+interface Server {
+  id: string;
+  slug: string;
+  name: string;
+  provider: string;
+  region: string;
+  node: string;
+  enabled: boolean;
+  sort_order: number;
+  product_count: number;
+}
+
+// ProductPlacement is where a product sits: the provisioner target it is sold onto and its place
+// in the category tree. It is a separate read from the product because the product shape is also
+// served to the storefront, which must never be handed a node name.
+interface ProductPlacement {
+  product_id: string;
+  server_id: string | null;
+  server: Server | null;
+  category_id: string | null;
+  category_parent_id: string | null;
+  category_path: string;
+  category_ancestor_slugs: string[];
+}
+
+interface ServersResponse {
+  data: Server[];
+}
+
 const INTERVAL_LABEL: Record<string, string> = {
   monthly: "Monthly",
   quarterly: "Quarterly",
@@ -113,8 +143,18 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
 
   const load = async () => {
     try {
-      const product = await ctx.api.get<Product>(`/api/v1/staff/catalog/products/${id}`, { cache: false });
-      swap(host, render(product));
+      const [product, placement, servers] = await Promise.all([
+        ctx.api.get<Product>(`/api/v1/staff/catalog/products/${id}`, { cache: false }),
+        // The placement is optional in the same sense the server is: a product with no server
+        // has nothing to show, and a failed read must not blank the whole page.
+        ctx.api
+          .get<ProductPlacement>(`/api/v1/staff/catalog/products/${id}/placement`, { cache: false })
+          .catch(() => null),
+        ctx.api
+          .get<ServersResponse>("/api/v1/staff/catalog/servers", { cache: false })
+          .catch(() => ({ data: [] as Server[] })),
+      ]);
+      swap(host, render(product, placement, servers.data ?? []));
     } catch (err) {
       swap(host, errorState(err, () => void load()));
     }
@@ -130,7 +170,7 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
     });
   };
 
-  const render = (p: Product): Node => {
+  const render = (p: Product, placement: ProductPlacement | null, servers: Server[]): Node => {
     const prices = p.prices ?? [];
     const current = prices[0];
     const ordered = plansInOrder(prices);
@@ -157,6 +197,60 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
         });
         ctx.toast("Description saved.", { tone: "success" });
         await load();
+      });
+    };
+
+    // placementCard is where the product sits: the provisioner target it is sold onto and the
+    // category branch it is filed in. It is its own card because both are structural facts rather
+    // than product prose, and because the server is the one control on this page that changes
+    // *where a future purchase is provisioned* rather than what the page says.
+    const placementCard = (): HTMLElement => {
+      const current = placement?.server ?? null;
+      const selector = select(
+        [
+          { value: "", label: "Inherit from the plan" },
+          ...servers.map((srv) => ({
+            value: srv.id,
+            label: serverLabel(srv),
+            disabled: !srv.enabled,
+          })),
+        ],
+        { id: "prod-server", value: placement?.server_id ?? "" },
+      );
+      const save = btn("Save server", { size: "sm" });
+      save.addEventListener("click", () => {
+        void withBusy(ctx, save, async () => {
+          await ctx.api.put(`/api/v1/staff/catalog/products/${p.id}/server`, {
+            server_id: selector.value || null,
+          });
+          ctx.toast("Server saved.", { tone: "success" });
+          await load();
+        });
+      });
+
+      return card({
+        title: "Placement",
+        sub: "where it is sold from",
+        body: h(
+          "div",
+          { class: "stack-sm" },
+          kv("Category", placement?.category_path ? pathText(placement.category_path) : p.category_name || "—"),
+          kv("Server", current ? serverLabel(current) : "Inherit from the plan"),
+          canWrite
+            ? field({
+                label: "Server",
+                control: selector,
+                id: "prod-server",
+                hint: "The node this product provisions onto. A plan that names its own region wins.",
+              })
+            : null,
+          canWrite ? h("div", { class: "row" }, save) : null,
+        ),
+        foot: h(
+          "span",
+          null,
+          "A change here affects the next purchase. Services that already exist keep the region they were created with.",
+        ),
       });
     };
 
@@ -351,6 +445,11 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
               metaGrid([
                 { label: "Slug", value: h("span", { class: "mono" }, p.slug) },
                 { label: "Category", value: p.category_name || "—" },
+                {
+                  label: "Category path",
+                  value: placement?.category_path ? pathText(placement.category_path) : "—",
+                },
+                { label: "Server", value: placement?.server ? serverLabel(placement.server) : "Inherit from the plan" },
                 { label: "Sort order", value: String(p.sort_order) },
                 { label: "Active subscriptions", value: String(p.active_subscriptions) },
                 { label: "Created", value: dateTime(p.created_at) },
@@ -358,6 +457,8 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
               ]),
             ),
           }),
+
+          placementCard(),
 
           descriptionCard(),
 
@@ -501,4 +602,16 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
 
   void load();
   return host;
+}
+
+/** serverLabel renders a provisioner target the way an operator recognises it: the name, then
+ *  the region and node the adapter will actually be told about. */
+function serverLabel(server: Server): string {
+  const detail = [server.region, server.node].filter(Boolean).join(" / ");
+  return detail ? `${server.name} (${detail})` : server.name;
+}
+
+/** pathText renders a slash-joined category path as a breadcrumb. */
+function pathText(path: string): string {
+  return path.split("/").filter(Boolean).join(" › ");
 }

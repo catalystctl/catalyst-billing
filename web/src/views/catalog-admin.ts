@@ -79,12 +79,56 @@ interface Category {
   product_count?: number;
 }
 
+// CategoryNode is a category plus its place in the tree. The panel renders the tree rather than
+// the flat list because that is the point of nesting: an operator has to be able to see that
+// "Minecraft" sits under "Game servers" before filing a product in it.
+interface CategoryNode extends Category {
+  parent_id: string | null;
+  depth: number;
+  path: string;
+  subtree_product_count: number;
+  children?: CategoryNode[];
+}
+
+// Server is a provisioner target: a node on the provider the installation is configured with.
+// It is not the provider configuration (that is the Servers settings screen); it is which node
+// on it a product is sold onto.
+interface Server {
+  id: string;
+  slug: string;
+  name: string;
+  provider: string;
+  region: string;
+  node: string;
+  enabled: boolean;
+  sort_order: number;
+  product_count: number;
+}
+
+// ProductPlacement is where a product sits: its server and its category branch. It is its own
+// read because the product shape is also served to the storefront, which must never see a node
+// name.
+interface ProductPlacement {
+  product_id: string;
+  server_id: string | null;
+  server: Server | null;
+  category_id: string | null;
+  category_parent_id: string | null;
+  category_path: string;
+  category_ancestor_slugs: string[];
+}
+
 interface ProductsResponse {
   data: Product[];
 }
 
-interface CategoriesResponse {
-  data: Category[];
+interface TreeResponse {
+  data: CategoryNode[];
+  max_depth: number;
+}
+
+interface ServersResponse {
+  data: Server[];
 }
 
 const INTERVALS = [
@@ -97,16 +141,23 @@ const INTERVALS = [
 export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
   const host = h("div", { class: "page" }, skeletonPage());
   let products: Product[] = [];
-  let categories: Category[] = [];
+  let categories: CategoryNode[] = [];
+  let categoryTree: CategoryNode[] = [];
+  let servers: Server[] = [];
 
   const load = async () => {
     try {
-      const [p, c] = await Promise.all([
+      const [p, t, s] = await Promise.all([
         ctx.api.get<ProductsResponse>("/api/v1/staff/catalog/products", { cache: false }),
-        ctx.api.get<CategoriesResponse>("/api/v1/staff/catalog/categories", { cache: false }),
+        ctx.api.get<TreeResponse>("/api/v1/staff/catalog/categories/tree", { cache: false }),
+        ctx.api.get<ServersResponse>("/api/v1/staff/catalog/servers", { cache: false }),
       ]);
       products = p.data ?? [];
-      categories = c.data ?? [];
+      categoryTree = t.data ?? [];
+      // The flat list feeds the product dialog's category selector and the counts; the tree is
+      // what the categories card renders.
+      categories = flattenTree(categoryTree).map((entry) => entry.node);
+      servers = s.data ?? [];
       swap(host, render());
     } catch (err) {
       swap(host, errorState(err, () => void load()));
@@ -199,7 +250,11 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
                     icon: "layers",
                     action: canWrite ? btn("New category", { onclick: () => categoryDialog(null) }) : null,
                   })
-                : h("div", null, ...categories.map(categoryRow)),
+                : h(
+                    "div",
+                    null,
+                    ...flattenTree(categoryTree).map((entry) => categoryRow(entry.node, entry.depth)),
+                  ),
           }),
           card({
             title: "How pricing works",
@@ -310,18 +365,19 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
     );
   };
 
-  const categoryRow = (c: Category): HTMLElement =>
+  const categoryRow = (c: CategoryNode, depth: number): HTMLElement =>
     h(
       "div",
       { class: "cat-row cat-row--compact" },
       h(
         "div",
-        { class: "cat-main" },
+        { class: "cat-main", style: depth > 1 ? `padding-left: ${(depth - 1) * 18}px` : undefined },
         h(
           "div",
           { class: "cat-name" },
           h("span", { class: "row-title" }, c.name),
           c.hidden ? badge("Hidden", "neutral", { dot: true }) : null,
+          c.children && c.children.length > 0 ? badge(`${c.children.length} sub`, "neutral") : null,
         ),
         h(
           "div",
@@ -329,6 +385,9 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
           h("span", { class: "mono" }, c.slug),
           h("span", { class: "dot-sep" }, "·"),
           h("span", null, `${c.product_count ?? 0} product${(c.product_count ?? 0) === 1 ? "" : "s"}`),
+          c.subtree_product_count > (c.product_count ?? 0)
+            ? h("span", { class: "faint" }, ` (${c.subtree_product_count} in the branch)`)
+            : null,
         ),
       ),
       ctx.can("catalog:write")
@@ -385,7 +444,7 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
   const deleteCategory = async (c: Category) => {
     const ok = await ctx.confirm({
       title: `Delete “${c.name}”?`,
-      body: "A category can only be deleted when no product uses it. Its products are not deleted with it.",
+      body: "A category can only be deleted when no product uses it and no sub-category hangs from it. Its products and its sub-categories are not deleted with it.",
       confirmLabel: "Delete category",
       danger: true,
     });
@@ -409,7 +468,7 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
 
   // --------------------------------------------------------------- dialogs --
 
-  const categoryDialog = (existing: Category | null) => {
+  const categoryDialog = (existing: CategoryNode | null) => {
     const name = input({ id: "cat-name", value: existing?.name ?? "", placeholder: "VPS Hosting", required: true });
     const slug = input({
       id: "cat-slug",
@@ -425,6 +484,22 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
     });
     const sortOrder = input({ id: "cat-sort", type: "number", value: existing?.sort_order ?? 0, min: 0 });
     const hidden = h("input", { type: "checkbox", checked: existing?.hidden ?? false });
+
+    // The parent control. A category cannot be moved under itself or under one of its own
+    // descendants, and the database refuses both; offering them in a dropdown would be an
+    // invitation to a 409, so they are not offered. Depth is capped at four by the database too,
+    // which is why the option label shows the level.
+    const excluded = existing ? subtreeIDs(existing.id, categoryTree) : new Set<string>();
+    const parentOptions = [
+      { value: "", label: "No parent (top level)" },
+      ...flattenTree(categoryTree)
+        .filter((entry) => !excluded.has(entry.node.id))
+        .map((entry) => ({
+          value: entry.node.id,
+          label: `${"\u00a0\u00a0".repeat(entry.depth - 1)}${entry.node.name}`,
+        })),
+    ];
+    const parent = select(parentOptions, { id: "cat-parent", value: existing?.parent_id ?? "" });
 
     // A slug is derived from the name until the operator edits it, then left alone: silently
     // rewriting a slug a second time would change a URL that may already be linked.
@@ -447,6 +522,13 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
       field({ label: "Name", control: name, id: "cat-name", required: true, class: "span-2" }),
       field({ label: "Slug", control: slug, id: "cat-slug", hint: "Used in the storefront URL.", required: true }),
       field({ label: "Sort order", control: sortOrder, id: "cat-sort", hint: "Lower shows first." }),
+      field({
+        label: "Parent category",
+        control: parent,
+        id: "cat-parent",
+        hint: "Four levels at most. A parent's page lists the products of everything under it.",
+        class: "span-2",
+      }),
       field({ label: "Description", control: description, id: "cat-desc", class: "span-2" }),
       h("div", { class: "span-2" }, h("label", { class: "switch" }, hidden, "Hide from the storefront")),
     );
@@ -491,8 +573,24 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
           hidden: hidden.checked,
         };
         try {
-          if (existing) await ctx.api.put(`/api/v1/staff/catalog/categories/${existing.id}`, payload);
-          else await ctx.api.post("/api/v1/staff/catalog/categories", payload);
+          if (existing) {
+            await ctx.api.put(`/api/v1/staff/catalog/categories/${existing.id}`, payload);
+            // The edit endpoint predates the tree and has no parent field, so a move is its own
+            // request — sent only when it changed, because moving a branch is a structural edit
+            // worth its own audit row rather than part of a rename.
+            if ((existing.parent_id ?? "") !== parent.value) {
+              await ctx.api.put(`/api/v1/staff/catalog/categories/${existing.id}/parent`, {
+                parent_id: parent.value || null,
+              });
+            }
+          } else {
+            const created = await ctx.api.post<Category>("/api/v1/staff/catalog/categories", payload);
+            if (parent.value && created?.id) {
+              await ctx.api.put(`/api/v1/staff/catalog/categories/${created.id}/parent`, {
+                parent_id: parent.value,
+              });
+            }
+          }
           ctx.toast(existing ? "Category saved" : "Category created", { tone: "success" });
           handle.close();
           await load();
@@ -501,7 +599,11 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
             err instanceof ApiError
               ? err.code === "slug_taken"
                 ? "That slug is already used by another category."
-                : err.detail || "The category could not be saved."
+                : err.code === "category_cycle"
+                  ? "That would put the category inside itself."
+                  : err.code === "category_too_deep"
+                    ? "Categories can only nest four levels deep."
+                    : err.detail || "The category could not be saved."
               : "The server could not be reached.";
           swap(errorHost, h("div", { class: "banner banner--danger" }, message));
         } finally {
@@ -532,9 +634,20 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
       placeholder: "Describe what the customer gets. Two or three sentences is plenty.",
     });
     const category = select(
-      [{ value: "", label: "No category" }, ...categories.map((c) => ({ value: c.id, label: c.name }))],
+      [{ value: "", label: "No category" }, ...categories.map((c) => ({ value: c.id, label: c.path.replace(/\//g, " \u203a ") }))],
       { id: "prod-category", value: existing?.category_id ?? "" },
     );
+    // Which provisioner target the product is sold onto. Empty means "whatever the plan says",
+    // which is what every product did before this control existed.
+    const serverOptions = [
+      { value: "", label: "Inherit from the plan" },
+      ...servers.map((s) => ({
+        value: s.id,
+        label: s.region ? `${s.name} (${s.region})` : s.name,
+        disabled: !s.enabled,
+      })),
+    ];
+    const serverSelect = select(serverOptions, { id: "prod-server", value: "" });
     const sortOrder = input({ id: "prod-sort", type: "number", value: existing?.sort_order ?? 0, min: 0 });
     const hidden = h("input", { type: "checkbox", checked: existing?.hidden ?? false });
 
@@ -564,6 +677,12 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
       field({ label: "Slug", control: slug, id: "prod-slug", hint: "Used in the storefront URL.", required: true }),
       field({ label: "Category", control: category, id: "prod-category" }),
       field({
+        label: "Server",
+        control: serverSelect,
+        id: "prod-server",
+        hint: "The node this product provisions onto. A plan that names its own region wins.",
+      }),
+      field({
         label: "Short description",
         control: shortDesc,
         id: "prod-short",
@@ -580,6 +699,26 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
     const cancel = btn("Cancel", { variant: "ghost" });
     const errorHost = h("div");
     const form = h("form", { class: "stack", novalidate: true }, errorHost, body);
+
+    // The product read is the storefront's shape as well, so it carries no server: the placement
+    // is its own read. It is loaded after the dialog opens rather than before, because a failed
+    // placement read must not stop an operator from renaming a product.
+    let initialServerID: string | null = null;
+    if (existing) {
+      void (async () => {
+        try {
+          const placement = await ctx.api.get<ProductPlacement>(
+            `/api/v1/staff/catalog/products/${existing.id}/placement`,
+            { cache: false },
+          );
+          initialServerID = placement.server_id;
+          serverSelect.value = placement.server_id ?? "";
+        } catch {
+          // Leaving the selector on "inherit" is the honest fallback: it matches what the
+          // product does when the read fails.
+        }
+      })();
+    }
 
     bindForm(form, submit);
     const handle = openDialog({
@@ -612,9 +751,24 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
           sort_order: Number(sortOrder.value) || 0,
         };
         try {
-          if (existing) await ctx.api.put(`/api/v1/staff/catalog/products/${existing.id}`, payload);
-          else {
+          const chosenServer = serverSelect.value || null;
+          if (existing) {
+            await ctx.api.put(`/api/v1/staff/catalog/products/${existing.id}`, payload);
+            // The product edit endpoint carries catalogue metadata and predates this column, so
+            // the assignment is its own request — and only when it changed, because moving a
+            // product onto another node is a provisioning decision, not part of a rename.
+            if (chosenServer !== initialServerID) {
+              await ctx.api.put(`/api/v1/staff/catalog/products/${existing.id}/server`, {
+                server_id: chosenServer,
+              });
+            }
+          } else {
             const created = await ctx.api.post<Product>("/api/v1/staff/catalog/products", payload);
+            if (chosenServer && created?.id) {
+              await ctx.api.put(`/api/v1/staff/catalog/products/${created.id}/server`, {
+                server_id: chosenServer,
+              });
+            }
             ctx.toast("Product created", { tone: "success", detail: "Add a price to publish it." });
             handle.close();
             await load();
@@ -820,4 +974,37 @@ function toMinor(raw: string): number | null {
   const [whole = "0", fraction = ""] = cleaned.split(".");
   const padded = (fraction + "00").slice(0, 2);
   return Number(whole) * 100 + Number(padded);
+}
+
+/** flattenTree walks the category tree in display order, carrying each node's depth. */
+function flattenTree(
+  nodes: CategoryNode[],
+  depth = 1,
+  out: Array<{ node: CategoryNode; depth: number }> = [],
+): Array<{ node: CategoryNode; depth: number }> {
+  for (const node of nodes) {
+    out.push({ node, depth });
+    if (node.children && node.children.length > 0) flattenTree(node.children, depth + 1, out);
+  }
+  return out;
+}
+
+/** subtreeIDs is a node's id and every id below it. A category cannot be moved into that set,
+ *  because the move would make it its own ancestor — the database refuses it, so the parent
+ *  dropdown does not offer it. */
+function subtreeIDs(rootID: string, tree: CategoryNode[]): Set<string> {
+  const ids = new Set<string>([rootID]);
+  const entries = flattenTree(tree);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const entry of entries) {
+      const parentID = entry.node.parent_id;
+      if (parentID && ids.has(parentID) && !ids.has(entry.node.id)) {
+        ids.add(entry.node.id);
+        grew = true;
+      }
+    }
+  }
+  return ids;
 }

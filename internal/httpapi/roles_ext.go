@@ -138,6 +138,7 @@ func (s *Server) handleRoleCreate(w http.ResponseWriter, r *http.Request) {
 		"name":        rec.Name,
 		"permissions": req.Permissions,
 	})
+	s.refreshAuthorizerTable(r)
 	writeJSON(w, http.StatusCreated, roleJSON(rec))
 }
 
@@ -173,6 +174,7 @@ func (s *Server) handleRoleUpdatePermissions(w http.ResponseWriter, r *http.Requ
 		"name":        rec.Name,
 		"permissions": req.Permissions,
 	})
+	s.refreshAuthorizerTable(r)
 	writeJSON(w, http.StatusOK, roleJSON(rec))
 }
 
@@ -193,6 +195,7 @@ func (s *Server) handleRoleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.auditIdentity(r, "role.delete", "role", id, nil)
+	s.refreshAuthorizerTable(r)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -211,6 +214,29 @@ func permissionList(w http.ResponseWriter, names []string) ([]authn.Permission, 
 		out = append(out, authn.Permission(name))
 	}
 	return out, true
+}
+
+// refreshAuthorizerTable makes a committed role change take effect without a restart.
+//
+// The Authorizer holds a snapshot of the custom-role permissions, so a newly created role would
+// otherwise stay inert until the next boot. This reloads the snapshot after every write.
+//
+// A failure to reload is logged, never returned: the role change has already committed, and
+// answering 500 for a successful write is worse than a window in which the new role is inert
+// (the four system roles still resolve from the compiled-in map, so nothing loses access).
+func (s *Server) refreshAuthorizerTable(r *http.Request) {
+	if s.auth == nil || s.auth.Service == nil || s.auth.Authz == nil {
+		return
+	}
+	table, err := s.auth.Service.AllRolePermissions(r.Context())
+	if err != nil {
+		s.cfg.Logger.ErrorContext(r.Context(),
+			"role change committed but the authorizer could not be refreshed; "+
+				"the new permissions take effect on next boot",
+			"error", err)
+		return
+	}
+	s.auth.Authz.SetTableRoles(table)
 }
 
 // auditIdentity records a role or identity change.

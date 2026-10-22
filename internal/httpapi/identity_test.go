@@ -58,30 +58,6 @@ func (e *authEnv) doIdentity(t *testing.T, method, path string, cookie *http.Coo
 	return rec
 }
 
-// decodeProblem asserts the problem+json envelope and returns its code.
-func decodeProblem(t *testing.T, rec *httptest.ResponseRecorder) string {
-	t.Helper()
-	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
-		t.Fatalf("Content-Type = %q, want application/problem+json; body %s", ct, rec.Body)
-	}
-	var body struct {
-		Type   string `json:"type"`
-		Title  string `json:"title"`
-		Status int    `json:"status"`
-		Code   string `json:"code"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("problem body is not JSON: %v; body %s", err, rec.Body)
-	}
-	if body.Code == "" || body.Type == "" || body.Title == "" {
-		t.Fatalf("incomplete problem document: %s", rec.Body)
-	}
-	if body.Status != rec.Code {
-		t.Fatalf("body status %d != HTTP status %d", body.Status, rec.Code)
-	}
-	return body.Code
-}
-
 // sessionIDsOf returns the live session ids recorded for a user.
 func (e *authEnv) sessionIDsOf(t *testing.T, userID string) []string {
 	t.Helper()
@@ -140,7 +116,7 @@ func TestUserCannotRevokeAnotherUsersSession(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-user revoke: status %d, want 404; body %s", rec.Code, rec.Body)
 	}
-	code := decodeProblem(t, rec)
+	code := problemCode(t, rec)
 	if code != "not_found" {
 		t.Fatalf("code = %q, want not_found", code)
 	}
@@ -285,7 +261,7 @@ func TestLoginHistoryIsOwnAndProblemJSONOnBadCursor(t *testing.T) {
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("bad cursor: status %d, want 400", bad.Code)
 	}
-	if code := decodeProblem(t, bad); code != "invalid_cursor" {
+	if code := problemCode(t, bad); code != "invalid_cursor" {
 		t.Fatalf("code = %q, want invalid_cursor", code)
 	}
 }
@@ -306,7 +282,7 @@ func TestImpersonationRequiresStaffManage(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("customer impersonation: status %d, want 403; body %s", rec.Code, rec.Body)
 	}
-	decodeProblem(t, rec)
+	problemCode(t, rec)
 
 	// Support is staff but lacks staff:manage.
 	env.createUser(t, "support@example.test", "support password 1", "support")
@@ -316,7 +292,7 @@ func TestImpersonationRequiresStaffManage(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("support impersonation: status %d, want 403; body %s", rec.Code, rec.Body)
 	}
-	decodeProblem(t, rec)
+	problemCode(t, rec)
 
 	// Nothing was created: a refused request must leave no session behind.
 	var impersonated int
@@ -461,7 +437,7 @@ func TestStopImpersonationRefusesNormalSession(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("stop on a normal session: status %d, want 400; body %s", rec.Code, rec.Body)
 	}
-	if code := decodeProblem(t, rec); code != "not_impersonating" {
+	if code := problemCode(t, rec); code != "not_impersonating" {
 		t.Fatalf("code = %q, want not_impersonating", code)
 	}
 	// The caller is still signed in.
@@ -573,7 +549,7 @@ func TestSystemRoleCannotBeDeletedOrEditedOverHTTP(t *testing.T) {
 	if del.Code != http.StatusConflict {
 		t.Fatalf("delete a system role: status %d, want 409; body %s", del.Code, del.Body)
 	}
-	if code := decodeProblem(t, del); code != "system_role" {
+	if code := problemCode(t, del); code != "system_role" {
 		t.Fatalf("code = %q, want system_role", code)
 	}
 
@@ -584,7 +560,7 @@ func TestSystemRoleCannotBeDeletedOrEditedOverHTTP(t *testing.T) {
 	if edit.Code != http.StatusConflict {
 		t.Fatalf("edit a system role: status %d, want 409; body %s", edit.Code, edit.Body)
 	}
-	if code := decodeProblem(t, edit); code != "system_role" {
+	if code := problemCode(t, edit); code != "system_role" {
 		t.Fatalf("code = %q, want system_role", code)
 	}
 
@@ -620,7 +596,7 @@ func TestRoleRejectsUndeclaredPermissionOverHTTP(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("undeclared permission: status %d, want 400; body %s", rec.Code, rec.Body)
 	}
-	if code := decodeProblem(t, rec); code != "unknown_permission" {
+	if code := problemCode(t, rec); code != "unknown_permission" {
 		t.Fatalf("code = %q, want unknown_permission", code)
 	}
 }
@@ -646,7 +622,7 @@ func TestRoleRoutesRequireStaffManage(t *testing.T) {
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("%s %s as support: status %d, want 403", tc.method, tc.path, rec.Code)
 		}
-		decodeProblem(t, rec)
+		problemCode(t, rec)
 	}
 }
 
@@ -708,7 +684,7 @@ func TestAPIKeyAllowlistRoundTrip(t *testing.T) {
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("invalid cidr: status %d, want 400; body %s", bad.Code, bad.Body)
 	}
-	if code := decodeProblem(t, bad); code != "invalid_allowlist" {
+	if code := problemCode(t, bad); code != "invalid_allowlist" {
 		t.Fatalf("code = %q, want invalid_allowlist", code)
 	}
 }
@@ -737,7 +713,7 @@ func TestAPIKeyAllowlistIsScopedToTheOwner(t *testing.T) {
 	if put.Code != http.StatusNotFound {
 		t.Fatalf("another user's key: status %d, want 404; body %s", put.Code, put.Body)
 	}
-	decodeProblem(t, put)
+	problemCode(t, put)
 }
 
 // The address decision itself: an empty list allows, a match allows, a miss does not, and an
@@ -778,7 +754,7 @@ func TestAllowlistDecision(t *testing.T) {
 	// distinguishable 403 would confirm the key is valid and merely misplaced.
 	switch rec.Code {
 	case http.StatusUnauthorized:
-		if code := decodeProblem(t, rec); code != "invalid_api_key" {
+		if code := problemCode(t, rec); code != "invalid_api_key" {
 			t.Fatalf("code = %q, want invalid_api_key", code)
 		}
 	case http.StatusOK:
@@ -855,7 +831,7 @@ func TestImpersonatingCannotEnrolMFA(t *testing.T) {
 			"(needs `if !s.impersonationGuard(w, r) { return }` as the first statement of "+
 			"handleMFAEnrol and handleMFADisable in internal/httpapi/auth_lifecycle.go)", rec.Code, rec.Body)
 	}
-	if code := decodeProblem(t, rec); code != "impersonating" {
+	if code := problemCode(t, rec); code != "impersonating" {
 		t.Fatalf("code = %q, want impersonating", code)
 	}
 
@@ -873,5 +849,73 @@ func TestImpersonatingCannotEnrolMFA(t *testing.T) {
 		map[string]any{})
 	if own.Code == http.StatusForbidden && bytes.Contains(own.Body.Bytes(), []byte("impersonating")) {
 		t.Fatalf("the operator's own session was refused as impersonating: %s", own.Body)
+	}
+}
+
+// A custom role must actually grant its permissions through the Authorizer — not merely be
+// stored. This is the end-to-end proof that the table and the permission check are joined:
+// create a role, assign it, and watch a route the role permits become reachable.
+//
+// It also proves the live refresh: the role is created while the server is running, so
+// without SetTableRoles being called after the write, the route would stay 403.
+func TestCustomRoleGrantsThroughTheAuthorizer(t *testing.T) {
+	env := newAuthEnv(t)
+	env.createUser(t, "admin7@example.test", "admin password 1", "administrator")
+	adminCookie, adminCSRF := env.login(t, "admin7@example.test", "admin password 1")
+
+	// A user with no staff role cannot read the audit log.
+	userID := env.createUser(t, "auditor@example.test", "auditor password 1", "")
+	userCookie, _ := env.login(t, "auditor@example.test", "auditor password 1")
+	if rec := env.get(t, "/api/v1/staff/audit", userCookie); rec.Code != http.StatusForbidden {
+		t.Fatalf("audit read before any role: status %d, want 403", rec.Code)
+	}
+
+	create := env.doIdentity(t, http.MethodPost, "/api/v1/staff/roles", adminCookie, adminCSRF,
+		map[string]any{
+			"name":        "t-live-auditor",
+			"description": "audit read only",
+			"permissions": []string{"audit:read"},
+		})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create role: %d %s", create.Code, create.Body)
+	}
+	var role struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &role); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	t.Cleanup(func() {
+		env.pool.Exec(context.Background(), `DELETE FROM staff_roles WHERE role_id = $1`, role.ID)
+		env.pool.Exec(context.Background(), `DELETE FROM roles WHERE id = $1`, role.ID)
+	})
+
+	if _, err := env.pool.Exec(context.Background(),
+		`INSERT INTO staff_roles (user_id, role_id) VALUES ($1, $2)`, userID, role.ID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+
+	// The route the role permits is now reachable, which only happens if the Authorizer
+	// resolved the custom role from the table.
+	rec := env.get(t, "/api/v1/staff/audit", userCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit read with audit:read from a custom role: status %d, want 200; body %s",
+			rec.Code, rec.Body)
+	}
+
+	// A route it does not permit stays refused: the role is a subset, not a promotion.
+	if rec := env.get(t, "/api/v1/staff/customers", userCookie); rec.Code != http.StatusForbidden {
+		t.Fatalf("customer read with only audit:read: status %d, want 403", rec.Code)
+	}
+
+	// Narrowing the role takes effect on the next request (the update refreshes the table).
+	narrow := env.doIdentity(t, http.MethodPut,
+		"/api/v1/staff/roles/"+role.ID+"/permissions", adminCookie, adminCSRF,
+		map[string]any{"permissions": []string{}})
+	if narrow.Code != http.StatusOK {
+		t.Fatalf("narrow role: %d %s", narrow.Code, narrow.Body)
+	}
+	if rec := env.get(t, "/api/v1/staff/audit", userCookie); rec.Code != http.StatusForbidden {
+		t.Fatalf("audit read after the permission was removed: status %d, want 403", rec.Code)
 	}
 }

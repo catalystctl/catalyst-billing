@@ -230,7 +230,6 @@ brand-render:
 
 brand-verify:
 	@node scripts/brand/verify.mjs
-
 # Full verification: the same sequence CI runs, minus the network-dependent
 # scanners. Run this before calling anything done.
 # The browser smoke test is part of verify: the UI is only proven by a browser, and a check

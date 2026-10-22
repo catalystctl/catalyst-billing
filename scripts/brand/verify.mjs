@@ -7,6 +7,19 @@ const BASE = process.env.BASE || 'http://127.0.0.1:8791';
 const CHROME = process.env.CHROME || 'chromium';
 const PROFILE = process.env.PROFILE || '/tmp/catalyst-brand-verify';
 
+// Fail with an instruction rather than a Chromium stack trace: this needs a *served* panel,
+// because half of what it proves is that the server sends the assets and the browser accepts
+// them. `make dev` is the shortest path to one.
+try {
+  const probe = await fetch(BASE + '/healthz');
+  if (!probe.ok) throw new Error(`healthz ${probe.status}`);
+} catch (err) {
+  console.error(`brand-verify: no panel answering at ${BASE} (${err.message})`);
+  console.error('  start one with `make dev`, or point BASE at a running panel:');
+  console.error('  BASE=http://127.0.0.1:8791 node scripts/brand/verify.mjs');
+  process.exit(1);
+}
+
 const chrome = spawn(CHROME, [
   '--headless', '--disable-gpu', '--no-sandbox', '--hide-scrollbars',
   '--remote-debugging-port=9333', `--user-data-dir=${PROFILE}`, 'about:blank',

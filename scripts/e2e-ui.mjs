@@ -871,6 +871,22 @@ try {
   await assertNewScreen("marketplace", { path: "/marketplace", expect: ["Marketplace"] });
   await assertNewScreen("oauth-clients", { path: "/oauth-clients", expect: ["OAuth clients"] });
 
+  // The operator screens that were APIs with no UI. Each of these was served and tested and
+  // unreachable by a human, which is the class of gap the route-vs-view audit found.
+  for (const surface of [
+    { name: "holds", path: "/holds", expect: ["Holds"] },
+    { name: "upgrades", path: "/upgrades", expect: ["Upgrades"] },
+    { name: "providers", path: "/providers", expect: ["Sign-in providers"] },
+    { name: "security", path: "/security", expect: ["Security"] },
+    { name: "notification-templates", path: "/notification-templates", expect: ["Notification templates"] },
+    { name: "automation", path: "/automation", expect: ["Automation"] },
+    { name: "service-properties", path: "/service-properties", expect: ["Service properties"] },
+    { name: "users", path: "/users", expect: ["Users"] },
+    { name: "roles", path: "/roles", expect: ["Roles"] },
+  ]) {
+    await assertNewScreen(surface.name, { path: surface.path, expect: surface.expect });
+  }
+
   // Gateway and provisioner configuration. These two are the screens an operator must be able
   // to use before the panel can take money or build a server, so they get more than a heading
   // check: the provider select must be populated from the server's own provider list, and the

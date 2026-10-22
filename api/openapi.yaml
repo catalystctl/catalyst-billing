@@ -3531,6 +3531,641 @@ paths:
                 required: true
             x-permission: service:cancel:self
             x-rate-class: mutation
+    /api/v1/portal/services/{id}/cancellation:
+        get:
+            description: 'Answers `{"cancellation": null}` when there is none: the absence of a request is the normal state, not an error. Used by the portal to show "cancellation requested" instead of offering the button again.'
+            operationId: GetPortalServicesByIdCancellation
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The request, or null
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The open cancellation request for a service
+            x-permission: service:read:self
+            x-rate-class: read
+        post:
+            description: Records a request rather than acting on the service. `end_of_period` sets `cancel_at_period_end` and returns a `scheduled` request with the paid-through date; the service keeps running and the renewal engine stops billing at that date. `immediate` records a `pending` request that staff or the due-work cron executes — an immediate cancellation destroys time the customer has already paid for, so it is a decision, not a button. The service is resolved through the caller's customer account in SQL, so another customer's identifier returns 404.
+            operationId: PostPortalServicesByIdCancellation
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                reason:
+                                    maxLength: 255
+                                    type: string
+                                type:
+                                    enum:
+                                        - immediate
+                                        - end_of_period
+                                    type: string
+                            required:
+                                - type
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    customer:
+                                        properties:
+                                            email:
+                                                format: email
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            name:
+                                                type: string
+                                        type: object
+                                    effective_at:
+                                        format: date-time
+                                        type: string
+                                    executed_at:
+                                        format: date-time
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    message:
+                                        type: string
+                                    product_name:
+                                        type: string
+                                    reason:
+                                        maxLength: 255
+                                        type: string
+                                    requested_by:
+                                        format: uuid
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - pending
+                                            - scheduled
+                                            - executed
+                                            - cancelled
+                                            - rejected
+                                        type: string
+                                    type:
+                                        description: immediate destroys the service and is executed by staff; end_of_period stops the schedule at the paid-through date.
+                                        enum:
+                                            - immediate
+                                            - end_of_period
+                                        type: string
+                                required:
+                                    - id
+                                    - service_id
+                                    - type
+                                    - status
+                                    - reason
+                                type: object
+                    description: The recorded request
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The service cannot be cancelled, or a request is already open
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Request cancellation of a service
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:cancel:self
+            x-rate-class: mutation
+    /api/v1/portal/services/{id}/config:
+        get:
+            description: Each row carries the amount it contributed at selection time, so a later option-price change does not silently re-price an existing service.
+            operationId: GetPortalServicesByIdConfig
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The selection
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The selection stored on a service
+            x-permission: service:read:self
+            x-rate-class: read
+        put:
+            description: 'An upgrade in everything but name: the option changes what the subscription renews at, so the difference for the remainder of the period is charged or credited exactly as a product upgrade would be. An option whose `upgradable` flag is false is refused.'
+            operationId: PutPortalServicesByIdConfig
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                config_option_id:
+                                    format: uuid
+                                    type: string
+                                reason:
+                                    type: string
+                                value:
+                                    type: string
+                            required:
+                                - config_option_id
+                                - value
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    credit_minor:
+                                        format: int64
+                                        type: integer
+                                    credit_pending:
+                                        description: True when the customer is owed a credit that the credits work package has not posted yet. The obligation is recorded on the service_upgrades row.
+                                        type: boolean
+                                    currency:
+                                        type: string
+                                    direction:
+                                        enum:
+                                            - upgrade
+                                            - downgrade
+                                            - none
+                                        type: string
+                                    from_price_version_id:
+                                        format: uuid
+                                        type: string
+                                    invoice_id:
+                                        format: uuid
+                                        type: string
+                                    invoice_number:
+                                        type: string
+                                    message:
+                                        type: string
+                                    prorated_minor:
+                                        description: 'Signed: positive is charged, negative is credited.'
+                                        format: int64
+                                        type: integer
+                                    proration:
+                                        properties:
+                                            as_of:
+                                                format: date-time
+                                                type: string
+                                            period_end:
+                                                format: date-time
+                                                type: string
+                                            period_start:
+                                                format: date-time
+                                                type: string
+                                            ratio:
+                                                description: The exact rational remaining/total. The prorated amount is (to - from) * ratio, rounded once with an explicit mode.
+                                                example: 1/2
+                                                type: string
+                                            remaining_secs:
+                                                description: Elapsed time left in the period. Durations, not day counts, so a DST transition and a 28-day February are both exact.
+                                                format: int64
+                                                type: integer
+                                            total_secs:
+                                                format: int64
+                                                type: integer
+                                        required:
+                                            - period_start
+                                            - period_end
+                                            - as_of
+                                            - ratio
+                                        type: object
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - pending
+                                            - applied
+                                            - cancelled
+                                            - failed
+                                        type: string
+                                    to_price_version_id:
+                                        format: uuid
+                                        type: string
+                                    upgrade_id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - upgrade_id
+                                    - service_id
+                                    - direction
+                                    - currency
+                                    - prorated_minor
+                                    - status
+                                type: object
+                    description: The recorded change
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An option or value the product does not offer
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The option is not upgradable
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Change an upgradable option on a service
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:upgrade:self
+            x-rate-class: mutation
+    /api/v1/portal/services/{id}/upgrade:
+        post:
+            description: Prices the change against the remainder of the current period using exact rational arithmetic — never a float, never a "30 days per month" assumption. A higher price issues an invoice for the prorated amount; the service keeps its current price until that invoice is paid, which is what makes a half-applied upgrade visible. A lower price records the credit owed and reports `credit_pending`. The target must be reachable from the service's product, in the same currency and on the same billing interval.
+            operationId: PostPortalServicesByIdUpgrade
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                price_version_id:
+                                    format: uuid
+                                    type: string
+                                reason:
+                                    type: string
+                            required:
+                                - price_version_id
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    credit_minor:
+                                        format: int64
+                                        type: integer
+                                    credit_pending:
+                                        description: True when the customer is owed a credit that the credits work package has not posted yet. The obligation is recorded on the service_upgrades row.
+                                        type: boolean
+                                    currency:
+                                        type: string
+                                    direction:
+                                        enum:
+                                            - upgrade
+                                            - downgrade
+                                            - none
+                                        type: string
+                                    from_price_version_id:
+                                        format: uuid
+                                        type: string
+                                    invoice_id:
+                                        format: uuid
+                                        type: string
+                                    invoice_number:
+                                        type: string
+                                    message:
+                                        type: string
+                                    prorated_minor:
+                                        description: 'Signed: positive is charged, negative is credited.'
+                                        format: int64
+                                        type: integer
+                                    proration:
+                                        properties:
+                                            as_of:
+                                                format: date-time
+                                                type: string
+                                            period_end:
+                                                format: date-time
+                                                type: string
+                                            period_start:
+                                                format: date-time
+                                                type: string
+                                            ratio:
+                                                description: The exact rational remaining/total. The prorated amount is (to - from) * ratio, rounded once with an explicit mode.
+                                                example: 1/2
+                                                type: string
+                                            remaining_secs:
+                                                description: Elapsed time left in the period. Durations, not day counts, so a DST transition and a 28-day February are both exact.
+                                                format: int64
+                                                type: integer
+                                            total_secs:
+                                                format: int64
+                                                type: integer
+                                        required:
+                                            - period_start
+                                            - period_end
+                                            - as_of
+                                            - ratio
+                                        type: object
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - pending
+                                            - applied
+                                            - cancelled
+                                            - failed
+                                        type: string
+                                    to_price_version_id:
+                                        format: uuid
+                                        type: string
+                                    upgrade_id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - upgrade_id
+                                    - service_id
+                                    - direction
+                                    - currency
+                                    - prorated_minor
+                                    - status
+                                type: object
+                    description: The recorded upgrade
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The target is not reachable, or the currencies or intervals differ
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Upgrade or downgrade a service
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:upgrade:self
+            x-rate-class: mutation
+    /api/v1/portal/services/{id}/upgrade-options:
+        get:
+            description: 'The products reachable from the service''s product through `product_upgrades`, each with its price versions in the service''s own currency and billing interval. Only prices in that currency are offered: this system deliberately has no exchange rate. Each price carries `prorated`, the exact charge or credit for the remainder of the current period.'
+            operationId: GetPortalServicesByIdUpgradeoptions
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The reachable products and their prices
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Products this service can move to
+            x-permission: service:upgrade:self
+            x-rate-class: read
     /api/v1/portal/tickets:
         get:
             description: 'Scoped in SQL: the customer is resolved from the session and the query filters on it, so substituting another customer''s ticket identifier returns not_found, identical to an id that never existed. `status` filters to open, replied or closed; `all` (the default) does not filter.'
@@ -4924,6 +5559,276 @@ paths:
             x-permission: audit:read
             x-rate-class: export
             x-staff-only: true
+    /api/v1/staff/cancellations:
+        get:
+            description: Newest first. `status` filters to one of pending, scheduled, executed, cancelled or rejected; an absent status means the open queue (pending and scheduled). `service_id` narrows to one service. Each row carries the customer and the product name, so a queue is readable without three more requests.
+            operationId: GetStaffCancellations
+            responses:
+                2XX:
+                    description: The queue
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The cancellation queue
+            x-permission: service:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/cancellations/{id}/execute:
+        post:
+            description: 'Enqueues the existing provisioning `terminate` operation for the service and marks the request executed in the same transaction, so the queue and the operation cannot disagree. Answers 202 with the operation id because the destructive part is queued; the service disappears when the worker has spoken to the provider. A `scheduled` request is refused: an end-of-period cancellation runs at its effective date, and destroying the service early is a refund event, not an execution.'
+            operationId: PostStaffCancellationsByIdExecute
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    already_terminated:
+                                        type: boolean
+                                    cancellation_id:
+                                        format: uuid
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        type: string
+                                type: object
+                    description: The service was already terminated; the request is marked executed
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is not pending or not immediate
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Execute a pending immediate cancellation
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:terminate
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/cancellations/{id}/reject:
+        post:
+            description: 'A reason is required: rejecting a customer''s request without one leaves the next agent and the customer with no explanation. An end-of-period request has already stopped the schedule, so rejecting it clears `cancel_at_period_end` in the same transaction — otherwise the queue would say rejected while the renewal engine quietly ended the subscription.'
+            operationId: PostStaffCancellationsByIdReject
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                reason:
+                                    maxLength: 255
+                                    type: string
+                            required:
+                                - reason
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    customer:
+                                        properties:
+                                            email:
+                                                format: email
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            name:
+                                                type: string
+                                        type: object
+                                    effective_at:
+                                        format: date-time
+                                        type: string
+                                    executed_at:
+                                        format: date-time
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    message:
+                                        type: string
+                                    product_name:
+                                        type: string
+                                    reason:
+                                        maxLength: 255
+                                        type: string
+                                    requested_by:
+                                        format: uuid
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - pending
+                                            - scheduled
+                                            - executed
+                                            - cancelled
+                                            - rejected
+                                        type: string
+                                    type:
+                                        description: immediate destroys the service and is executed by staff; end_of_period stops the schedule at the paid-through date.
+                                        enum:
+                                            - immediate
+                                            - end_of_period
+                                        type: string
+                                required:
+                                    - id
+                                    - service_id
+                                    - type
+                                    - status
+                                    - reason
+                                type: object
+                    description: The rejected request
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No reason given
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is not open
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Reject a cancellation request
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:suspend
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/catalog/categories:
         get:
             description: Categories with a product count, ordered by sort_order then name.
@@ -5602,6 +6507,718 @@ paths:
                 required: true
             x-permission: catalog:write
             x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/config-options:
+        get:
+            description: 'Every option with its per-price-version amounts and setup fees, ordered by sort_order then name. `product_id` is required. Requires invoice:read:all: reading the pricing of an option must not require the right to change it.'
+            operationId: GetStaffConfigoptions
+            responses:
+                2XX:
+                    description: The options and the valid types
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: A product's configurable options
+            x-permission: invoice:read:all
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: A dropdown or radio option needs at least one choice; a checkbox, text or number option does not. Changing an option changes what every subscription on that product renews at, which is why this needs config:write rather than catalog:write.
+            operationId: PostStaffConfigoptions
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                choices:
+                                    items:
+                                        type: string
+                                    type: array
+                                description:
+                                    type: string
+                                env_variable:
+                                    type: string
+                                hidden:
+                                    type: boolean
+                                name:
+                                    maxLength: 120
+                                    type: string
+                                parent_id:
+                                    format: uuid
+                                    type: string
+                                product_id:
+                                    format: uuid
+                                    type: string
+                                required:
+                                    type: boolean
+                                sort_order:
+                                    type: integer
+                                type:
+                                    enum:
+                                        - dropdown
+                                        - radio
+                                        - checkbox
+                                        - text
+                                        - number
+                                    type: string
+                                upgradable:
+                                    type: boolean
+                            required:
+                                - product_id
+                                - name
+                                - type
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    choices:
+                                        items:
+                                            type: string
+                                        type: array
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    description:
+                                        type: string
+                                    env_variable:
+                                        description: The environment variable the provisioner receives when this option is selected.
+                                        type: string
+                                    hidden:
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    name:
+                                        maxLength: 120
+                                        type: string
+                                    parent_id:
+                                        format: uuid
+                                        type: string
+                                    prices:
+                                        items:
+                                            properties:
+                                                amount_minor:
+                                                    format: int64
+                                                    type: integer
+                                                choice:
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                price_version_id:
+                                                    format: uuid
+                                                    type: string
+                                                setup_minor:
+                                                    format: int64
+                                                    type: integer
+                                            type: object
+                                        type: array
+                                    product_id:
+                                        format: uuid
+                                        type: string
+                                    required:
+                                        type: boolean
+                                    sort_order:
+                                        type: integer
+                                    type:
+                                        enum:
+                                            - dropdown
+                                            - radio
+                                            - checkbox
+                                            - text
+                                            - number
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                    upgradable:
+                                        description: A live service may change this option, which issues a prorated charge.
+                                        type: boolean
+                                required:
+                                    - id
+                                    - product_id
+                                    - name
+                                    - type
+                                type: object
+                    description: The option
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Invalid definition
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Create a configurable option
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: config:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/config-options/{id}:
+        delete:
+            description: 'Refused while any live service has selected it: a selection is a priced fact, and deleting the option underneath it would leave a renewal that cannot re-price.'
+            operationId: DeleteStaffConfigoptionsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A live service has selected it
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete a configurable option
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: config:write
+            x-rate-class: mutation
+            x-staff-only: true
+        put:
+            description: '`upgradable` is preserved when the body omits it, so an edit from a screen that does not show the flag cannot turn a live-changeable option into a fixed one.'
+            operationId: PutStaffConfigoptionsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                choices:
+                                    items:
+                                        type: string
+                                    type: array
+                                description:
+                                    type: string
+                                env_variable:
+                                    type: string
+                                hidden:
+                                    type: boolean
+                                name:
+                                    maxLength: 120
+                                    type: string
+                                parent_id:
+                                    format: uuid
+                                    type: string
+                                required:
+                                    type: boolean
+                                sort_order:
+                                    type: integer
+                                type:
+                                    enum:
+                                        - dropdown
+                                        - radio
+                                        - checkbox
+                                        - text
+                                        - number
+                                    type: string
+                                upgradable:
+                                    type: boolean
+                            required:
+                                - name
+                                - type
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    choices:
+                                        items:
+                                            type: string
+                                        type: array
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    description:
+                                        type: string
+                                    env_variable:
+                                        description: The environment variable the provisioner receives when this option is selected.
+                                        type: string
+                                    hidden:
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    name:
+                                        maxLength: 120
+                                        type: string
+                                    parent_id:
+                                        format: uuid
+                                        type: string
+                                    prices:
+                                        items:
+                                            properties:
+                                                amount_minor:
+                                                    format: int64
+                                                    type: integer
+                                                choice:
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                price_version_id:
+                                                    format: uuid
+                                                    type: string
+                                                setup_minor:
+                                                    format: int64
+                                                    type: integer
+                                            type: object
+                                        type: array
+                                    product_id:
+                                        format: uuid
+                                        type: string
+                                    required:
+                                        type: boolean
+                                    sort_order:
+                                        type: integer
+                                    type:
+                                        enum:
+                                            - dropdown
+                                            - radio
+                                            - checkbox
+                                            - text
+                                            - number
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                    upgradable:
+                                        description: A live service may change this option, which issues a prorated charge.
+                                        type: boolean
+                                required:
+                                    - id
+                                    - product_id
+                                    - name
+                                    - type
+                                type: object
+                    description: The option
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such option
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Edit a configurable option
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: config:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/config-options/{id}/prices:
+        delete:
+            description: A choice with no price row is free, which is the documented default rather than an error state.
+            operationId: DeleteStaffConfigoptionsByIdPrices
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                choice:
+                                    type: string
+                                price_version_id:
+                                    format: uuid
+                                    type: string
+                            required:
+                                - price_version_id
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: Deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such price
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Remove one choice's price
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: config:write
+            x-rate-class: mutation
+            x-staff-only: true
+        put:
+            description: 'An upsert on (option, price version, choice): the same choice priced twice is one price, not two rows whose order decides the answer. The option and the price version must belong to the same product, so a typo cannot create a price no selection can ever match.'
+            operationId: PutStaffConfigoptionsByIdPrices
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                amount_minor:
+                                    format: int64
+                                    minimum: 0
+                                    type: integer
+                                choice:
+                                    type: string
+                                price_version_id:
+                                    format: uuid
+                                    type: string
+                                setup_minor:
+                                    format: int64
+                                    minimum: 0
+                                    type: integer
+                            required:
+                                - price_version_id
+                                - amount_minor
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: The stored price
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The option and price version belong to different products
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Set one choice's amount and setup fee
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: config:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/config-options/resolve:
+        get:
+            description: 'The same resolver the checkout path and the renewal engine call, so a quote and a renewal cannot disagree: they are the same function reading the same rows. Query `product_id`, `price_version_id`, and one `option.<config_option_id>=<value>` pair per selection. The response is a breakdown — each option''s contribution, the recurring total and the one-off setup total — plus the environment the provisioner would receive.'
+            operationId: GetStaffConfigoptionsResolve
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    currency:
+                                        type: string
+                                    env:
+                                        additionalProperties:
+                                            type: string
+                                        description: 'The environment the provisioner receives: one entry per selected option that names an env_variable.'
+                                        type: object
+                                    options:
+                                        items:
+                                            properties:
+                                                amount:
+                                                    $ref: '#/components/schemas/Amount'
+                                                config_option_id:
+                                                    format: uuid
+                                                    type: string
+                                                env_variable:
+                                                    type: string
+                                                name:
+                                                    type: string
+                                                setup:
+                                                    $ref: '#/components/schemas/Amount'
+                                                value:
+                                                    type: string
+                                            required:
+                                                - config_option_id
+                                                - value
+                                                - amount
+                                                - setup
+                                            type: object
+                                        type: array
+                                    price_version_id:
+                                        format: uuid
+                                        type: string
+                                    setup_total:
+                                        $ref: '#/components/schemas/Amount'
+                                    total:
+                                        $ref: '#/components/schemas/Amount'
+                                required:
+                                    - price_version_id
+                                    - currency
+                                    - options
+                                    - total
+                                    - setup_total
+                                type: object
+                    description: The priced selection
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An option or value the product does not offer
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Price a selection
+            x-permission: invoice:read:all
+            x-rate-class: read
             x-staff-only: true
     /api/v1/staff/coupons:
         get:
@@ -9013,6 +10630,150 @@ paths:
             x-permission: service:read:all
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/services/{id}/cancellation:
+        post:
+            description: The same body and the same state machine as the portal route, without the customer scoping. Gated on service:upgrade because moving a service's lifecycle for a customer is the same kind of decision as repricing it.
+            operationId: PostStaffServicesByIdCancellation
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                reason:
+                                    maxLength: 255
+                                    type: string
+                                type:
+                                    enum:
+                                        - immediate
+                                        - end_of_period
+                                    type: string
+                            required:
+                                - type
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    customer:
+                                        properties:
+                                            email:
+                                                format: email
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            name:
+                                                type: string
+                                        type: object
+                                    effective_at:
+                                        format: date-time
+                                        type: string
+                                    executed_at:
+                                        format: date-time
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    message:
+                                        type: string
+                                    product_name:
+                                        type: string
+                                    reason:
+                                        maxLength: 255
+                                        type: string
+                                    requested_by:
+                                        format: uuid
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - pending
+                                            - scheduled
+                                            - executed
+                                            - cancelled
+                                            - rejected
+                                        type: string
+                                    type:
+                                        description: immediate destroys the service and is executed by staff; end_of_period stops the schedule at the paid-through date.
+                                        enum:
+                                            - immediate
+                                            - end_of_period
+                                        type: string
+                                required:
+                                    - id
+                                    - service_id
+                                    - type
+                                    - status
+                                    - reason
+                                type: object
+                    description: The recorded request
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The service cannot be cancelled
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Record a cancellation on a customer's behalf
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:upgrade
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/services/{id}/holds:
         get:
             operationId: GetStaffServicesByIdHolds
@@ -9412,6 +11173,170 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: service:terminate
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/services/{id}/upgrade:
+        post:
+            description: 'The same pricing as the portal route, without the customer scoping: staff may move a service within the upgrade graph, including to a more expensive price the customer did not ask for. Requires service:upgrade, which is separate from service:provision because it changes what the customer is billed, not just what is running.'
+            operationId: PostStaffServicesByIdUpgrade
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                price_version_id:
+                                    format: uuid
+                                    type: string
+                                reason:
+                                    type: string
+                            required:
+                                - price_version_id
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    credit_minor:
+                                        format: int64
+                                        type: integer
+                                    credit_pending:
+                                        description: True when the customer is owed a credit that the credits work package has not posted yet. The obligation is recorded on the service_upgrades row.
+                                        type: boolean
+                                    currency:
+                                        type: string
+                                    direction:
+                                        enum:
+                                            - upgrade
+                                            - downgrade
+                                            - none
+                                        type: string
+                                    from_price_version_id:
+                                        format: uuid
+                                        type: string
+                                    invoice_id:
+                                        format: uuid
+                                        type: string
+                                    invoice_number:
+                                        type: string
+                                    message:
+                                        type: string
+                                    prorated_minor:
+                                        description: 'Signed: positive is charged, negative is credited.'
+                                        format: int64
+                                        type: integer
+                                    proration:
+                                        properties:
+                                            as_of:
+                                                format: date-time
+                                                type: string
+                                            period_end:
+                                                format: date-time
+                                                type: string
+                                            period_start:
+                                                format: date-time
+                                                type: string
+                                            ratio:
+                                                description: The exact rational remaining/total. The prorated amount is (to - from) * ratio, rounded once with an explicit mode.
+                                                example: 1/2
+                                                type: string
+                                            remaining_secs:
+                                                description: Elapsed time left in the period. Durations, not day counts, so a DST transition and a 28-day February are both exact.
+                                                format: int64
+                                                type: integer
+                                            total_secs:
+                                                format: int64
+                                                type: integer
+                                        required:
+                                            - period_start
+                                            - period_end
+                                            - as_of
+                                            - ratio
+                                        type: object
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - pending
+                                            - applied
+                                            - cancelled
+                                            - failed
+                                        type: string
+                                    to_price_version_id:
+                                        format: uuid
+                                        type: string
+                                    upgrade_id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - upgrade_id
+                                    - service_id
+                                    - direction
+                                    - currency
+                                    - prorated_minor
+                                    - status
+                                type: object
+                    description: The recorded upgrade
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The target is not reachable, or the service cannot be upgraded
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Move any service to a different price
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:upgrade
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/tax-rates:
@@ -10974,6 +12899,56 @@ paths:
                 - bearerKey: []
             summary: The queue's configuration
             x-permission: ticket:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/upgrades:
+        get:
+            description: '`paid=true` lists only the rows whose invoice has been paid — the ones the worker will apply. `paid=false` lists every pending row, including a downgrade whose credit has not been posted yet, which is what an operator chasing a stuck change wants to see.'
+            operationId: GetStaffUpgrades
+            responses:
+                2XX:
+                    description: The queue
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The pending-upgrade queue
+            x-permission: service:read:all
             x-rate-class: read
             x-staff-only: true
     /api/v1/staff/webhooks:

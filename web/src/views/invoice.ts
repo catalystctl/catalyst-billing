@@ -33,6 +33,7 @@ import {
   mutate,
   pageHead,
   balanceBar,
+  select,
   skeletonPage,
   statusBadge,
   textarea,
@@ -81,6 +82,10 @@ interface Payment {
   amount: Amount;
   status: string;
   received_at: string;
+  /** Set only for a payment a staff member recorded outside a gateway; null for a gateway payment. */
+  method: string | null;
+  /** The operator's note on an offline payment, null otherwise. */
+  note: string | null;
 }
 
 interface Allocation {
@@ -220,6 +225,9 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
   const canWrite = ctx.can("invoice:write:all");
   const canVoid = ctx.can("invoice:void");
   const canRefund = ctx.can("payment:refund");
+  // Asserting that money arrived is a reconciliation authority, not an editing one, so the
+  // record-payment action follows payment:reconcile — the same permission the server checks.
+  const canRecordPayment = ctx.can("payment:reconcile");
 
   // ------------------------------------------------------------- actions --
   const openRefund = (payment: Payment) => {
@@ -327,6 +335,137 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
           }
           return "The invoice could not be voided.";
         }
+      },
+    });
+  };
+
+  // Recording money that arrived outside the gateway — a bank transfer, cash, a cheque.
+  //
+  // This is the direction the panel was missing: it could refund, credit and void, but a
+  // customer who pays by transfer had no way to make their invoice paid. The vocabulary is
+  // fetched rather than hardcoded so the form offers exactly the closed set the server accepts,
+  // and the labels stay defined once, next to the CHECK constraint that enforces them.
+  const recordPayment = async () => {
+    let methods: { value: string; label: string }[] = [];
+    try {
+      const res = await ctx.api.get<{ methods: { value: string; label: string }[] }>(
+        "/api/v1/staff/payment-methods/offline",
+      );
+      methods = res.methods ?? [];
+    } catch (err) {
+      ctx.toast("Could not load the payment methods", {
+        tone: "danger",
+        detail: err instanceof ApiError ? err.detail || humanStatus(err.code) : undefined,
+      });
+      return;
+    }
+    if (methods.length === 0) {
+      ctx.toast("No offline payment methods are configured", { tone: "danger" });
+      return;
+    }
+
+    const amountInput = input({
+      id: "record-payment-amount",
+      class: "input--mono",
+      inputmode: "decimal",
+      // The outstanding balance, because that is what the customer owes; an operator who
+      // received a different amount types it.
+      value: money(inv.due),
+    });
+    const methodSelect = select(
+      methods.map((m) => ({ value: m.value, label: m.label })),
+      { id: "record-payment-method" },
+    );
+    const referenceInput = input({
+      id: "record-payment-reference",
+      placeholder: "Bank reference, cheque number or receipt id",
+      autocomplete: "off",
+    });
+    const noteInput = textarea({
+      id: "record-payment-note",
+      placeholder: "Anything the next person reconciling this should know",
+      maxlength: 500,
+    });
+
+    await ctx.formDialog({
+      title: `Record a payment against ${inv.number || "this invoice"}`,
+      subtitle:
+        "For money that arrived outside the gateway: a bank transfer, cash, a cheque. It is allocated to this invoice and the balance follows.",
+      submitLabel: "Record payment",
+      body: h(
+        "div",
+        { class: "stack" },
+        banner(
+          "info",
+          "This is a payment, not a credit",
+          "An overpayment is refused rather than turned into customer credit: grant credit separately if that is what the customer is owed.",
+        ),
+        field({
+          label: "Amount received",
+          control: amountInput,
+          id: "record-payment-amount",
+          required: true,
+          hint: `${moneyWithCode(inv.due)} is still outstanding. A smaller amount leaves the invoice partly paid.`,
+        }),
+        field({
+          label: "Method",
+          control: methodSelect,
+          id: "record-payment-method",
+          required: true,
+          hint: "How the money arrived. It is shown on the payment so a reconciliation can tell it apart from a card charge.",
+        }),
+        field({
+          label: "Reference",
+          control: referenceInput,
+          id: "record-payment-reference",
+          required: true,
+          hint: "The payment's identity: recording the same reference twice applies the money once.",
+        }),
+        field({
+          label: "Note",
+          control: noteInput,
+          id: "record-payment-note",
+          hint: "Optional. Stored on the payment and recorded in the audit log with your name.",
+        }),
+      ),
+      onSubmit: async () => {
+        const minor = amountFromInput(amountInput.value, scale);
+        if (minor === null) return "That amount is not a number. Use digits and a decimal point, e.g. 120.00.";
+        if (minor <= 0) return "The amount must be greater than zero.";
+        const reference = referenceInput.value.trim();
+        if (reference === "") return "A reference is required: it is the payment's identity.";
+        const method = methodSelect.value;
+        const label = methods.find((m) => m.value === method)?.label ?? titleCase(method);
+        try {
+          const res = await ctx.api.post<{ already_recorded?: boolean }>(
+            `/api/v1/staff/invoices/${encodeURIComponent(inv.id)}/payments`,
+            {
+              amount_minor: minor,
+              method,
+              reference,
+              note: noteInput.value.trim(),
+            },
+          );
+          ctx.toast(res?.already_recorded ? "Payment already recorded" : "Payment recorded", {
+            tone: "success",
+            detail: `${moneyWithCode(amt(minor))} · ${label}`,
+          });
+          reload();
+        } catch (err) {
+          if (err instanceof ApiError) {
+            if (err.code === "overpayment") {
+              return err.detail || "That is more than the invoice still owes.";
+            }
+            if (err.code === "reference_conflict" || err.code === "reference_reused") {
+              return err.detail || "That reference is already recorded against a payment.";
+            }
+            if (err.code === "not_issued") return err.detail || "Issue the invoice before recording a payment.";
+            if (err.code === "invalid_method") return "That is not a method this installation accepts.";
+            return err.detail || humanStatus(err.code);
+          }
+          return "The payment could not be recorded.";
+        }
+        return undefined;
       },
     });
   };
@@ -465,6 +604,17 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
   if (canWrite && (inv.status === "open" || inv.status === "paid")) {
     actions.push(btn("Credit note", { size: "sm", icon: "undo", onclick: () => void createCreditNote() }));
   }
+  if (canRecordPayment && inv.due.minor > 0 && inv.status !== "void" && inv.status !== "draft") {
+    actions.push(
+      btn("Record payment", {
+        variant: "primary",
+        size: "sm",
+        icon: "wallet",
+        title: "Record a bank transfer, cash or cheque that arrived outside the gateway",
+        onclick: () => void recordPayment(),
+      }),
+    );
+  }
   if (canWrite && inv.status === "open" && inv.due.minor > 0) {
     actions.push(btn("Apply credit", { size: "sm", icon: "dollar", onclick: () => void applyCredit() }));
   }
@@ -487,7 +637,7 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
       payments.length === 0
         ? emptyState({
             title: "Nothing has been received",
-            body: "A payment appears here once the provider confirms it and it is allocated to this invoice. A payment is never edited — a refund is its own record.",
+            body: "A payment appears here once the provider confirms it, or as soon as a staff member records a bank transfer, cash or cheque. A payment is never edited — a refund is its own record.",
             icon: "dollar",
           })
         : h(
@@ -502,9 +652,29 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
                     h(
                       "div",
                       { class: "cell-main" },
-                      h("div", { class: "primary" }, h("a", { class: "row-title", href: `/payments/${p.id}` }, `${p.provider} · ${p.provider_account}`)),
+                      h(
+                        "div",
+                        { class: "primary" },
+                        h(
+                          "a",
+                          { class: "row-title", href: `/payments/${p.id}` },
+                          // A manual payment has no merchant account, so "manual · manual" would
+                          // be noise; the method column beside it says how the money arrived.
+                          p.method ? "Recorded by staff" : `${p.provider} · ${p.provider_account}`,
+                        ),
+                      ),
                       h("div", { class: "secondary mono" }, p.provider_payment_id),
+                      p.note ? h("div", { class: "secondary" }, p.note) : null,
                     ),
+                },
+                {
+                  // The method is what makes an offline payment distinguishable from a gateway
+                  // charge: "manual" says a person recorded it, the method says how it arrived.
+                  label: "Method",
+                  render: (p) =>
+                    p.method
+                      ? badge(titleCase(p.method), "info")
+                      : h("span", { class: "faint" }, "Gateway"),
                 },
                 { label: "Received", render: (p) => h("span", { class: "dim", title: dateTime(p.received_at) }, relative(p.received_at)) },
                 { label: "Amount", align: "right", render: (p) => moneyEl(p.amount) },

@@ -353,6 +353,16 @@ func nullableString(s string) any {
 	return s
 }
 
+// optionalString renders an optional database text column. A nil column is JSON null — which is
+// what the payment list uses to say "this is not an offline payment" — and an empty value is
+// treated the same way, because an empty method is not a method.
+func optionalString(s *string) any {
+	if s == nil || *s == "" {
+		return nil
+	}
+	return *s
+}
+
 // mustCurrency resolves a currency code that came from a database CHECK constraint, so it is
 // always well formed; the error path exists only to keep the renderer total.
 func mustCurrency(code string) money.Currency {
@@ -444,6 +454,8 @@ func (s *Server) handleStaffInvoice(w http.ResponseWriter, r *http.Request) {
 			"amount":              amountMap(staff.Amount{Minor: p.Amount, Currency: mustCurrency(p.Currency)}),
 			"status":              p.Status,
 			"received_at":         p.ReceivedAt.UTC(),
+			"method":              optionalString(p.Method),
+			"note":                optionalString(p.Note),
 		})
 	}
 
@@ -789,8 +801,10 @@ func (s *Server) handleStaffPayments(w http.ResponseWriter, r *http.Request) {
 		Provider:   q.Get("provider"),
 		Status:     q.Get("status"),
 		CustomerID: q.Get("customer_id"),
-		From:       from,
-		To:         to,
+		// How an offline payment arrived. It is exact, like provider, and empty means "any".
+		Method: q.Get("method"),
+		From:   from,
+		To:     to,
 	}
 
 	rows, invoices, next, err := s.staffService().Payments(r.Context(), filter, limit, cursor)
@@ -814,6 +828,9 @@ func (s *Server) handleStaffPayments(w http.ResponseWriter, r *http.Request) {
 			"status":              row.Status,
 			"received_at":         row.ReceivedAt.UTC(),
 			"invoice_ids":         ids,
+			// null for a gateway payment: how it arrived is the provider's fact, not ours.
+			"method": optionalString(row.Method),
+			"note":   optionalString(row.Note),
 		})
 	}
 	writePage(w, Page[map[string]any]{Data: out, NextCursor: nextCursor(next)})
@@ -879,6 +896,8 @@ func (s *Server) handleStaffPayment(w http.ResponseWriter, r *http.Request) {
 			"currency":            detail.Payment.Currency,
 			"status":              detail.Payment.Status,
 			"received_at":         detail.Payment.ReceivedAt.UTC(),
+			"method":              optionalString(detail.Payment.Method),
+			"note":                optionalString(detail.Payment.Note),
 		},
 		"allocations": allocations,
 		"refunds":     refunds,

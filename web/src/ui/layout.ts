@@ -301,6 +301,32 @@ export function createShell(options: ShellOptions): Shell {
         ? h("a", { class: "menu-item", href: "/portal" }, icon("globe", 15), tx("shell.menu.portal", "Customer portal"))
         : null,
       h("div", { class: "menu-sep" }),
+      // The second factor, in the place people look for it. It is a link rather than a label so
+      // the answer comes with the way to change it: the account screens are where enrolment
+      // lives, and an operator who reads "off" here should not have to guess where to go.
+      h(
+        "a",
+        {
+          class: "menu-item menu-item--mfa",
+          href: user.is_staff ? "/settings" : "/portal/security",
+          title: session.mfa?.has_mfa
+            ? tx("shell.mfa.on_title", "A code is required at every sign-in")
+            : tx("shell.mfa.off_title", "Your password alone gets into this account"),
+        },
+        icon(session.mfa?.has_mfa ? "shieldCheck" : "shield", 15),
+        h(
+          "span",
+          { class: "menu-item-label" },
+          tx("shell.mfa.label", "Two-factor"),
+          " · ",
+          h(
+            "span",
+            { class: session.mfa?.has_mfa ? "menu-mfa-on" : "menu-mfa-off" },
+            session.mfa?.has_mfa ? tx("shell.mfa.on", "on") : tx("shell.mfa.off", "off"),
+          ),
+        ),
+      ),
+      h("div", { class: "menu-sep" }),
       h(
         "button",
         { class: "menu-item menu-item--danger", type: "button", onclick: options.onLogout },
@@ -410,10 +436,62 @@ export function createShell(options: ShellOptions): Shell {
     for (const menu of document.querySelectorAll<HTMLElement>(".user-menu")) menu.hidden = true;
   });
 
-  const main = h("div", { class: "main" }, topbar, content);
+  // The privileged-account prompt. It lives in the shell rather than on the settings page
+  // because "your role can change every customer's account and your login is a password" is a
+  // fact an operator should meet on the way to doing something else, not only if they go looking.
+  // It is dismissible for the tab, not forever: a warning that can be silenced permanently is
+  // one that gets silenced in the first week and never seen again.
+  const noticeHost = h("div", { class: "shell-notice" });
+  let dismissed = false;
+  const renderNotice = (session: Session) => {
+    const privileged = session.user.is_staff;
+    const enabled = session.mfa?.has_mfa === true;
+    if (!privileged || enabled || dismissed) {
+      noticeHost.replaceChildren();
+      return;
+    }
+    noticeHost.replaceChildren(
+      h(
+        "div",
+        { class: "mfa-prompt", role: "status" },
+        icon("shield", 15),
+        h(
+          "span",
+          { class: "mfa-prompt-text" },
+          h("strong", null, tx("shell.mfa.prompt_title", "Your account has no second factor.")),
+          " ",
+          tx(
+            "shell.mfa.prompt_body",
+            "Your role can change every customer's account, so a stolen password is not one customer's problem.",
+          ),
+        ),
+        h(
+          "a",
+          { class: "btn btn--sm btn--primary", href: "/settings" },
+          tx("shell.mfa.prompt_action", "Set up two-factor"),
+        ),
+        h(
+          "button",
+          {
+            class: "btn btn--sm btn--ghost",
+            type: "button",
+            "aria-label": tx("shell.mfa.prompt_dismiss", "Dismiss for now"),
+            onclick: () => {
+              dismissed = true;
+              noticeHost.replaceChildren();
+            },
+          },
+          tx("shell.mfa.prompt_dismiss_label", "Not now"),
+        ),
+      ),
+    );
+  };
+
+  const main = h("div", { class: "main" }, topbar, noticeHost, content);
   fill(app, sidebar, scrim, main);
   renderNav(options.session);
   renderUser(options.session);
+  renderNotice(options.session);
   setCrumbs([{ label: tx("shell.crumb.dashboard", "Dashboard") }]);
 
   function setActive(path: string) {
@@ -460,6 +538,7 @@ export function createShell(options: ShellOptions): Shell {
     updateSession(session) {
       renderNav(session);
       renderUser(session);
+      renderNotice(session);
       setActive(window.location.pathname);
     },
   };

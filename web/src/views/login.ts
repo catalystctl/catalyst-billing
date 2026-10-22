@@ -368,6 +368,24 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
         }
         ctx.onSignedIn(session);
       } catch (err) {
+        // An expired challenge is not a wrong code, and the difference matters to the person
+        // reading it: retrying the same digits can never work, and the only way forward is the
+        // password again. The server says which it was (`challenge_expired`), so the screen says it
+        // too instead of printing a generic refusal that invites another attempt.
+        if (err instanceof ApiError && err.code === "challenge_expired") {
+          showError(
+            tx(
+              "login.mfa.error.expired",
+              "This sign-in attempt took too long. Enter your password again to get a new code prompt.",
+            ),
+            err.code,
+          );
+          for (const d of digits) d.value = "";
+          // The submit button is left enabled: "Start over" is one link away and re-typing the
+          // digits is harmless (the server refuses them again), so disabling the control would only
+          // leave the form looking frozen.
+          return;
+        }
         const message =
           err instanceof ApiError && err.code === "invalid_code"
             ? tx("login.mfa.error.invalid", "That code is not valid. Codes change every 30 seconds.")
@@ -419,7 +437,10 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
         h(
           "p",
           null,
-          tx("login.mfa.subtitle", "Enter the six-digit code from your authenticator app."),
+          tx(
+            "login.mfa.subtitle",
+            "Enter the six-digit code from your authenticator app, or a recovery code if you cannot open it.",
+          ),
         ),
       ),
       formHost,

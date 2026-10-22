@@ -130,9 +130,20 @@ func coreOperations() map[string]Operation {
 			Responses:   []Response{{Status: 200, Description: "Signed out"}},
 		},
 		"GET /api/v1/auth/me": {
-			Summary:     "The current identity and its permissions",
-			Description: "The UI hides actions with this list, and the server refuses them independently.",
-			Responses:   []Response{{Status: 200, Description: "The identity"}},
+			Summary: "The current identity and its permissions",
+			Description: "The UI hides actions with this list, and the server refuses them independently. Also reports " +
+				"`mfa`: the caller's own second-factor state, in the same shape as `GET /api/v1/auth/mfa`, so the shell can " +
+				"say whether the account is protected without a second request.",
+			Responses: []Response{{Status: 200, Description: "The identity"}},
+		},
+		"GET /api/v1/auth/mfa": {
+			Summary: "Your own second-factor state",
+			Description: "Whether a TOTP factor is confirmed, when it was confirmed, how many recovery codes are left, " +
+				"whether an operator's reset left an enrolment demand outstanding, and who performed that reset. Scoped to " +
+				"the caller: there is no id in the path. `available` is false when the state could not be read, so no screen " +
+				"offers to enrol on top of a fact it could not see. The same object is carried by `GET /api/v1/auth/me` " +
+				"under `mfa`, and by `GET /api/v1/portal/mfa`; all three come from one read.",
+			Responses: []Response{{Status: 200, Description: "The state"}},
 		},
 		"GET /api/v1/events": {
 			Summary: "Server-sent stream of committed changes",

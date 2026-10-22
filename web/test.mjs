@@ -18,6 +18,7 @@ const result = await build({
   entryPoints: {
     "lib/format": join(root, "src/lib/format.ts"),
     "lib/i18n": join(root, "src/lib/i18n.ts"),
+    "lib/qr": join(root, "src/lib/qr.ts"),
     "lib/router": join(root, "src/lib/router.ts"),
   },
   bundle: true,

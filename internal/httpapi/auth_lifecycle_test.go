@@ -593,6 +593,171 @@ func TestMFADisableRequiresBothFactors(t *testing.T) {
 	}
 }
 
+// The account screens have to be able to say whether a second factor is on. The state is reported
+// by `/auth/me` (as `mfa`) and by `/auth/mfa`, both from `authn.MFAStatusFor`, and it tracks the
+// credential through its whole life: absent, confirmed, and removed.
+//
+// The two carriers are compared rather than tested separately: two ways to answer one question is
+// how a panel and its enforcement path drift apart, and a test that only checked one of them would
+// not notice.
+func TestMFAStateIsReported(t *testing.T) {
+	env := mfaEnv(t)
+	env.createUser(t, "state@example.test", "a good password 1", "")
+	cookie, csrf := env.login(t, "state@example.test", "a good password 1")
+
+	type state struct {
+		HasMFA                 bool    `json:"has_mfa"`
+		EnrolledAt             *string `json:"enrolled_at"`
+		RecoveryCodesRemaining int     `json:"recovery_codes_remaining"`
+		EnrolmentRequired      bool    `json:"enrolment_required"`
+		Available              bool    `json:"available"`
+	}
+	read := func() state {
+		t.Helper()
+		var me struct {
+			MFA state `json:"mfa"`
+		}
+		rec := env.get(t, "/api/v1/auth/me", cookie)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("auth/me: %d %s", rec.Code, rec.Body)
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil {
+			t.Fatalf("auth/me body: %v (%s)", err, rec.Body)
+		}
+		var direct state
+		if rec := env.get(t, "/api/v1/auth/mfa", cookie); rec.Code != http.StatusOK {
+			t.Fatalf("auth/mfa: %d %s", rec.Code, rec.Body)
+		} else if err := json.Unmarshal(rec.Body.Bytes(), &direct); err != nil {
+			t.Fatalf("auth/mfa body: %v", err)
+		}
+		// Compared field by field rather than as structs: `EnrolledAt` is a pointer, and comparing
+		// two pointers would compare their addresses instead of the instants they name.
+		sameTime := (direct.EnrolledAt == nil) == (me.MFA.EnrolledAt == nil) &&
+			(direct.EnrolledAt == nil || *direct.EnrolledAt == *me.MFA.EnrolledAt)
+		if direct.HasMFA != me.MFA.HasMFA || !sameTime ||
+			direct.RecoveryCodesRemaining != me.MFA.RecoveryCodesRemaining ||
+			direct.EnrolmentRequired != me.MFA.EnrolmentRequired ||
+			direct.Available != me.MFA.Available {
+			t.Fatalf("auth/mfa = %+v disagrees with auth/me.mfa = %+v", direct, me.MFA)
+		}
+		return me.MFA
+	}
+
+	if got := read(); got.HasMFA || got.EnrolledAt != nil || !got.Available {
+		t.Fatalf("a fresh account reports %+v, want nothing enrolled and readable", got)
+	}
+
+	rec := env.postJSON(t, "/api/v1/auth/mfa/enrol", cookie, csrf, map[string]any{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enrol: %d %s", rec.Code, rec.Body)
+	}
+	var enrolment struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &enrolment); err != nil {
+		t.Fatal(err)
+	}
+	// An unconfirmed enrolment is not a second factor: it does not challenge a login, so reporting
+	// it as one would be a lie a customer relies on.
+	if got := read(); got.HasMFA || got.EnrolledAt != nil {
+		t.Fatalf("after enrol the state is %+v, want still not enrolled", got)
+	}
+
+	code, err := authn.TOTPCodeForTest(enrolment.Secret, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := env.postJSON(t, "/api/v1/auth/mfa/confirm", cookie, csrf,
+		map[string]any{"code": code}); rec.Code != http.StatusOK {
+		t.Fatalf("confirm: %d %s", rec.Code, rec.Body)
+	}
+	got := read()
+	if !got.HasMFA || got.EnrolledAt == nil {
+		t.Fatalf("after confirm the state is %+v, want enrolled with a time", got)
+	}
+	if got.RecoveryCodesRemaining != authn.RecoveryCodeCount {
+		t.Fatalf("recovery codes remaining = %d, want %d", got.RecoveryCodesRemaining, authn.RecoveryCodeCount)
+	}
+
+	fresh, err := authn.TOTPCodeForTest(enrolment.Secret, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := env.postJSON(t, "/api/v1/auth/mfa/disable", cookie, csrf,
+		map[string]any{"password": "a good password 1", "code": fresh}); rec.Code != http.StatusNoContent {
+		t.Fatalf("disable: %d %s", rec.Code, rec.Body)
+	}
+	if got := read(); got.HasMFA || got.EnrolledAt != nil || got.RecoveryCodesRemaining != 0 {
+		t.Fatalf("after disable the state is %+v, want nothing enrolled", got)
+	}
+}
+
+// The state is the caller's own, and it is not readable through an impersonated session: an
+// operator acting as a customer must not be able to inspect that customer's credentials.
+func TestMFAStateIsScopedToTheCaller(t *testing.T) {
+	env := mfaEnv(t)
+	env.createUser(t, "state-scope@example.test", "a good password 1", "")
+	cookie, _ := env.login(t, "state-scope@example.test", "a good password 1")
+
+	// A second account with a confirmed factor, so a leak would be visible rather than invisible.
+	env.createUser(t, "state-other@example.test", "another good password 1", "")
+	otherCookie, otherCSRF := env.login(t, "state-other@example.test", "another good password 1")
+	rec := env.postJSON(t, "/api/v1/auth/mfa/enrol", otherCookie, otherCSRF, map[string]any{})
+	var enrolment struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &enrolment); err != nil {
+		t.Fatal(err)
+	}
+	code, err := authn.TOTPCodeForTest(enrolment.Secret, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := env.postJSON(t, "/api/v1/auth/mfa/confirm", otherCookie, otherCSRF,
+		map[string]any{"code": code}); rec.Code != http.StatusOK {
+		t.Fatalf("confirm: %d %s", rec.Code, rec.Body)
+	}
+
+	var mine struct {
+		HasMFA bool `json:"has_mfa"`
+	}
+	rec = env.get(t, "/api/v1/auth/mfa", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &mine); err != nil {
+		t.Fatal(err)
+	}
+	if mine.HasMFA {
+		t.Fatal("the endpoint reported somebody else's second factor")
+	}
+}
+
+// Without a sealing key the state is still readable — the read is a plain SELECT and does not need
+// the key — and it reports nothing enrolled. Enrolment itself answers 503, which is the answer the
+// screens render; the state does not pretend the installation is broken.
+func TestMFAStateIsReadableWithoutAKey(t *testing.T) {
+	t.Setenv("BILLING_MFA_KEY", "")
+	env := newLifecycleEnv(t)
+	env.createUser(t, "nokey-state@example.test", "a good password 1", "")
+	cookie, _ := env.login(t, "nokey-state@example.test", "a good password 1")
+
+	rec := env.get(t, "/api/v1/auth/mfa", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var state struct {
+		HasMFA    bool `json:"has_mfa"`
+		Available bool `json:"available"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.HasMFA || !state.Available {
+		t.Fatalf("state = %+v, want has_mfa=false available=true", state)
+	}
+}
+
 // Enrolment is refused when no encryption key is configured, rather than storing a plaintext
 // secret.
 func TestMFARequiresAKey(t *testing.T) {

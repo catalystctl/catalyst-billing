@@ -543,8 +543,13 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		// The same demand the sign-in response carries, so a page load, a second tab or a
 		// bookmarked URL is told about it too. Cleared by a confirmed enrolment.
 		"mfa_enrolment_required": s.enrolmentRequired(r, user.ID),
-		"csrf_token":             sess.CSRFToken,
-		"expires_at":             sess.ExpiresAt,
+		// The rest of the caller's own second-factor state: whether a factor is confirmed, when,
+		// how many recovery codes are left, and whether enrolment is even possible here. The shell
+		// and the account screens read this to say "on"/"off" instead of guessing; the field names
+		// match `GET /api/v1/portal/mfa`, and both come from `authn.MFAStatusFor`.
+		"mfa":        s.mfaStateFor(r.Context(), user.ID),
+		"csrf_token": sess.CSRFToken,
+		"expires_at": sess.ExpiresAt,
 	})
 }
 

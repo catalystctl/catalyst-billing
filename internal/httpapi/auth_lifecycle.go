@@ -53,6 +53,11 @@ func registerAuthLifecycle(r *router) {
 	r.publicPost("/api/v1/auth/mfa/verify", r.s.handleMFAVerify)
 
 	// Authenticated: enrolment and disabling act on the caller's own account.
+	//
+	// The read comes first: an account screen has to know whether a factor is already on before
+	// it can offer to add one or remove one, and the answer is the caller's own state — there is
+	// no id in the path, so this cannot be pointed at somebody else.
+	r.userGet("/api/v1/auth/mfa", r.s.handleMFAState)
 	r.userMutation(http.MethodPost, "/api/v1/auth/mfa/enrol", false, r.s.handleMFAEnrol)
 	r.userMutation(http.MethodPost, "/api/v1/auth/mfa/confirm", false, r.s.handleMFAConfirm)
 	r.userMutation(http.MethodPost, "/api/v1/auth/mfa/disable", false, r.s.handleMFADisable)

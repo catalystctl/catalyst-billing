@@ -178,3 +178,105 @@
     column-count: 1;
   }
 }
+
+/* ------------------------------------------------------- two-factor enrolment -- */
+
+/* The QR code, the secret and the URI are one block: an operator scans on a phone, a customer
+ * pastes into a password manager, and both need the block to be the first thing in the dialog. */
+.settings-qr-panel {
+  display: flex;
+  gap: var(--s-4);
+  align-items: flex-start;
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+
+/* The quiet zone is part of the code as far as a camera is concerned: a QR with modules flush
+ * against a border is the classic "it scans on my screen but not on yours" bug. */
+.settings-qr-frame {
+  flex: 0 0 auto;
+  padding: 8px;
+  border-radius: var(--r-sm);
+  /* Always light, in both themes: a scanner expects dark modules on a light field, and a
+   * dark-mode QR on a dark background is a QR that many cameras refuse. */
+  background: #fff;
+  line-height: 0;
+}
+
+.settings-qr {
+  display: block;
+  width: 152px;
+  height: 152px;
+}
+
+.settings-qr path {
+  fill: #000;
+}
+
+@media (max-width: 640px) {
+  .settings-qr-panel {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* The on/off state of the caller's second factor. */
+.settings-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+}
+
+.settings-status-detail {
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+}
+
+/* The shell's prompt for a privileged account with no second factor. It sits between the topbar
+ * and the screen: visible on the way to whatever the operator opened the panel to do, and
+ * dismissed for this tab only. */
+.shell-notice:empty {
+  display: none;
+}
+
+.mfa-prompt {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin: var(--s-3) var(--s-5) 0;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line-warning, var(--line));
+  border-radius: var(--r-md);
+  background: var(--warning-soft);
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.mfa-prompt svg {
+  flex: 0 0 auto;
+  color: var(--warning);
+}
+
+.mfa-prompt-text {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .mfa-prompt {
+    flex-wrap: wrap;
+    margin: var(--s-2) var(--s-3) 0;
+  }
+}
+
+/* The account-menu line: "Two-factor · on". */
+.menu-mfa-on {
+  color: var(--success);
+}
+
+.menu-mfa-off {
+  color: var(--warning);
+}

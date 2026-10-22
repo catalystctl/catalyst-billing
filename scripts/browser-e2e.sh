@@ -170,9 +170,16 @@ if [[ -z "$BASE" ]]; then
   BASE="http://127.0.0.1:${PORT}"
 
   go build -o /tmp/billing-e2e ./cmd/billing
+  # The TOTP sealing key. Enrolment refuses with a 503 without it, by design — a secret that
+  # cannot be encrypted must not be stored in the clear — so the harness that drives enrolment
+  # has to supply one. It is fixed rather than random because a *rotation* is a different test:
+  # this key only has to seal the two enrolments one run creates, and a stable value means a
+  # re-run against the same database can still disable the factor it enrolled last time.
   BILLING_HTTP_ADDR="127.0.0.1:${PORT}" \
   BILLING_EMBEDDED_WORKER=false \
   BILLING_PUBLIC_URL="$BASE" \
+  BILLING_MFA_KEY="e2e0b1e2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e" \
+  BILLING_MFA_KEY_ID="e2e" \
     /tmp/billing-e2e serve >/tmp/billing-e2e.log 2>&1 &
   SERVER_PID=$!
 

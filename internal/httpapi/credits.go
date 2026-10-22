@@ -58,32 +58,6 @@ func (s *Server) creditService(r *http.Request) *credit.Service {
 	return svc
 }
 
-// customerFor resolves the caller's billing account.
-//
-// A customer with no billing account is a 404 rather than a 403: the panel has staff
-// identities that are not customers, and telling them "you are not allowed" when the truth
-// is "you have no billing account" would send them to the wrong screen.
-func (s *Server) customerFor(w http.ResponseWriter, r *http.Request) (string, bool) {
-	if s.portal == nil {
-		writeProblem(w, http.StatusServiceUnavailable, "portal_unavailable",
-			"the portal is not configured")
-		return "", false
-	}
-	user, _ := userFrom(r.Context())
-	customerID, err := s.portal.CustomerIDFor(r.Context(), user.ID)
-	if err != nil {
-		if errors.Is(err, portal.ErrNotFound) {
-			writeProblem(w, http.StatusNotFound, "not_found", "no billing account for this login")
-			return "", false
-		}
-		s.cfg.Logger.ErrorContext(r.Context(), "resolve customer", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "internal_error",
-			"the request could not be completed")
-		return "", false
-	}
-	return customerID, true
-}
-
 // creditAmounts renders a per-currency balance list.
 func creditAmounts(amounts []money.Amount) []map[string]any {
 	out := make([]map[string]any, 0, len(amounts))

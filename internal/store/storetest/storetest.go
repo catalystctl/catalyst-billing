@@ -417,6 +417,13 @@ func Truncate(ctx context.Context, conn *pgx.Conn) error {
 	if _, err := conn.Exec(ctx, `DELETE FROM settings`); err != nil {
 		return fmt.Errorf("clear settings: %w", err)
 	}
+
+	// A custom role is state a test creates; the four system roles are seeded by 0026 and must
+	// survive, because the permission sets they carry are what the code's separation of duties
+	// assumes. Deleting only the non-system rows resets exactly what a test could have changed.
+	if _, err := conn.Exec(ctx, `DELETE FROM roles WHERE NOT is_system`); err != nil {
+		return fmt.Errorf("clear custom roles: %w", err)
+	}
 	if _, err := conn.Exec(ctx, `
 		INSERT INTO settings (group_key, key, value) VALUES
 			('general',  'company_name',        'Catalyst Hosting'),
@@ -506,6 +513,12 @@ var ReferenceTables = []string{
 	"retention_policies",
 	"currencies",
 	"settings",
+	// Roles and their permissions are seeded by 0026: the four system roles carry the permission
+	// sets the code's separation of duties depends on, so they are configuration, not state a test
+	// creates. A *custom* role is state, and Truncate deletes those below so a test that defines one
+	// does not leak it into the next.
+	"roles",
+	"role_permissions",
 }
 
 // Tables lists the mutable application tables to truncate, children first.

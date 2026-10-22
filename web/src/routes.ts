@@ -94,8 +94,46 @@ export const routes: Route[] = [
   route("/portal/services/:id", () => import("./views/portal-service")),
   route("/portal/profile", () => import("./views/portal-profile")),
 
-  // ---- commerce, support and account screens append below this line ----------------------
+  // ---- commerce, support and account screens ---------------------------------------------
+  //
+  // A route here whose view module does not exist yet is not a broken link: `navGroups` filters
+  // the navigation by whether a route is declared, and the router renders an honest "not in this
+  // build" state for a declared route whose chunk is missing. So a screen appears in the panel
+  // the moment its module lands, with no second edit.
+  route("/register", () => import("./views/register")),
+  route("/cart", () => import("./views/cart")),
+  route("/checkout", () => import("./views/checkout")),
+
+  route("/coupons", () => import("./views/coupons")),
+  route("/tax-rates", () => import("./views/tax-rates")),
+  route("/currencies", () => import("./views/currencies")),
+  route("/config-options", () => import("./views/config-options")),
+  route("/settings/system", () => import("./views/system-settings")),
+  route("/announcements", () => import("./views/announcements")),
+  route("/logs", () => import("./views/logs")),
+  route("/cancellations", () => import("./views/cancellations")),
+
+  route("/tickets", () => import("./views/tickets")),
+  route("/tickets/new", () => import("./views/ticket-new")),
+  route("/tickets/:id", () => import("./views/ticket")),
+  route("/support", () => import("./views/support-queue")),
+
+  route("/credits", () => import("./views/credits")),
+  route("/portal/credits", () => import("./views/portal-credits")),
+  route("/portal/security", () => import("./views/portal-security")),
+  route("/portal/notifications", () => import("./views/portal-notifications")),
+  route("/portal/payment-methods", () => import("./views/portal-payment-methods")),
 ];
+
+/** True when a route for `path` is declared.
+ *
+ *  The navigation uses this so a menu entry cannot point at a screen the router does not know:
+ *  the two are generated from one list, and an entry for an undeclared route is not rendered.
+ *  That is what makes "a link in the panel is never a bug" true rather than aspirational, and it
+ *  means a screen appears in the menu the moment its route is added. */
+export function hasRoute(path: string): boolean {
+  return routes.some((r) => r.pattern === path);
+}
 
 /** The labels a breadcrumb uses for a path segment. */
 export const SEGMENT_LABELS: Record<string, string> = {
@@ -118,4 +156,21 @@ export const SEGMENT_LABELS: Record<string, string> = {
   "forgot-password": "Reset password",
   "reset-password": "Choose a password",
   verify: "Verify email",
+  cart: "Cart",
+  checkout: "Checkout",
+  register: "Create an account",
+  coupons: "Coupons",
+  "tax-rates": "Tax rates",
+  currencies: "Currencies",
+  "config-options": "Config options",
+  system: "System settings",
+  announcements: "Announcements",
+  logs: "Logs",
+  cancellations: "Cancellations",
+  tickets: "Tickets",
+  support: "Support",
+  credits: "Credit",
+  security: "Security",
+  notifications: "Notifications",
+  "payment-methods": "Payment methods",
 };

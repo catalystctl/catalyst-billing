@@ -50,6 +50,7 @@ import (
 	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/ledger"
 	"github.com/catalyst/billing/internal/money"
+	"github.com/catalyst/billing/internal/settings"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
 )
@@ -85,7 +86,9 @@ var (
 //
 // Every value has a default because the row may be absent: a fresh installation, or one
 // migrated from before the settings table existed, must still take a deposit. A missing
-// row is configuration that has not been written yet, not a broken installation.
+// row is configuration that has not been written yet, not a broken installation. The
+// defaults themselves live in internal/settings, which is the one place that declares what
+// a setting is called, what type it has and what it reads as when absent.
 type Settings struct {
 	Enabled             bool
 	MinimumDepositMinor int64
@@ -94,16 +97,48 @@ type Settings struct {
 	AutoUse             bool
 }
 
-// DefaultSettings mirrors the values migration 0020 seeds. They are repeated here so a
-// missing row and a seeded row behave identically.
+// DefaultSettings is the configuration a fresh installation behaves as if it had.
+//
+// The numbers come from internal/settings, which is the single registry of every
+// setting's type and default. They are not repeated here: a second copy would drift the
+// first time an operator changed a default, and the drift would show up as a deposit limit
+// that disagrees with the settings page that displays it.
 func DefaultSettings() Settings {
 	return Settings{
-		Enabled:             true,
-		MinimumDepositMinor: 500,
-		MaximumDepositMinor: 100_000,
-		MaximumCreditMinor:  1_000_000,
-		AutoUse:             true,
+		Enabled:             settingDefaultBool("enabled"),
+		MinimumDepositMinor: settingDefaultInt("minimum_deposit_minor"),
+		MaximumDepositMinor: settingDefaultInt("maximum_deposit_minor"),
+		MaximumCreditMinor:  settingDefaultInt("maximum_credit_minor"),
+		AutoUse:             settingDefaultBool("auto_use"),
 	}
+}
+
+// settingDefaultBool reads one credits default from the settings registry.
+func settingDefaultBool(key string) bool {
+	def, ok := settings.Lookup("credits", key)
+	if !ok {
+		// An undeclared key is a programming error, and the safe reading of "the limit I
+		// cannot find" is the restrictive one.
+		return false
+	}
+	parsed, err := strconv.ParseBool(strings.TrimSpace(def.Default))
+	if err != nil {
+		return false
+	}
+	return parsed
+}
+
+// settingDefaultInt reads one credits default from the settings registry.
+func settingDefaultInt(key string) int64 {
+	def, ok := settings.Lookup("credits", key)
+	if !ok {
+		return 0
+	}
+	parsed, err := strconv.ParseInt(strings.TrimSpace(def.Default), 10, 64)
+	if err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
 }
 
 // Querier is the read surface a settings load needs. A pool, a transaction and a
@@ -115,6 +150,12 @@ type Querier interface {
 
 // LoadSettings reads the credits settings, falling back to the code-side default for any
 // key that is absent or unparseable.
+//
+// It takes a querier rather than using settings.Store because every caller reads these
+// inside the transaction that will act on them: the maximum-balance check and the deposit it
+// authorises must see one snapshot, and a read through the pool could see a limit that an
+// operator changed between the check and the write. The *defaults* still come from the
+// settings registry, so there is one declaration of what each key means.
 //
 // An unparseable value keeps the default rather than failing: an operator who typed
 // "1O0" into a numeric setting should not lose the ability to take a deposit, and the
@@ -151,15 +192,17 @@ func LoadSettings(ctx context.Context, q Querier) (Settings, error) {
 	return out, nil
 }
 
+// parseBool reads a stored boolean, keeping the default for anything it cannot parse.
+//
+// strconv.ParseBool is used rather than a hand-written switch so the accepted spellings are
+// the same ones the settings page validates against: a value that saved successfully must
+// read back, and two parsers that disagree would make that untrue.
 func parseBool(raw string, fallback bool) bool {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "true", "1", "yes", "on":
-		return true
-	case "false", "0", "no", "off":
-		return false
-	default:
+	parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
 		return fallback
 	}
+	return parsed
 }
 
 func parseInt(raw string, fallback int64) int64 {

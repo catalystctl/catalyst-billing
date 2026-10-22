@@ -498,6 +498,13 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	// and a client that iterates the list — `roles.length`, `roles.join(", ")` — throws before
 	// it renders anything. The client is fixed to tolerate null as well, but the contract is
 	// "a list", and a contract that is sometimes null is one every caller has to special-case.
+	// An impersonated session is reported as such on every identity read, not just once at the
+	// start. The banner that warns an operator they are acting as a customer is rendered from
+	// this flag, and a page reload, a second tab or a bookmarked URL all take this path — so the
+	// warning cannot be missed by navigating.
+	//
+	// It is reported as both a flag and the operator's id: the flag is what the UI branches on,
+	// and the id is what makes the audit trail explainable to the person reading it.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user": map[string]any{
 			"id":             user.ID,
@@ -507,9 +514,11 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 			"roles":          nonNilRoles(user.Roles),
 			"is_staff":       user.IsStaff(),
 		},
-		"permissions": perms,
-		"csrf_token":  sess.CSRFToken,
-		"expires_at":  sess.ExpiresAt,
+		"impersonating":   sess.ImpersonatedBy != "",
+		"impersonated_by": sess.ImpersonatedBy,
+		"permissions":     perms,
+		"csrf_token":      sess.CSRFToken,
+		"expires_at":      sess.ExpiresAt,
 	})
 }
 

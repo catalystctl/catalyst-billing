@@ -483,8 +483,15 @@ func (s *Server) handleStaffRecordPayment(w http.ResponseWriter, r *http.Request
 	//     the deposit invoice paid and the balance empty.
 	//
 	// Both are the same code the webhook uses. The allocation, its ledger posting and its
-	// idempotency are billing.ApplyPayment's, inside both of them.
-	applier := credit.NewDepositApplier(s.pool, fulfilment.NewApplier(s.pool))
+	// idempotency are billing.ApplyPayment's, inside both of them. The notifier is attached
+	// for the same reason: a customer whose bank transfer was recorded deserves the same
+	// "your invoice is paid" message as one whose card settled, and the outbox write belongs
+	// in the settlement transaction either way.
+	next := fulfilment.NewApplier(s.pool)
+	if s.notify != nil {
+		next = next.WithNotifier(s.notify)
+	}
+	applier := credit.NewDepositApplier(s.pool, next)
 	user, _ := userFrom(r.Context())
 
 	var (

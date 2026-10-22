@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/approvals"
+	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/catalog"
 	"github.com/catalyst/billing/internal/dunning"
@@ -38,6 +39,7 @@ import (
 	"github.com/catalyst/billing/internal/staff"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/catalyst/billing/web"
+	"github.com/jackc/pgx/v5"
 )
 
 // Config configures the server.
@@ -203,6 +205,39 @@ func (s *Server) WithPortal(m *portal.Manager) *Server {
 // request rather than falling open.
 func (s *Server) WithAuth(a *Auth) *Server {
 	s.auth = a
+	// Tell a customer about a login from an address their account has not used before. The hook
+	// lives here rather than inside authn because authn must not import the outbox: the login
+	// path has to work when mail is broken.
+	//
+	// It writes on its own connection and swallows a failure on purpose. A notification is not a
+	// security control that may refuse a correct password — turning a mail outage into a lockout
+	// would be a worse bug than the one the notification exists to report.
+	if a != nil && a.Service != nil && s.notify != nil {
+		a.Service.OnNewDevice(func(ctx context.Context, ev authn.NewDeviceLogin) {
+			queue := s.notify
+			if queue == nil {
+				return
+			}
+			if err := s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+				_, err := notify.NewLogin(ctx, tx, queue, notify.NewLoginInput{
+					UserID:      ev.UserID,
+					Email:       ev.Email,
+					AuthEventID: ev.AuthEventID,
+					At:          ev.At,
+					IP:          ev.IP,
+					UserAgent:   ev.UserAgent,
+					SecurityURL: "/portal/security",
+				})
+				return err
+			}); err != nil {
+				// Best effort, and deliberately silent: a failed notification must not fail a
+				// login, there is no caller left to return the error to, and the login itself is
+				// already durable. A mail outage shows up in notification_deliveries, which is
+				// where an operator looks for it.
+				_ = err
+			}
+		})
+	}
 	return s
 }
 

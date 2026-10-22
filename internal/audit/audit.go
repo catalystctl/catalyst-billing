@@ -46,6 +46,15 @@ type Actor struct {
 	// ID is the user id. It is empty for a system action.
 	ID   string
 	Kind string
+	// ImpersonatedBy is the operator's user id when this action happened inside an impersonated
+	// session, and empty otherwise.
+	//
+	// It is separate from ID because the two answer different questions. ID answers "whose account
+	// was this done to", which is what a customer's support thread needs; ImpersonatedBy answers
+	// "which human did it", which is what an investigation needs. A row recording only the customer
+	// would make an operator's actions indistinguishable from the customer's own — exactly the
+	// confusion impersonation must not create.
+	ImpersonatedBy string
 }
 
 // Event is one audit row.
@@ -268,10 +277,11 @@ func (r *Recorder) Record(ctx context.Context, e Event) error {
 	_, err = r.tx.Exec(ctx, `
 		INSERT INTO audit_events
 			(actor_id, actor_kind, action, target_type, target_id, outcome,
-			 changes, correlation_id, ip)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			 changes, correlation_id, ip, impersonated_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		nullableID(e.Actor.ID), actorKind, e.Action, e.TargetType,
-		nullableID(e.TargetID), e.Outcome, payload, e.CorrelationID, nullableIP(e.IP))
+		nullableID(e.TargetID), e.Outcome, payload, e.CorrelationID, nullableIP(e.IP),
+		nullableID(e.Actor.ImpersonatedBy))
 	if err != nil {
 		return fmt.Errorf("audit: insert event: %w", err)
 	}

@@ -121,6 +121,22 @@ use it only on loopback. The session cookie is `HttpOnly` and `SameSite=Lax`
 regardless; the CSRF cookie is readable by the client on purpose, because the
 double-submit pattern needs it.
 
+### Configuration
+
+Every environment variable the code reads is documented in `.env.example`, with the
+default the code actually uses and a `REQUIRED` marker on the ones that have no
+default. That file is the reference — there is no separate table here, because two
+lists drift and the one in the repository root is the one people copy.
+
+```bash
+make env-check   # fails when the code reads a variable .env.example does not document
+```
+
+The check covers the extension binaries too. A gateway's credentials live in the
+extension's environment rather than the panel's — a deliberate boundary, since a hung
+HTTP client cannot take the panel down and the core's tests never need a live key —
+which also means nothing in the panel points at them.
+
 ---
 
 ## What is implemented, and what it guarantees

@@ -2599,6 +2599,512 @@ paths:
             summary: Download an invoice as a PDF
             x-permission: invoice:read:self
             x-rate-class: read
+    /api/v1/portal/notifications:
+        get:
+            description: Newest first, keyset-paginated. The user id comes from the session and is in the WHERE clause, so this endpoint cannot be asked for anyone else's inbox. `unread=true` returns only unread rows. Each row carries the `url` the inbox should open, relative to the panel origin.
+            operationId: GetPortalNotifications
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                body:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                event_key:
+                                                    description: The event that produced this row.
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                read_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                title:
+                                                    type: string
+                                                unread:
+                                                    type: boolean
+                                                url:
+                                                    description: Panel path to open; relative to the panel origin.
+                                                    type: string
+                                            required:
+                                                - id
+                                                - event_key
+                                                - title
+                                                - unread
+                                                - created_at
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: One page of notifications
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List the caller's in-app notifications
+            x-permission: customer:read:self
+            x-rate-class: read
+    /api/v1/portal/notifications/{id}/read:
+        post:
+            description: 'Marking an already-read row succeeds: the caller''s intent is satisfied, and an error there would make a double click look like a failure. A notification belonging to another account updates no row and answers 404, byte-identical to an id that never existed, so the endpoint cannot be used to discover which ids are real.'
+            operationId: PostPortalNotificationsByIdRead
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    status:
+                                        type: string
+                                    unread:
+                                        type: integer
+                                required:
+                                    - status
+                                    - unread
+                                type: object
+                    description: Marked read, with the remaining unread count
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Mark one notification read
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
+    /api/v1/portal/notifications/preferences:
+        get:
+            description: Every event in the catalogue, resolved for this user, in display order. Events the user has never set appear with their default rather than being absent, so the screen shows what will actually happen. `force` marks the two events that cannot be turned off.
+            operationId: GetPortalNotificationsPreferences
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                event_key:
+                                                    type: string
+                                                force:
+                                                    description: The user cannot turn this event off. True for password reset and email verification, which are the only ways to complete an action the user started.
+                                                    type: boolean
+                                                in_app:
+                                                    type: boolean
+                                                mail:
+                                                    type: boolean
+                                                name:
+                                                    type: string
+                                                preference:
+                                                    description: The effective preference after precedence is applied. `never` is an operator decision and outranks `force`; a force event ignores `choice_off`.
+                                                    enum:
+                                                        - force
+                                                        - choice_on
+                                                        - choice_off
+                                                        - never
+                                                    type: string
+                                                stored:
+                                                    description: The user's own stored choice, empty when they have never set one. `preference` is what will actually happen.
+                                                    type: string
+                                            required:
+                                                - event_key
+                                                - name
+                                                - force
+                                                - preference
+                                                - mail
+                                                - in_app
+                                            type: object
+                                        type: array
+                                required:
+                                    - data
+                                type: object
+                    description: The resolved preferences
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Read the caller's notification preferences
+            x-permission: customer:read:self
+            x-rate-class: read
+        put:
+            description: 'A PUT because the screen submits the whole set. Every entry is validated before any is written, so a request that turns three events off and fails on the fourth does not leave the account half-configured. `choice_off` and `never` against a force event (password reset, email verification) are refused with 422 `force_event`: opting out of the reset mail does not protect anyone, it makes the account unrecoverable.'
+            operationId: PutPortalNotificationsPreferences
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                preferences:
+                                    items:
+                                        properties:
+                                            event_key:
+                                                type: string
+                                            preference:
+                                                enum:
+                                                    - choice_on
+                                                    - choice_off
+                                                    - never
+                                                type: string
+                                        required:
+                                            - event_key
+                                            - preference
+                                        type: object
+                                    type: array
+                            required:
+                                - preferences
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                event_key:
+                                                    type: string
+                                                force:
+                                                    description: The user cannot turn this event off. True for password reset and email verification, which are the only ways to complete an action the user started.
+                                                    type: boolean
+                                                in_app:
+                                                    type: boolean
+                                                mail:
+                                                    type: boolean
+                                                name:
+                                                    type: string
+                                                preference:
+                                                    description: The effective preference after precedence is applied. `never` is an operator decision and outranks `force`; a force event ignores `choice_off`.
+                                                    enum:
+                                                        - force
+                                                        - choice_on
+                                                        - choice_off
+                                                        - never
+                                                    type: string
+                                                stored:
+                                                    description: The user's own stored choice, empty when they have never set one. `preference` is what will actually happen.
+                                                    type: string
+                                            required:
+                                                - event_key
+                                                - name
+                                                - force
+                                                - preference
+                                                - mail
+                                                - in_app
+                                            type: object
+                                        type: array
+                                required:
+                                    - data
+                                type: object
+                    description: The resolved preferences after the change
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An unknown event, an invalid preference, or an opt-out of a force event
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Replace the caller's notification preferences
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
+    /api/v1/portal/notifications/read-all:
+        post:
+            description: One statement, so a partial failure cannot leave a badge showing a number the user already dismissed. Reports how many rows changed.
+            operationId: PostPortalNotificationsReadall
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    marked:
+                                        type: integer
+                                    status:
+                                        type: string
+                                    unread:
+                                        type: integer
+                                required:
+                                    - status
+                                    - marked
+                                    - unread
+                                type: object
+                    description: All read
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Mark every notification read
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:self
+            x-rate-class: mutation
+    /api/v1/portal/notifications/unread-count:
+        get:
+            description: The number the inbox badge shows. Separate from the list because the shell polls it far more often than the list is opened, and fetching twenty notifications to render one integer is a slow sidebar for no reason.
+            operationId: GetPortalNotificationsUnreadcount
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    unread:
+                                        type: integer
+                                required:
+                                    - unread
+                                type: object
+                    description: The count
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Unread notification count
+            x-permission: customer:read:self
+            x-rate-class: read
     /api/v1/portal/orders:
         post:
             description: |-
@@ -7388,6 +7894,478 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: invoice:void
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/notification-templates:
+        get:
+            description: 'Every event in the catalogue, in display order, whether or not it has a template row. An event with no row is reported with `seeded: false` so the omission is visible rather than the event silently missing from the screen. Requires notification:write: support answers "why did I get this", it does not decide what the mail says.'
+            operationId: GetStaffNotificationtemplates
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                bcc_addresses:
+                                                    description: Comma-separated. Each address receives its own outbox row.
+                                                    type: string
+                                                body:
+                                                    description: 'Plain text with {{variables}}. It is never interpreted as markup and is sent as text/plain: an invoice description is customer-influenced, and rendering it as HTML would turn the panel into a phishing vector.'
+                                                    type: string
+                                                cc_addresses:
+                                                    description: Comma-separated. Each address receives its own outbox row.
+                                                    type: string
+                                                enabled:
+                                                    description: Master switch. Disabled sends nothing on any channel.
+                                                    type: boolean
+                                                event_key:
+                                                    type: string
+                                                force:
+                                                    description: Derived from the event, not editable.
+                                                    type: boolean
+                                                in_app_body:
+                                                    type: string
+                                                in_app_enabled:
+                                                    type: boolean
+                                                in_app_title:
+                                                    type: string
+                                                in_app_url:
+                                                    type: string
+                                                mail_enabled:
+                                                    type: boolean
+                                                name:
+                                                    type: string
+                                                seeded:
+                                                    description: False when the event has no template row yet.
+                                                    type: boolean
+                                                subject:
+                                                    description: Plain text with {{variables}}. Substituted values are stripped of control characters, so a value cannot inject a header.
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - event_key
+                                                - name
+                                                - subject
+                                                - body
+                                                - enabled
+                                            type: object
+                                        type: array
+                                required:
+                                    - data
+                                type: object
+                    description: The templates
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List notification templates
+            x-permission: notification:write
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/notification-templates/{event_key}:
+        get:
+            description: The template for one event, plus `force` (derived from the event, not editable) so the editor can explain why a channel cannot be turned off.
+            operationId: GetStaffNotificationtemplatesByEventkey
+            parameters:
+                - in: path
+                  name: event_key
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    bcc_addresses:
+                                        description: Comma-separated. Each address receives its own outbox row.
+                                        type: string
+                                    body:
+                                        description: 'Plain text with {{variables}}. It is never interpreted as markup and is sent as text/plain: an invoice description is customer-influenced, and rendering it as HTML would turn the panel into a phishing vector.'
+                                        type: string
+                                    cc_addresses:
+                                        description: Comma-separated. Each address receives its own outbox row.
+                                        type: string
+                                    enabled:
+                                        description: Master switch. Disabled sends nothing on any channel.
+                                        type: boolean
+                                    event_key:
+                                        type: string
+                                    force:
+                                        description: Derived from the event, not editable.
+                                        type: boolean
+                                    in_app_body:
+                                        type: string
+                                    in_app_enabled:
+                                        type: boolean
+                                    in_app_title:
+                                        type: string
+                                    in_app_url:
+                                        type: string
+                                    mail_enabled:
+                                        type: boolean
+                                    name:
+                                        type: string
+                                    seeded:
+                                        description: False when the event has no template row yet.
+                                        type: boolean
+                                    subject:
+                                        description: Plain text with {{variables}}. Substituted values are stripped of control characters, so a value cannot inject a header.
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - event_key
+                                    - name
+                                    - subject
+                                    - body
+                                    - enabled
+                                type: object
+                    description: The template
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such event
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The event exists but has no template row yet
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Read one notification template
+            x-permission: notification:write
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: 'The event key is in the path and cannot be changed by the body, so a rename cannot leave the old event without wording. Fields not present in the body keep their current value, so an editor that only touches the subject does not blank the in-app title. The change is audited: it changes what the business tells its customers. Bodies are plain text and are never interpreted as markup.'
+            operationId: PutStaffNotificationtemplatesByEventkey
+            parameters:
+                - in: path
+                  name: event_key
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                bcc_addresses:
+                                    type: string
+                                body:
+                                    type: string
+                                cc_addresses:
+                                    type: string
+                                enabled:
+                                    type: boolean
+                                in_app_body:
+                                    type: string
+                                in_app_enabled:
+                                    type: boolean
+                                in_app_title:
+                                    type: string
+                                in_app_url:
+                                    type: string
+                                mail_enabled:
+                                    type: boolean
+                                name:
+                                    type: string
+                                subject:
+                                    type: string
+                            required:
+                                - subject
+                                - body
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    bcc_addresses:
+                                        description: Comma-separated. Each address receives its own outbox row.
+                                        type: string
+                                    body:
+                                        description: 'Plain text with {{variables}}. It is never interpreted as markup and is sent as text/plain: an invoice description is customer-influenced, and rendering it as HTML would turn the panel into a phishing vector.'
+                                        type: string
+                                    cc_addresses:
+                                        description: Comma-separated. Each address receives its own outbox row.
+                                        type: string
+                                    enabled:
+                                        description: Master switch. Disabled sends nothing on any channel.
+                                        type: boolean
+                                    event_key:
+                                        type: string
+                                    force:
+                                        description: Derived from the event, not editable.
+                                        type: boolean
+                                    in_app_body:
+                                        type: string
+                                    in_app_enabled:
+                                        type: boolean
+                                    in_app_title:
+                                        type: string
+                                    in_app_url:
+                                        type: string
+                                    mail_enabled:
+                                        type: boolean
+                                    name:
+                                        type: string
+                                    seeded:
+                                        description: False when the event has no template row yet.
+                                        type: boolean
+                                    subject:
+                                        description: Plain text with {{variables}}. Substituted values are stripped of control characters, so a value cannot inject a header.
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - event_key
+                                    - name
+                                    - subject
+                                    - body
+                                    - enabled
+                                type: object
+                    description: The saved template
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such event
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The body is not valid
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Edit one notification template
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: notification:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/notification-templates/{event_key}/reset:
+        post:
+            description: 'Replaces the row with the default this build ships for that event. It is a mutation rather than a delete because every event must always have wording: a deleted template would mean an event that cannot be sent at all, and the send would fail inside the transaction that recorded the customer''s change.'
+            operationId: PostStaffNotificationtemplatesByEventkeyReset
+            parameters:
+                - in: path
+                  name: event_key
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    bcc_addresses:
+                                        description: Comma-separated. Each address receives its own outbox row.
+                                        type: string
+                                    body:
+                                        description: 'Plain text with {{variables}}. It is never interpreted as markup and is sent as text/plain: an invoice description is customer-influenced, and rendering it as HTML would turn the panel into a phishing vector.'
+                                        type: string
+                                    cc_addresses:
+                                        description: Comma-separated. Each address receives its own outbox row.
+                                        type: string
+                                    enabled:
+                                        description: Master switch. Disabled sends nothing on any channel.
+                                        type: boolean
+                                    event_key:
+                                        type: string
+                                    force:
+                                        description: Derived from the event, not editable.
+                                        type: boolean
+                                    in_app_body:
+                                        type: string
+                                    in_app_enabled:
+                                        type: boolean
+                                    in_app_title:
+                                        type: string
+                                    in_app_url:
+                                        type: string
+                                    mail_enabled:
+                                        type: boolean
+                                    name:
+                                        type: string
+                                    seeded:
+                                        description: False when the event has no template row yet.
+                                        type: boolean
+                                    subject:
+                                        description: Plain text with {{variables}}. Substituted values are stripped of control characters, so a value cannot inject a header.
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - event_key
+                                    - name
+                                    - subject
+                                    - body
+                                    - enabled
+                                type: object
+                    description: The restored template
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such event
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Restore a template's shipped wording
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: notification:write
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/operations:

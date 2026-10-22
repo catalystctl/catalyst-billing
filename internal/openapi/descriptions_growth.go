@@ -41,7 +41,30 @@ func affiliateSchema() map[string]any {
 				"type": "string",
 				"enum": []string{"credit", "paypal", "bank_transfer", "manual"},
 			},
-			"enabled":        map[string]any{"type": "boolean"},
+			"enabled": map[string]any{
+				"type":        "boolean",
+				"description": "Whether the affiliate can earn. Kept for compatibility; `status` is the field to branch on.",
+			},
+			"status": map[string]any{
+				"type": "string",
+				"enum": []string{"active", "suspended", "deleted"},
+				"description": "Derived server-side from the state that actually gates earning, so a client cannot " +
+					"disagree with what the server will do. `suspended` means the code no longer attributes and no " +
+					"further commission accrues; `deleted` means the payee is archived and everything they earned " +
+					"is still owed.",
+			},
+			"suspended_at": map[string]any{
+				"type": []string{"string", "null"}, "format": "date-time",
+				"description": "When the suspension was recorded. Null on an affiliate that was never suspended, and " +
+					"on one disabled before suspensions were recorded.",
+			},
+			"suspended_reason": map[string]any{"type": "string"},
+			"deleted_at": map[string]any{
+				"type": []string{"string", "null"}, "format": "date-time",
+				"description": "When the affiliate was archived. Once set it is never cleared: a deletion is not a " +
+					"longer suspension.",
+			},
+			"deleted_reason": map[string]any{"type": "string"},
 			"referred_count": map[string]any{"type": "integer"},
 			"balances": map[string]any{
 				"type": "array",
@@ -75,6 +98,11 @@ func payoutLineSchema() map[string]any {
 			"currency":      map[string]any{"type": "string"},
 			"owed":          AmountRef(),
 			"lifetime_paid": AmountRef(),
+			"deleted": map[string]any{
+				"type": "boolean",
+				"description": "The payee has been archived but is still owed money. The line is still payable: a " +
+					"debt does not expire because the payee left the programme.",
+			},
 			"pending_commissions": map[string]any{
 				"type":        "integer",
 				"description": "Commission rows that make up `owed`, so a reconciler can compare summary with detail.",
@@ -182,6 +210,94 @@ func growthOperations() map[string]Operation {
 				{Status: 201, Description: "The affiliate", Schema: affiliateSchema()},
 				{Status: 409, Description: "The code or the user is already an affiliate", Schema: ProblemRef()},
 				{Status: 422, Description: "The rate or the code is not valid", Schema: ProblemRef()},
+			},
+		},
+		// ------------------------------------------------- the controls (0053) --
+		//
+		// Four routes, one permission (credit:write) and one shape: they answer with the
+		// affiliate as it now stands, because the operator's next question is always "what
+		// state is it in now".
+		"PATCH /api/v1/staff/affiliates/{id}": {
+			Summary: "Set an affiliate's commission rate",
+			Description: "Sets a custom per-affiliate rate. It is an exact rational (`10%`, `0.1`, `1/10`), " +
+				"stored canonically and bounded at 100% inclusive; anything above 1 is refused rather than " +
+				"clamped, because a commission larger than the order pays out money that was never taken. " +
+				"The change applies to future commissions only: every commission row captures the rate that " +
+				"produced it, so a rate change cannot restate what a past order earned.",
+			RequestSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"commission_rate"},
+				"properties": map[string]any{
+					"commission_rate": map[string]any{
+						"type": "string",
+						"description": "Exact rational in [0, 1]: `0.1`, `10%` or `1/10`. A float is not accepted, " +
+							"and neither is a rate above 100%.",
+					},
+				},
+			},
+			Responses: []Response{
+				{Status: 200, Description: "The affiliate with its new rate", Schema: affiliateSchema()},
+				{Status: 404, Description: "No such affiliate", Schema: ProblemRef()},
+				{Status: 409, Description: "The affiliate is deleted", Schema: ProblemRef()},
+				{Status: 422, Description: "The rate is not a rational in [0, 1]", Schema: ProblemRef()},
+			},
+		},
+		"POST /api/v1/staff/affiliates/{id}/suspend": {
+			Summary: "Suspend (ban) an affiliate",
+			Description: "Stops the affiliate earning: their referral code no longer attributes a signup and no " +
+				"further commission is recorded for their referrals. What they have already earned is untouched " +
+				"and remains payable — a ban is not a confiscation — and a commission on an order paid while " +
+				"suspended is refused rather than recorded. A reason is required, and is stored with the " +
+				"operator and the instant. Suspending an already-suspended affiliate is a no-op that keeps the " +
+				"first record.",
+			RequestSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"reason"},
+				"properties": map[string]any{
+					"reason": map[string]any{
+						"type": "string", "maxLength": 500,
+						"description": "Why. Required: a ban the next operator cannot understand is one they cannot review.",
+					},
+				},
+			},
+			Responses: []Response{
+				{Status: 200, Description: "The suspended affiliate", Schema: affiliateSchema()},
+				{Status: 404, Description: "No such affiliate", Schema: ProblemRef()},
+				{Status: 409, Description: "The affiliate is deleted", Schema: ProblemRef()},
+				{Status: 422, Description: "The reason is missing or too long", Schema: ProblemRef()},
+			},
+		},
+		"POST /api/v1/staff/affiliates/{id}/reinstate": {
+			Summary: "Reinstate a suspended affiliate",
+			Description: "Puts a suspended affiliate back into the programme with the rate they had. Idempotent: " +
+				"reinstating an affiliate who is already active succeeds and changes nothing. A deleted " +
+				"affiliate cannot be reinstated — deletion ends the record rather than lengthening the " +
+				"suspension.",
+			Responses: []Response{
+				{Status: 200, Description: "The reinstated affiliate", Schema: affiliateSchema()},
+				{Status: 404, Description: "No such affiliate", Schema: ProblemRef()},
+				{Status: 409, Description: "The affiliate is deleted", Schema: ProblemRef()},
+			},
+		},
+		"DELETE /api/v1/staff/affiliates/{id}": {
+			Summary: "Delete (archive) an affiliate",
+			Description: "Takes the affiliate out of the programme and out of the default list, and keeps the " +
+				"ledger: every commission row they earned, every balance they are owed and every payout already " +
+				"made stay readable, and the payout report keeps naming them for as long as their balance is " +
+				"non-zero. A deleted affiliate with unpaid commission is a debt, so deletion is an archive rather " +
+				"than a removal — the commission rows reference the affiliate and are never cascaded away. A " +
+				"reason is required. Deleting twice is a no-op.",
+			RequestSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"reason"},
+				"properties": map[string]any{
+					"reason": map[string]any{"type": "string", "maxLength": 500},
+				},
+			},
+			Responses: []Response{
+				{Status: 200, Description: "The archived affiliate", Schema: affiliateSchema()},
+				{Status: 404, Description: "No such affiliate", Schema: ProblemRef()},
+				{Status: 422, Description: "The reason is missing or too long", Schema: ProblemRef()},
 			},
 		},
 		"GET /api/v1/staff/affiliates/payouts": {

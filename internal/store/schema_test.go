@@ -462,6 +462,96 @@ func TestWebhookEventDeduplication(t *testing.T) {
 	}
 }
 
+// A proforma invoice is a document a customer can read and pay that carries no number until
+// it becomes real. The immutability trigger from 0008 refused *any* change to `number` on a
+// non-draft row, so converting one was impossible; 0021 permits exactly that transition and
+// nothing else. This test pins both halves: the conversion works, and every neighbouring
+// mutation that used to be refused still is.
+//
+// The second half matters more than the first. A carve-out that is one condition too wide
+// turns "issued invoices are immutable" into a comment, and the whole reason the trigger
+// exists is that a wrong invoice must be corrected with a credit note rather than an UPDATE.
+func TestProformaConversionAndItsBoundaries(t *testing.T) {
+	pool := storetest.DB(t)
+	ctx := context.Background()
+	f := seed(t, ctx, pool)
+
+	// insertProforma creates an open, unnumbered, provisional invoice.
+	insertProforma := func(id string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO invoices (id, customer_id, status, currency, subtotal_minor, tax_minor,
+			                      total_minor, issued_at, proforma)
+			VALUES ($1, $2, 'open', 'USD', 1000, 0, 1000, now(), true)`, id, f.customerID); err != nil {
+			t.Fatalf("insert proforma: %v", err)
+		}
+	}
+
+	const proformaID = "aaaaaaaa-0000-0000-0000-000000000001"
+	insertProforma(proformaID)
+
+	// A numbered proforma is impossible: that is what "provisional" means.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO invoices (customer_id, status, currency, subtotal_minor, tax_minor, total_minor,
+		                      issued_at, proforma, number)
+		VALUES ($1, 'open', 'USD', 100, 0, 100, now(), true, 'INV-BAD')`, f.customerID); err == nil {
+		t.Fatal("a proforma with a number was accepted")
+	} else if store.SQLState(err) != store.StateCheckViolation {
+		t.Fatalf("numbered proforma: got %q, want a check violation", store.SQLState(err))
+	}
+
+	// Converting without assigning a number is refused: a real invoice always has one, and
+	// silently producing an unnumbered non-draft invoice would leave a gap in the series.
+	if _, err := pool.Exec(ctx,
+		`UPDATE invoices SET proforma = false WHERE id = $1`, proformaID); err == nil {
+		t.Fatal("a proforma was converted without a number")
+	} else if store.SQLState(err) != store.StateRestrictViolation {
+		t.Fatalf("unnumbered conversion: got %q, want restrict violation", store.SQLState(err))
+	}
+
+	// The one permitted transition.
+	if _, err := pool.Exec(ctx,
+		`UPDATE invoices SET proforma = false, number = 'INV-PRO-1' WHERE id = $1`, proformaID); err != nil {
+		t.Fatalf("converting a proforma must be allowed: %v", err)
+	}
+
+	// ... and once converted, the document is frozen exactly as before.
+	frozen := []struct {
+		name string
+		sql  string
+	}{
+		{"renumber", `UPDATE invoices SET number = 'INV-OTHER' WHERE id = $1`},
+		{"money", `UPDATE invoices SET total_minor = 1, subtotal_minor = 1 WHERE id = $1`},
+		{"snapshot", `UPDATE invoices SET snapshot = '{"x":1}'::jsonb WHERE id = $1`},
+		{"customer", `UPDATE invoices SET customer_id = gen_random_uuid() WHERE id = $1`},
+		{"delete", `DELETE FROM invoices WHERE id = $1`},
+	}
+	for _, tc := range frozen {
+		t.Run("after conversion: "+tc.name, func(t *testing.T) {
+			_, err := pool.Exec(ctx, tc.sql, proformaID)
+			if err == nil {
+				t.Fatalf("a converted invoice allowed %s", tc.name)
+			}
+			if store.SQLState(err) != store.StateRestrictViolation {
+				t.Fatalf("got %q, want restrict violation", store.SQLState(err))
+			}
+		})
+	}
+
+	// A plain issued invoice is unaffected: it still cannot be renumbered at all.
+	const plainID = "bbbbbbbb-0000-0000-0000-000000000002"
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO invoices (id, customer_id, status, currency, subtotal_minor, tax_minor,
+		                      total_minor, issued_at, number)
+		VALUES ($1, $2, 'open', 'USD', 500, 0, 500, now(), 'INV-9')`, plainID, f.customerID); err != nil {
+		t.Fatalf("insert plain invoice: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE invoices SET number = 'INV-10' WHERE id = $1`, plainID); err == nil {
+		t.Fatal("a plain issued invoice was renumbered")
+	}
+}
+
 // Acceptance scenario 14: an issued invoice's money and identity are frozen;
 // catalog edits cannot rewrite it.
 func TestIssuedInvoiceIsImmutable(t *testing.T) {

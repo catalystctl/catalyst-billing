@@ -497,3 +497,74 @@ func TestAnchorDivergenceDoesNotWedgeRenewal(t *testing.T) {
 		t.Fatalf("subscription version = %d, want 1 (unchanged)", version)
 	}
 }
+
+// A subscription whose price version is not a schedule is a data defect: nothing may renew a
+// one-time or free price. Billing it would charge the customer for the same one-time purchase
+// every period, for ever, so the engine ends the schedule and records why — instead of failing
+// on the same row every run, or (worse) invoicing it.
+func TestNonRecurringPriceIsNeverRenewed(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	subID := h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+
+	// Hand-write the defect: the price version behind an active subscription becomes one-time.
+	// The interval CHECK on `subscriptions` deliberately does not allow this value, so the only
+	// way to reach it is through the price the subscription points at — which is exactly the
+	// shape a catalog bug would produce.
+	if _, err := h.pool.Exec(context.Background(),
+		`UPDATE price_versions SET interval = 'one_time'`); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := h.engine.Run(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeSkippedNonRecurring {
+		t.Fatalf("results = %+v, want one skipped_non_recurring", results)
+	}
+	if n := h.invoiceCount(t); n != 0 {
+		t.Fatalf("%d invoices issued for a one-time price, want 0", n)
+	}
+
+	// The schedule is ended, so the scanner does not visit it again and the customer's portal
+	// stops claiming a next-bill date that will never happen.
+	var status string
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT status FROM subscriptions WHERE id = $1`, subID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "ended" {
+		t.Fatalf("subscription status = %q, want ended", status)
+	}
+	// A second run has nothing left to do.
+	again, err := h.engine.Run(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if len(again) != 0 {
+		t.Fatalf("second run scanned %d subscriptions, want 0", len(again))
+	}
+}
+
+// A free price never renews either, and a one-time purchase never has a subscription for the
+// engine to find in the first place. The second half of that is asserted where the purchase is
+// made (internal/orders); this is the price-side guard.
+func TestFreePriceIsNeverRenewed(t *testing.T) {
+	h := newHarness(t, time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC))
+	h.subscribe(t, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), calendar.Monthly, 31, "UTC")
+
+	if _, err := h.pool.Exec(context.Background(),
+		`UPDATE price_versions SET interval = 'free', amount_minor = 0`); err != nil {
+		t.Fatal(err)
+	}
+	results, err := h.engine.Run(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(results) != 1 || results[0].Outcome != renewal.OutcomeSkippedNonRecurring {
+		t.Fatalf("results = %+v, want one skipped_non_recurring", results)
+	}
+	if n := h.invoiceCount(t); n != 0 {
+		t.Fatalf("%d invoices issued for a free price, want 0", n)
+	}
+}

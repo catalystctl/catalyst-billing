@@ -358,29 +358,16 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 
 // productJSON is the staff shape: everything, including hidden state and cost-bearing fields.
 func (s *Server) productJSON(p catalog.Product) map[string]any {
-	prices := make([]map[string]any, 0, len(p.Prices))
-	for _, price := range p.Prices {
-		prices = append(prices, map[string]any{
-			"id":               price.ID,
-			"version":          price.Version,
-			"name":             price.Name,
-			"currency":         price.Currency,
-			"amount":           s.priceAmount(price.AmountMinor, price.Currency),
-			"setup":            s.priceAmount(price.SetupMinor, price.Currency),
-			"interval":         price.Interval,
-			"anchor_day":       price.AnchorDay,
-			"anchor_timezone":  price.AnchorTimezone,
-			"provision_plan":   price.ProvisionPlan,
-			"provision_region": price.ProvisionRegion,
-			"created_at":       price.CreatedAt.UTC(),
-		})
-	}
+	// Version order, not plan order: the price table is a history and `prices[0]` is the current
+	// price. Display order is `sort_order`, which every row carries.
+	prices := planHistoryJSON(s, p.Prices)
 	return map[string]any{
 		"id":                   p.ID,
 		"slug":                 p.Slug,
 		"name":                 p.Name,
 		"short_description":    p.ShortDescription,
 		"description":          p.Description,
+		"description_format":   p.DescriptionFormat,
 		"category_id":          p.CategoryID,
 		"category_name":        p.CategoryName,
 		"category_slug":        p.CategorySlug,
@@ -404,8 +391,11 @@ func (s *Server) productJSON(p catalog.Product) map[string]any {
 // active-subscription count (business internals) and provision plan/region (infrastructure
 // details that tell an attacker which node a customer lands on).
 func (s *Server) publicProductJSON(p catalog.Product) map[string]any {
-	prices := make([]map[string]any, 0, len(p.Prices))
-	for _, price := range p.Prices {
+	// Display order, not history order: a visitor sees the plans in the order the operator
+	// arranged them, and `sort_order` is the only thing that decides it.
+	ordered := catalog.Plans(p.Prices)
+	prices := make([]map[string]any, 0, len(ordered))
+	for _, price := range ordered {
 		prices = append(prices, map[string]any{
 			"id":       price.ID,
 			"version":  price.Version,
@@ -414,17 +404,24 @@ func (s *Server) publicProductJSON(p catalog.Product) map[string]any {
 			"amount":   s.priceAmount(price.AmountMinor, price.Currency),
 			"setup":    s.priceAmount(price.SetupMinor, price.Currency),
 			"interval": price.Interval,
+			// A visitor needs to know whether a plan bills again, and asking them to
+			// interpret the interval name is how a one-time product gets rendered as a
+			// monthly one.
+			"interval_label": catalog.IntervalLabel(price.Interval),
+			"recurring":      price.Recurring(),
+			"sort_order":     price.SortOrder,
 		})
 	}
 	return map[string]any{
-		"slug":              p.Slug,
-		"name":              p.Name,
-		"short_description": p.ShortDescription,
-		"description":       p.Description,
-		"category_name":     p.CategoryName,
-		"category_slug":     p.CategorySlug,
-		"image_url":         p.ImageURL(),
-		"prices":            prices,
+		"slug":               p.Slug,
+		"name":               p.Name,
+		"short_description":  p.ShortDescription,
+		"description":        p.Description,
+		"description_format": p.DescriptionFormat,
+		"category_name":      p.CategoryName,
+		"category_slug":      p.CategorySlug,
+		"image_url":          p.ImageURL(),
+		"prices":             prices,
 	}
 }
 

@@ -110,13 +110,16 @@ type Image struct {
 
 // Price is one immutable price version.
 type Price struct {
-	ID              string    `json:"id"`
-	Version         int       `json:"version"`
-	Name            string    `json:"name"`
-	Currency        string    `json:"currency"`
-	AmountMinor     int64     `json:"amount_minor"`
-	SetupMinor      int64     `json:"setup_minor"`
-	Interval        string    `json:"interval"`
+	ID          string `json:"id"`
+	Version     int    `json:"version"`
+	Name        string `json:"name"`
+	Currency    string `json:"currency"`
+	AmountMinor int64  `json:"amount_minor"`
+	SetupMinor  int64  `json:"setup_minor"`
+	Interval    string `json:"interval"`
+	// SortOrder is where this plan sits in the product's plan list. It is the one column on
+	// a price version that may be UPDATEd: an order is presentation, an amount is history.
+	SortOrder       int       `json:"sort_order"`
 	AnchorDay       int       `json:"anchor_day"`
 	AnchorTimezone  string    `json:"anchor_timezone"`
 	ProvisionPlan   string    `json:"provision_plan"`
@@ -124,13 +127,21 @@ type Price struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+// Recurring reports whether this price bills again. A one-time or free price does not, so
+// nothing that renews may ever be built from it.
+func (p Price) Recurring() bool { return Recurring(p.Interval) }
+
 // Product is one catalog entry.
 type Product struct {
-	ID                  string    `json:"id"`
-	Slug                string    `json:"slug"`
-	Name                string    `json:"name"`
-	ShortDescription    string    `json:"short_description"`
-	Description         string    `json:"description"`
+	ID               string `json:"id"`
+	Slug             string `json:"slug"`
+	Name             string `json:"name"`
+	ShortDescription string `json:"short_description"`
+	Description      string `json:"description"`
+	// DescriptionFormat says whether Description is `plain` text or sanitised `html`. The
+	// renderer needs to know which, because escaping HTML shows the tags and parsing plain
+	// text runs whatever was typed as markup.
+	DescriptionFormat   string    `json:"description_format"`
 	CategoryID          *string   `json:"category_id"`
 	CategoryName        string    `json:"category_name,omitempty"`
 	CategorySlug        string    `json:"category_slug,omitempty"`
@@ -154,14 +165,17 @@ func (p Product) ImageURL() string {
 
 // ProductInput is what the panel sends when creating or editing a product.
 type ProductInput struct {
-	Slug             string  `json:"slug"`
-	Name             string  `json:"name"`
-	ShortDescription string  `json:"short_description"`
-	Description      string  `json:"description"`
-	CategoryID       *string `json:"category_id"`
-	ImageID          *string `json:"image_id"`
-	Hidden           bool    `json:"hidden"`
-	SortOrder        int     `json:"sort_order"`
+	Slug             string `json:"slug"`
+	Name             string `json:"name"`
+	ShortDescription string `json:"short_description"`
+	Description      string `json:"description"`
+	// DescriptionFormat is `plain` or `html`; empty means "unchanged if the text did not
+	// change, otherwise plain", which is what the plain metadata form needs to be safe.
+	DescriptionFormat string  `json:"description_format"`
+	CategoryID        *string `json:"category_id"`
+	ImageID           *string `json:"image_id"`
+	Hidden            bool    `json:"hidden"`
+	SortOrder         int     `json:"sort_order"`
 }
 
 // --------------------------------------------------------------- categories --
@@ -347,15 +361,22 @@ func (s *Store) CreateProductTx(ctx context.Context, q querier, in ProductInput)
 	if strings.TrimSpace(in.Name) == "" {
 		return Product{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
 	}
+	description, format, err := Description(in.Description, in.DescriptionFormat)
+	if err != nil {
+		return Product{}, err
+	}
 	var out Product
-	err := q.QueryRow(ctx, `
-		INSERT INTO products (slug, name, short_description, description, category_id, image_id, hidden, sort_order)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, slug, name, short_description, description, category_id, image_id, hidden, sort_order, created_at, updated_at`,
-		in.Slug, strings.TrimSpace(in.Name), in.ShortDescription, in.Description,
+	err = q.QueryRow(ctx, `
+		INSERT INTO products (slug, name, short_description, description, description_format,
+		                     category_id, image_id, hidden, sort_order)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id, slug, name, short_description, description, description_format,
+		          category_id, image_id, hidden, sort_order, created_at, updated_at`,
+		in.Slug, strings.TrimSpace(in.Name), in.ShortDescription, description, format,
 		in.CategoryID, in.ImageID, in.Hidden, in.SortOrder,
 	).Scan(&out.ID, &out.Slug, &out.Name, &out.ShortDescription, &out.Description,
-		&out.CategoryID, &out.ImageID, &out.Hidden, &out.SortOrder, &out.CreatedAt, &out.UpdatedAt)
+		&out.DescriptionFormat, &out.CategoryID, &out.ImageID, &out.Hidden, &out.SortOrder,
+		&out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Product{}, ErrSlugTaken
@@ -383,12 +404,36 @@ func (s *Store) UpdateProductTx(ctx context.Context, q querier, id string, in Pr
 	if strings.TrimSpace(in.Name) == "" {
 		return Product{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
 	}
+	// A caller that does not say which format it wrote has to keep the stored one when it
+	// re-sends the same text (the plain metadata form does exactly that, and it must not
+	// silently downgrade a rich description to escaped markup). If it *changed* the text
+	// without declaring a format, it wrote plain text, and saying so is the honest answer.
+	format := in.DescriptionFormat
+	if strings.TrimSpace(format) == "" {
+		var storedText, storedFormat string
+		err := q.QueryRow(ctx, `SELECT description, description_format FROM products WHERE id = $1`, id).
+			Scan(&storedText, &storedFormat)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Product{}, ErrNotFound
+		}
+		if err != nil {
+			return Product{}, fmt.Errorf("catalog: read product description: %w", err)
+		}
+		if storedText == in.Description {
+			format = storedFormat
+		}
+	}
+	description, format, err := Description(in.Description, format)
+	if err != nil {
+		return Product{}, err
+	}
 	tag, err := q.Exec(ctx, `
 		UPDATE products
 		   SET slug = $2, name = $3, short_description = $4, description = $5,
-		       category_id = $6, image_id = $7, hidden = $8, sort_order = $9
+		       description_format = $6, category_id = $7, image_id = $8, hidden = $9,
+		       sort_order = $10
 		 WHERE id = $1`,
-		id, in.Slug, strings.TrimSpace(in.Name), in.ShortDescription, in.Description,
+		id, in.Slug, strings.TrimSpace(in.Name), in.ShortDescription, description, format,
 		in.CategoryID, in.ImageID, in.Hidden, in.SortOrder)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -460,10 +505,13 @@ func (s *Store) AddPriceTx(ctx context.Context, q querier, productID string, p P
 	if p.AmountMinor < 0 || p.SetupMinor < 0 {
 		return Price{}, fmt.Errorf("%w: amounts cannot be negative", ErrInvalidInput)
 	}
-	switch p.Interval {
-	case "monthly", "quarterly", "semiannual", "annual":
-	default:
-		return Price{}, fmt.Errorf("%w: interval must be monthly, quarterly, semiannual or annual", ErrInvalidInput)
+	if err := ValidateInterval(p.Interval); err != nil {
+		return Price{}, err
+	}
+	if p.Interval == IntervalFree && (p.AmountMinor != 0 || p.SetupMinor != 0) {
+		// The database refuses this too; refusing here gives the operator a sentence instead
+		// of a constraint violation.
+		return Price{}, fmt.Errorf("%w: a free price cannot have an amount or a setup fee", ErrInvalidInput)
 	}
 	if p.AnchorDay < 1 || p.AnchorDay > 31 {
 		return Price{}, fmt.Errorf("%w: anchor_day must be 1-31", ErrInvalidInput)
@@ -472,19 +520,31 @@ func (s *Store) AddPriceTx(ctx context.Context, q querier, productID string, p P
 		return Price{}, fmt.Errorf("%w: anchor_timezone is required", ErrInvalidInput)
 	}
 
+	// A new plan lands after the ones already on the product unless the caller says
+	// otherwise. "Wherever max(version) put it" is not an order an operator chose.
+	sortOrder := p.SortOrder
+	if sortOrder == 0 {
+		if err := q.QueryRow(ctx, `
+			SELECT COALESCE(max(sort_order) + 1, 0) FROM price_versions WHERE product_id = $1`,
+			productID).Scan(&sortOrder); err != nil {
+			return Price{}, fmt.Errorf("catalog: next plan order: %w", err)
+		}
+	}
+
 	var out Price
 	err := q.QueryRow(ctx, `
 		INSERT INTO price_versions (product_id, version, name, currency, amount_minor, setup_minor,
-		                            interval, anchor_day, anchor_timezone, provision_plan, provision_region)
+		                            interval, sort_order, anchor_day, anchor_timezone,
+		                            provision_plan, provision_region)
 		SELECT $1,
 		       COALESCE((SELECT max(version) FROM price_versions WHERE product_id = $1), 0) + 1,
-		       $2, $3, $4, $5, $6, $7, $8, $9, $10
-		RETURNING id, version, name, currency, amount_minor, setup_minor, interval,
+		       $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+		RETURNING id, version, name, currency, amount_minor, setup_minor, interval, sort_order,
 		          anchor_day, anchor_timezone, provision_plan, provision_region, created_at`,
 		productID, strings.TrimSpace(p.Name), p.Currency, p.AmountMinor, p.SetupMinor,
-		p.Interval, p.AnchorDay, p.AnchorTimezone, p.ProvisionPlan, p.ProvisionRegion,
+		p.Interval, sortOrder, p.AnchorDay, p.AnchorTimezone, p.ProvisionPlan, p.ProvisionRegion,
 	).Scan(&out.ID, &out.Version, &out.Name, &out.Currency, &out.AmountMinor, &out.SetupMinor,
-		&out.Interval, &out.AnchorDay, &out.AnchorTimezone, &out.ProvisionPlan,
+		&out.Interval, &out.SortOrder, &out.AnchorDay, &out.AnchorTimezone, &out.ProvisionPlan,
 		&out.ProvisionRegion, &out.CreatedAt)
 	if err != nil {
 		if isForeignKeyViolation(err) {
@@ -500,7 +560,7 @@ func (s *Store) AddPriceTx(ctx context.Context, q querier, productID string, p P
 // List returns every product, hidden included, for the panel.
 func (s *Store) List(ctx context.Context) ([]Product, error) {
 	return s.query(ctx, `
-		SELECT p.id, p.slug, p.name, p.short_description, p.description,
+		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
 		       p.category_id, COALESCE(c.name, ''), COALESCE(c.slug, ''), p.image_id,
 		       p.hidden, p.sort_order, p.created_at, p.updated_at,
 		       (SELECT count(*) FROM subscriptions sub
@@ -518,7 +578,7 @@ func (s *Store) List(ctx context.Context) ([]Product, error) {
 // rather than in the client also means the API cannot be asked for it.
 func (s *Store) Public(ctx context.Context) ([]Product, error) {
 	return s.query(ctx, `
-		SELECT p.id, p.slug, p.name, p.short_description, p.description,
+		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
 		       p.category_id, c.name, c.slug, p.image_id, p.hidden, p.sort_order,
 		       p.created_at, p.updated_at, 0
 		  FROM products p
@@ -532,7 +592,7 @@ func (s *Store) Public(ctx context.Context) ([]Product, error) {
 // as Public's: a hidden product is indistinguishable from a missing one to a visitor.
 func (s *Store) PublicProduct(ctx context.Context, slug string) (Product, error) {
 	rows, err := s.query(ctx, `
-		SELECT p.id, p.slug, p.name, p.short_description, p.description,
+		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
 		       p.category_id, c.name, c.slug, p.image_id, p.hidden, p.sort_order,
 		       p.created_at, p.updated_at, 0
 		  FROM products p
@@ -557,7 +617,7 @@ func (s *Store) Product(ctx context.Context, id string) (Product, error) {
 // just wrote rather than racing a concurrent edit.
 func (s *Store) productTx(ctx context.Context, q querier, id string) (Product, error) {
 	rows, err := s.queryWith(ctx, q, `
-		SELECT p.id, p.slug, p.name, p.short_description, p.description,
+		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
 		       p.category_id, COALESCE(c.name, ''), COALESCE(c.slug, ''), p.image_id,
 		       p.hidden, p.sort_order, p.created_at, p.updated_at,
 		       (SELECT count(*) FROM subscriptions sub
@@ -592,7 +652,7 @@ func (s *Store) queryWith(ctx context.Context, q querier, stmt string, args ...a
 	for rows.Next() {
 		var p Product
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.ShortDescription, &p.Description,
-			&p.CategoryID, &p.CategoryName, &p.CategorySlug, &p.ImageID, &p.Hidden,
+			&p.DescriptionFormat, &p.CategoryID, &p.CategoryName, &p.CategorySlug, &p.ImageID, &p.Hidden,
 			&p.SortOrder, &p.CreatedAt, &p.UpdatedAt, &p.ActiveSubscriptions); err != nil {
 			return nil, fmt.Errorf("catalog: scan product: %w", err)
 		}
@@ -612,10 +672,10 @@ func (s *Store) queryWith(ctx context.Context, q querier, stmt string, args ...a
 }
 
 // pricesWith reads every version, newest first: a card shows the current price and the panel
-// shows the history.
+// shows the history. Display order is `Plans`, which sorts by the operator's plan order.
 func (s *Store) pricesWith(ctx context.Context, q querier, productID string) ([]Price, error) {
 	rows, err := q.Query(ctx, `
-		SELECT id, version, name, currency, amount_minor, setup_minor, interval,
+		SELECT id, version, name, currency, amount_minor, setup_minor, interval, sort_order,
 		       anchor_day, anchor_timezone, provision_plan, provision_region, created_at
 		  FROM price_versions
 		 WHERE product_id = $1
@@ -628,7 +688,7 @@ func (s *Store) pricesWith(ctx context.Context, q querier, productID string) ([]
 	for rows.Next() {
 		var p Price
 		if err := rows.Scan(&p.ID, &p.Version, &p.Name, &p.Currency, &p.AmountMinor, &p.SetupMinor,
-			&p.Interval, &p.AnchorDay, &p.AnchorTimezone, &p.ProvisionPlan,
+			&p.Interval, &p.SortOrder, &p.AnchorDay, &p.AnchorTimezone, &p.ProvisionPlan,
 			&p.ProvisionRegion, &p.CreatedAt); err != nil {
 			return nil, fmt.Errorf("catalog: scan price: %w", err)
 		}

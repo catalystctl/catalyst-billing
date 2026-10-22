@@ -22,6 +22,7 @@ import (
 
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/calendar"
+	"github.com/catalyst/billing/internal/catalog"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
@@ -87,8 +88,14 @@ const (
 	OutcomeInvoiced         Outcome = "invoiced"
 	OutcomeSkippedCancelled Outcome = "skipped_cancelled"
 	OutcomeSkippedNotDue    Outcome = "skipped_not_due"
-	OutcomeNeedsReview      Outcome = "needs_review"
-	OutcomeFailed           Outcome = "failed"
+	// OutcomeSkippedNonRecurring is a subscription whose price is one-time or free. That
+	// combination is a data defect — a one-time purchase creates a service with *no*
+	// subscription, so a subscription pointing at such a price can only come from a hand-written
+	// row or an old bug. It is skipped and ended rather than invoiced, because renewing it would
+	// charge the customer for the same one-time purchase every period, for ever.
+	OutcomeSkippedNonRecurring Outcome = "skipped_non_recurring"
+	OutcomeNeedsReview         Outcome = "needs_review"
+	OutcomeFailed              Outcome = "failed"
 )
 
 // Result is the outcome for one subscription.
@@ -267,6 +274,18 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 		price, err := loadPrice(ctx, tx, sub.PriceVersionID)
 		if err != nil {
 			return err
+		}
+		// Nothing may renew a price that is not a schedule. A one-time purchase creates a service
+		// with no subscription at all, so reaching this point means the row is a defect: billing it
+		// would charge the customer for the same one-time purchase every period, for ever. End the
+		// schedule and record why, rather than erroring on it every run for the rest of time.
+		if !catalog.Recurring(price.Interval) {
+			if err := e.endSubscription(ctx, tx, sub, now); err != nil {
+				return err
+			}
+			out.Outcome = OutcomeSkippedNonRecurring
+			out.Detail = fmt.Sprintf("price version interval is %q, which does not recur; the subscription was ended rather than billed", price.Interval)
+			return e.record(ctx, tx, runID, sub.ID, out.PeriodKey, out)
 		}
 		if price.AnchorDay != sub.Anchor.Day {
 			// The subscription owns its schedule: a catalog edit must not move a live
@@ -457,20 +476,23 @@ type price struct {
 	Currency    money.Currency
 	Description string
 	AnchorDay   int
+	// Interval is the price's billing period. It is checked before anything is billed: a
+	// one-time or free price is not a schedule, so a subscription pointing at one is ended
+	// rather than renewed.
+	Interval string
 }
 
 func loadPrice(ctx context.Context, tx pgx.Tx, priceVersionID string) (price, error) {
 	var (
 		p        price
 		currency string
-		interval string
 	)
 	err := tx.QueryRow(ctx, `
 		SELECT pv.amount_minor, pv.currency, pv.interval, pv.anchor_day, p.name
 		FROM price_versions pv
 		JOIN products p ON p.id = pv.product_id
 		WHERE pv.id = $1`, priceVersionID).
-		Scan(&p.AmountMinor, &currency, &interval, &p.AnchorDay, &p.Description)
+		Scan(&p.AmountMinor, &currency, &p.Interval, &p.AnchorDay, &p.Description)
 	if err != nil {
 		return price{}, fmt.Errorf("renewal: load price version: %w", err)
 	}

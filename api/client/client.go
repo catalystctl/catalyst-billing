@@ -1923,6 +1923,20 @@ func (c *Client) PostStaffCatalogProducts(ctx context.Context, query url.Values,
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffCatalogProductsByIdDuplicate calls POST /api/v1/staff/catalog/products/{id}/duplicate.
+//
+// # Duplicate a product
+//
+// Permission: catalog:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffCatalogProductsByIdDuplicate(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/products/{id}/duplicate"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffCatalogProductsByIdPrices calls POST /api/v1/staff/catalog/products/{id}/prices.
 //
 // # Append a price version
@@ -2426,6 +2440,20 @@ func (c *Client) PutStaffCatalogCategoriesById(ctx context.Context, id string, q
 // id is the id path parameter.
 func (c *Client) PutStaffCatalogProductsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/catalog/products/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffCatalogProductsByIdPlansOrder calls PUT /api/v1/staff/catalog/products/{id}/plans/order.
+//
+// # Set the order of a product's plans
+//
+// Permission: catalog:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutStaffCatalogProductsByIdPlansOrder(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/catalog/products/{id}/plans/order"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }

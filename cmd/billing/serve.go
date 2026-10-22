@@ -241,6 +241,17 @@ func cmdServe(args []string) error {
 		authz.SetTableRoles(table)
 	}
 
+	// The snapshot above is the boot state, and a role edit through the API refreshes it at the
+	// point of the edit. Neither covers a row inserted directly in the database (psql, a restore,
+	// another instance's process), which used to stay inert until the next boot. This poll closes
+	// that gap from a background goroutine, so a guarded request still costs no query — the
+	// reason the table is cached at all. internal/authn/role_refresh.go justifies the poll over
+	// LISTEN/NOTIFY.
+	roleRefresher := authn.NewRoleRefresher(authz, authSvc, authn.DefaultRoleRefreshInterval).
+		WithLogger(func(msg string, args ...any) { logger.Warn(msg, args...) })
+	roleRefresher.Start(ctx)
+	defer roleRefresher.Stop()
+
 	srv := httpapi.New(httpapi.Config{
 		Version: version,
 		Logger:  logger,

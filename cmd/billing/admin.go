@@ -23,10 +23,16 @@ import (
 //
 // Every subcommand is a thin wrapper over the same domain code the API uses, so
 // an admin action cannot take a shortcut that the API would refuse.
+//
+// The subcommands split into two groups: the ones that bootstrap a fresh installation
+// (create-user, create-customer, migrate) and the ones that reach the panel's operator screens
+// from a shell (setting set, logs tail, issue-invoice, purge-test-data). The second group exists
+// because an operator without a browser — at 02:00, with the panel being the thing that is broken
+// — must still be able to change a setting and read a log. See admin_settings.go.
 func cmdAdmin(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: billing admin " +
-			"<create-user|create-customer|issue-invoice|purge-test-data>")
+			"<create-user|create-customer|issue-invoice|purge-test-data|setting|logs>")
 	}
 	switch args[0] {
 	case "create-user":
@@ -37,6 +43,29 @@ func cmdAdmin(args []string) error {
 		return adminIssueInvoice(args[1:])
 	case "purge-test-data":
 		return adminPurgeTestData(args[1:])
+	case "setting":
+		// The verb is explicit ("set") rather than implied by the argument count: `setting` will
+		// grow a `get` and a `list`, and a command that guessed its verb from how many arguments
+		// it received could not grow them.
+		if len(args) < 2 {
+			return errors.New("usage: billing admin setting <set> <group> <key> <value|-> [--as <email>]")
+		}
+		switch args[1] {
+		case "set":
+			return adminSettingSet(args[2:])
+		default:
+			return fmt.Errorf("unknown setting command %q; try `billing admin setting set`", args[1])
+		}
+	case "logs":
+		if len(args) < 2 {
+			return errors.New("usage: billing admin logs <tail> [--kind email|error|http|all] [--follow]")
+		}
+		switch args[1] {
+		case "tail":
+			return adminLogsTail(args[2:])
+		default:
+			return fmt.Errorf("unknown logs command %q; try `billing admin logs tail`", args[1])
+		}
 	default:
 		return fmt.Errorf("unknown admin command %q", args[0])
 	}

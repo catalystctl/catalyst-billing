@@ -13,8 +13,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/invoicepdf"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/store"
@@ -57,6 +59,27 @@ func (a *Applier) ApplySettledPayment(ctx context.Context, tx pgx.Tx, p payments
 	// Provisioning is enqueued only when this payment actually settled the
 	// invoice. A partial payment moves money but buys nothing yet.
 	if res.InvoicePaid {
+		// A proforma carries no number until it is paid, which is what makes it provisional.
+		// Converting here — in the same transaction that settled the payment — is what keeps the
+		// two facts inseparable: an invoice cannot be paid without becoming real, and a real
+		// invoice cannot appear without the money that earned it. A conversion failure rolls the
+		// payment back, which is the right direction to fail: a settled payment with an unnumbered
+		// document is a reconciliation problem nobody can reconstruct later.
+		//
+		// ConvertProformaOnPayment is a no-op for an ordinary invoice, so this does not branch on
+		// whether the invoice was provisional.
+		numbering, err := invoicepdf.LoadNumbering(ctx, tx)
+		if err != nil {
+			return payments.ApplyResult{}, err
+		}
+		series, err := numbering.InvoiceSeries(time.Now())
+		if err != nil {
+			return payments.ApplyResult{}, err
+		}
+		if _, err := invoicepdf.ConvertProformaOnPayment(ctx, tx, p.InvoiceID, series); err != nil {
+			return payments.ApplyResult{}, err
+		}
+
 		if err := a.activateSubscription(ctx, tx, p.InvoiceID); err != nil {
 			return payments.ApplyResult{}, err
 		}

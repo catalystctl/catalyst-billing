@@ -114,6 +114,39 @@ paths:
                     description: An internal error occurred
             summary: The embedded application shell
             x-rate-class: ""
+    /api/v1/announcements:
+        get:
+            description: 'Public, because the storefront is public: a visitor who cannot see "we are closed for maintenance" has no way to find out before registering. Returns only published, unexpired rows, and only the fields a customer may see — the creator and the draft state are operator information. `?placement=storefront|dashboard` narrows it; `both` matches either. A database failure yields an empty feed rather than a 500, because the storefront must render.'
+            operationId: GetAnnouncements
+            responses:
+                2XX:
+                    description: The live announcements
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: Published announcements for the storefront and dashboard
+            x-rate-class: ""
     /api/v1/auth/login:
         post:
             description: Sets an HttpOnly session cookie and returns the CSRF token. When a confirmed MFA credential exists the response is 200 with `mfa_required` and a challenge token instead, and no session cookie is set.
@@ -5169,6 +5202,454 @@ paths:
             summary: The ticket form's configuration
             x-permission: ticket:read:self
             x-rate-class: read
+    /api/v1/staff/announcements:
+        get:
+            description: Every announcement, newest first, with `live` derived from `published` and `expires_at`.
+            operationId: GetStaffAnnouncements
+            responses:
+                2XX:
+                    description: The announcements
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List announcements, drafts included
+            x-permission: announcement:write
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: A draft unless `published` is true. Publishing stamps `published_at` once, so a draft published later keeps the instant it went live.
+            operationId: PostStaffAnnouncements
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                body:
+                                    type: string
+                                expires_at:
+                                    format: date-time
+                                    type:
+                                        - string
+                                        - "null"
+                                placement:
+                                    default: both
+                                    enum:
+                                        - storefront
+                                        - dashboard
+                                        - both
+                                    type: string
+                                published:
+                                    description: Omitted keeps the current state on update. Publishing stamps published_at once; unpublishing keeps it.
+                                    type: boolean
+                                title:
+                                    maxLength: 200
+                                    type: string
+                            required:
+                                - title
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    body:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    created_by:
+                                        description: 'Empty in the public feed: who wrote an announcement is operator information.'
+                                        format: uuid
+                                        type: string
+                                    expires_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    live:
+                                        description: Published and not expired, derived at read time so it cannot drift from the clock.
+                                        type: boolean
+                                    placement:
+                                        enum:
+                                            - storefront
+                                            - dashboard
+                                            - both
+                                        type: string
+                                    published:
+                                        type: boolean
+                                    published_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    title:
+                                        maxLength: 200
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - title
+                                    - placement
+                                    - published
+                                    - created_at
+                                    - updated_at
+                                type: object
+                    description: The announcement
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The title is missing or too long, or the placement is not accepted
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Create an announcement
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: announcement:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/announcements/{id}:
+        delete:
+            description: 'Delete is allowed here, unlike an invoice: an announcement has no legal weight and no record references it, so a typo published for a minute is removable. The audit row keeps the fact that it existed.'
+            operationId: DeleteStaffAnnouncementsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such announcement
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete an announcement
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: announcement:write
+            x-rate-class: mutation
+            x-staff-only: true
+        get:
+            operationId: GetStaffAnnouncementsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The announcement
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such announcement
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: One announcement
+            x-permission: announcement:write
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: Omitted `published` keeps the current state, so a client editing only the body does not silently unpublish it.
+            operationId: PutStaffAnnouncementsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                body:
+                                    type: string
+                                expires_at:
+                                    format: date-time
+                                    type:
+                                        - string
+                                        - "null"
+                                placement:
+                                    default: both
+                                    enum:
+                                        - storefront
+                                        - dashboard
+                                        - both
+                                    type: string
+                                published:
+                                    description: Omitted keeps the current state on update. Publishing stamps published_at once; unpublishing keeps it.
+                                    type: boolean
+                                title:
+                                    maxLength: 200
+                                    type: string
+                            required:
+                                - title
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    body:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    created_by:
+                                        description: 'Empty in the public feed: who wrote an announcement is operator information.'
+                                        format: uuid
+                                        type: string
+                                    expires_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    live:
+                                        description: Published and not expired, derived at read time so it cannot drift from the clock.
+                                        type: boolean
+                                    placement:
+                                        enum:
+                                            - storefront
+                                            - dashboard
+                                            - both
+                                        type: string
+                                    published:
+                                        type: boolean
+                                    published_at:
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    title:
+                                        maxLength: 200
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - title
+                                    - placement
+                                    - published
+                                    - created_at
+                                    - updated_at
+                                type: object
+                    description: The announcement
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such announcement
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The title is missing or too long, or the placement is not accepted
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Update an announcement
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: announcement:write
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/api-keys:
         get:
             description: 'Never returns a key value: only the prefix, the scopes and the metadata.'
@@ -7882,6 +8363,200 @@ paths:
             x-permission: invoice:read:all
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/cron:
+        get:
+            description: 'One row per job run, newest first, so an operator can tell "nothing was due" from "the worker is dead". Keyset-paginated. Filter by `job` and `outcome`; a run still in progress has `outcome: running`, a null `finished_at` and a null `duration_ms`.'
+            operationId: GetStaffCron
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                detail:
+                                                    type: string
+                                                duration_ms:
+                                                    description: Null while the run is still going.
+                                                    type:
+                                                        - integer
+                                                        - "null"
+                                                finished_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                items:
+                                                    type: integer
+                                                job:
+                                                    example: renewals
+                                                    type: string
+                                                outcome:
+                                                    enum:
+                                                        - running
+                                                        - ok
+                                                        - failed
+                                                        - skipped
+                                                    type: string
+                                                started_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - id
+                                                - job
+                                                - started_at
+                                                - outcome
+                                                - items
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: A page of runs
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The cursor or limit is invalid
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Recent cron runs
+            x-permission: log:read
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/cron/heartbeat:
+        get:
+            description: 'The heartbeat row plus whether it is stale. `stale` is derived from the age, because a heartbeat row that exists is not the same as a worker that is alive: a process killed nine hours ago leaves a row behind forever. A worker that has never run answers 200 with `present: false` rather than a 404, because that is the sentence the operator needs.'
+            operationId: GetStaffCronHeartbeat
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    heartbeat:
+                                        description: Null when no worker has ever reported. `present` says the same thing, for a client that prefers a boolean.
+                                        oneOf:
+                                            - properties:
+                                                age_seconds:
+                                                    type: integer
+                                                beat_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    example: worker
+                                                    type: string
+                                                jobs:
+                                                    type: integer
+                                                stale:
+                                                    description: True when the beat is older than the server's stale threshold. A row existing is not the same as a worker being alive.
+                                                    type: boolean
+                                                stale_after_seconds:
+                                                    type: integer
+                                                version:
+                                                    type: string
+                                              required:
+                                                - id
+                                                - beat_at
+                                                - age_seconds
+                                                - jobs
+                                                - version
+                                                - stale
+                                              type: object
+                                            - type: "null"
+                                    present:
+                                        type: boolean
+                                    stale:
+                                        type: boolean
+                                    stale_after_seconds:
+                                        type: integer
+                                type: object
+                    description: The heartbeat, or its absence
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Worker heartbeat
+            x-permission: log:read
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/currencies:
         get:
             description: Disabled currencies included, because they keep the history their price rows and invoices reference.
@@ -8794,6 +9469,154 @@ paths:
             x-permission: service:read:all
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/dashboard:
+        get:
+            description: 'Revenue from the ledger (the revenue account, credits minus debits) so a credit note reduces it and a void invoice never counted; invoice counts by status; active customers; the open ticket count; normalised monthly recurring revenue from subscriptions; and the exception count from the operator overview. Every money figure is a list per currency — there is no cross-currency total, because adding currencies would be arithmetic on unrelated quantities. `available: false` means a figure could not be read; it is not the same as zero.'
+            operationId: GetStaffDashboard
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    active_customers:
+                                        description: Customers with a live service or an invoice in the period.
+                                        type: integer
+                                    available:
+                                        description: False when a figure could not be read. Reporting zero instead would make a broken database look like an empty business.
+                                        type: boolean
+                                    exception_critical:
+                                        type: integer
+                                    exceptions:
+                                        description: The exception count from the operator overview, so the dashboard does not have to fetch it twice.
+                                        type: integer
+                                    from:
+                                        format: date-time
+                                        type: string
+                                    generated_at:
+                                        format: date-time
+                                        type: string
+                                    invoices:
+                                        description: Invoice counts by status, for invoices issued in the period.
+                                        items:
+                                            properties:
+                                                count:
+                                                    type: integer
+                                                status:
+                                                    type: string
+                                            required:
+                                                - status
+                                                - count
+                                            type: object
+                                        type: array
+                                    open_tickets:
+                                        description: The support queue depth right now.
+                                        type: integer
+                                    period:
+                                        enum:
+                                            - 7d
+                                            - 30d
+                                            - 90d
+                                        type: string
+                                    recurring:
+                                        description: Normalised monthly recurring revenue per currency. Each active subscription is divided by its interval in months, so a quarterly price contributes a third.
+                                        items:
+                                            properties:
+                                                currency:
+                                                    type: string
+                                                display:
+                                                    type: string
+                                                minor:
+                                                    format: int64
+                                                    type: integer
+                                                scale:
+                                                    type: integer
+                                                subscriptions:
+                                                    type: integer
+                                            required:
+                                                - currency
+                                                - scale
+                                                - minor
+                                                - display
+                                                - subscriptions
+                                            type: object
+                                        type: array
+                                    revenue:
+                                        description: 'Revenue per currency, from the ledger''s revenue account (credits minus debits, so a credit note reduces it and a void invoice never counted). There is deliberately no cross-currency total: adding currencies would be arithmetic on unrelated quantities.'
+                                        items:
+                                            properties:
+                                                currency:
+                                                    type: string
+                                                display:
+                                                    type: string
+                                                minor:
+                                                    format: int64
+                                                    type: integer
+                                                scale:
+                                                    type: integer
+                                            required:
+                                                - currency
+                                                - scale
+                                                - minor
+                                                - display
+                                            type: object
+                                        type: array
+                                    to:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - period
+                                    - from
+                                    - to
+                                    - revenue
+                                    - invoices
+                                    - available
+                                    - generated_at
+                                type: object
+                    description: The dashboard
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The period is not 7d, 30d or 90d
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Dashboard figures for a period
+            x-permission: report:read
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/holds/{hold_id}:
         delete:
             operationId: DeleteStaffHoldsByHoldid
@@ -9512,6 +10335,294 @@ paths:
                 required: true
             x-permission: invoice:void
             x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/logs/email:
+        get:
+            description: 'A viewer over `notification_deliveries`, the durable outbox: what was sent, to whom, and whether it worked. Keyset-paginated. Filter by `status`, `kind`, `to` (an address fragment) and a `from`/`to_time` window.'
+            operationId: GetStaffLogsEmail
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                attempts:
+                                                    type: integer
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                kind:
+                                                    description: 'The message kind: password_reset, email_verification, invoice_issued, dunning_reminder or one of the notification events.'
+                                                    type: string
+                                                last_error:
+                                                    type: string
+                                                sent_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                status:
+                                                    enum:
+                                                        - queued
+                                                        - sending
+                                                        - sent
+                                                        - failed
+                                                        - suppressed
+                                                    type: string
+                                                subject:
+                                                    type: string
+                                                to:
+                                                    format: email
+                                                    type: string
+                                            required:
+                                                - id
+                                                - kind
+                                                - to
+                                                - subject
+                                                - status
+                                                - created_at
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: A page of deliveries
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The cursor, limit or timestamp is invalid
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Email delivery log
+            x-permission: log:read
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/logs/errors:
+        get:
+            description: What failed in the process. Keyset-paginated. Filter by `level`, `source` and `q` (a fragment of the message). A detail is stored with credential-looking key/value pairs already redacted.
+            operationId: GetStaffLogsErrors
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                detail:
+                                                    description: Diagnostic text, with credential-looking key/value pairs replaced by `[redacted]` before it was stored.
+                                                    type: string
+                                                id:
+                                                    format: int64
+                                                    type: integer
+                                                level:
+                                                    example: error
+                                                    type: string
+                                                message:
+                                                    type: string
+                                                source:
+                                                    example: worker.renewals
+                                                    type: string
+                                            required:
+                                                - id
+                                                - level
+                                                - message
+                                                - created_at
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: A page of error rows
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The cursor or limit is invalid
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Error log
+            x-permission: log:read
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/logs/http:
+        get:
+            description: 'What the process served, and how long it took. Keyset-paginated. Filter by `method`, `status`, `min_status` and `path` (a prefix). Headers are deliberately not stored: a header map is where an Authorization token or a session cookie would be copied into a backup, and the query string is stripped from the path for the same reason.'
+            operationId: GetStaffLogsHttp
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                actor_id:
+                                                    format: uuid
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                duration_ms:
+                                                    type: integer
+                                                id:
+                                                    format: int64
+                                                    type: integer
+                                                ip:
+                                                    type: string
+                                                method:
+                                                    type: string
+                                                path:
+                                                    description: The path only. A query string is stripped before it is stored, so a token in one is not copied into a backup.
+                                                    type: string
+                                                status:
+                                                    type: integer
+                                            required:
+                                                - id
+                                                - method
+                                                - path
+                                                - status
+                                                - duration_ms
+                                                - created_at
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: A page of requests
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The cursor, limit or status is invalid
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: HTTP request log
+            x-permission: log:read
+            x-rate-class: read
             x-staff-only: true
     /api/v1/staff/notification-templates:
         get:
@@ -11337,6 +12448,258 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: service:upgrade
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/settings:
+        get:
+            description: 'Returns every group, or one group when `?group=` names it. A secret is never returned: its `value` is `[redacted]` and `is_set` says whether a credential is configured. A key with no row reads its code-side default with `is_set: false`, so a fresh installation renders before an operator saves anything. Reading requires `settings:write` because the page is one screen: separating read from write would let a support agent read the SMTP and gateway configuration, which is reconnaissance rather than support.'
+            operationId: GetStaffSettings
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                group:
+                                                    enum:
+                                                        - general
+                                                        - invoices
+                                                        - credits
+                                                        - tax
+                                                        - tickets
+                                                        - cronjob
+                                                        - mail
+                                                        - announcements
+                                                    type: string
+                                                keys:
+                                                    items:
+                                                        properties:
+                                                            group:
+                                                                type: string
+                                                            is_secret:
+                                                                description: This value is a credential and was redacted. Render it as an empty password field.
+                                                                type: boolean
+                                                            is_set:
+                                                                description: A row exists. It is how a client tells an unchanged default from an explicitly saved value, and the only thing a secret's read reveals.
+                                                                type: boolean
+                                                            key:
+                                                                type: string
+                                                            kind:
+                                                                description: How the value is parsed. A JSON value is stored as text and must be valid JSON; an int is an integer, never a float.
+                                                                enum:
+                                                                    - string
+                                                                    - int
+                                                                    - bool
+                                                                    - json
+                                                                type: string
+                                                            updated_at:
+                                                                description: When the row was last written; null when the value is the code-side default.
+                                                                format: date-time
+                                                                type:
+                                                                    - string
+                                                                    - "null"
+                                                            value:
+                                                                description: The stored text, or `[redacted]` when `is_secret` is true. A secret's value is never returned, whether or not a row exists.
+                                                                type: string
+                                                        required:
+                                                            - group
+                                                            - key
+                                                            - kind
+                                                            - value
+                                                            - is_secret
+                                                            - is_set
+                                                        type: object
+                                                    type: array
+                                            required:
+                                                - group
+                                                - keys
+                                            type: object
+                                        type: array
+                                    groups:
+                                        items:
+                                            type: string
+                                        type: array
+                                type: object
+                    description: The settings groups
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such settings group
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Read system settings, secrets redacted
+            x-permission: settings:write
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: 'A bulk upsert of one group, validated as a whole before anything is stored: a form that fails on its last key writes nothing. Every write records `updated_by` and `updated_at` and writes an audit row in the same transaction, so the change carries the operator, the correlation id and the source address. A secret submitted as `[redacted]` is skipped rather than stored, so saving a loaded form cannot overwrite a credential with the marker.'
+            operationId: PutStaffSettings
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                group:
+                                    description: The group being written. One request writes one group, so a form that fails cannot half-apply across groups.
+                                    type: string
+                                values:
+                                    additionalProperties:
+                                        type: string
+                                    description: key -> text value. A secret sent as `[redacted]` is skipped rather than stored, which is what makes "load the page, change the company name, save" safe.
+                                    type: object
+                            required:
+                                - group
+                                - values
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    group:
+                                        enum:
+                                            - general
+                                            - invoices
+                                            - credits
+                                            - tax
+                                            - tickets
+                                            - cronjob
+                                            - mail
+                                            - announcements
+                                        type: string
+                                    keys:
+                                        items:
+                                            properties:
+                                                group:
+                                                    type: string
+                                                is_secret:
+                                                    description: This value is a credential and was redacted. Render it as an empty password field.
+                                                    type: boolean
+                                                is_set:
+                                                    description: A row exists. It is how a client tells an unchanged default from an explicitly saved value, and the only thing a secret's read reveals.
+                                                    type: boolean
+                                                key:
+                                                    type: string
+                                                kind:
+                                                    description: How the value is parsed. A JSON value is stored as text and must be valid JSON; an int is an integer, never a float.
+                                                    enum:
+                                                        - string
+                                                        - int
+                                                        - bool
+                                                        - json
+                                                    type: string
+                                                updated_at:
+                                                    description: When the row was last written; null when the value is the code-side default.
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                value:
+                                                    description: The stored text, or `[redacted]` when `is_secret` is true. A secret's value is never returned, whether or not a row exists.
+                                                    type: string
+                                            required:
+                                                - group
+                                                - key
+                                                - kind
+                                                - value
+                                                - is_secret
+                                                - is_set
+                                            type: object
+                                        type: array
+                                required:
+                                    - group
+                                    - keys
+                                type: object
+                    description: The group as it now reads
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The group is missing, or a key is not declared
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A value does not parse as its declared kind
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Write one settings group
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: settings:write
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/tax-rates:

@@ -273,18 +273,16 @@ type GroupValues struct {
 }
 
 // Store reads and writes settings.
+//
+// It holds a pool and nothing else: the clock is the database's (`now()`), so a row's
+// updated_at and the audit row's created_at cannot disagree with each other or with a
+// worker on another host.
 type Store struct {
 	pool *store.Pool
-	// Now is injectable for tests. It is used only for the audit row's timestamp, which
-	// the audit table stamps itself; keeping the field documents that the store does not
-	// invent a clock.
-	Now func() time.Time
 }
 
 // New constructs a Store.
-func New(pool *store.Pool) *Store {
-	return &Store{pool: pool, Now: func() time.Time { return time.Now().UTC() }}
-}
+func New(pool *store.Pool) *Store { return &Store{pool: pool} }
 
 // querier is the read surface a pool and a transaction share.
 type querier interface {

@@ -131,6 +131,33 @@ type Service struct {
 	// than a worker pool because each verification must complete for the caller to
 	// get an answer; queuing is the only alternative to running them all at once.
 	hashSlots chan struct{}
+	// onNewDevice is called after a successful login from an address this account has not used
+	// before. It is a hook rather than a direct call to the notify package because authn must not
+	// depend on the outbox: the login path has to work when mail is broken, and a security event
+	// that cannot be recorded must not become a security event that cannot log in to.
+	//
+	// It runs on a best-effort basis. The alternative — refusing a correct password because a
+	// notification could not be written — would turn a mail outage into a lockout.
+	onNewDevice func(ctx context.Context, event NewDeviceLogin)
+}
+
+// NewDeviceLogin describes a login from an address the account has not used before.
+type NewDeviceLogin struct {
+	UserID      string
+	Email       string
+	IP          string
+	UserAgent   string
+	AuthEventID string
+	At          time.Time
+}
+
+// OnNewDevice registers a callback invoked after a successful login from a new address.
+//
+// "New" means the (user, address) pair has no earlier successful login, so the first login from
+// a second device is reported once and later logins from that device are not. That is what a
+// customer expects from "new device", and it keeps the message rare enough to be read.
+func (s *Service) OnNewDevice(fn func(ctx context.Context, event NewDeviceLogin)) {
+	s.onNewDevice = fn
 }
 
 // ErrOverloaded is returned when the server cannot admit another password
@@ -277,6 +304,10 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResult, err
 		return LoginResult{}, err
 	}
 	s.audit(ctx, userID, "login_succeeded", "", req.IP)
+
+	// Report a login from an address this account has not used before. It runs after the session
+	// exists, so a failure here can never refuse a correct password.
+	s.reportNewDevice(ctx, userID, email, req)
 
 	return LoginResult{
 		Token:   token,
@@ -666,4 +697,38 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// reportNewDevice calls the new-device hook when this login is from an address the account has
+// not successfully logged in from before.
+//
+// It is deliberately best-effort: a query failure means no notification, not a failed login. The
+// query runs after the successful audit row was written, so "the login happened" is already
+// durable by the time this decides whether to tell anyone.
+func (s *Service) reportNewDevice(ctx context.Context, userID, email string, req LoginRequest) {
+	if s.onNewDevice == nil || req.IP == "" {
+		return
+	}
+
+	// Count earlier successful logins from this address. Zero means this is the first, which is
+	// the only case worth reporting: reporting every login would be noise, and reporting the
+	// second-ever login from the same laptop would be wrong.
+	var prior int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*)
+		  FROM auth_events
+		 WHERE user_id = $1
+		   AND event = 'login_succeeded'
+		   AND ip = NULLIF($2, '')::inet`, userID, req.IP).Scan(&prior)
+	if err != nil || prior > 0 {
+		return
+	}
+
+	s.onNewDevice(ctx, NewDeviceLogin{
+		UserID:    userID,
+		Email:     email,
+		IP:        req.IP,
+		UserAgent: req.UserAgent,
+		At:        s.cfg.Now(),
+	})
 }

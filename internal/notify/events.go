@@ -334,6 +334,19 @@ func dedupeKey(eventKey, subject string) string {
 
 // ---------------------------------------------------------------- events --
 
+// A note on the default `*_url` values below.
+//
+// A notification is read by a *customer*, and the panel only lets a customer reach /portal,
+// /account, /cart, /checkout and /tickets (see CUSTOMER_PREFIXES in web/src/routes.ts). A
+// default of "/invoices/<id>" would therefore deep-link a customer into the staff invoice
+// screen and bounce them out of their own area — a broken link in the one place a customer is
+// most likely to click it.
+//
+// So each default points at the customer-visible destination, and where no customer view
+// exists yet (orders and tickets are P10/P11 work) it points at the customer's landing page
+// rather than at a staff route. The caller should pass the exact path — it knows the record and
+// the current route shape — and the default is only the fallback for a caller that does not.
+
 // PasswordReset sends the reset mail.
 //
 // It is the templated form of PasswordResetMessage: the wording comes from the
@@ -404,7 +417,7 @@ func InvoiceIssued(ctx context.Context, tx pgx.Tx, queue *Queue, in InvoiceIssue
 		"customer_name":  in.CustomerName,
 		"total":          in.Total,
 		"due_at":         formatWhen(in.DueAt),
-		"invoice_url":    orDefault(in.InvoiceURL, "/invoices/"+in.InvoiceID),
+		"invoice_url":    orDefault(in.InvoiceURL, "/portal/invoices/"+in.InvoiceID),
 	}
 	return dispatch(ctx, tx, queue, EventNewInvoiceCreated, Target{
 		UserID: in.UserID, Email: in.Email, DedupeKey: in.InvoiceID, Vars: vars,
@@ -432,7 +445,7 @@ func InvoicePaid(ctx context.Context, tx pgx.Tx, queue *Queue, in InvoicePaidInp
 		"invoice_number": in.Number,
 		"total":          in.Total,
 		"paid_at":        formatWhen(in.PaidAt),
-		"invoice_url":    orDefault(in.InvoiceURL, "/invoices/"+in.InvoiceID),
+		"invoice_url":    orDefault(in.InvoiceURL, "/portal/invoices/"+in.InvoiceID),
 	}
 	return dispatch(ctx, tx, queue, EventInvoicePaid, Target{
 		UserID: in.UserID, Email: in.Email, DedupeKey: in.InvoiceID, Vars: vars,
@@ -461,7 +474,7 @@ func InvoicePaymentFailed(ctx context.Context, tx pgx.Tx, queue *Queue, in Invoi
 		"total":          in.Total,
 		"attempted_at":   formatWhen(in.AttemptedAt),
 		"failure_reason": orDefault(in.Reason, "the payment was declined"),
-		"invoice_url":    orDefault(in.InvoiceURL, "/invoices/"+in.InvoiceID),
+		"invoice_url":    orDefault(in.InvoiceURL, "/portal/invoices/"+in.InvoiceID),
 	}
 	return dispatch(ctx, tx, queue, EventInvoicePaymentFailed, Target{
 		UserID: in.UserID, Email: in.Email, DedupeKey: withAttempt(in.InvoiceID, in.AttemptedAt),
@@ -488,7 +501,7 @@ func OrderCreated(ctx context.Context, tx pgx.Tx, queue *Queue, in OrderCreatedI
 	vars := map[string]string{
 		"order_number": in.Number,
 		"total":        in.Total,
-		"order_url":    orDefault(in.OrderURL, "/orders/"+in.OrderID),
+		"order_url":    orDefault(in.OrderURL, "/portal"),
 	}
 	return dispatch(ctx, tx, queue, EventNewOrderCreated, Target{
 		UserID: in.UserID, Email: in.Email, DedupeKey: in.OrderID, Vars: vars,
@@ -510,7 +523,7 @@ func ServerCreated(ctx context.Context, tx pgx.Tx, queue *Queue, in ServerCreate
 	vars := map[string]string{
 		"service_name": in.ServiceName,
 		"server_name":  orDefault(in.ServerName, in.ServiceName),
-		"service_url":  orDefault(in.ServiceURL, "/services/"+in.ServiceID),
+		"service_url":  orDefault(in.ServiceURL, "/portal/services/"+in.ServiceID),
 	}
 	return dispatch(ctx, tx, queue, EventNewServerCreated, Target{
 		UserID: in.UserID, Email: in.Email, DedupeKey: in.ServiceID, Vars: vars,
@@ -536,7 +549,7 @@ func ServerSuspended(ctx context.Context, tx pgx.Tx, queue *Queue, in ServerSusp
 		"service_name": in.ServiceName,
 		"reason":       orDefault(in.Reason, "the service was suspended"),
 		"suspended_at": formatWhen(in.SuspendedAt),
-		"service_url":  orDefault(in.ServiceURL, "/services/"+in.ServiceID),
+		"service_url":  orDefault(in.ServiceURL, "/portal/services/"+in.ServiceID),
 	}
 	return dispatch(ctx, tx, queue, EventServerSuspended, Target{
 		UserID: in.UserID, Email: in.Email,
@@ -560,7 +573,7 @@ func ServerTerminated(ctx context.Context, tx pgx.Tx, queue *Queue, in ServerTer
 	vars := map[string]string{
 		"service_name":  in.ServiceName,
 		"terminated_at": formatWhen(in.TerminatedAt),
-		"service_url":   orDefault(in.ServiceURL, "/services/"+in.ServiceID),
+		"service_url":   orDefault(in.ServiceURL, "/portal/services/"+in.ServiceID),
 	}
 	return dispatch(ctx, tx, queue, EventServerTerminated, Target{
 		UserID: in.UserID, Email: in.Email, DedupeKey: in.ServiceID, Vars: vars,
@@ -586,7 +599,7 @@ func CancellationReceived(ctx context.Context, tx pgx.Tx, queue *Queue, in Cance
 	vars := map[string]string{
 		"service_name": in.ServiceName,
 		"cancels_at":   formatWhen(in.CancelsAt),
-		"service_url":  orDefault(in.ServiceURL, "/services/"+in.ServiceID),
+		"service_url":  orDefault(in.ServiceURL, "/portal/services/"+in.ServiceID),
 	}
 	return dispatch(ctx, tx, queue, EventServiceCancellationReceived, Target{
 		UserID: in.UserID, Email: in.Email, DedupeKey: in.ServiceID, Vars: vars,
@@ -614,7 +627,7 @@ func TicketMessage(ctx context.Context, tx pgx.Tx, queue *Queue, in TicketMessag
 		"ticket_subject":   in.Subject,
 		"author":           orDefault(in.Author, "Support"),
 		"ticket_excerpt":   excerpt(in.Excerpt, 400),
-		"ticket_url":       orDefault(in.TicketURL, "/tickets/"+in.TicketID),
+		"ticket_url":       orDefault(in.TicketURL, "/tickets"),
 	}
 	return dispatch(ctx, tx, queue, EventNewTicketMessage, Target{
 		UserID: in.UserID, Email: in.Email,
@@ -649,7 +662,7 @@ func NewLogin(ctx context.Context, tx pgx.Tx, queue *Queue, in NewLoginInput) (O
 		"login_at":     formatWhen(in.At),
 		"ip_address":   orDefault(in.IP, "unknown"),
 		"user_agent":   orDefault(in.UserAgent, "unknown"),
-		"security_url": orDefault(in.SecurityURL, "/account/security"),
+		"security_url": orDefault(in.SecurityURL, "/portal/profile"),
 	}
 	return dispatch(ctx, tx, queue, EventNewLoginDetected, Target{
 		UserID: in.UserID, Email: in.Email, DedupeKey: in.AuthEventID, Vars: vars,

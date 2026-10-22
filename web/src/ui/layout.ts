@@ -30,6 +30,8 @@ export interface NavGroup {
   items: NavItem[];
 }
 
+import { hasRoute } from "../routes";
+
 export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGroup[] {
   const groups: NavGroup[] = [];
   if (isStaff) {
@@ -112,7 +114,16 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
   });
 
   return groups
-    .map((group) => ({ ...group, items: group.items.filter((item) => !item.permission || can(item.permission)) }))
+    // Two filters, both of which must hold. The permission check hides an action the server would
+    // refuse; the route check hides a link the router cannot serve. The second one is what makes
+    // "a link in the panel is never a bug" true: the navigation and the route table are generated
+    // from one list, so an entry for an undeclared route is not rendered rather than leading to a
+    // not-found page. It also means a screen appears in the menu the moment its route lands,
+    // without a second edit that someone will forget.
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => (!item.permission || can(item.permission)) && hasRoute(item.href)),
+    }))
     .filter((group) => group.items.length > 0);
 }
 

@@ -25,6 +25,8 @@ cd "$(dirname "$0")/.."
 ADDR="${BILLING_DEV_ADDR:-127.0.0.1:8791}"
 PORT="${ADDR##*:}"
 PID_FILE=/tmp/billing-dev.pid
+# The same defaults scripts/dev-config.sh uses to seed the account, so the banner cannot name an
+# account that was never created.
 DEV_ADMIN_EMAIL="${DEV_ADMIN_EMAIL:-admin@dev.local}"
 DEV_ADMIN_PASSWORD="${DEV_ADMIN_PASSWORD:-dev-only-password-1}"
 
@@ -35,25 +37,13 @@ for binary in billing fakegateway fakeprov; do
   fi
 done
 
-# A server left behind by an earlier run — scripts/dev-ui.sh starts one in the background —
-# would fail this one with "address in use" after a confusing delay. Stop the one this
-# repository started and refuse to touch anything else: guessing which process holds a port is
-# how a dev script kills someone's unrelated service.
-if [[ -f "$PID_FILE" ]]; then
-  old="$(cat "$PID_FILE" 2>/dev/null || true)"
-  if [[ -n "$old" ]] && kill -0 "$old" 2>/dev/null; then
-    echo "dev: stopping the previous server (pid $old)"
-    kill "$old" 2>/dev/null || true
-    for _ in $(seq 1 40); do
-      kill -0 "$old" 2>/dev/null || break
-      sleep 0.05
-    done
-  fi
-  rm -f "$PID_FILE"
-fi
+# A server left behind by an earlier run — a `make dev` whose terminal was closed, or the
+# background one scripts/dev-ui.sh starts — would fail this one with "address in use" after a
+# confusing delay. dev-stop.sh stops only this checkout's own `bin/billing serve`, and says so.
+bash scripts/dev-stop.sh --quiet
 if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
-  echo "dev: 127.0.0.1:$PORT is already in use. Stop that process, or run with another" >&2
-  echo "     address: BILLING_DEV_ADDR=127.0.0.1:8792 make dev" >&2
+  echo "dev: 127.0.0.1:$PORT is already in use by a process this checkout did not start." >&2
+  echo "     Stop it, or use another address: BILLING_DEV_ADDR=127.0.0.1:8792 make dev" >&2
   exit 1
 fi
 
@@ -70,6 +60,11 @@ export BILLING_PUBLIC_URL="http://$ADDR"
 export BILLING_GATEWAY_EXTENSION="$PWD/bin/fakegateway"
 export BILLING_PROVISIONER_EXTENSION="$PWD/bin/fakeprov"
 export BILLING_GATEWAY_ACCOUNT="${BILLING_GATEWAY_ACCOUNT:-acct_test}"
+# The provider name is set here as well as in the settings table, and both are needed: the
+# panel and the jobs resolve it from the table (where the environment would otherwise win),
+# but the HTTP server builds its webhook verifier from the environment alone at startup. With
+# only the row, every delivery is refused with "no webhook verifier configured".
+export BILLING_GATEWAY_PROVIDER="${BILLING_GATEWAY_PROVIDER:-fake}"
 # The core verifies a delivery with this. Without it every webhook is rejected, which is the
 # correct default for an unconfigured panel and a puzzling one on a workstation.
 export BILLING_WEBHOOK_SECRET="${BILLING_WEBHOOK_SECRET:-whsec_dev}"
@@ -121,7 +116,7 @@ done
 cat <<EOF
 
   panel      http://$ADDR
-  sign in    $DEV_ADMIN_EMAIL / $DEV_ADMIN_PASSWORD
+  sign in    $DEV_ADMIN_EMAIL / $DEV_ADMIN_PASSWORD   (dev fixture account)
   gateway    fake  (bin/fakegateway, webhook POST /webhooks/fake)
   provision  fake  (bin/fakeprov)
   jobs       $jobs_mode

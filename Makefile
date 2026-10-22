@@ -3,7 +3,7 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help dev dev-stop dev-config dev-reset db-up db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test
+.PHONY: help dev dev-stop dev-config dev-reset db-up db-ensure db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test
 
 help:
 	@echo "dev        database + schema + fixtures + a staff account, then serve (Ctrl-C stops)"
@@ -46,6 +46,17 @@ db-wait:
 db-up:
 	$(COMPOSE) up -d
 	@$(MAKE) --no-print-directory db-wait
+
+# Start the cluster only when it is not already answering. `podman-compose up -d` reports a
+# container-name conflict when the container it wants to create already exists under a
+# different project label — the database is up and healthy, and the message is noise on every
+# second run of a target meant to be run repeatedly.
+db-ensure:
+	@if pg_isready -h 127.0.0.1 -p $(POSTGRES_PORT) -U $(POSTGRES_SUPERUSER) -q 2>/dev/null; then \
+		echo "postgres already answering on 127.0.0.1:$(POSTGRES_PORT)"; \
+	else \
+		$(MAKE) --no-print-directory db-up; \
+	fi
 
 db-down:
 	$(COMPOSE) down
@@ -97,7 +108,7 @@ extensions:
 #
 # Deliberately not part of `verify`: it starts a server and waits, which is a thing a person
 # does, not a thing CI does.
-dev: db-up migrate build extensions dev-config
+dev: db-ensure migrate build extensions dev-config
 	@bash scripts/dev.sh
 
 # The fixture configuration on its own, for a database that is already running: the gateway and
@@ -111,15 +122,11 @@ dev-config: build
 dev-reset: db-reset
 	@$(MAKE) --no-print-directory dev
 
-# scripts/dev-ui.sh starts a server in the background; this is how to stop one that outlived its
-# terminal. Matched by the pid file that script writes, never by process name.
+# Stop the dev server this checkout started, whether `make dev` left it in a closed terminal or
+# scripts/dev-ui.sh started it in the background. Matched by pid file and by the exact command
+# line of this checkout's own bin/billing serve — never by port or by process name alone.
 dev-stop:
-	@if [ -f /tmp/billing-dev.pid ]; then \
-		pid="$$(cat /tmp/billing-dev.pid)"; \
-		if kill "$$pid" 2>/dev/null; then echo "stopped dev server (pid $$pid)"; \
-		else echo "no dev server is running (stale pid $$pid)"; fi; \
-		rm -f /tmp/billing-dev.pid; \
-	else echo "no dev server is running"; fi
+	@bash scripts/dev-stop.sh
 
 # The frontend is a separate toolchain on purpose: `go build` never needs Node, because the
 # built dist/ is committed and embedded. These targets exist for when the frontend changes.

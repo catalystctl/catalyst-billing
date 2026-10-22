@@ -549,6 +549,14 @@ func (c *Client) GetEvents(ctx context.Context, query url.Values, body any) (*Re
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetExtensionsHooks calls GET /api/v1/extensions/hooks.
+//
+// Extension-contributed navigation and service actions
+func (c *Client) GetExtensionsHooks(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/extensions/hooks"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetHealthz calls GET /healthz.
 //
 // Liveness
@@ -2036,6 +2044,24 @@ func (c *Client) PostPortalServicesByIdCancellation(ctx context.Context, id stri
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostPortalServicesByIdHooksByExtensionByAction calls POST /api/v1/portal/services/{id}/hooks/{extension}/{action}.
+//
+// # Call an extension's service action on your own service
+//
+// Permission: service:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+// extension is the extension path parameter.
+// action is the action path parameter.
+func (c *Client) PostPortalServicesByIdHooksByExtensionByAction(ctx context.Context, id string, extension string, action string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/services/{id}/hooks/{extension}/{action}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	path = strings.ReplaceAll(path, "{extension}", url.PathEscape(extension))
+	path = strings.ReplaceAll(path, "{action}", url.PathEscape(action))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostPortalServicesByIdUpgrade calls POST /api/v1/portal/services/{id}/upgrade.
 //
 // # Upgrade or downgrade a service
@@ -2566,6 +2592,22 @@ func (c *Client) PostStaffServicesByIdCancellation(ctx context.Context, id strin
 func (c *Client) PostStaffServicesByIdHolds(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/services/{id}/holds"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffServicesByIdHooksByExtensionByAction calls POST /api/v1/staff/services/{id}/hooks/{extension}/{action}.
+//
+// Call an extension's service action, as staff Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+// extension is the extension path parameter.
+// action is the action path parameter.
+func (c *Client) PostStaffServicesByIdHooksByExtensionByAction(ctx context.Context, id string, extension string, action string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/services/{id}/hooks/{extension}/{action}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	path = strings.ReplaceAll(path, "{extension}", url.PathEscape(extension))
+	path = strings.ReplaceAll(path, "{action}", url.PathEscape(action))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 

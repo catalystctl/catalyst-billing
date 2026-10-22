@@ -12,9 +12,9 @@
 
 import { h } from "../lib/dom";
 import type { Amount } from "../lib/format";
-import { dateTime, humanStatus, isoDate, relative, shortId } from "../lib/format";
+import { dateTime, humanStatus, isoDate, relative, shortId, titleCase } from "../lib/format";
 import type { Ctx } from "../lib/types";
-import { btn, card, cellMain, emptyState, field, input, moneyEl, pageHead, select, statusBadge } from "../ui/kit";
+import { badge, btn, card, cellMain, emptyState, field, input, moneyEl, pageHead, select, statusBadge } from "../ui/kit";
 import { createTable, type Column, type Table } from "../ui/table";
 
 export const meta = { title: "Payments", crumb: "Payments" };
@@ -30,6 +30,10 @@ interface PaymentRow {
   status: string;
   received_at: string;
   invoice_ids: string[];
+  /** Set only for a payment a staff member recorded outside a gateway; null for a gateway payment. */
+  method: string | null;
+  /** The operator's note on an offline payment, null otherwise. */
+  note: string | null;
 }
 
 /** The CHECK constraint on payments.status, in the order an operator thinks about them. */
@@ -39,6 +43,7 @@ interface Filters {
   provider: string;
   status: string;
   customer_id: string;
+  method: string;
   from: string;
   to: string;
 }
@@ -51,6 +56,7 @@ export default async function paymentsPage(ctx: Ctx): Promise<Node> {
     provider: query.get("provider") ?? "",
     status: query.get("status") ?? "",
     customer_id: query.get("customer_id") ?? "",
+    method: query.get("method") ?? "",
     from: dayValue(query.get("from")),
     to: dayValue(query.get("to")),
   };
@@ -64,6 +70,14 @@ export default async function paymentsPage(ctx: Ctx): Promise<Node> {
   const statusSelect = select(
     [{ value: "", label: "Any status" }, ...STATUSES.map((s) => ({ value: s, label: humanStatus(s) }))],
     { id: "payment-filter-status", value: state.status },
+  );
+  // The offline methods are fetched rather than hardcoded, so the filter offers exactly what the
+  // server accepts. A failed fetch costs the filter, not the list: the page still works, which is
+  // the right trade for a convenience control on a read-only screen.
+  const methodOptions = await offlineMethods(ctx);
+  const methodSelect = select(
+    [{ value: "", label: "Any method" }, ...methodOptions.map((m) => ({ value: m.value, label: m.label }))],
+    { id: "payment-filter-method", value: state.method },
   );
   const customerInput = input({
     id: "payment-filter-customer",
@@ -106,6 +120,13 @@ export default async function paymentsPage(ctx: Ctx): Promise<Node> {
         cellMain(h("span", null, row.provider), h("span", { class: "faint mono" }, row.provider_account)),
     },
     {
+      // How an offline payment arrived. A gateway payment has no method here — the provider owns
+      // that fact — so the column says "Gateway" rather than guessing one.
+      key: "method",
+      label: "Method",
+      render: (row) => (row.method ? badge(titleCase(row.method), "info") : h("span", { class: "faint" }, "Gateway")),
+    },
+    {
       key: "status",
       label: "Status",
       render: (row) => statusBadge(row.status),
@@ -130,13 +151,14 @@ export default async function paymentsPage(ctx: Ctx): Promise<Node> {
     limit: 25,
     empty: {
       title: "No payments match",
-      body: "Payments arrive from the provider webhook. A narrow date range or a mistyped provider name is the usual reason this list is empty.",
+      body: "Payments arrive from the provider webhook, or from a staff member recording a bank transfer on an invoice. A narrow date range or a mistyped provider name is the usual reason this list is empty.",
       action: btn("Clear filters", {
         size: "sm",
         icon: "x",
         onclick: () => {
           providerInput.value = "";
           customerInput.value = "";
+          methodSelect.value = "";
           fromInput.value = "";
           toInput.value = "";
           statusSelect.value = "";
@@ -153,12 +175,14 @@ export default async function paymentsPage(ctx: Ctx): Promise<Node> {
     state.provider = providerInput.value.trim();
     state.status = statusSelect.value;
     state.customer_id = customerInput.value.trim();
+    state.method = methodSelect.value;
     state.from = fromInput.value;
     state.to = toInput.value;
     ctx.replaceQuery({
       provider: state.provider || null,
       status: state.status || null,
       customer_id: state.customer_id || null,
+      method: state.method || null,
       from: state.from || null,
       to: state.to || null,
     });
@@ -169,6 +193,7 @@ export default async function paymentsPage(ctx: Ctx): Promise<Node> {
   // Apply button (Enter in a field submits the form), because reloading a table on every
   // keystroke of a UUID is noise.
   statusSelect.addEventListener("change", apply);
+  methodSelect.addEventListener("change", apply);
   fromInput.addEventListener("change", apply);
   toInput.addEventListener("change", apply);
 
@@ -184,6 +209,7 @@ export default async function paymentsPage(ctx: Ctx): Promise<Node> {
     },
     field({ label: "Provider", control: providerInput, id: "payment-filter-provider", hint: "Exact provider name" }),
     field({ label: "Status", control: statusSelect, id: "payment-filter-status" }),
+    field({ label: "Method", control: methodSelect, id: "payment-filter-method", hint: "How an offline payment arrived" }),
     field({ label: "Customer", control: customerInput, id: "payment-filter-customer", hint: "Exact customer id" }),
     field({ label: "From", control: fromInput, id: "payment-filter-from" }),
     field({ label: "To", control: toInput, id: "payment-filter-to" }),
@@ -195,7 +221,7 @@ export default async function paymentsPage(ctx: Ctx): Promise<Node> {
     { class: "page" },
     pageHead({
       title: "Payments",
-      sub: "Money the provider actually collected. A payment is immutable: corrections are refunds or credit notes, never edits.",
+      sub: "Money that was actually collected — by the provider, or recorded by staff for a bank transfer, cash or cheque. A payment is immutable: corrections are refunds or credit notes, never edits.",
       actions: btn("Invoices", { href: "/invoices", icon: "invoice", size: "sm" }),
     }),
     card({ flush: true, tight: true, body: filters }),
@@ -208,9 +234,22 @@ function queryOf(state: Filters): Record<string, string | undefined> {
     provider: state.provider || undefined,
     status: state.status || undefined,
     customer_id: state.customer_id || undefined,
+    method: state.method || undefined,
     from: startOfDay(state.from),
     to: endOfDay(state.to),
   };
+}
+
+/** The offline payment vocabulary, or an empty list when the endpoint cannot be read. */
+async function offlineMethods(ctx: Ctx): Promise<{ value: string; label: string }[]> {
+  try {
+    const res = await ctx.api.get<{ methods?: { value: string; label: string }[] }>(
+      "/api/v1/staff/payment-methods/offline",
+    );
+    return res.methods ?? [];
+  } catch {
+    return [];
+  }
 }
 
 /** The date input value ("2024-05-01") back from an RFC3339 query parameter. */

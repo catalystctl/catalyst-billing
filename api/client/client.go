@@ -1821,6 +1821,16 @@ func (c *Client) GetStaffOrdersById(ctx context.Context, id string, query url.Va
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffPaymentmethodsOffline calls GET /api/v1/staff/payment-methods/offline.
+//
+// # The offline payment methods
+//
+// Permission: payment:reconcile. Staff only.
+func (c *Client) GetStaffPaymentmethodsOffline(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/payment-methods/offline"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffPayments calls GET /api/v1/staff/payments.
 //
 // # Payment history
@@ -2889,6 +2899,20 @@ func (c *Client) PostStaffInvoicesByIdCreditnotes(ctx context.Context, id string
 // id is the id path parameter.
 func (c *Client) PostStaffInvoicesByIdIssue(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/invoices/{id}/issue"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffInvoicesByIdPayments calls POST /api/v1/staff/invoices/{id}/payments.
+//
+// # Record a payment that arrived outside a gateway
+//
+// Permission: payment:reconcile. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffInvoicesByIdPayments(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/invoices/{id}/payments"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }

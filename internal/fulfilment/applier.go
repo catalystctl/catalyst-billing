@@ -13,9 +13,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/invoicepdf"
 	"github.com/catalyst/billing/internal/money"
+	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
@@ -24,10 +27,25 @@ import (
 // Applier implements payments.Applier on top of the billing package.
 type Applier struct {
 	pool *store.Pool
+	// notify is the outbox the "your invoice is paid" message is written to. It is optional so
+	// a test or a deployment without mail configured still works; when it is nil the payment
+	// path is unchanged, because telling the customer is not a precondition for taking money.
+	notify *notify.Queue
 }
 
 // NewApplier constructs an Applier.
 func NewApplier(pool *store.Pool) *Applier { return &Applier{pool: pool} }
+
+// WithNotifier attaches the outbox used to tell a customer their invoice was paid.
+//
+// It is a builder rather than a constructor argument so every existing caller — including the
+// e2e slice and the fulfilment tests — keeps compiling and keeps its current behaviour. The
+// notification is written inside the settlement transaction, so a paid invoice and the message
+// about it commit together or not at all.
+func (a *Applier) WithNotifier(q *notify.Queue) *Applier {
+	a.notify = q
+	return a
+}
 
 // ApplySettledPayment records a provider-confirmed payment and enqueues
 // provisioning for anything the paid invoice bought.
@@ -57,6 +75,40 @@ func (a *Applier) ApplySettledPayment(ctx context.Context, tx pgx.Tx, p payments
 	// Provisioning is enqueued only when this payment actually settled the
 	// invoice. A partial payment moves money but buys nothing yet.
 	if res.InvoicePaid {
+		// A proforma carries no number until it is paid, which is what makes it provisional.
+		// Converting here — in the same transaction that settled the payment — is what keeps the
+		// two facts inseparable: an invoice cannot be paid without becoming real, and a real
+		// invoice cannot appear without the money that earned it. A conversion failure rolls the
+		// payment back, which is the right direction to fail: a settled payment with an unnumbered
+		// document is a reconciliation problem nobody can reconstruct later.
+		//
+		// ConvertProformaOnPayment is a no-op for an ordinary invoice, so this does not branch on
+		// whether the invoice was provisional.
+		numbering, err := invoicepdf.LoadNumbering(ctx, tx)
+		if err != nil {
+			return payments.ApplyResult{}, err
+		}
+		series, err := numbering.InvoiceSeries(time.Now())
+		if err != nil {
+			return payments.ApplyResult{}, err
+		}
+		if _, err := invoicepdf.ConvertProformaOnPayment(ctx, tx, p.InvoiceID, series); err != nil {
+			return payments.ApplyResult{}, err
+		}
+
+		// Tell the customer, in this transaction. A payment that settled and a message that says
+		// so are one fact, so they commit together: if the outbox write fails the money is not
+		// taken either, which is the honest ordering for a customer-facing promise.
+		//
+		// This is deliberately best-effort with respect to *content*: a missing recipient or a
+		// disabled template records a reason on the outcome rather than failing the payment. The
+		// notify package's own rule is that a missing template is a hard error, and it is — inside
+		// dispatch — but the distinction that matters here is that a customer who has not finished
+		// registering has no address to send to, and that must not stop their payment landing.
+		if err := a.notifyInvoicePaid(ctx, tx, p.InvoiceID); err != nil {
+			return payments.ApplyResult{}, err
+		}
+
 		if err := a.activateSubscription(ctx, tx, p.InvoiceID); err != nil {
 			return payments.ApplyResult{}, err
 		}
@@ -251,4 +303,66 @@ func currencyOf(code string) (money.Currency, error) {
 		return cur, nil
 	}
 	return money.NewCurrency(code, 2)
+}
+
+// notifyInvoicePaid writes the "your invoice is paid" message for a settled invoice.
+//
+// It resolves the recipient from the billing account rather than assuming the customer has a
+// login: a staff-created customer may have an email and no user, and that customer still deserves
+// to be told. When there is no address at all the call is skipped — notify.Target treats an
+// empty address as "do not send" rather than guessing one.
+//
+// The invoice number is read after the proforma conversion above, so a provisional document that
+// just became real is announced with the number it actually has.
+func (a *Applier) notifyInvoicePaid(ctx context.Context, tx pgx.Tx, invoiceID string) error {
+	if a.notify == nil {
+		return nil
+	}
+
+	var (
+		number   string
+		total    int64
+		currency string
+		email    string
+		name     string
+		userID   *string
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT COALESCE(i.number, ''), i.total_minor, i.currency,
+		       c.email, c.name,
+		       (SELECT ca.user_id::text FROM customer_accounts ca WHERE ca.customer_id = c.id LIMIT 1)
+		  FROM invoices i
+		  JOIN customers c ON c.id = i.customer_id
+		 WHERE i.id = $1`, invoiceID).
+		Scan(&number, &total, &currency, &email, &name, &userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("notify invoice paid: read invoice: %w", err)
+	}
+
+	cur, err := currencyOf(currency)
+	if err != nil {
+		return fmt.Errorf("notify invoice paid: %w", err)
+	}
+
+	in := notify.InvoicePaidInput{
+		Email:      email,
+		InvoiceID:  invoiceID,
+		Number:     number,
+		Total:      money.New(total, cur).Format(),
+		PaidAt:     time.Now().UTC(),
+		InvoiceURL: "/portal/invoices/" + invoiceID,
+	}
+	if userID != nil {
+		in.UserID = *userID
+	}
+	_ = name // the template addresses the customer generically; a name is not required.
+
+	_, err = notify.InvoicePaid(ctx, tx, a.notify, in)
+	if err != nil {
+		return fmt.Errorf("notify invoice paid: %w", err)
+	}
+	return nil
 }

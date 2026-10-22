@@ -191,6 +191,44 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values,
 	return out, nil
 }
 
+// DeletePortalCart calls DELETE /api/v1/portal/cart.
+//
+// # Empty the cart
+//
+// Permission: customer:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) DeletePortalCart(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/cart"
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
+// DeletePortalCartCoupon calls DELETE /api/v1/portal/cart/coupon.
+//
+// # Remove the promotion from the cart
+//
+// Permission: customer:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) DeletePortalCartCoupon(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/cart/coupon"
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
+// DeletePortalCartItemsById calls DELETE /api/v1/portal/cart/items/{id}.
+//
+// # Remove a line
+//
+// Permission: customer:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeletePortalCartItemsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/cart/items/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffApikeysById calls DELETE /api/v1/staff/api-keys/{id}.
 //
 // # Revoke an API key
@@ -261,6 +299,20 @@ func (c *Client) DeleteStaffConfigoptionsByIdPrices(ctx context.Context, id stri
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffCurrenciesByCode calls DELETE /api/v1/staff/currencies/{code}.
+//
+// # Delete a currency that has never been used
+//
+// Permission: currency:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// code is the code path parameter.
+func (c *Client) DeleteStaffCurrenciesByCode(ctx context.Context, code string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/currencies/{code}"
+	path = strings.ReplaceAll(path, "{code}", url.PathEscape(code))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffHoldsByHoldid calls DELETE /api/v1/staff/holds/{hold_id}.
 //
 // # Clear a manual hold
@@ -272,6 +324,20 @@ func (c *Client) DeleteStaffConfigoptionsByIdPrices(ctx context.Context, id stri
 func (c *Client) DeleteStaffHoldsByHoldid(ctx context.Context, holdId string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/holds/{hold_id}"
 	path = strings.ReplaceAll(path, "{hold_id}", url.PathEscape(holdId))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
+// DeleteStaffTaxratesById calls DELETE /api/v1/staff/tax-rates/{id}.
+//
+// # Delete a rate that never took effect
+//
+// Permission: tax:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeleteStaffTaxratesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tax-rates/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
@@ -314,6 +380,14 @@ func (c *Client) GetCatalog(ctx context.Context, query url.Values, body any) (*R
 func (c *Client) GetCatalogBySlug(ctx context.Context, slug string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/catalog/{slug}"
 	path = strings.ReplaceAll(path, "{slug}", url.PathEscape(slug))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetCurrencies calls GET /api/v1/currencies.
+//
+// The currencies offered at checkout
+func (c *Client) GetCurrencies(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/currencies"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -371,6 +445,38 @@ func (c *Client) GetPortalBillingprofile(ctx context.Context, query url.Values, 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetPortalCart calls GET /api/v1/portal/cart.
+//
+// # The caller's cart
+//
+// Permission: customer:read:self.
+func (c *Client) GetPortalCart(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/cart"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalCartTotals calls GET /api/v1/portal/cart/totals.
+//
+// # Price the cart from the catalog
+//
+// Permission: customer:read:self.
+func (c *Client) GetPortalCartTotals(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/cart/totals"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalCreditnotesByIdPdf calls GET /api/v1/portal/credit-notes/{id}/pdf.
+//
+// # Download a credit note as a PDF
+//
+// Permission: invoice:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalCreditnotesByIdPdf(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/credit-notes/{id}/pdf"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetPortalInvoices calls GET /api/v1/portal/invoices.
 //
 // # The customer's invoices
@@ -390,6 +496,48 @@ func (c *Client) GetPortalInvoices(ctx context.Context, query url.Values, body a
 func (c *Client) GetPortalInvoicesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/invoices/{id}"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalInvoicesByIdPdf calls GET /api/v1/portal/invoices/{id}/pdf.
+//
+// # Download an invoice as a PDF
+//
+// Permission: invoice:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalInvoicesByIdPdf(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/invoices/{id}/pdf"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalNotifications calls GET /api/v1/portal/notifications.
+//
+// # List the caller's in-app notifications
+//
+// Permission: customer:read:self.
+func (c *Client) GetPortalNotifications(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/notifications"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalNotificationsPreferences calls GET /api/v1/portal/notifications/preferences.
+//
+// # Read the caller's notification preferences
+//
+// Permission: customer:read:self.
+func (c *Client) GetPortalNotificationsPreferences(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/notifications/preferences"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalNotificationsUnreadcount calls GET /api/v1/portal/notifications/unread-count.
+//
+// # Unread notification count
+//
+// Permission: customer:read:self.
+func (c *Client) GetPortalNotificationsUnreadcount(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/notifications/unread-count"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -458,6 +606,50 @@ func (c *Client) GetPortalServicesByIdConfig(ctx context.Context, id string, que
 func (c *Client) GetPortalServicesByIdUpgradeoptions(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/services/{id}/upgrade-options"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalTickets calls GET /api/v1/portal/tickets.
+//
+// # The customer's tickets
+//
+// Permission: ticket:read:self.
+func (c *Client) GetPortalTickets(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalTicketsAttachmentsById calls GET /api/v1/portal/tickets/attachments/{id}.
+//
+// # Download an attachment
+//
+// Permission: ticket:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalTicketsAttachmentsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/attachments/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalTicketsById calls GET /api/v1/portal/tickets/{id}.
+//
+// # One ticket thread
+//
+// Permission: ticket:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalTicketsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalTicketsMeta calls GET /api/v1/portal/tickets/meta.
+//
+// # The ticket form's configuration
+//
+// Permission: ticket:read:self.
+func (c *Client) GetPortalTicketsMeta(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/meta"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -558,6 +750,62 @@ func (c *Client) GetStaffConfigoptions(ctx context.Context, query url.Values, bo
 // Permission: invoice:read:all. Staff only.
 func (c *Client) GetStaffConfigoptionsResolve(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/config-options/resolve"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCoupons calls GET /api/v1/staff/coupons.
+//
+// # List promotions
+//
+// Permission: coupon:read:all. Staff only.
+func (c *Client) GetStaffCoupons(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/coupons"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCouponsById calls GET /api/v1/staff/coupons/{id}.
+//
+// # One promotion
+//
+// Permission: coupon:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffCouponsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/coupons/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCouponsByIdRedemptions calls GET /api/v1/staff/coupons/{id}/redemptions.
+//
+// # Who used a promotion, and what it cost
+//
+// Permission: coupon:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffCouponsByIdRedemptions(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/coupons/{id}/redemptions"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCreditnotesByIdPdf calls GET /api/v1/staff/credit-notes/{id}/pdf.
+//
+// # Download any credit note as a PDF
+//
+// Permission: invoice:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffCreditnotesByIdPdf(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/credit-notes/{id}/pdf"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCurrencies calls GET /api/v1/staff/currencies.
+//
+// # List every configured currency
+//
+// Permission: currency:write. Staff only.
+func (c *Client) GetStaffCurrencies(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/currencies"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -662,6 +910,40 @@ func (c *Client) GetStaffInvoices(ctx context.Context, query url.Values, body an
 func (c *Client) GetStaffInvoicesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/invoices/{id}"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffInvoicesByIdPdf calls GET /api/v1/staff/invoices/{id}/pdf.
+//
+// # Download any invoice as a PDF
+//
+// Permission: invoice:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffInvoicesByIdPdf(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/invoices/{id}/pdf"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffNotificationtemplates calls GET /api/v1/staff/notification-templates.
+//
+// # List notification templates
+//
+// Permission: notification:write. Staff only.
+func (c *Client) GetStaffNotificationtemplates(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/notification-templates"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffNotificationtemplatesByEventkey calls GET /api/v1/staff/notification-templates/{event_key}.
+//
+// # Read one notification template
+//
+// Permission: notification:write. Staff only.
+// eventKey is the event_key path parameter.
+func (c *Client) GetStaffNotificationtemplatesByEventkey(ctx context.Context, eventKey string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/notification-templates/{event_key}"
+	path = strings.ReplaceAll(path, "{event_key}", url.PathEscape(eventKey))
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -789,6 +1071,72 @@ func (c *Client) GetStaffServicesByIdSuspensioneligibility(ctx context.Context, 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffTaxrates calls GET /api/v1/staff/tax-rates.
+//
+// # List jurisdiction tax rates
+//
+// Permission: tax:write. Staff only.
+func (c *Client) GetStaffTaxrates(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tax-rates"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffTaxratesById calls GET /api/v1/staff/tax-rates/{id}.
+//
+// # One tax rate
+//
+// Permission: tax:write. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffTaxratesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tax-rates/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffTickets calls GET /api/v1/staff/tickets.
+//
+// # The support queue
+//
+// Permission: ticket:read:all. Staff only.
+func (c *Client) GetStaffTickets(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffTicketsAttachmentsById calls GET /api/v1/staff/tickets/attachments/{id}.
+//
+// # Download any attachment
+//
+// Permission: ticket:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffTicketsAttachmentsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/attachments/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffTicketsById calls GET /api/v1/staff/tickets/{id}.
+//
+// # One ticket thread, as staff
+//
+// Permission: ticket:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffTicketsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffTicketsMeta calls GET /api/v1/staff/tickets/meta.
+//
+// # The queue's configuration
+//
+// Permission: ticket:read:all. Staff only.
+func (c *Client) GetStaffTicketsMeta(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/meta"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffUpgrades calls GET /api/v1/staff/upgrades.
 //
 // # The pending-upgrade queue
@@ -807,6 +1155,20 @@ func (c *Client) GetStaffUpgrades(ctx context.Context, query url.Values, body an
 func (c *Client) GetStaffWebhooks(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/webhooks"
 	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// PatchStaffTicketsById calls PATCH /api/v1/staff/tickets/{id}.
+//
+// # Change a ticket's status, priority or department
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PatchStaffTicketsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PATCH", path, query, body, true, true)
 }
 
 // PostAuthLogin calls POST /api/v1/auth/login.
@@ -861,6 +1223,15 @@ func (c *Client) PostAuthMfaVerify(ctx context.Context, query url.Values, body a
 	return c.do(ctx, "POST", path, query, body, false, false)
 }
 
+// PostAuthPasswordChange calls POST /api/v1/auth/password/change.
+//
+// Change your own password
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+func (c *Client) PostAuthPasswordChange(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/password/change"
+	return c.do(ctx, "POST", path, query, body, true, false)
+}
+
 // PostAuthPasswordresetComplete calls POST /api/v1/auth/password-reset/complete.
 //
 // Complete a password reset
@@ -877,12 +1248,44 @@ func (c *Client) PostAuthPasswordresetRequest(ctx context.Context, query url.Val
 	return c.do(ctx, "POST", path, query, body, false, false)
 }
 
+// PostAuthRegister calls POST /api/v1/auth/register.
+//
+// Create a customer account
+func (c *Client) PostAuthRegister(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/register"
+	return c.do(ctx, "POST", path, query, body, false, false)
+}
+
 // PostAuthVerifyRequest calls POST /api/v1/auth/verify/request.
 //
 // Request an email verification message
 func (c *Client) PostAuthVerifyRequest(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/auth/verify/request"
 	return c.do(ctx, "POST", path, query, body, false, false)
+}
+
+// PostPortalCartCoupon calls POST /api/v1/portal/cart/coupon.
+//
+// # Apply a promotion to the cart
+//
+// Permission: customer:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostPortalCartCoupon(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/cart/coupon"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalCartItems calls POST /api/v1/portal/cart/items.
+//
+// # Add a selection to the cart
+//
+// Permission: customer:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostPortalCartItems(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/cart/items"
+	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
 // PostPortalInvoicesByIdCheckout calls POST /api/v1/portal/invoices/{id}/checkout.
@@ -896,6 +1299,44 @@ func (c *Client) PostAuthVerifyRequest(ctx context.Context, query url.Values, bo
 func (c *Client) PostPortalInvoicesByIdCheckout(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/invoices/{id}/checkout"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalNotificationsByIdRead calls POST /api/v1/portal/notifications/{id}/read.
+//
+// # Mark one notification read
+//
+// Permission: customer:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostPortalNotificationsByIdRead(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/notifications/{id}/read"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalNotificationsReadall calls POST /api/v1/portal/notifications/read-all.
+//
+// # Mark every notification read
+//
+// Permission: customer:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostPortalNotificationsReadall(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/notifications/read-all"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalOrders calls POST /api/v1/portal/orders.
+//
+// # Buy products as the signed-in customer
+//
+// Permission: invoice:pay:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostPortalOrders(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/orders"
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
@@ -937,6 +1378,59 @@ func (c *Client) PostPortalServicesByIdCancellation(ctx context.Context, id stri
 // id is the id path parameter.
 func (c *Client) PostPortalServicesByIdUpgrade(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/services/{id}/upgrade"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalTickets calls POST /api/v1/portal/tickets.
+//
+// # Open a ticket
+//
+// Permission: ticket:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostPortalTickets(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalTicketsByIdAttachments calls POST /api/v1/portal/tickets/{id}/attachments.
+//
+// # Attach a file to the customer's own ticket
+//
+// Permission: ticket:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// id is the id path parameter.
+func (c *Client) PostPortalTicketsByIdAttachments(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/{id}/attachments"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, false)
+}
+
+// PostPortalTicketsByIdClose calls POST /api/v1/portal/tickets/{id}/close.
+//
+// # Close a ticket
+//
+// Permission: ticket:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostPortalTicketsByIdClose(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/{id}/close"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalTicketsByIdReplies calls POST /api/v1/portal/tickets/{id}/replies.
+//
+// # Reply to a ticket
+//
+// Permission: ticket:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostPortalTicketsByIdReplies(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/{id}/replies"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
@@ -1067,6 +1561,30 @@ func (c *Client) PostStaffConfigoptions(ctx context.Context, query url.Values, b
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffCoupons calls POST /api/v1/staff/coupons.
+//
+// # Create a promotion
+//
+// Permission: coupon:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffCoupons(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/coupons"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffCurrencies calls POST /api/v1/staff/currencies.
+//
+// # Add a currency
+//
+// Permission: currency:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffCurrencies(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/currencies"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffCustomersByIdCreditApply calls POST /api/v1/staff/customers/{id}/credit/apply.
 //
 // # Apply customer credit to an invoice
@@ -1121,6 +1639,20 @@ func (c *Client) PostStaffInvoicesByIdIssue(ctx context.Context, id string, quer
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffInvoicesByIdProforma calls POST /api/v1/staff/invoices/{id}/proforma.
+//
+// # Issue a draft as a provisional, unnumbered invoice
+//
+// Permission: invoice:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffInvoicesByIdProforma(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/invoices/{id}/proforma"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffInvoicesByIdVoid calls POST /api/v1/staff/invoices/{id}/void.
 //
 // # Void an invoice
@@ -1132,6 +1664,34 @@ func (c *Client) PostStaffInvoicesByIdIssue(ctx context.Context, id string, quer
 func (c *Client) PostStaffInvoicesByIdVoid(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/invoices/{id}/void"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffInvoicesByIdVoidreason calls POST /api/v1/staff/invoices/{id}/void-reason.
+//
+// # Void an invoice and record the reason on it
+//
+// Permission: invoice:void. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffInvoicesByIdVoidreason(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/invoices/{id}/void-reason"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffNotificationtemplatesByEventkeyReset calls POST /api/v1/staff/notification-templates/{event_key}/reset.
+//
+// # Restore a template's shipped wording
+//
+// Permission: notification:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// eventKey is the event_key path parameter.
+func (c *Client) PostStaffNotificationtemplatesByEventkeyReset(ctx context.Context, eventKey string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/notification-templates/{event_key}/reset"
+	path = strings.ReplaceAll(path, "{event_key}", url.PathEscape(eventKey))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
@@ -1245,6 +1805,73 @@ func (c *Client) PostStaffServicesByIdUpgrade(ctx context.Context, id string, qu
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffTaxrates calls POST /api/v1/staff/tax-rates.
+//
+// # Append a tax rate
+//
+// Permission: tax:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffTaxrates(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tax-rates"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffTicketsByIdAssign calls POST /api/v1/staff/tickets/{id}/assign.
+//
+// # Assign or unassign a ticket
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffTicketsByIdAssign(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}/assign"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffTicketsByIdAttachments calls POST /api/v1/staff/tickets/{id}/attachments.
+//
+// # Attach a file to any ticket
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// id is the id path parameter.
+func (c *Client) PostStaffTicketsByIdAttachments(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}/attachments"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, false)
+}
+
+// PostStaffTicketsByIdClose calls POST /api/v1/staff/tickets/{id}/close.
+//
+// # Close a ticket as staff
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffTicketsByIdClose(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}/close"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffTicketsByIdReplies calls POST /api/v1/staff/tickets/{id}/replies.
+//
+// # Reply as staff
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffTicketsByIdReplies(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}/replies"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostWebhooksByProvider calls POST /webhooks/{provider}.
 //
 // Ingest one provider webhook delivery
@@ -1264,6 +1891,32 @@ func (c *Client) PostWebhooksByProvider(ctx context.Context, provider string, qu
 // An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
 func (c *Client) PutPortalBillingprofile(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/billing-profile"
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutPortalCartItemsById calls PUT /api/v1/portal/cart/items/{id}.
+//
+// # Set a line's quantity
+//
+// Permission: customer:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutPortalCartItemsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/cart/items/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutPortalNotificationsPreferences calls PUT /api/v1/portal/notifications/preferences.
+//
+// # Replace the caller's notification preferences
+//
+// Permission: customer:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PutPortalNotificationsPreferences(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/notifications/preferences"
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }
 
@@ -1337,6 +1990,34 @@ func (c *Client) PutStaffConfigoptionsByIdPrices(ctx context.Context, id string,
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }
 
+// PutStaffCouponsById calls PUT /api/v1/staff/coupons/{id}.
+//
+// # Edit or retire a promotion
+//
+// Permission: coupon:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutStaffCouponsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/coupons/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffCurrenciesByCode calls PUT /api/v1/staff/currencies/{code}.
+//
+// # Edit a currency's presentation or default state
+//
+// Permission: currency:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// code is the code path parameter.
+func (c *Client) PutStaffCurrenciesByCode(ctx context.Context, code string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/currencies/{code}"
+	path = strings.ReplaceAll(path, "{code}", url.PathEscape(code))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
 // PutStaffCustomersByIdBillingprofile calls PUT /api/v1/staff/customers/{id}/billing-profile.
 //
 // # Update a customer's billing details
@@ -1347,6 +2028,48 @@ func (c *Client) PutStaffConfigoptionsByIdPrices(ctx context.Context, id string,
 // id is the id path parameter.
 func (c *Client) PutStaffCustomersByIdBillingprofile(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/customers/{id}/billing-profile"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffInvoicesByIdClientnote calls PUT /api/v1/staff/invoices/{id}/client-note.
+//
+// # Set or clear the client-visible note on an invoice
+//
+// Permission: invoice:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutStaffInvoicesByIdClientnote(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/invoices/{id}/client-note"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffNotificationtemplatesByEventkey calls PUT /api/v1/staff/notification-templates/{event_key}.
+//
+// # Edit one notification template
+//
+// Permission: notification:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// eventKey is the event_key path parameter.
+func (c *Client) PutStaffNotificationtemplatesByEventkey(ctx context.Context, eventKey string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/notification-templates/{event_key}"
+	path = strings.ReplaceAll(path, "{event_key}", url.PathEscape(eventKey))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffTaxratesById calls PUT /api/v1/staff/tax-rates/{id}.
+//
+// # Edit a rate's window or presentation
+//
+// Permission: tax:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutStaffTaxratesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tax-rates/{id}"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }

@@ -320,6 +320,29 @@ try {
     const detail = await pageText();
     check("customer detail: shows the email", detail.includes(customerEmail));
     check("customer detail: has tabs", /Overview/.test(detail) && /Invoices/.test(detail));
+
+    // An operator has to be able to see what the customer sees. Follow the link rather than
+    // guessing the URL, because a link that points nowhere is the failure worth catching.
+    // The link is rendered with the customer's data, so waiting for the page shell is not
+    // enough: clicking before it exists silently does nothing and the next assertion times out
+    // with a misleading message.
+    await until(
+      "the link to the customer's portal",
+      "document.querySelector('a[href^=\"/customers/\"][href$=\"/portal\"]') !== null",
+      12_000,
+    );
+    await click('a[href^="/customers/"][href$="/portal"]');
+    await until(
+      "the staff portal view",
+      "location.pathname.endsWith('/portal') && document.querySelector('.page-skeleton') === null",
+      12_000,
+    );
+    const viewed = await pageText();
+    check("staff portal view: says it is a staff view", /viewing this as staff/i.test(viewed));
+    check("staff portal view: shows the customer", viewed.includes(customerEmail));
+    check("staff portal view: shows a balance", /Outstanding/i.test(viewed));
+    // Read-only is the contract. A Pay button here would be impersonation that can move money.
+    check("staff portal view: offers no payment action", !/\bPay now\b/i.test(viewed));
   }
 
   const invoiceNumber = arg("expect-invoice");

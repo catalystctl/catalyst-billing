@@ -148,8 +148,15 @@ func (m *Manager) OverviewForCustomer(ctx context.Context, customerID string) (O
 		RecentInvoices: []Invoice{},
 		OpenInvoices:   []Invoice{},
 	}
+	// A missing customer is ErrNotFound, not an internal error. For a customer's own request
+	// the difference is invisible (the session implies a customer that exists), but a staff
+	// member can name any id at all, and an unknown one must read as 404 rather than as a
+	// broken server.
 	if err := m.pool.QueryRow(ctx, `SELECT name, email FROM customers WHERE id = $1`, customerID).
 		Scan(&out.Customer.Name, &out.Customer.Email); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Overview{}, ErrNotFound
+		}
 		return Overview{}, fmt.Errorf("portal: load customer: %w", err)
 	}
 
@@ -182,7 +189,6 @@ func (m *Manager) Overview(ctx context.Context, userID string) (Overview, error)
 	}
 	return m.OverviewForCustomer(ctx, customerID)
 }
-
 
 // Invoices lists the customer's invoices, newest first.
 func (m *Manager) InvoicesForCustomer(ctx context.Context, customerID string) ([]Invoice, error) {
@@ -236,7 +242,6 @@ func (m *Manager) Invoices(ctx context.Context, userID string) ([]Invoice, error
 	}
 	return m.InvoicesForCustomer(ctx, customerID)
 }
-
 
 // Invoice fetches one invoice, scoped to the customer.
 //
@@ -358,7 +363,6 @@ func (m *Manager) Balance(ctx context.Context, userID string) (Balance, error) {
 	return m.BalanceForCustomer(ctx, customerID)
 }
 
-
 // Services lists the customer's services with the actions they may take.
 func (m *Manager) ServicesForCustomer(ctx context.Context, customerID string) ([]Service, error) {
 	rows, err := m.pool.Query(ctx, `
@@ -397,7 +401,6 @@ func (m *Manager) Services(ctx context.Context, userID string) ([]Service, error
 	}
 	return m.ServicesForCustomer(ctx, customerID)
 }
-
 
 // Service fetches one service, scoped to the customer.
 func (m *Manager) Service(ctx context.Context, userID, serviceID string) (Service, error) {

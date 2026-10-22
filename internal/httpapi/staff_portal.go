@@ -40,9 +40,13 @@ func init() {
 }
 
 func (s *Server) registerStaffPortalView(r *router) {
+	// Each endpoint carries the permission its *data* needs, not the one the page is named
+	// after. Infrastructure holds customer:read:all but deliberately not invoice:read:all —
+	// gating the invoice list on the customer permission would hand that role every invoice in
+	// the system through a screen that was supposed to be a convenience.
 	r.staffGet("/api/v1/staff/customers/{id}/portal", authn.PermCustomerReadAll, s.handleStaffPortalOverview)
-	r.staffGet("/api/v1/staff/customers/{id}/portal/invoices", authn.PermCustomerReadAll, s.handleStaffPortalInvoices)
-	r.staffGet("/api/v1/staff/customers/{id}/portal/services", authn.PermCustomerReadAll, s.handleStaffPortalServices)
+	r.staffGet("/api/v1/staff/customers/{id}/portal/invoices", authn.PermInvoiceReadAll, s.handleStaffPortalInvoices)
+	r.staffGet("/api/v1/staff/customers/{id}/portal/services", authn.PermServiceReadAll, s.handleStaffPortalServices)
 	r.staffGet("/api/v1/staff/customers/{id}/portal/billing-profile", authn.PermCustomerReadAll, s.handleStaffPortalProfile)
 }
 
@@ -74,7 +78,24 @@ func (s *Server) handleStaffPortalOverview(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.auditCustomerView(r, customerID, "overview")
-	writeJSON(w, http.StatusOK, portalOverviewJSON(overview))
+
+	// The overview is a bundle: it carries the balance, the invoices and the services. A role
+	// can hold customer:read:all without holding invoice:read:all or service:read:all, so the
+	// sections are removed rather than the whole page being refused — an operator who may see
+	// the customer but not their billing should see the customer, not an error.
+	//
+	// Removing a section is the only safe direction here: an absent key cannot be read as an
+	// empty list by a client that does not check, because there is nothing to iterate.
+	body := portalOverviewJSON(overview)
+	if !s.can(r, authn.PermInvoiceReadAll) {
+		delete(body, "open_invoices")
+		delete(body, "recent_invoices")
+		delete(body, "balance")
+	}
+	if !s.can(r, authn.PermServiceReadAll) {
+		delete(body, "services")
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleStaffPortalInvoices(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +148,18 @@ func (s *Server) handleStaffPortalProfile(w http.ResponseWriter, r *http.Request
 	}
 	s.auditCustomerView(r, customerID, "billing_profile")
 	writeJSON(w, http.StatusOK, profileResponse(profile))
+}
+
+// can reports whether the caller holds a permission.
+func (s *Server) can(r *http.Request, p authn.Permission) bool {
+	if s.auth == nil || s.auth.Authz == nil {
+		return false
+	}
+	user, ok := userFrom(r.Context())
+	if !ok {
+		return false
+	}
+	return s.auth.Authz.Can(user, p)
 }
 
 // auditCustomerView records that a staff member looked at a customer's account.

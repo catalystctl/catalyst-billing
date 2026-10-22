@@ -529,7 +529,7 @@ func (c *Client) GetStaffCustomersByIdPortalBillingprofile(ctx context.Context, 
 //
 // # A customer's invoices, as they see them
 //
-// Permission: customer:read:all. Staff only.
+// Permission: invoice:read:all. Staff only.
 // id is the id path parameter.
 func (c *Client) GetStaffCustomersByIdPortalInvoices(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/customers/{id}/portal/invoices"
@@ -541,7 +541,7 @@ func (c *Client) GetStaffCustomersByIdPortalInvoices(ctx context.Context, id str
 //
 // # A customer's services, as they see them
 //
-// Permission: customer:read:all. Staff only.
+// Permission: service:read:all. Staff only.
 // id is the id path parameter.
 func (c *Client) GetStaffCustomersByIdPortalServices(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/customers/{id}/portal/services"

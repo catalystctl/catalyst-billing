@@ -59,12 +59,15 @@ interface PortalService {
   cancellable: boolean;
 }
 
+// Every section is optional. The endpoint removes the ones the caller may not read — a role can
+// hold customer:read:all without invoice:read:all — so a section is absent rather than empty,
+// and "absent" has to render as "you cannot see this" rather than as "there is nothing here".
 interface Overview {
   customer: PortalCustomer;
-  balance: { outstanding: Amount[]; credit: Amount[] };
-  services: PortalService[];
-  open_invoices: PortalInvoice[];
-  recent_invoices: PortalInvoice[];
+  balance?: { outstanding: Amount[]; credit: Amount[] };
+  services?: PortalService[];
+  open_invoices?: PortalInvoice[];
+  recent_invoices?: PortalInvoice[];
 }
 
 export default async function staffPortalViewPage(ctx: Ctx): Promise<Node> {
@@ -89,6 +92,12 @@ export default async function staffPortalViewPage(ctx: Ctx): Promise<Node> {
     const services = data.services ?? [];
     const open = data.open_invoices ?? [];
     const recent = data.recent_invoices ?? [];
+
+    // Whether the caller may read each section at all. Absent means "not permitted", which is
+    // a different sentence from "this customer has none", and an operator who is told the
+    // wrong one will draw the wrong conclusion about the account.
+    const canSeeBilling = data.balance !== undefined;
+    const canSeeServices = data.services !== undefined;
 
     return h(
       "div",
@@ -130,26 +139,35 @@ export default async function staffPortalViewPage(ctx: Ctx): Promise<Node> {
           h(
             "p",
             { class: "dim" },
-            open.length === 0
-              ? "No invoice is waiting for payment."
-              : `${open.length} invoice${open.length === 1 ? "" : "s"} awaiting payment.`,
+            !canSeeBilling
+              ? "Their billing is not visible with your permissions."
+              : open.length === 0
+                ? "No invoice is waiting for payment."
+                : `${open.length} invoice${open.length === 1 ? "" : "s"} awaiting payment.`,
           ),
         ),
-        h(
-          "div",
-          { class: "portal-balance" },
-          h(
-            "span",
-            { class: "portal-balance-label" },
-            outstanding.length > 1 ? "Outstanding, per currency" : "Outstanding",
-          ),
-          outstanding.length === 0
-            ? h("span", { class: "money money--xl faint" }, "Nothing due")
-            : h("div", { class: "portal-balance-amounts" }, ...outstanding.map((a) => moneyElBlock(a))),
-          ...credit.map((a) =>
-            h("span", { class: "portal-balance-sub" }, "Credit ", h("span", { class: "money" }, money(a))),
-          ),
-        ),
+        canSeeBilling
+          ? h(
+              "div",
+              { class: "portal-balance" },
+              h(
+                "span",
+                { class: "portal-balance-label" },
+                outstanding.length > 1 ? "Outstanding, per currency" : "Outstanding",
+              ),
+              outstanding.length === 0
+                ? h("span", { class: "money money--xl faint" }, "Nothing due")
+                : h("div", { class: "portal-balance-amounts" }, ...outstanding.map((a) => moneyElBlock(a))),
+              ...credit.map((a) =>
+                h("span", { class: "portal-balance-sub" }, "Credit ", h("span", { class: "money" }, money(a))),
+              ),
+            )
+          : h(
+              "div",
+              { class: "portal-balance" },
+              h("span", { class: "portal-balance-label" }, "Balance"),
+              h("span", { class: "faint" }, "Not visible with your permissions"),
+            ),
       ),
 
       h(
@@ -162,14 +180,19 @@ export default async function staffPortalViewPage(ctx: Ctx): Promise<Node> {
             title: "Invoices awaiting payment",
             sub: open.length > 0 ? `${open.length}` : undefined,
             flush: true,
-            body:
-              open.length === 0
+            body: !canSeeBilling
+              ? emptyState({
+                  title: "Not visible",
+                  body: "Your role can see this customer but not their invoices.",
+                  icon: "lock",
+                })
+              : open.length === 0
                 ? emptyState({
                     title: "Nothing to pay",
                     body: "Every issued invoice is settled. This is what the customer sees.",
                     icon: "checkCircle",
                   })
-                : h("div", null, ...open.map(invoiceRow)),
+                : h("div", null, ...open.map((inv) => invoiceRow(inv, { payable: true }))),
           }),
           card({
             title: "Recent invoices",
@@ -180,10 +203,15 @@ export default async function staffPortalViewPage(ctx: Ctx): Promise<Node> {
               icon("chevronRight", 12),
             ),
             flush: true,
-            body:
-              recent.length === 0
+            body: !canSeeBilling
+              ? emptyState({
+                  title: "Not visible",
+                  body: "Your role can see this customer but not their invoices.",
+                  icon: "lock",
+                })
+              : recent.length === 0
                 ? emptyState({ title: "No invoices", body: "This customer has no issued invoice.", icon: "invoice" })
-                : h("div", null, ...recent.map(invoiceRow)),
+                : h("div", null, ...recent.map((inv) => invoiceRow(inv))),
           }),
         ),
         h(
@@ -193,8 +221,13 @@ export default async function staffPortalViewPage(ctx: Ctx): Promise<Node> {
             title: "Services",
             sub: services.length > 0 ? `${services.length}` : undefined,
             flush: true,
-            body:
-              services.length === 0
+            body: !canSeeServices
+              ? emptyState({
+                  title: "Not visible",
+                  body: "Your role can see this customer but not their services.",
+                  icon: "lock",
+                })
+              : services.length === 0
                 ? emptyState({
                     title: "No services",
                     body: "Nothing is provisioned for this customer.",
@@ -218,35 +251,48 @@ export default async function staffPortalViewPage(ctx: Ctx): Promise<Node> {
   const moneyElBlock = (a: Amount): HTMLElement =>
     h("span", { class: "money money--xl" }, h("span", { class: "money-code" }, a.currency), money(a));
 
-  const invoiceRow = (inv: PortalInvoice): HTMLElement =>
+  // The row shapes are the portal's own (.portal-row and friends). Reusing them is the whole
+  // point: if a row is laid out differently here, the operator is not really seeing what the
+  // customer sees. The only difference is the destination — a staff member lands on the staff
+  // invoice, not on the customer's checkout page.
+  const invoiceRow = (inv: PortalInvoice, opts?: { payable?: boolean }): HTMLElement =>
     h(
-      "a",
-      { class: "portal-invoice-row", href: `/customers/${ctx.route.params.id}?tab=invoices` },
+      "div",
+      { class: "portal-row" },
       h(
         "div",
-        { class: "cell-main" },
+        { class: "portal-row-main" },
         h(
           "div",
-          { class: "primary" },
-          inv.number || "Draft",
+          { class: "portal-row-title" },
+          h(
+            "a",
+            { class: "row-title", href: `/invoices/${encodeURIComponent(inv.id)}` },
+            inv.number || "Invoice",
+          ),
           inv.overdue ? badge("Overdue", "warning", { dot: true }) : null,
         ),
         h(
           "div",
-          { class: "secondary" },
-          inv.issued_at ? `issued ${dateOnly(inv.issued_at)}` : "not issued",
-          inv.due_at ? ` · due ${relative(inv.due_at)}` : "",
+          { class: "portal-row-meta" },
+          h("span", null, inv.issued_at ? `Issued ${dateOnly(inv.issued_at)}` : "Not issued"),
+          inv.due_at ? h("span", { class: "portal-row-dot" }, "·") : null,
+          inv.due_at ? h("span", null, `due ${dateOnly(inv.due_at)}`) : null,
         ),
       ),
       h(
         "div",
-        { class: "portal-invoice-amounts" },
-        h("span", { class: "money" }, money(inv.total)),
-        inv.due.minor > 0
-          ? h("span", { class: "portal-invoice-due" }, `${money(inv.due)} due`)
-          : h("span", { class: "faint" }, "settled"),
+        { class: "portal-row-side" },
+        opts?.payable
+          ? h(
+              "div",
+              { class: "portal-row-amount" },
+              h("span", { class: "portal-row-label" }, "Outstanding"),
+              h("span", { class: "money" }, money(inv.due)),
+            )
+          : h("span", { class: "money" }, money(inv.total)),
+        statusBadge(inv.overdue ? "overdue" : inv.status),
       ),
-      statusBadge(inv.status),
     );
 
   const serviceRow = (svc: PortalService): HTMLElement =>
@@ -259,13 +305,17 @@ export default async function staffPortalViewPage(ctx: Ctx): Promise<Node> {
         h(
           "div",
           { class: "portal-service-name" },
-          svc.name || "Service",
+          h(
+            "a",
+            { class: "row-title", href: `/services/${encodeURIComponent(svc.id)}` },
+            svc.name || "Service",
+          ),
           svc.cancel_at_period_end ? badge("Cancels at period end", "warning", { dot: true }) : null,
         ),
         h(
           "div",
           { class: "portal-service-meta" },
-          svc.next_bill_at ? `renews ${relative(svc.next_bill_at)}` : "no renewal scheduled",
+          svc.next_bill_at ? `Renews ${dateOnly(svc.next_bill_at)}` : "No renewal scheduled",
         ),
       ),
       statusBadge(svc.status),

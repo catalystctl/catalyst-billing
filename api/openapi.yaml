@@ -2808,7 +2808,7 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: A customer's invoices, as they see them
-            x-permission: customer:read:all
+            x-permission: invoice:read:all
             x-rate-class: read
             x-staff-only: true
     /api/v1/staff/customers/{id}/portal/services:
@@ -2864,7 +2864,7 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: A customer's services, as they see them
-            x-permission: customer:read:all
+            x-permission: service:read:all
             x-rate-class: read
             x-staff-only: true
     /api/v1/staff/holds/{hold_id}:

@@ -543,13 +543,16 @@ func TestSettlingAReferredInvoicePaysCommissionOnce(t *testing.T) {
 
 	// 10% of 2500 is exactly 250. Written as a number rather than a percentage so a float
 	// creeping into the money path shows up here as 249 or 251.
+	// The commission is recorded on a row that carries the order id: the open attribution (the
+	// one with a NULL order) is the signup record, and the commission row is the earning. Reading
+	// the open row would report zero forever, which is exactly the mistake this comment prevents.
 	var commission int64
 	var currency string
 	if err := pool.QueryRow(ctx, `
 		SELECT commission_minor, currency FROM affiliate_referrals
-		 WHERE affiliate_id = $1 AND customer_id = $2`,
+		 WHERE affiliate_id = $1 AND customer_id = $2 AND order_id IS NOT NULL`,
 		affiliateID, customerID).Scan(&commission, &currency); err != nil {
-		t.Fatalf("read referral: %v", err)
+		t.Fatalf("read commission row: %v", err)
 	}
 	if commission != 250 {
 		t.Fatalf("commission = %d, want exactly 250 (10%% of 2500)", commission)
@@ -562,9 +565,9 @@ func TestSettlingAReferredInvoicePaysCommissionOnce(t *testing.T) {
 
 	if err := pool.QueryRow(ctx, `
 		SELECT commission_minor FROM affiliate_referrals
-		 WHERE affiliate_id = $1 AND customer_id = $2`,
+		 WHERE affiliate_id = $1 AND customer_id = $2 AND order_id IS NOT NULL`,
 		affiliateID, customerID).Scan(&commission); err != nil {
-		t.Fatalf("read referral after replay: %v", err)
+		t.Fatalf("read commission row after replay: %v", err)
 	}
 	if commission != 250 {
 		t.Fatalf("after a replayed webhook commission = %d, want still 250", commission)

@@ -48,6 +48,15 @@ var (
 // the bytes can live in a row without turning the table into a blob store.
 const MaxImageBytes = 256 << 10
 
+// MaxEmailTemplateBytes caps a product's activation snippet.
+//
+// The snippet is operator prose rendered into the activation mail as plain text, so it needs no
+// escaping; what it needs is a bound. The column is `text`, and an unbounded `text` column a UI
+// can write to is a blob store: a 200 KB "snippet" is not a message, it is an attachment. 4000
+// bytes is several paragraphs, which is more than any setup instruction needs, and it is the
+// bound 0031_product_email_template.sql enforces in the database too.
+const MaxEmailTemplateBytes = 4000
+
 // AllowedImageTypes is the closed set the endpoint accepts and the table enforces.
 var AllowedImageTypes = map[string]bool{
 	"image/png":     true,
@@ -141,7 +150,11 @@ type Product struct {
 	// DescriptionFormat says whether Description is `plain` text or sanitised `html`. The
 	// renderer needs to know which, because escaping HTML shows the tags and parsing plain
 	// text runs whatever was typed as markup.
-	DescriptionFormat   string    `json:"description_format"`
+	DescriptionFormat string `json:"description_format"`
+	// EmailTemplate is the per-product activation snippet: what the customer is told about how
+	// to use what they bought. It is rendered into the activation mail as
+	// {{product_instructions}}, and an empty value means the shipped default sentence.
+	EmailTemplate       string    `json:"email_template"`
 	CategoryID          *string   `json:"category_id"`
 	CategoryName        string    `json:"category_name,omitempty"`
 	CategorySlug        string    `json:"category_slug,omitempty"`
@@ -176,6 +189,25 @@ type ProductInput struct {
 	ImageID           *string `json:"image_id"`
 	Hidden            bool    `json:"hidden"`
 	SortOrder         int     `json:"sort_order"`
+	// EmailTemplate is the activation snippet. It is part of the product's *metadata*, so it is
+	// editable here; it is deliberately not part of the storefront read, because it is written
+	// for the person who already bought the product rather than for a visitor.
+	EmailTemplate string `json:"email_template"`
+}
+
+// validateEmailTemplate normalises and bounds a product's activation snippet.
+//
+// It trims the value and normalises CRLF so a snippet pasted from a Windows editor renders the
+// same on every platform, and it refuses one that is over the bound rather than truncating it:
+// a silently shortened instruction is worse than a rejected one, because the customer acts on
+// half a sentence.
+func validateEmailTemplate(s string) (string, error) {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n"))
+	if len(s) > MaxEmailTemplateBytes {
+		return "", fmt.Errorf("%w: the activation snippet is limited to %d bytes",
+			ErrInvalidInput, MaxEmailTemplateBytes)
+	}
+	return s, nil
 }
 
 // --------------------------------------------------------------- categories --
@@ -365,17 +397,22 @@ func (s *Store) CreateProductTx(ctx context.Context, q querier, in ProductInput)
 	if err != nil {
 		return Product{}, err
 	}
+	template, err := validateEmailTemplate(in.EmailTemplate)
+	if err != nil {
+		return Product{}, err
+	}
 	var out Product
 	err = q.QueryRow(ctx, `
 		INSERT INTO products (slug, name, short_description, description, description_format,
-		                     category_id, image_id, hidden, sort_order)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		                     email_template, category_id, image_id, hidden, sort_order)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, slug, name, short_description, description, description_format,
-		          category_id, image_id, hidden, sort_order, created_at, updated_at`,
-		in.Slug, strings.TrimSpace(in.Name), in.ShortDescription, description, format,
+		          email_template, category_id, image_id, hidden, sort_order, created_at, updated_at`,
+		in.Slug, strings.TrimSpace(in.Name), in.ShortDescription, description, format, template,
 		in.CategoryID, in.ImageID, in.Hidden, in.SortOrder,
 	).Scan(&out.ID, &out.Slug, &out.Name, &out.ShortDescription, &out.Description,
-		&out.DescriptionFormat, &out.CategoryID, &out.ImageID, &out.Hidden, &out.SortOrder,
+		&out.DescriptionFormat, &out.EmailTemplate,
+		&out.CategoryID, &out.ImageID, &out.Hidden, &out.SortOrder,
 		&out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -427,14 +464,18 @@ func (s *Store) UpdateProductTx(ctx context.Context, q querier, id string, in Pr
 	if err != nil {
 		return Product{}, err
 	}
+	template, err := validateEmailTemplate(in.EmailTemplate)
+	if err != nil {
+		return Product{}, err
+	}
 	tag, err := q.Exec(ctx, `
 		UPDATE products
 		   SET slug = $2, name = $3, short_description = $4, description = $5,
-		       description_format = $6, category_id = $7, image_id = $8, hidden = $9,
-		       sort_order = $10
+		       description_format = $6, email_template = $7, category_id = $8,
+		       image_id = $9, hidden = $10, sort_order = $11
 		 WHERE id = $1`,
 		id, in.Slug, strings.TrimSpace(in.Name), in.ShortDescription, description, format,
-		in.CategoryID, in.ImageID, in.Hidden, in.SortOrder)
+		template, in.CategoryID, in.ImageID, in.Hidden, in.SortOrder)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Product{}, ErrSlugTaken
@@ -561,7 +602,7 @@ func (s *Store) AddPriceTx(ctx context.Context, q querier, productID string, p P
 func (s *Store) List(ctx context.Context) ([]Product, error) {
 	return s.query(ctx, `
 		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
-		       p.category_id, COALESCE(c.name, ''), COALESCE(c.slug, ''), p.image_id,
+		       p.email_template, p.category_id, COALESCE(c.name, ''), COALESCE(c.slug, ''), p.image_id,
 		       p.hidden, p.sort_order, p.created_at, p.updated_at,
 		       (SELECT count(*) FROM subscriptions sub
 		          JOIN price_versions pv ON pv.id = sub.price_version_id
@@ -579,7 +620,7 @@ func (s *Store) List(ctx context.Context) ([]Product, error) {
 func (s *Store) Public(ctx context.Context) ([]Product, error) {
 	return s.query(ctx, `
 		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
-		       p.category_id, c.name, c.slug, p.image_id, p.hidden, p.sort_order,
+		       '', p.category_id, c.name, c.slug, p.image_id, p.hidden, p.sort_order,
 		       p.created_at, p.updated_at, 0
 		  FROM products p
 		  JOIN categories c ON c.id = p.category_id AND NOT c.hidden
@@ -593,7 +634,7 @@ func (s *Store) Public(ctx context.Context) ([]Product, error) {
 func (s *Store) PublicProduct(ctx context.Context, slug string) (Product, error) {
 	rows, err := s.query(ctx, `
 		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
-		       p.category_id, c.name, c.slug, p.image_id, p.hidden, p.sort_order,
+		       '', p.category_id, c.name, c.slug, p.image_id, p.hidden, p.sort_order,
 		       p.created_at, p.updated_at, 0
 		  FROM products p
 		  JOIN categories c ON c.id = p.category_id AND NOT c.hidden
@@ -618,7 +659,7 @@ func (s *Store) Product(ctx context.Context, id string) (Product, error) {
 func (s *Store) productTx(ctx context.Context, q querier, id string) (Product, error) {
 	rows, err := s.queryWith(ctx, q, `
 		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
-		       p.category_id, COALESCE(c.name, ''), COALESCE(c.slug, ''), p.image_id,
+		       p.email_template, p.category_id, COALESCE(c.name, ''), COALESCE(c.slug, ''), p.image_id,
 		       p.hidden, p.sort_order, p.created_at, p.updated_at,
 		       (SELECT count(*) FROM subscriptions sub
 		          JOIN price_versions pv ON pv.id = sub.price_version_id
@@ -652,7 +693,8 @@ func (s *Store) queryWith(ctx context.Context, q querier, stmt string, args ...a
 	for rows.Next() {
 		var p Product
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.ShortDescription, &p.Description,
-			&p.DescriptionFormat, &p.CategoryID, &p.CategoryName, &p.CategorySlug, &p.ImageID, &p.Hidden,
+			&p.DescriptionFormat, &p.EmailTemplate,
+			&p.CategoryID, &p.CategoryName, &p.CategorySlug, &p.ImageID, &p.Hidden,
 			&p.SortOrder, &p.CreatedAt, &p.UpdatedAt, &p.ActiveSubscriptions); err != nil {
 			return nil, fmt.Errorf("catalog: scan product: %w", err)
 		}

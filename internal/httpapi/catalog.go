@@ -362,12 +362,16 @@ func (s *Server) productJSON(p catalog.Product) map[string]any {
 	// price. Display order is `sort_order`, which every row carries.
 	prices := planHistoryJSON(s, p.Prices)
 	return map[string]any{
-		"id":                   p.ID,
-		"slug":                 p.Slug,
-		"name":                 p.Name,
-		"short_description":    p.ShortDescription,
-		"description":          p.Description,
-		"description_format":   p.DescriptionFormat,
+		"id":                 p.ID,
+		"slug":               p.Slug,
+		"name":               p.Name,
+		"short_description":  p.ShortDescription,
+		"description":        p.Description,
+		"description_format": p.DescriptionFormat,
+		// The per-product activation snippet. It is staff-only by construction: this shape is
+		// the panel's, and publicProductJSON deliberately omits it. An operator writes it for
+		// someone who has already bought the product, not for a visitor deciding whether to.
+		"email_template":       p.EmailTemplate,
 		"category_id":          p.CategoryID,
 		"category_name":        p.CategoryName,
 		"category_slug":        p.CategorySlug,

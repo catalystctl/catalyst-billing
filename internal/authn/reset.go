@@ -59,6 +59,10 @@ type ResetRequest struct {
 	Token     string
 	Email     string
 	ExpiresAt time.Time
+	// UserID is the account the token belongs to. It is empty when no account exists, and it is
+	// what lets the caller write the in-app copy of the reset notice into that account's inbox
+	// instead of only mailing an address.
+	UserID string
 	// AccountExists is what the caller must not leak.
 	AccountExists bool
 }
@@ -126,6 +130,7 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) (Reset
 	}
 
 	out.Token = token
+	out.UserID = userID
 	out.AccountExists = true
 	return out, nil
 }

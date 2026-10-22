@@ -343,6 +343,16 @@ func (c *Client) GetPortalBillingprofile(ctx context.Context, query url.Values, 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetPortalCredits calls GET /api/v1/portal/credits.
+//
+// # The customer's credit balance and the top-up limits
+//
+// Permission: customer:read:self.
+func (c *Client) GetPortalCredits(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/credits"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetPortalInvoices calls GET /api/v1/portal/invoices.
 //
 // # The customer's invoices
@@ -365,6 +375,18 @@ func (c *Client) GetPortalInvoicesById(ctx context.Context, id string, query url
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetPortalInvoicesByIdPaymentstatus calls GET /api/v1/portal/invoices/{id}/payment-status.
+//
+// # Poll the local state of an invoice's payment attempt
+//
+// Permission: invoice:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalInvoicesByIdPaymentstatus(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/invoices/{id}/payment-status"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetPortalOverview calls GET /api/v1/portal/overview.
 //
 // # The customer landing page
@@ -372,6 +394,16 @@ func (c *Client) GetPortalInvoicesById(ctx context.Context, id string, query url
 // Permission: customer:read:self.
 func (c *Client) GetPortalOverview(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/overview"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalPaymentmethods calls GET /api/v1/portal/payment-methods.
+//
+// # The payment gateways this installation offers
+//
+// Permission: customer:read:self.
+func (c *Client) GetPortalPaymentmethods(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/payment-methods"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -781,6 +813,18 @@ func (c *Client) PostAuthVerifyRequest(ctx context.Context, query url.Values, bo
 	return c.do(ctx, "POST", path, query, body, false, false)
 }
 
+// PostPortalCreditsDeposit calls POST /api/v1/portal/credits/deposit.
+//
+// # Start a credit top-up through the gateway
+//
+// Permission: invoice:pay:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostPortalCreditsDeposit(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/credits/deposit"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostPortalInvoicesByIdCheckout calls POST /api/v1/portal/invoices/{id}/checkout.
 //
 // # Start or reuse a payment session
@@ -791,6 +835,20 @@ func (c *Client) PostAuthVerifyRequest(ctx context.Context, query url.Values, bo
 // id is the id path parameter.
 func (c *Client) PostPortalInvoicesByIdCheckout(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/invoices/{id}/checkout"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalInvoicesByIdPaywithcredit calls POST /api/v1/portal/invoices/{id}/pay-with-credit.
+//
+// # Pay an invoice with the customer's credit
+//
+// Permission: invoice:pay:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostPortalInvoicesByIdPaywithcredit(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/invoices/{id}/pay-with-credit"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
@@ -895,6 +953,20 @@ func (c *Client) PostStaffCatalogProductsByIdPrices(ctx context.Context, id stri
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffCustomersByIdCredit calls POST /api/v1/staff/customers/{id}/credit.
+//
+// # Grant credit to a customer
+//
+// Permission: credit:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffCustomersByIdCredit(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/customers/{id}/credit"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffCustomersByIdCreditApply calls POST /api/v1/staff/customers/{id}/credit/apply.
 //
 // # Apply customer credit to an invoice
@@ -972,6 +1044,18 @@ func (c *Client) PostStaffInvoicesByIdVoid(ctx context.Context, id string, query
 // An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
 func (c *Client) PostStaffOrders(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/orders"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffPayments calls POST /api/v1/staff/payments.
+//
+// # Record a payment that arrived outside the gateway
+//
+// Permission: payment:reconcile. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffPayments(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/payments"
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 

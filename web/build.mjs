@@ -83,9 +83,37 @@ async function run() {
   }
   if (!jsName) throw new Error("build produced no JavaScript bundle");
 
-  // The favicon is referenced by a stable name: it is small, it changes rarely, and a
-  // hashed name would only make the link in the HTML harder to read.
-  await writeFile(join(dist, "assets", "mark.svg"), await readFile(join(root, "src/mark.svg")));
+  // The favicon and the install icons are referenced by stable names: they are small, they
+  // change rarely, and a hashed name would only make the links in the HTML harder to read.
+  // They are the brand assets from assets/brand (see scripts/brand/build.py), copied into
+  // src/ so `npm run build` never depends on the Python tooling having been run.
+  for (const name of ["mark.svg", "favicon-32.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "og.png"]) {
+    await writeFile(join(dist, "assets", name), await readFile(join(root, "src", name)));
+  }
+
+  // The PWA manifest, at a stable URL, pointing at the same icons the shell links.
+  await writeFile(
+    join(dist, "site.webmanifest"),
+    JSON.stringify(
+      {
+        name: "Catalyst Billing",
+        short_name: "Billing",
+        description: "Billing and service automation for hosting providers.",
+        start_url: "/",
+        display: "standalone",
+        // The site's own tokens: --background and --chalk.
+        background_color: "#161412",
+        theme_color: "#161412",
+        icons: [
+          { src: "/assets/icon-192.png", sizes: "192x192", type: "image/png" },
+          { src: "/assets/icon-512.png", sizes: "512x512", type: "image/png" },
+          { src: "/assets/mark.svg", sizes: "any", type: "image/svg+xml" },
+        ],
+      },
+      null,
+      2,
+    ) + "\n",
+  );
 
   // The service worker, at a stable URL (see workerOptions above).
   //

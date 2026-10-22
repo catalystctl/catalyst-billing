@@ -266,6 +266,12 @@ func (s *Server) handleStaffGrantCredit(w http.ResponseWriter, r *http.Request) 
 	}
 
 	cur := moneyFor(grant.Currency)
+	// The audit row is read back after the commit rather than assumed. The screen that shows a
+	// grant shows its note, its audit row and the balance it left; the note and the balance come
+	// from the domain result, and the audit row is the evidence that the change was recorded —
+	// which is the part a client cannot infer. It is nil when the read fails, and the grant is
+	// still reported as successful: the change is committed, and answering "failed" for a
+	// successful grant is worse than a display field the client has to fetch from the list.
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":          grant.ID,
 		"number":      grant.Number,
@@ -275,6 +281,7 @@ func (s *Server) handleStaffGrantCredit(w http.ResponseWriter, r *http.Request) 
 		"reason":      grant.Reason,
 		"status":      "issued",
 		"replayed":    grant.AlreadyGranted,
+		"audit":       s.latestCreditGrantAudit(r.Context(), grant.ID),
 	})
 }
 

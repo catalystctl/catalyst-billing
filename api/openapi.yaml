@@ -10699,6 +10699,368 @@ paths:
             x-permission: invoice:read:all
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/credit/customers:
+        get:
+            description: 'One row per customer, with the balance **per currency** — never a total, because the product has no exchange rate and a single number would be arithmetic on unrelated quantities. The balance is derived from the `customer_credit` subledger account, the same source the customer''s own portal reads, so the number an operator quotes is the number the books contain. `q` matches the email or the name and needs two characters: a one-character term matches nearly every row, and refusing it is better than a request that looks broken because it is slow. `with_credit=true` lists only customers who hold something, which is the list an operator starts an audit from. Keyset-paginated, so a customer created while the list is being scrolled is neither skipped nor duplicated.'
+            operationId: GetStaffCreditCustomers
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                balances:
+                                                    items:
+                                                        $ref: '#/components/schemas/Amount'
+                                                    type: array
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                email:
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                name:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - email
+                                                - name
+                                                - created_at
+                                                - balances
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: A page of customers with their per-currency credit
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The search term, sort, direction or cursor is invalid
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Customers with their credit balances
+            x-permission: credit:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/credit/grants:
+        get:
+            description: 'The credit notes issued with no invoice behind them, read from the note''s frozen snapshot (`snapshot.kind = "grant"`): the snapshot is what the document was issued with, so it cannot drift from the note it describes, and a correction to a specific invoice has a different kind and belongs on that invoice. Filter with `customer_id` for one account''s history. Keyset-paginated on `(created_at, id)`.'
+            operationId: GetStaffCreditGrants
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                amount:
+                                                    $ref: '#/components/schemas/Amount'
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                created_by:
+                                                    description: the operator's user id, empty for a system grant
+                                                    type: string
+                                                created_by_email:
+                                                    type: string
+                                                customer_email:
+                                                    type: string
+                                                customer_id:
+                                                    format: uuid
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                invoice_id:
+                                                    format: uuid
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                kind:
+                                                    description: 'the note''s frozen snapshot kind: grant, refund, correction'
+                                                    type: string
+                                                number:
+                                                    description: the credit note number, from the installation's credit-note series
+                                                    type: string
+                                                reason:
+                                                    type: string
+                                                status:
+                                                    enum:
+                                                        - draft
+                                                        - issued
+                                                        - applied
+                                                        - void
+                                                    type: string
+                                            required:
+                                                - id
+                                                - number
+                                                - customer_id
+                                                - amount
+                                                - reason
+                                                - status
+                                                - created_at
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                required:
+                                    - data
+                                    - next_cursor
+                                type: object
+                    description: A page of grants
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The cursor is invalid
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`customer_id` is not a customer id'
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Goodwill credit grants, newest first
+            x-permission: credit:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/credit/grants/{id}:
+        get:
+            description: 'The screen that answers "what did that grant do", in one request: the credit note as issued, every audit row written against it (append-only, written inside the transaction that made the change, so it is evidence rather than a description), and the customer''s balance per currency **now**. The balance is the current one, not a replay of the balance at issue time: a per-instant balance is derivable from the ledger but not stored, and a screen that reconstructed it would be inventing a number. A currency with nothing left reports a zero balance rather than omitting the field, because an absent field reads as a failed read. The route accepts any credit note id and reports its `kind`, so a note that turns out to be a refund correction is shown rather than 404ed.'
+            operationId: GetStaffCreditGrantsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    audit:
+                                        items:
+                                            properties:
+                                                action:
+                                                    description: a dotted verb, e.g. credit.grant
+                                                    type: string
+                                                actor_email:
+                                                    type: string
+                                                actor_id:
+                                                    type: string
+                                                changes:
+                                                    description: the redacted diff, as stored
+                                                    type: object
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: int64
+                                                    type: integer
+                                                outcome:
+                                                    enum:
+                                                        - success
+                                                        - failure
+                                                        - denied
+                                                    type: string
+                                            required:
+                                                - id
+                                                - action
+                                                - outcome
+                                                - created_at
+                                            type: object
+                                        type: array
+                                    balance:
+                                        $ref: '#/components/schemas/Amount'
+                                    balances:
+                                        items:
+                                            $ref: '#/components/schemas/Amount'
+                                        type: array
+                                    customer:
+                                        properties:
+                                            email:
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                        type: object
+                                    grant:
+                                        properties:
+                                            amount:
+                                                $ref: '#/components/schemas/Amount'
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            created_by:
+                                                description: the operator's user id, empty for a system grant
+                                                type: string
+                                            created_by_email:
+                                                type: string
+                                            customer_email:
+                                                type: string
+                                            customer_id:
+                                                format: uuid
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            invoice_id:
+                                                format: uuid
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            kind:
+                                                description: 'the note''s frozen snapshot kind: grant, refund, correction'
+                                                type: string
+                                            number:
+                                                description: the credit note number, from the installation's credit-note series
+                                                type: string
+                                            reason:
+                                                type: string
+                                            status:
+                                                enum:
+                                                    - draft
+                                                    - issued
+                                                    - applied
+                                                    - void
+                                                type: string
+                                        required:
+                                            - id
+                                            - number
+                                            - customer_id
+                                            - amount
+                                            - reason
+                                            - status
+                                            - created_at
+                                        type: object
+                                required:
+                                    - grant
+                                    - audit
+                                    - balance
+                                    - balances
+                                    - customer
+                                type: object
+                    description: The note, its audit rows, its customer and the current balance
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such credit note
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: One grant, with its audit rows and the balance it left
+            x-permission: credit:read:all
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/cron:
         get:
             description: 'One row per job run, newest first, so an operator can tell "nothing was due" from "the worker is dead". Keyset-paginated. Filter by `job` and `outcome`; a run still in progress has `outcome: running`, a null `finished_at` and a null `duration_ms`.'

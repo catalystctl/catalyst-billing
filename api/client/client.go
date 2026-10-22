@@ -1003,6 +1003,38 @@ func (c *Client) GetStaffCouponsByIdRedemptions(ctx context.Context, id string, 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffCreditCustomers calls GET /api/v1/staff/credit/customers.
+//
+// # Customers with their credit balances
+//
+// Permission: credit:read:all. Staff only.
+func (c *Client) GetStaffCreditCustomers(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/credit/customers"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCreditGrants calls GET /api/v1/staff/credit/grants.
+//
+// # Goodwill credit grants, newest first
+//
+// Permission: credit:read:all. Staff only.
+func (c *Client) GetStaffCreditGrants(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/credit/grants"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffCreditGrantsById calls GET /api/v1/staff/credit/grants/{id}.
+//
+// # One grant, with its audit rows and the balance it left
+//
+// Permission: credit:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffCreditGrantsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/credit/grants/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffCreditnotesByIdPdf calls GET /api/v1/staff/credit-notes/{id}/pdf.
 //
 // # Download any credit note as a PDF

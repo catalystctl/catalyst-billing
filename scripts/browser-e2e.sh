@@ -21,6 +21,9 @@ BASE="${1:-}"
 SERVER_PID=""
 SHOTS="${E2E_SCREENSHOTS:-}"
 STAMP="$(date +%s)"
+# A currency code is `^[A-Z0-9]{2,12}$`, so the run stamp rides along in it: "ZZ" plus ten
+# digits is twelve characters, valid, and cannot collide with a real ISO code.
+CURRENCY_CODE="ZZ${STAMP}"
 STAFF_EMAIL="e2e-staff-${STAMP}@example.test"
 STAFF_PASSWORD="e2e-staff-password-1"
 CUSTOMER_EMAIL="e2e-customer-${STAMP}@example.test"
@@ -36,10 +39,55 @@ cleanup() {
   # behind on every run fills the audit log with noise, makes the catalog grow a product per
   # run, and eventually changes what the next run sees — a test that mutates the fixture it
   # asserts on stops being a test.
+  #
+  # The split of responsibility is deliberate, because getting it wrong hides a real bug:
+  #
+  #   * `admin purge-test-data` owns everything scoped to a customer or a user — accounts,
+  #     invoices, the journal, tickets, carts, redemptions. Those tables refuse DELETE by
+  #     trigger (the journal, the audit log, issued invoices), so purge is the only thing that
+  #     can remove them, and it is the product's own reviewed command rather than a DELETE
+  #     this script invented.
+  #   * This script owns the *installation-wide configuration* it added — a coupon, a tax
+  #     rate, a currency, an announcement, a config option. Those hang from no customer, so
+  #     purge cannot reach them by design, and they are this script's to clean.
+  #
+  # The purge is NOT silenced. An earlier version ran it with `|| true` and a missing step in
+  # its list (no `tickets` entry) aborted its transaction on the foreign key, so three runs in
+  # a row leaked a staff account, a customer and a catalogue entry while the script reported
+  # success. A cleanup that cannot fail is a cleanup that cannot tell you it stopped working,
+  # so a purge failure is now printed with its output and the leftover rows are counted and
+  # named at the end.
   if [[ -n "${SEEDED:-}" ]]; then
-    # --force is required because a developer's database is usually not named "test"; the
-    # pattern is what scopes the deletion, and it only matches this script's own accounts.
-    ./bin/billing admin purge-test-data --pattern "e2e-%@example.test" --yes --force >/dev/null 2>&1 || true
+    # 1. The configuration fixtures. Children before parents: a config option's prices and a
+    #    coupon's product restrictions and redemptions are all keyed to the row above them.
+    psql "$BILLING_DATABASE_URL" -q -v ON_ERROR_STOP=0 >/dev/null 2>&1 <<SQL || true
+DELETE FROM config_option_prices WHERE config_option_id IN (
+  SELECT id FROM config_options WHERE name LIKE 'e2e-option-%');
+DELETE FROM config_options WHERE name LIKE 'e2e-option-%';
+DELETE FROM coupon_products WHERE coupon_id IN (
+  SELECT id FROM coupons WHERE code LIKE 'E2E-%');
+DELETE FROM coupon_redemptions WHERE coupon_id IN (
+  SELECT id FROM coupons WHERE code LIKE 'E2E-%');
+DELETE FROM coupons WHERE code LIKE 'E2E-%';
+DELETE FROM tax_rates WHERE name LIKE 'e2e-tax-%';
+DELETE FROM announcements WHERE title LIKE 'e2e-announcement-%';
+DELETE FROM currencies WHERE code LIKE 'ZZ%';
+SQL
+
+    # 2. The accounts and everything scoped to them. --force is required because a
+    #    developer's database is usually not named "test"; the pattern is what scopes the
+    #    deletion, and it only matches this script's own accounts.
+    local purge_log
+    if ! purge_log="$(./bin/billing admin purge-test-data --pattern "e2e-%@example.test" --yes --force 2>&1)"; then
+      echo "WARNING: admin purge-test-data failed; the seed was not fully removed" >&2
+      printf '%s\n' "$purge_log" | tail -5 >&2
+    fi
+
+    # 3. The catalog. Its price versions are referenced by cart items, and the cart is
+    #    customer-scoped so purge has already removed it above — that ordering is why this
+    #    block can run at all. Deleting a price version a live cart still points at is
+    #    refused by the foreign key, which is the correct behaviour and not something to
+    #    bypass.
     psql "$BILLING_DATABASE_URL" -q -v ON_ERROR_STOP=0 >/dev/null 2>&1 <<SQL || true
 DELETE FROM services WHERE external_id LIKE 'e2e-svc-%';
 DELETE FROM price_versions WHERE product_id IN (
@@ -47,6 +95,29 @@ DELETE FROM price_versions WHERE product_id IN (
 DELETE FROM products WHERE slug LIKE 'e2e-hosting-%' OR slug LIKE 'e2e-product-%' OR slug LIKE 'e2e-hidden-%';
 DELETE FROM categories WHERE slug LIKE 'e2e-category-%';
 SQL
+
+    # 4. Prove it. A leak is reported by table and count, so a regression in the purge shows
+    #    up as a named leftover row rather than as a database that quietly grows a product
+    #    per run until something unrelated fails.
+    local leftovers
+    leftovers="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=0 2>/dev/null <<'SQL' || true
+SELECT format('%s=%s', 'products', count(*)) FROM products WHERE slug LIKE 'e2e-%'
+UNION ALL SELECT format('%s=%s', 'users', count(*)) FROM users WHERE email LIKE 'e2e-%@example.test'
+UNION ALL SELECT format('%s=%s', 'customers', count(*)) FROM customers WHERE email LIKE 'e2e-%@example.test'
+UNION ALL SELECT format('%s=%s', 'tickets', count(*)) FROM tickets WHERE subject LIKE 'e2e-ticket-%'
+UNION ALL SELECT format('%s=%s', 'carts', count(*)) FROM carts c JOIN customers cu ON cu.id = c.customer_id
+  WHERE cu.email LIKE 'e2e-%@example.test'
+UNION ALL SELECT format('%s=%s', 'coupons', count(*)) FROM coupons WHERE code LIKE 'E2E-%'
+UNION ALL SELECT format('%s=%s', 'currencies', count(*)) FROM currencies WHERE code LIKE 'ZZ%'
+UNION ALL SELECT format('%s=%s', 'announcements', count(*)) FROM announcements WHERE title LIKE 'e2e-announcement-%'
+UNION ALL SELECT format('%s=%s', 'config_options', count(*)) FROM config_options WHERE name LIKE 'e2e-option-%'
+SQL
+)"
+    local leaked
+    leaked="$(printf '%s\n' "$leftovers" | grep -v '=0$' | tr '\n' ' ' || true)"
+    if [[ -n "$leaked" ]]; then
+      echo "WARNING: the seed was not fully cleaned up: $leaked" >&2
+    fi
   fi
 }
 trap cleanup EXIT
@@ -166,6 +237,136 @@ COMMIT;
 SQL
 ok "seeded a catalog product, a service and the portal login"
 
+# ------------------------------------------------ the commerce/support fixtures --
+#
+# The screens the parallel packages built need data of their own. Each insert is guarded with
+# ON CONFLICT DO NOTHING like the catalog seed above, so a re-run against a database that
+# already holds the row is a no-op rather than an error. The column names come from
+# 0020_commerce.sql, which is the schema these rows live in; a name guessed here would fail
+# loudly on the first run and be "fixed" by deleting the assertion.
+#
+# The fixtures and what each one proves:
+#
+#   coupon            /coupons lists a code, a kind and a value it read from the database
+#   tax rate          /tax-rates lists a jurisdiction and an exact rational rate
+#   currency          /currencies lists a configured currency with its render style
+#   config option     /config-options shows an option attached to the seeded product
+#   ticket + message  /support and /tickets show a ticket, and its thread has a body
+#   credit balance    /portal/credits has a positive balance (a ledger posting, not a column)
+#   announcement      /announcements lists a published announcement
+#   cart line         /cart and /checkout are not empty, so they render the priced cart
+#
+# The credit balance is a *balanced journal transaction*, because that is what the balance is
+# derived from: `GET /portal/credits` sums `journal_entries` on `customer_credit`. Inserting a
+# number into a column would prove nothing, and the deferred balance trigger would refuse an
+# unbalanced transaction anyway. Debit `refunds` (an expense) and credit `customer_credit`
+# (a liability) is the same pair a goodwill credit note posts.
+TICKET_SUBJECT="e2e-ticket-${STAMP} the host stopped answering"
+CONFIG_OPTION_NAME="e2e-option-${STAMP} memory"
+ANNOUNCEMENT_TITLE="e2e-announcement-${STAMP} maintenance window"
+COUPON_CODE="E2E-${STAMP}"
+TAX_RATE_NAME="e2e-tax-${STAMP} Germany VAT"
+
+psql "$BILLING_DATABASE_URL" -v ON_ERROR_STOP=1 -q >/dev/null <<SQL || fail "could not seed the commerce and support fixtures"
+BEGIN;
+
+-- A percentage coupon. `percentage` is a rational string, never a float, and the CHECK in
+-- 0020 refuses a row that carries both a percentage and an amount.
+INSERT INTO coupons (code, description, kind, percentage, applies_to, max_uses, enabled)
+VALUES ('${COUPON_CODE}', 'Seeded by the browser test', 'percentage', '10', 'all', 100, true)
+ON CONFLICT DO NOTHING;
+
+-- One dated rate. `rate` is text for the same reason: an exact rational, not a float.
+-- The unique index allows one open-ended rate per (country, region, class), so this is a
+-- plain insert guarded on that key.
+INSERT INTO tax_rates (name, country_code, region_code, tax_class, rate, inclusive, enabled)
+VALUES ('${TAX_RATE_NAME}', 'DE', '', 'standard', '0.19', false, true)
+ON CONFLICT DO NOTHING;
+
+-- A currency with a deliberately unusual presentation, so the screen has something to render
+-- that the seeded ISO rows do not: a suffix symbol, a space group separator and a comma
+-- decimal mark. It is disabled so it is never offered at checkout — this is a fixture for the
+-- configuration screen, not a change to what the shop sells in.
+INSERT INTO currencies (code, name, scale, symbol, symbol_position, group_separator,
+  decimal_mark, group_size, is_default, enabled, sort_order)
+VALUES ('${CURRENCY_CODE}', 'E2E Test Currency', 2, 'Z', 'suffix', ' ', ',', 3, false, false, 999)
+ON CONFLICT (code) DO NOTHING;
+
+-- A published announcement. `published_at` must be set for `live` to be true, so it is.
+INSERT INTO announcements (title, body, placement, published, published_at)
+VALUES ('${ANNOUNCEMENT_TITLE}', 'The panel will be read-only for ten minutes.', 'both', true, now())
+ON CONFLICT DO NOTHING;
+
+-- A dropdown option on the seeded product, with two choices. `choices` is jsonb.
+INSERT INTO config_options (product_id, name, description, option_type, choices, env_variable,
+  required, sort_order)
+SELECT p.id, '${CONFIG_OPTION_NAME}', 'Seeded by the browser test', 'dropdown',
+       '["1 GB", "2 GB"]'::jsonb, 'E2E_MEMORY', false, 1
+FROM products p WHERE p.slug = 'e2e-product-${STAMP}'
+ON CONFLICT DO NOTHING;
+
+-- A ticket with a first message, so both the list and the thread have something to render.
+-- The number comes from the shared invoice sequence under the "ticket" scope, which is what
+-- the product does; a ticket with no number would render "—" in the list and prove less.
+INSERT INTO invoice_number_sequences (scope, next_value)
+VALUES ('ticket', 1)
+ON CONFLICT (scope) DO NOTHING;
+
+WITH allocated AS (
+  UPDATE invoice_number_sequences SET next_value = next_value + 1
+  WHERE scope = 'ticket' RETURNING next_value - 1 AS n
+)
+INSERT INTO tickets (number, customer_id, user_id, subject, department, priority, status,
+  opened_by, last_reply_at)
+SELECT 'TKT-' || lpad(n::text, 6, '0'), '${CUSTOMER_ID}', u.id,
+       '${TICKET_SUBJECT}', 'technical', 'high', 'open', u.id, now()
+FROM allocated, users u WHERE u.email = '${CUSTOMER_EMAIL}';
+
+INSERT INTO ticket_messages (ticket_id, author_user_id, from_staff, body)
+SELECT t.id, u.id, false, 'The host stopped answering ping at 09:10 UTC and has not come back.'
+FROM tickets t, users u
+WHERE t.subject = '${TICKET_SUBJECT}' AND u.email = '${CUSTOMER_EMAIL}';
+
+-- A credit balance, as a balanced posting. The reference id is a fresh uuid, so a re-run adds
+-- a second posting rather than failing on the ledger's (kind, reference_type, reference_id)
+-- unique key — and the balance assertion is "greater than zero", which both satisfy.
+WITH tx AS (
+  INSERT INTO journal_transactions (kind, reference_type, reference_id, currency)
+  VALUES ('adjustment', 'e2e_seed', gen_random_uuid(), 'USD')
+  RETURNING id
+)
+INSERT INTO journal_entries (transaction_id, account_code, currency, debit_minor, credit_minor,
+  memo, customer_id)
+SELECT tx.id, v.account, 'USD', v.debit, v.credit, 'Seeded credit for the browser test',
+       '${CUSTOMER_ID}'
+FROM tx, (VALUES ('refunds', 2500, 0), ('customer_credit', 0, 2500)) AS v(account, debit, credit);
+
+-- A cart with one line, so /cart and /checkout render a priced selection rather than their
+-- empty state. A cart holds a selection and its currency, never a price: the price comes from
+-- the price version at read time.
+INSERT INTO carts (customer_id, currency)
+VALUES ('${CUSTOMER_ID}', 'USD')
+ON CONFLICT (customer_id) DO NOTHING;
+
+INSERT INTO cart_items (cart_id, price_version_id, quantity)
+SELECT c.id, pv.id, 1
+FROM carts c
+JOIN products p ON p.slug = 'e2e-product-${STAMP}'
+JOIN price_versions pv ON pv.product_id = p.id
+WHERE c.customer_id = '${CUSTOMER_ID}'
+ON CONFLICT DO NOTHING;
+
+COMMIT;
+SQL
+ok "seeded a coupon, a tax rate, a currency, a config option, a ticket, credit and a cart line"
+
+# The config-options screen is per product, so the harness needs the product's id and not its
+# slug. Reading it back from the database is the only honest source: the insert above selected
+# the id rather than generating one here.
+CONFIG_PRODUCT_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
+  -c "SELECT id FROM products WHERE slug = 'e2e-product-${STAMP}'")" || fail "could not read the seeded product id"
+[[ -n "$CONFIG_PRODUCT_ID" ]] || fail "the seeded product has no id"
+
 # ---------------------------------------------------------------- the drive --
 
 ARGS=(
@@ -181,6 +382,15 @@ ARGS=(
   "--expect-product=E2E ${STAMP} Plan"
   "--expect-product-slug=e2e-product-${STAMP}"
   "--expect-hidden=E2E Hidden ${STAMP}"
+  # The commerce/support fixtures. Each is the value the screen must show, so an empty state
+  # on a screen that was seeded is a finding rather than a fixture gap.
+  "--expect-coupon=${COUPON_CODE}"
+  "--expect-tax-rate=${TAX_RATE_NAME}"
+  "--expect-currency=${CURRENCY_CODE}"
+  "--expect-announcement=${ANNOUNCEMENT_TITLE}"
+  "--expect-ticket=${TICKET_SUBJECT}"
+  "--expect-cart-product=E2E ${STAMP} Plan"
+  "--expect-config-product=${CONFIG_PRODUCT_ID}"
 )
 [[ -n "$SHOTS" ]] && ARGS+=("--screenshots=$SHOTS")
 

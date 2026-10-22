@@ -374,12 +374,28 @@ func coreOperations() map[string]Operation {
 			Description: "Prices one catalog price version and writes the order, its items, a pending subscription and an issued " +
 				"invoice in one transaction. `customer_id` may be omitted, in which case the acting staff member's own billing " +
 				"account is used and created from their login if it does not exist; no `customer_accounts` link is required " +
-				"because that table attaches a customer login to an account. The price is read from the catalog, never from the " +
-				"body, so a caller cannot choose what to charge.",
+				"because that table attaches a customer login to an account. " +
+				"The price is read from the catalog, with one deliberate exception: `custom_price_minor` agrees a different " +
+				"unit price with one customer, and it requires `custom_price_reason`. The override is recorded on the invoice " +
+				"line and the catalog is left untouched, so a negotiated price cannot leak into what every other customer is " +
+				"charged. `custom_price_minor` replaces both the catalog unit price and its setup fee, so the number sent is " +
+				"the whole price of one unit; absent means the catalog price, and zero is refused because it is an amount that " +
+				"cannot be charged rather than a free product.",
 			RequestSchema: map[string]any{
 				"type":     "object",
 				"required": []string{"price_version_id"},
 				"properties": map[string]any{
+					"custom_price_minor": map[string]any{
+						"type":        "integer",
+						"format":      "int64",
+						"minimum":     1,
+						"description": "Negotiated unit price in minor units, replacing the catalog unit price and its setup fee. Requires custom_price_reason.",
+					},
+					"custom_price_reason": map[string]any{
+						"type":        "string",
+						"maxLength":   500,
+						"description": "Why the price differs from the catalog. Mandatory whenever custom_price_minor is present.",
+					},
 					"customer_id":      map[string]any{"type": "string", "format": "uuid", "description": "Billing account; omit to bill yourself."},
 					"price_version_id": map[string]any{"type": "string", "format": "uuid"},
 					"quantity":         map[string]any{"type": "integer", "minimum": 1, "maximum": 1000, "default": 1},

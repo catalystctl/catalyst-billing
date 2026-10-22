@@ -74,6 +74,17 @@ DELETE FROM announcements WHERE title LIKE 'e2e-announcement-%';
 DELETE FROM currencies WHERE code LIKE 'ZZ%';
 SQL
 
+    # The support desk's switch is restored to whatever this installation had before the run,
+    # rather than forced off. A harness that left it on would change the behaviour of the next
+    # person's installation, and one that always turned it off would hide a screen it is
+    # supposed to exercise.
+    if [[ -n "${TICKETS_WERE_DISABLED:-}" ]]; then
+      psql "$BILLING_DATABASE_URL" -q -v ON_ERROR_STOP=0 >/dev/null 2>&1 <<SQL || true
+UPDATE settings SET value = '${TICKETS_WERE_DISABLED}', updated_at = now()
+WHERE group_key = 'tickets' AND key = 'disabled';
+SQL
+    fi
+
     # 2. The accounts and everything scoped to them. --force is required because a
     #    developer's database is usually not named "test"; the pattern is what scopes the
     #    deletion, and it only matches this script's own accounts.
@@ -267,8 +278,26 @@ ANNOUNCEMENT_TITLE="e2e-announcement-${STAMP} maintenance window"
 COUPON_CODE="E2E-${STAMP}"
 TAX_RATE_NAME="e2e-tax-${STAMP} Germany VAT"
 
+# The support desk's previous state, captured before the seed switches it on so cleanup can put
+# it back. It is captured here, in the shell, rather than inside the SQL block below: a command
+# substitution in a heredoc is inserted as text into the statement, not executed.
+TICKETS_WERE_DISABLED="$(psql "$BILLING_DATABASE_URL" -tAc "SELECT coalesce((SELECT value FROM settings WHERE group_key = 'tickets' AND key = 'disabled'), 'false')" | tr -d '[:space:]')"
+: "${TICKETS_WERE_DISABLED:=false}"
+
 psql "$BILLING_DATABASE_URL" -v ON_ERROR_STOP=1 -q >/dev/null <<SQL || fail "could not seed the commerce and support fixtures"
 BEGIN;
+
+-- The support desk must be switched on, because this run asserts on the ticket form and on a
+-- seeded ticket appearing in the queue. The setting is installation-wide state that an operator
+-- (or an earlier manual test) may have left off, and a switched-off desk is a legitimate
+-- configuration: the screens render it honestly rather than breaking. But this harness is here
+-- to exercise the form, so it states the precondition instead of inheriting it.
+--
+-- The value is restored on the way out, alongside the other installation-wide configuration this
+-- script owns. Leaving it forced on would change what the next person's installation does.
+INSERT INTO settings (group_key, key, value, updated_at)
+VALUES ('tickets', 'disabled', 'false', now())
+ON CONFLICT (group_key, key) DO UPDATE SET value = 'false', updated_at = now();
 
 -- A percentage coupon. `percentage` is a rational string, never a float, and the CHECK in
 -- 0020 refuses a row that carries both a percentage and an amount.

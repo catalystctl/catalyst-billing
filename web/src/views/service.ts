@@ -22,7 +22,7 @@
 //    is not an error. Each one names the next step instead of a generic failure toast.
 
 import { ApiError } from "../lib/api";
-import { h } from "../lib/dom";
+import { h, type Child } from "../lib/dom";
 import { dateTime, humanStatus, relative, shortId, titleCase, truncate } from "../lib/format";
 import type { Amount } from "../lib/format";
 import { icon, type IconName } from "../lib/icons";
@@ -167,6 +167,32 @@ interface ServiceMetadata {
   properties: ServiceProperty[];
   config: Array<{ config_option_id: string; name: string; value: string }>;
   updated_at: string;
+}
+
+/** One line under a property's field: what the two visibility flags mean for this key.
+ *
+ *  They are separate on purpose and confusing when conflated. `customer_visible` decides whether
+ *  the customer's portal shows the property at all; `show_on_invoice` decides whether it prints
+ *  on a document they keep. A property can be visible and not printed — an internal note the
+ *  customer may read but that does not belong on an invoice — and the reverse is a property that
+ *  appears on a document without appearing anywhere else, which is worth naming because it is
+ *  almost always a mistake.
+ *
+ *  Both facts live on the definition, so the hint is read-only text rather than a control: a
+ *  property's document behaviour is a catalogue decision, not something a support agent edits
+ *  while looking at one service.
+ */
+function propertyHint(def: PropertyDefinition): string {
+  if (def.show_on_invoice && def.customer_visible) {
+    return "Shown in the customer's portal and printed on invoices.";
+  }
+  if (def.show_on_invoice) {
+    return "Printed on invoices but hidden from the customer's portal — check that is intended.";
+  }
+  if (def.customer_visible) {
+    return "Shown in the customer's portal, not printed on invoices.";
+  }
+  return "Internal only: neither printed nor shown to the customer.";
 }
 
 /** One configured property definition, as the staff properties screen edits it. */

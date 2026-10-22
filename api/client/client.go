@@ -369,6 +369,20 @@ func (c *Client) DeleteStaffRolesById(ctx context.Context, id string, query url.
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffServicepropertiesByKey calls DELETE /api/v1/staff/service-properties/{key}.
+//
+// # Delete a service property definition
+//
+// Permission: service:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// key is the key path parameter.
+func (c *Client) DeleteStaffServicepropertiesByKey(ctx context.Context, key string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/service-properties/{key}"
+	path = strings.ReplaceAll(path, "{key}", url.PathEscape(key))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffSessionsById calls DELETE /api/v1/staff/sessions/{id}.
 //
 // # Revoke a session as an administrator
@@ -719,6 +733,18 @@ func (c *Client) GetPortalServicesByIdCancellation(ctx context.Context, id strin
 // id is the id path parameter.
 func (c *Client) GetPortalServicesByIdConfig(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/services/{id}/config"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalServicesByIdMetadata calls GET /api/v1/portal/services/{id}/metadata.
+//
+// # What this service is, for the customer who owns it
+//
+// Permission: service:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalServicesByIdMetadata(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/services/{id}/metadata"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
@@ -1345,6 +1371,16 @@ func (c *Client) GetStaffServersTest(ctx context.Context, query url.Values, body
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffServiceproperties calls GET /api/v1/staff/service-properties.
+//
+// # The configured service properties
+//
+// Permission: service:read:all. Staff only.
+func (c *Client) GetStaffServiceproperties(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/service-properties"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffServices calls GET /api/v1/staff/services.
 //
 // # Service list
@@ -1375,6 +1411,18 @@ func (c *Client) GetStaffServicesById(ctx context.Context, id string, query url.
 // id is the id path parameter.
 func (c *Client) GetStaffServicesByIdHolds(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/services/{id}/holds"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffServicesByIdMetadata calls GET /api/v1/staff/services/{id}/metadata.
+//
+// # What this service is, for a support agent
+//
+// Permission: service:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffServicesByIdMetadata(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/services/{id}/metadata"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
@@ -2428,6 +2476,20 @@ func (c *Client) PutPortalServicesByIdConfig(ctx context.Context, id string, que
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }
 
+// PutPortalServicesByIdMetadata calls PUT /api/v1/portal/services/{id}/metadata.
+//
+// # Rename or describe your own service
+//
+// Permission: service:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutPortalServicesByIdMetadata(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/services/{id}/metadata"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
 // PutStaffAnnouncementsById calls PUT /api/v1/staff/announcements/{id}.
 //
 // # Update an announcement
@@ -2643,6 +2705,34 @@ func (c *Client) PutStaffRolesByIdPermissions(ctx context.Context, id string, qu
 // An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
 func (c *Client) PutStaffServers(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/servers"
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffServicepropertiesByKey calls PUT /api/v1/staff/service-properties/{key}.
+//
+// # Create or edit a service property definition
+//
+// Permission: service:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// key is the key path parameter.
+func (c *Client) PutStaffServicepropertiesByKey(ctx context.Context, key string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/service-properties/{key}"
+	path = strings.ReplaceAll(path, "{key}", url.PathEscape(key))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffServicesByIdMetadata calls PUT /api/v1/staff/services/{id}/metadata.
+//
+// # Edit a service's label, description and custom properties
+//
+// Permission: service:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutStaffServicesByIdMetadata(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/services/{id}/metadata"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }
 

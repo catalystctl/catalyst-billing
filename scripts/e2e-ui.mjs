@@ -813,6 +813,62 @@ try {
   // in the list deliberately so the report says so rather than omitting it.
   await assertNewScreen("credits-staff", { path: "/credits", expect: ["Credit"] });
 
+  // Gateway and provisioner configuration. These two are the screens an operator must be able
+  // to use before the panel can take money or build a server, so they get more than a heading
+  // check: the provider select must be populated from the server's own provider list, and the
+  // connection test must be pressable and answer. A test that is not pressable is the same as
+  // no test, and it is the failure a heading-only assertion cannot see.
+  for (const surface of [
+    { name: "gateways", path: "/gateways", endpoint: "/api/v1/staff/gateways", providerId: "#gw-provider", testPath: "/api/v1/staff/gateways/test", expect: ["Payment gateways", "Provider", "Connection"] },
+    { name: "servers", path: "/servers", endpoint: "/api/v1/staff/servers", providerId: "#srv-provider", testPath: "/api/v1/staff/servers/test", expect: ["Provisioning servers", "Provisioner", "Connection"] },
+  ]) {
+    const result = await assertNewScreen(surface.name, { path: surface.path, expect: surface.expect });
+    if (result.status !== "present") continue;
+
+    // The provider list comes from the API, so an empty select is a screen wired to nothing.
+    const options = await evaluate(`document.querySelectorAll('${surface.providerId} option').length`);
+    check(`${surface.name}: offers the providers the server knows`, options > 1, `options=${options}`);
+
+    // Choosing a provider must reveal the credential fields that provider declares. This is
+    // the branch a static assertion never reaches: the fields are painted by a change handler.
+    const chosen = await evaluate(`(() => {
+      const sel = document.querySelector('${surface.providerId}');
+      const real = Array.from(sel.options).find((o) => o.value !== '');
+      if (!real) return null;
+      sel.value = real.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return real.value;
+    })()`);
+    if (chosen) {
+      const painted = await evaluate("document.querySelectorAll('.field input, .field select').length");
+      check(`${surface.name}: shows ${chosen}'s credential fields`, painted > 0, `fields=${painted}`);
+      // A secret is write-only: no password input may carry a value the page could reveal.
+      const leaked = await evaluate(`Array.from(document.querySelectorAll('input[type=password]')).filter((i) => i.value !== '').length`);
+      check(`${surface.name}: no secret is rendered into the form`, leaked === 0, `${leaked} password field(s) had a value`);
+    }
+
+    // The connection test must be pressable and must answer with a result the operator can
+    // read, whether that answer is "connected" or "not configured" — both are honest.
+    const pressed = await evaluate(`(() => {
+      const b = Array.from(document.querySelectorAll('button')).find((x) => /test connection/i.test(x.textContent || ''));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    check(`${surface.name}: the connection test is pressable`, pressed, "no Test connection button");
+    if (pressed) {
+      // The test launches a child process, so it is not instant; wait for the answer rather
+      // than for a fixed delay, or the assertion races the thing it is testing.
+      await until(
+        `${surface.name}'s test answer`,
+        "!!document.querySelector('.banner')",
+        30_000,
+      ).catch(() => {});
+      const answered = await evaluate("!!document.querySelector('.banner')");
+      check(`${surface.name}: the connection test answers`, answered, "no result banner appeared");
+    }
+  }
+
   // A settings screen that offers to save must actually be able to: the form fields come
   // from the settings API, so an empty form is a broken screen even though it has a heading.
   await visit("/settings/system");

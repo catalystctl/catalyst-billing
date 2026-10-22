@@ -218,25 +218,47 @@ decision with a test behind it, not a checkbox:
   configurable from the panel.
 - **A locale catalog.** Two locales ship, `de` disabled but fully translated; a missing key falls
   back rather than rendering blank, and a customer's stored choice beats their browser's header.
+- **Email piping works.** Both halves of `TKT-11`: a provider webhook authenticated by the piping
+  secret, and an IMAP poller written on `net/textproto` rather than by adding a mail library.
+  Attribution refuses an ambiguous match instead of guessing, a message from an address that does
+  not match the ticket's customer is never appended to it, and a mail loop is made impossible
+  rather than unlikely.
+- **A cPanel provisioner.** `extensions/cpanel` speaks the same protocol as the Pterodactyl
+  adapter, which is what proves the protocol is not Pterodactyl-shaped. It also produced the
+  finding that mattered most this round: the core passed no environment to an extension at all,
+  so both real adapters were unconfigurable and the panel reported them as healthy.
+- **Extensions can contribute a nav item and a service action**, as data, with the permission
+  checked against the closed set — never as code the core executes.
+- **Web push**, with RFC 8291 encryption proved by decrypting the ciphertext in a test, and a
+  service worker served from a stable URL.
+- **OAuth2 and social login**, where a token is an attenuation of its owner's permissions rather
+  than a second authorization path, and an existing account is never silently merged by email.
+- **Captcha** on registration and password reset, with the panel's CSP widened by exactly the
+  configured provider's origins and by nothing at all when no provider is set.
+- **Recurring affiliate commission** that reconciles against a payout report, bounded by the
+  configured cycles and idempotent on the invoice.
+- **An importer** whose dry run is the default and whose money parsing is exact for a 0-decimal
+  and a 3-decimal currency as well as a 2-decimal one.
 
 ## Not done, and why
 
 Still recorded rather than hidden:
 
-- **Email piping has a model and no ingest.** `message_id` dedupe and `ticket_mail_logs` are in
-  place; no IMAP poller or inbound webhook turns a message into a reply (`TKT-11`). This is the
-  largest remaining gap and it is a security-sensitive one: attribution must refuse an ambiguous
-  match rather than guess, or a stranger's message lands in someone else's thread.
 - **Arbitrary-length billing periods.** `one_time` and `free` are in the interval set; an N-day
   period is not, because it needs a period model `internal/calendar` does not have. Recorded in
   `0028_plan_types.sql`.
 - **Self-applying panel updates.** The update check, the approved target version and the state
   are honest; the panel does not replace its own binary, because doing that safely needs a
   deployment shape this repository does not have. An update is approved and the operator deploys.
-- **A cPanel provisioner.** Two real adapters exist; a third would prove the protocol is not
-  Pterodactyl-shaped, which is worth doing and is not a prerequisite for taking money.
+- **A shared extension registry.** The marketplace fetches a configured index and verifies each
+  download's SHA-256 before it is trusted, but there is no hosted index of extensions to point at,
+  and no signature beyond the digest — a compromised index can still serve a matching malicious
+  binary. Pinning is the mitigation available today; a real signature chain is not.
+- **Translations beyond the shell.** The mechanism, the catalog, the resolution chain and the
+  `/locales` editor are real, and the panel shell and storefront are translated. The long tail of
+  screens still renders English text inline. That is a translation task, not an engineering one.
 
-## The never-regress list, checked## The never-regress list, checked
+## The never-regress list, checked
 
 | Rule | Evidence |
 |---|---|

@@ -13124,6 +13124,175 @@ paths:
             x-permission: customer:read:all
             x-rate-class: read
             x-staff-only: true
+        post:
+            description: |-
+                Creates the billing account, a login for it and the link between them, in one transaction. The login has no password the caller knows: it stores the hash of 32 bytes of server randomness that are generated and discarded, so the only way in is the invitation mail, which carries a single-use reset link. No response to this route contains a credential.
+
+                An address that already belongs to a customer or a login is refused with `409 email_taken`. That is deliberately different from self-registration, which must not reveal whether an address is known: this caller is an authenticated operator about to create a record, and the useful answer is "open that record instead".
+
+                `invitation_sent` reports whether the message reached the outbox, and `invitation_detail` explains it when it did not. The account exists either way; the operator can resend from the customer's page. The address is stamped verified because the operator typed it — otherwise a customer could set a password through the reset flow and still not sign in on an installation that requires verification.
+            operationId: PostStaffCustomers
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            additionalProperties: false
+                            properties:
+                                billing_address:
+                                    allOf:
+                                        - additionalProperties: false
+                                          properties:
+                                            address_line1:
+                                                maxLength: 200
+                                                type: string
+                                            address_line2:
+                                                maxLength: 200
+                                                type: string
+                                            city:
+                                                maxLength: 200
+                                                type: string
+                                            country_code:
+                                                description: ISO 3166-1 alpha-2, upper case. It is the jurisdiction the tax engine resolves the rate for.
+                                                maxLength: 2
+                                                minLength: 2
+                                                pattern: ^[A-Z]{2}$
+                                                type: string
+                                            legal_name:
+                                                description: The name printed on documents. An empty value falls back to the customer's display name, so a document always prints a name.
+                                                maxLength: 200
+                                                type: string
+                                            postal_code:
+                                                maxLength: 200
+                                                type: string
+                                            region:
+                                                maxLength: 200
+                                                type: string
+                                            tax_id:
+                                                maxLength: 200
+                                                type: string
+                                          type: object
+                                    description: Optional. Omitted means no address is stored — an empty profile row would claim someone cleared fields they never filled in.
+                                email:
+                                    description: Stored lower-cased. It is unique across customers and logins, so an address that already has a record is refused rather than adopted.
+                                    format: email
+                                    maxLength: 254
+                                    type: string
+                                name:
+                                    description: The display name, and the fallback for the legal name on a document.
+                                    maxLength: 200
+                                    minLength: 1
+                                    type: string
+                                tax_exempt:
+                                    description: Marks the account exempt from tax. Requires tax_exemption_reason.
+                                    type: boolean
+                                tax_exemption_reason:
+                                    description: 'Why the account is exempt. A 400 when the flag is set and this is empty: an exemption without a reason is a number on a tax return nobody can defend.'
+                                    maxLength: 200
+                                    type: string
+                            required:
+                                - email
+                                - name
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    billing_profile:
+                                        type: object
+                                    customer:
+                                        properties:
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            email:
+                                                format: email
+                                                type: string
+                                            has_login:
+                                                description: Whether a login is attached. A staff-created customer always has one, and it has no password the caller knows.
+                                                type: boolean
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            name:
+                                                type: string
+                                            tax_exempt:
+                                                description: Read from the billing profile, where the tax engine reads it.
+                                                type: boolean
+                                            tax_exemption_reason:
+                                                description: Why the account is exempt. Empty when it is not. The database keeps the flag and the reason together, so a taxable account cannot carry a stale reason.
+                                                type: string
+                                        required:
+                                            - id
+                                            - email
+                                            - name
+                                            - has_login
+                                        type: object
+                                    invitation_detail:
+                                        description: Why the invitation was not queued. Absent when it was.
+                                        type: string
+                                    invitation_sent:
+                                        type: boolean
+                                required:
+                                    - customer
+                                    - invitation_sent
+                                type: object
+                    description: The customer was created
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An invalid address or name, or an exemption with no reason
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The address already has a customer record or a login
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Create a customer and invite them to set a password
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:all
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/customers/{id}:
         get:
             description: Joins billing, services, subscriptions, holds, the last invoices and recent authentication events in one response.
@@ -13179,6 +13348,169 @@ paths:
             summary: Customer detail
             x-permission: customer:read:all
             x-rate-class: read
+            x-staff-only: true
+        put:
+            description: |-
+                A partial edit: an absent field is left alone, so a rename cannot blank an address the operator did not touch. Changing the address moves the login with it — an account whose address and login disagree is two identities that only look like one, and the customer would never be able to reset a password at the address just set.
+
+                `tax_exempt` and `tax_exemption_reason` are written to the billing profile, where the tax engine reads them. Setting the flag false clears the reason with it: a leftover sentence on a taxable account is a contradiction an auditor reads. Setting it true with no reason is a 400.
+
+                This never touches an invoice. An issued document carries a frozen snapshot of the details it was issued with, enforced by a trigger, so a correction changes the next document and nothing already sent.
+            operationId: PutStaffCustomersById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            additionalProperties: false
+                            properties:
+                                billing_address:
+                                    allOf:
+                                        - additionalProperties: false
+                                          properties:
+                                            address_line1:
+                                                maxLength: 200
+                                                type: string
+                                            address_line2:
+                                                maxLength: 200
+                                                type: string
+                                            city:
+                                                maxLength: 200
+                                                type: string
+                                            country_code:
+                                                description: ISO 3166-1 alpha-2, upper case. It is the jurisdiction the tax engine resolves the rate for.
+                                                maxLength: 2
+                                                minLength: 2
+                                                pattern: ^[A-Z]{2}$
+                                                type: string
+                                            legal_name:
+                                                description: The name printed on documents. An empty value falls back to the customer's display name, so a document always prints a name.
+                                                maxLength: 200
+                                                type: string
+                                            postal_code:
+                                                maxLength: 200
+                                                type: string
+                                            region:
+                                                maxLength: 200
+                                                type: string
+                                            tax_id:
+                                                maxLength: 200
+                                                type: string
+                                          type: object
+                                    description: Replaces the bill-to block when it is present.
+                                email:
+                                    format: email
+                                    maxLength: 254
+                                    type: string
+                                name:
+                                    maxLength: 200
+                                    minLength: 1
+                                    type: string
+                                tax_exempt:
+                                    description: Absent leaves the exemption alone. Setting it false clears the reason with it.
+                                    type: boolean
+                                tax_exemption_reason:
+                                    maxLength: 200
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    billing_profile:
+                                        type: object
+                                    customer:
+                                        properties:
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            email:
+                                                format: email
+                                                type: string
+                                            has_login:
+                                                description: Whether a login is attached. A staff-created customer always has one, and it has no password the caller knows.
+                                                type: boolean
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            name:
+                                                type: string
+                                            tax_exempt:
+                                                description: Read from the billing profile, where the tax engine reads it.
+                                                type: boolean
+                                            tax_exemption_reason:
+                                                description: Why the account is exempt. Empty when it is not. The database keeps the flag and the reason together, so a taxable account cannot carry a stale reason.
+                                                type: string
+                                        required:
+                                            - id
+                                            - email
+                                            - name
+                                            - has_login
+                                        type: object
+                                required:
+                                    - customer
+                                type: object
+                    description: The customer was updated
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An invalid field, an invalid profile, or an exemption with no reason
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such customer
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The new address already belongs to another record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Edit a customer's identity, address and tax exemption
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: customer:write:all
+            x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/customers/{id}/billing-profile:
         get:
@@ -21668,6 +22000,201 @@ paths:
             summary: Service list
             x-permission: service:read:all
             x-rate-class: read
+            x-staff-only: true
+        post:
+            description: |-
+                Creates the service, its config selection and a queued provisioning operation, and — unless it is comped — a subscription whose period is derived from the price's own anchor and timezone. That subscription is what the renewal engine scans, so a service created here is billed from the next period onwards exactly like a purchased one.
+
+                **It never raises an invoice, and the response says so.** An invoice is a demand for money backed by an immutable document and a ledger posting; a manual creation is the delivery of something already agreed — a transfer that cleared, an account onboarded from another panel, a comped service. Billing for a service is the separate action `POST /api/v1/staff/invoices` with a `product_id` line, which fulfilment provisions when it settles. There is one money path, not two.
+
+                `comp: true` creates the service with no subscription at all, which is how "this customer does not pay for this" is expressed: nothing will ever invoice it, because there is no row to find.
+
+                Stock, the per-customer limit and the product's quantity policy are enforced by the same helpers the customer checkout calls, inside the same transaction, so a manual creation cannot bypass a sold-out product. The audit row names the operator and the reason, and the service records its origin in `origin`, `origin_reason` and `origin_actor`.
+            operationId: PostStaffServices
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            additionalProperties: false
+                            properties:
+                                comp:
+                                    description: Create the service with no subscription, so nothing ever invoices it. The absence of the row is what makes that true in the database rather than in a code path.
+                                    type: boolean
+                                config:
+                                    additionalProperties:
+                                        type: string
+                                    description: 'The chosen config options as {config_option_id: value}. Validated against the product''s options and priced from the catalog for this price version; an unknown option, an unavailable choice or a missing required option is a 400 rather than being ignored.'
+                                    type: object
+                                customer_id:
+                                    format: uuid
+                                    type: string
+                                price_version_id:
+                                    format: uuid
+                                    type: string
+                                quantity:
+                                    default: 1
+                                    description: Refused above one for a product whose quantity policy is disabled.
+                                    maximum: 1000
+                                    minimum: 1
+                                    type: integer
+                                reason:
+                                    description: 'Why the service was added. Required, stored on the service and written into the audit row: a service with no order behind it is exactly what an auditor asks about.'
+                                    maxLength: 500
+                                    minLength: 1
+                                    type: string
+                            required:
+                                - customer_id
+                                - price_version_id
+                                - reason
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    comped:
+                                        description: True when no subscription was created, so nothing will ever invoice the service.
+                                        type: boolean
+                                    config:
+                                        description: The priced selection, with the amount captured at selection time so a later option-price change cannot silently re-price the service.
+                                        items:
+                                            properties:
+                                                amount:
+                                                    $ref: '#/components/schemas/Amount'
+                                                config_option_id:
+                                                    format: uuid
+                                                    type: string
+                                                env_variable:
+                                                    type: string
+                                                name:
+                                                    type: string
+                                                setup:
+                                                    $ref: '#/components/schemas/Amount'
+                                                value:
+                                                    type: string
+                                            type: object
+                                        type: array
+                                    invoiced:
+                                        description: 'Always false. This endpoint is a delivery, not a demand for money: an invoice is raised by POST /api/v1/staff/invoices with a product line, which fulfilment provisions when it settles.'
+                                        enum:
+                                            - false
+                                        type: boolean
+                                    price_version_id:
+                                        format: uuid
+                                        type: string
+                                    service:
+                                        properties:
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            customer_id:
+                                                format: uuid
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            origin:
+                                                description: Every service this endpoint creates is 'manual'. A purchased one is 'purchase'.
+                                                enum:
+                                                    - manual
+                                                type: string
+                                            product_id:
+                                                format: uuid
+                                                type: string
+                                            quantity:
+                                                type: integer
+                                            reason:
+                                                type: string
+                                            status:
+                                                description: '''pending'' until the queued provisioning operation succeeds.'
+                                                type: string
+                                        required:
+                                            - id
+                                            - status
+                                            - origin
+                                        type: object
+                                    subscription:
+                                        description: The schedule the renewal engine will act on, or null when there is none — because the service is comped, or because the price is one-time or free.
+                                        properties:
+                                            current_period_end:
+                                                format: date-time
+                                                type: string
+                                            current_period_start:
+                                                format: date-time
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            interval:
+                                                type: string
+                                            next_billing_at:
+                                                format: date-time
+                                                type: string
+                                            status:
+                                                type: string
+                                        type:
+                                            - object
+                                            - "null"
+                                required:
+                                    - service
+                                    - invoiced
+                                    - comped
+                                type: object
+                    description: The service was created
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A missing reason, an invalid quantity, or an unavailable option selection
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such customer or price version
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The product is sold out, or the customer holds the maximum of it
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Add a service to an existing customer
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:write:all
+            x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/services/{id}:
         get:

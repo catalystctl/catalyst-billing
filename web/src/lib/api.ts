@@ -60,6 +60,10 @@ export interface RequestOptions {
   noIdempotency?: boolean;
   /** A mutation that must not send the CSRF header (public entry points). */
   noCSRF?: boolean;
+  /** A body that is sent verbatim rather than JSON-encoded: a file upload. */
+  raw?: BodyInit;
+  /** The Content-Type of a raw body. */
+  contentType?: string;
 }
 
 const CSRF_HEADER = "X-CSRF-Token";
@@ -147,9 +151,37 @@ export class Api {
     return this.request<T>("DELETE", path, { ...options, body });
   }
 
+  /**
+   * A mutation whose body is *not* JSON.
+   *
+   * A file upload is the reason this exists: `post()` JSON-encodes its body, so a `File` would
+   * arrive as `{}` — a 9 MB PDF stored as two bytes. The bytes are sent as they are, with the
+   * caller's own Content-Type, and everything else (CSRF, the idempotency key, the 401 handler,
+   * the problem+json envelope) is the same as any other mutation. That is the whole point of
+   * adding a method here rather than calling `fetch` from the screen: a second HTTP client would
+   * be the one that is silently wrong the next time one of those four changes.
+   */
+  async postRaw<T>(
+    path: string,
+    body: BodyInit,
+    options: RequestOptions & { contentType?: string } = {},
+  ): Promise<T> {
+    return this.request<T>("POST", path, {
+      ...options,
+      raw: body,
+      contentType: options.contentType ?? "application/octet-stream",
+    });
+  }
+
   private async request<T>(method: string, path: string, options: RequestOptions): Promise<T> {
     const headers: Record<string, string> = { Accept: "application/json" };
-    if (options.body !== undefined) headers["Content-Type"] = "application/json";
+    if (options.raw !== undefined) {
+      // A raw body carries its own type. The browser must not add one, and it must not add a
+      // charset to a binary: the server's allowlist reads the type exactly as sent.
+      headers["Content-Type"] = options.contentType ?? "application/octet-stream";
+    } else if (options.body !== undefined) {
+      headers["Content-Type"] = "application/json";
+    }
 
     if (method !== "GET") {
       this.invalidate();
@@ -168,7 +200,12 @@ export class Api {
         method,
         headers,
         credentials: "same-origin",
-        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        body:
+          options.raw !== undefined
+            ? options.raw
+            : options.body === undefined
+              ? undefined
+              : JSON.stringify(options.body),
         signal: options.signal ?? null,
         // A redirect from the API is never expected; following one would turn a JSON
         // request into an HTML fetch of the sign-in page.

@@ -389,14 +389,14 @@ func TestAttachmentDownloadIsScoped(t *testing.T) {
 	attachment, err := f.svc.AddAttachmentAsCustomer(ctx, f.alice, thread.Ticket.ID, "",
 		tickets.AttachmentInput{
 			Filename:    "log.txt",
-			ContentType: "text/html", // downgraded on the way in
+			ContentType: "text/plain",
 			Bytes:       []byte("hello"),
 		})
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	if attachment.ContentType != "application/octet-stream" {
-		t.Fatalf("stored content type = %q, want application/octet-stream", attachment.ContentType)
+	if attachment.ContentType != "text/plain" {
+		t.Fatalf("stored content type = %q, want text/plain", attachment.ContentType)
 	}
 
 	got, err := f.svc.AttachmentForCustomer(ctx, f.alice, attachment.ID)
@@ -409,6 +409,59 @@ func TestAttachmentDownloadIsScoped(t *testing.T) {
 
 	if _, err := f.svc.AttachmentForCustomer(ctx, f.bob, attachment.ID); !errors.Is(err, tickets.ErrNotFound) {
 		t.Fatalf("cross-customer download = %v, want ErrNotFound", err)
+	}
+}
+
+// The upload's content type is an allowlist, not a downgrade.
+//
+// The old behaviour normalised text/html to application/octet-stream and stored it, which meant a
+// ticket could carry a document the sender chose the type of. It is now refused, and the refusal
+// names the accepted set so the sender can convert or zip the file instead of guessing. A type
+// that *is* accepted keeps its own type, and an unknown type is stored opaque.
+func TestAttachmentContentTypeAllowlist(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	thread := f.open(t, f.alice, "file types")
+
+	for _, refused := range []string{
+		"text/html",
+		"image/svg+xml",
+		"application/javascript",
+		"text/xml",
+		"application/x-msdownload",
+	} {
+		_, err := f.svc.AddAttachmentAsCustomer(ctx, f.alice, thread.Ticket.ID, "",
+			tickets.AttachmentInput{Filename: "file.bin", ContentType: refused, Bytes: []byte("x")})
+		if !errors.Is(err, tickets.ErrAttachmentType) {
+			t.Fatalf("content type %q = %v, want ErrAttachmentType", refused, err)
+		}
+	}
+
+	// An extension that implies a refused type is refused when no type was claimed.
+	_, err := f.svc.AddAttachmentAsCustomer(ctx, f.alice, thread.Ticket.ID, "",
+		tickets.AttachmentInput{Filename: "page.html", Bytes: []byte("<script>")})
+	if !errors.Is(err, tickets.ErrAttachmentType) {
+		t.Fatalf("an html file with no claimed type = %v, want ErrAttachmentType", err)
+	}
+
+	// An accepted type keeps its own type.
+	kept, err := f.svc.AddAttachmentAsCustomer(ctx, f.alice, thread.Ticket.ID, "",
+		tickets.AttachmentInput{Filename: "screen.png", ContentType: "image/png", Bytes: []byte("\x89PNG")})
+	if err != nil {
+		t.Fatalf("png upload: %v", err)
+	}
+	if kept.ContentType != "image/png" {
+		t.Fatalf("stored content type = %q, want image/png", kept.ContentType)
+	}
+
+	// A file whose type is genuinely unknown is stored as an opaque download.
+	opaque, err := f.svc.AddAttachmentAsCustomer(ctx, f.alice, thread.Ticket.ID, "",
+		tickets.AttachmentInput{Filename: "dump", ContentType: "application/octet-stream", Bytes: []byte("\x00\x01")})
+	if err != nil {
+		t.Fatalf("opaque upload: %v", err)
+	}
+	if opaque.ContentType != "application/octet-stream" {
+		t.Fatalf("stored content type = %q, want application/octet-stream", opaque.ContentType)
 	}
 }
 

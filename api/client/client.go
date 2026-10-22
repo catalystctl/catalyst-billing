@@ -537,6 +537,20 @@ func (c *Client) DeleteStaffTaxratesById(ctx context.Context, id string, query u
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffTicketfieldsById calls DELETE /api/v1/staff/ticket-fields/{id}.
+//
+// # Retire a ticket field
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeleteStaffTicketfieldsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/ticket-fields/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffUpdatesApproval calls DELETE /api/v1/staff/updates/approval.
 //
 // # Withdraw the approved version
@@ -2045,6 +2059,16 @@ func (c *Client) GetStaffTaxratesById(ctx context.Context, id string, query url.
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffTicketfields calls GET /api/v1/staff/ticket-fields.
+//
+// # The configured ticket fields
+//
+// Permission: ticket:read:all. Staff only.
+func (c *Client) GetStaffTicketfields(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/ticket-fields"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffTickets calls GET /api/v1/staff/tickets.
 //
 // # The support queue
@@ -2183,6 +2207,20 @@ func (c *Client) PatchStaffLocalesByCode(ctx context.Context, code string, query
 // id is the id path parameter.
 func (c *Client) PatchStaffRolesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/roles/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PATCH", path, query, body, true, true)
+}
+
+// PatchStaffTicketfieldsById calls PATCH /api/v1/staff/ticket-fields/{id}.
+//
+// # Change a ticket field
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PatchStaffTicketfieldsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/ticket-fields/{id}"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "PATCH", path, query, body, true, true)
 }
@@ -3260,6 +3298,30 @@ func (c *Client) PostStaffTaxrates(ctx context.Context, query url.Values, body a
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffTicketfields calls POST /api/v1/staff/ticket-fields.
+//
+// # Create a ticket field
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffTicketfields(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/ticket-fields"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffTickets calls POST /api/v1/staff/tickets.
+//
+// # Open a ticket on a customer's behalf
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffTickets(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffTicketsByIdAssign calls POST /api/v1/staff/tickets/{id}/assign.
 //
 // # Assign or unassign a ticket
@@ -3485,6 +3547,19 @@ func (c *Client) PutPortalServicesByIdMetadata(ctx context.Context, id string, q
 	path := "/api/v1/portal/services/{id}/metadata"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutPortalTicketsByIdFields calls PUT /api/v1/portal/tickets/{id}/fields.
+//
+// # Answer the custom fields on the customer's own ticket
+//
+// Permission: ticket:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// id is the id path parameter.
+func (c *Client) PutPortalTicketsByIdFields(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/tickets/{id}/fields"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, false)
 }
 
 // PutStaffAnnouncementsById calls PUT /api/v1/staff/announcements/{id}.
@@ -3853,6 +3928,20 @@ func (c *Client) PutStaffSettings(ctx context.Context, query url.Values, body an
 // id is the id path parameter.
 func (c *Client) PutStaffTaxratesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/tax-rates/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffTicketsByIdFields calls PUT /api/v1/staff/tickets/{id}/fields.
+//
+// # Answer the custom fields on any ticket
+//
+// Permission: ticket:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutStaffTicketsByIdFields(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/tickets/{id}/fields"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }

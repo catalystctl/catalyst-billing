@@ -117,6 +117,10 @@ export const routes: Route[] = [
   route("/tickets/new", () => import("./views/ticket-new")),
   route("/tickets/:id", () => import("./views/ticket")),
   route("/support", () => import("./views/support-queue")),
+  // Opening a ticket *for* a customer. A separate screen from /tickets/new because the customer's
+  // form cannot name a customer — that would be a ticket on someone else's account — and the staff
+  // form has to.
+  route("/support/new", () => import("./views/support")),
 
   route("/credits", () => import("./views/credits")),
   route("/affiliates", () => import("./views/affiliates")),

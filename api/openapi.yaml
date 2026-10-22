@@ -6509,7 +6509,7 @@ paths:
             x-permission: ticket:read:self
             x-rate-class: read
         post:
-            description: The customer is the session's, never the body's. Refused with 403 tickets_disabled when the operator has switched support off. A service_id must be one of the caller's own services; anything else is not_found. The ticket number is allocated from the same sequence invoices use, under the `ticket` scope.
+            description: The customer is the session's, never the body's. Refused with 403 tickets_disabled when the operator has switched support off. A service_id must be one of the caller's own services; anything else is not_found. A custom field the operator made required at creation must be answered, or the refusal is 400 required_field_missing with the field named. The ticket number is allocated from the same sequence invoices use, under the `ticket` scope.
             operationId: PostPortalTickets
             requestBody:
                 content:
@@ -6519,6 +6519,9 @@ paths:
                                 department:
                                     description: One of the configured departments from GET /api/v1/portal/tickets/meta.
                                     type: string
+                                fields:
+                                    description: Answers to the operator's custom fields, keyed by field key. A field marked required_on_create must be answered or the ticket is refused with required_field_missing, naming it.
+                                    type: object
                                 message:
                                     properties:
                                         body:
@@ -6554,6 +6557,69 @@ paths:
                         application/json:
                             schema:
                                 properties:
+                                    fields:
+                                        description: The operator's custom fields, each with this ticket's answer or the fact that it has none. An unanswered field that is required to close is what the close refusal names.
+                                        items:
+                                            properties:
+                                                answer_count:
+                                                    description: How many tickets carry an answer.
+                                                    type: integer
+                                                answered:
+                                                    type: boolean
+                                                answered_at:
+                                                    format: date-time
+                                                    type: string
+                                                archived:
+                                                    description: 'A retired field: no longer asked, no longer required, existing answers kept.'
+                                                    type: boolean
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                key:
+                                                    description: The stable slug a client sends the answer under. Lower-case letters, digits and underscores.
+                                                    type: string
+                                                label:
+                                                    description: What the field is called on the form, and what a refused close names.
+                                                    maxLength: 120
+                                                    type: string
+                                                options:
+                                                    description: The option set of a select field; empty for the other types.
+                                                    items:
+                                                        type: string
+                                                    type: array
+                                                required_on_create:
+                                                    description: A new ticket is refused while this is unanswered.
+                                                    type: boolean
+                                                required_to_close:
+                                                    description: Closing is refused while this is unanswered, and the refusal names the field.
+                                                    type: boolean
+                                                sort_order:
+                                                    type: integer
+                                                type:
+                                                    enum:
+                                                        - text
+                                                        - select
+                                                        - checkbox
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                                value:
+                                                    description: A string for text and select, a boolean for checkbox, null when unanswered. Null is not the same as "" or false.
+                                                    nullable: true
+                                            required:
+                                                - id
+                                                - key
+                                                - label
+                                                - type
+                                                - required_on_create
+                                                - required_to_close
+                                                - answered
+                                            type: object
+                                        type: array
                                     messages:
                                         items:
                                             properties:
@@ -6686,7 +6752,7 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Problem'
-                    description: Invalid subject, department, priority or body
+                    description: Invalid subject, department, priority, body or custom field
                 "401":
                     content:
                         application/json:
@@ -6749,6 +6815,69 @@ paths:
                         application/json:
                             schema:
                                 properties:
+                                    fields:
+                                        description: The operator's custom fields, each with this ticket's answer or the fact that it has none. An unanswered field that is required to close is what the close refusal names.
+                                        items:
+                                            properties:
+                                                answer_count:
+                                                    description: How many tickets carry an answer.
+                                                    type: integer
+                                                answered:
+                                                    type: boolean
+                                                answered_at:
+                                                    format: date-time
+                                                    type: string
+                                                archived:
+                                                    description: 'A retired field: no longer asked, no longer required, existing answers kept.'
+                                                    type: boolean
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                key:
+                                                    description: The stable slug a client sends the answer under. Lower-case letters, digits and underscores.
+                                                    type: string
+                                                label:
+                                                    description: What the field is called on the form, and what a refused close names.
+                                                    maxLength: 120
+                                                    type: string
+                                                options:
+                                                    description: The option set of a select field; empty for the other types.
+                                                    items:
+                                                        type: string
+                                                    type: array
+                                                required_on_create:
+                                                    description: A new ticket is refused while this is unanswered.
+                                                    type: boolean
+                                                required_to_close:
+                                                    description: Closing is refused while this is unanswered, and the refusal names the field.
+                                                    type: boolean
+                                                sort_order:
+                                                    type: integer
+                                                type:
+                                                    enum:
+                                                        - text
+                                                        - select
+                                                        - checkbox
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                                value:
+                                                    description: A string for text and select, a boolean for checkbox, null when unanswered. Null is not the same as "" or false.
+                                                    nullable: true
+                                            required:
+                                                - id
+                                                - key
+                                                - label
+                                                - type
+                                                - required_on_create
+                                                - required_to_close
+                                                - answered
+                                            type: object
+                                        type: array
                                     messages:
                                         items:
                                             properties:
@@ -6920,7 +7049,7 @@ paths:
             x-rate-class: read
     /api/v1/portal/tickets/{id}/attachments:
         post:
-            description: The body is the file itself, with the name in `?filename=` and the type in Content-Type; `?message_id=` selects the message (the newest when omitted). Capped at 10 MB, checked against Content-Length before the body is read and again while reading, so an oversized upload is refused with 413 attachment_too_large rather than buffered. Identical bytes attached to one message collapse to one row by digest. This route deliberately does not use the idempotency wrapper, which buffers bodies at 1 MB and would refuse a valid 9 MB file with the wrong code.
+            description: The body is the file itself, with the name in `?filename=` and the type in Content-Type; `?message_id=` selects the message (the newest when omitted). Capped at 10 MB, checked against Content-Length before the body is read and again while reading, so an oversized upload is refused with 413 attachment_too_large rather than buffered. The type must be on the allowlist (images, PDF, plain text, CSV, JSON, archives and Office documents, plus application/octet-stream); anything a browser would render — HTML, SVG, JavaScript, XML — is refused with 415 attachment_type_not_allowed rather than downgraded. Identical bytes attached to one message collapse to one row by digest. This route deliberately does not use the idempotency wrapper, which buffers bodies at 1 MB and would refuse a valid 9 MB file with the wrong code.
             operationId: PostPortalTicketsByIdAttachments
             parameters:
                 - in: path
@@ -6989,6 +7118,12 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Problem'
                     description: Larger than 10 MB
+                "415":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The content type is not on the allowlist
                 "429":
                     content:
                         application/json:
@@ -7010,7 +7145,7 @@ paths:
             x-rate-class: mutation
     /api/v1/portal/tickets/{id}/close:
         post:
-            description: Closes the caller's own ticket. Refused with 403 client_closing_disabled when the operator has reserved closing to staff.
+            description: Closes the caller's own ticket. Refused with 403 client_closing_disabled when the operator has reserved closing to staff, and with 409 required_field_missing when a custom field the operator made required to close is still unanswered — the detail names the field.
             operationId: PostPortalTicketsByIdClose
             parameters:
                 - in: path
@@ -7107,6 +7242,12 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Problem'
                     description: No such ticket, or it belongs to someone else
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A close-required field is unanswered; the detail names it
                 "429":
                     content:
                         application/json:
@@ -7127,6 +7268,143 @@ paths:
             x-idempotency:
                 header: Idempotency-Key
                 required: true
+            x-permission: ticket:write:self
+            x-rate-class: mutation
+    /api/v1/portal/tickets/{id}/fields:
+        put:
+            description: 'Answers keyed by field key; an omitted key is left alone and null or an empty string clears one. The write is scoped to the caller''s customer in SQL, so another customer''s ticket is 404 not_found. This is how a close-time requirement is satisfied: closing is refused until the field is answered, so there has to be a way to answer it afterwards.'
+            operationId: PutPortalTicketsByIdFields
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                values:
+                                    additionalProperties:
+                                        nullable: true
+                                    description: Answers keyed by field key. A string for text and select, a boolean for checkbox. An omitted key is left alone; null or an empty string clears the answer. An unknown key, a value outside a select's options, or a value of the wrong type is refused with invalid_input naming the field.
+                                    type: object
+                            required:
+                                - values
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    fields:
+                                        items:
+                                            properties:
+                                                answer_count:
+                                                    description: How many tickets carry an answer.
+                                                    type: integer
+                                                answered:
+                                                    type: boolean
+                                                answered_at:
+                                                    format: date-time
+                                                    type: string
+                                                archived:
+                                                    description: 'A retired field: no longer asked, no longer required, existing answers kept.'
+                                                    type: boolean
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                key:
+                                                    description: The stable slug a client sends the answer under. Lower-case letters, digits and underscores.
+                                                    type: string
+                                                label:
+                                                    description: What the field is called on the form, and what a refused close names.
+                                                    maxLength: 120
+                                                    type: string
+                                                options:
+                                                    description: The option set of a select field; empty for the other types.
+                                                    items:
+                                                        type: string
+                                                    type: array
+                                                required_on_create:
+                                                    description: A new ticket is refused while this is unanswered.
+                                                    type: boolean
+                                                required_to_close:
+                                                    description: Closing is refused while this is unanswered, and the refusal names the field.
+                                                    type: boolean
+                                                sort_order:
+                                                    type: integer
+                                                type:
+                                                    enum:
+                                                        - text
+                                                        - select
+                                                        - checkbox
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                                value:
+                                                    description: A string for text and select, a boolean for checkbox, null when unanswered. Null is not the same as "" or false.
+                                                    nullable: true
+                                            required:
+                                                - id
+                                                - key
+                                                - label
+                                                - type
+                                                - required_on_create
+                                                - required_to_close
+                                                - answered
+                                            type: object
+                                        type: array
+                                type: object
+                    description: Every field, with this ticket's answers
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An unknown key, a value outside the options, or a value of the wrong type
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket, or it belongs to someone else
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Answer the custom fields on the customer's own ticket
+            x-csrf-required: true
             x-permission: ticket:write:self
             x-rate-class: mutation
     /api/v1/portal/tickets/{id}/replies:
@@ -26956,6 +27234,520 @@ paths:
             x-permission: tax:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/ticket-fields:
+        get:
+            description: The definitions, in display order, with the closed set of types. `include_archived=true` adds the retired fields, which the settings screen shows so an operator can see what a closed ticket was asked.
+            operationId: GetStaffTicketfields
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    fields:
+                                        items:
+                                            properties:
+                                                answer_count:
+                                                    description: How many tickets carry an answer.
+                                                    type: integer
+                                                archived:
+                                                    description: 'A retired field: no longer asked, no longer required, existing answers kept.'
+                                                    type: boolean
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                key:
+                                                    description: The stable slug a client sends the answer under. Lower-case letters, digits and underscores.
+                                                    type: string
+                                                label:
+                                                    description: What the field is called on the form, and what a refused close names.
+                                                    maxLength: 120
+                                                    type: string
+                                                options:
+                                                    description: The option set of a select field; empty for the other types.
+                                                    items:
+                                                        type: string
+                                                    type: array
+                                                required_on_create:
+                                                    description: A new ticket is refused while this is unanswered.
+                                                    type: boolean
+                                                required_to_close:
+                                                    description: Closing is refused while this is unanswered, and the refusal names the field.
+                                                    type: boolean
+                                                sort_order:
+                                                    type: integer
+                                                type:
+                                                    enum:
+                                                        - text
+                                                        - select
+                                                        - checkbox
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - id
+                                                - key
+                                                - label
+                                                - type
+                                                - required_on_create
+                                                - required_to_close
+                                            type: object
+                                        type: array
+                                    types:
+                                        items:
+                                            type: string
+                                        type: array
+                                type: object
+                    description: The field definitions
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The configured ticket fields
+            x-permission: ticket:read:all
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: 'A field is text, select or checkbox. `required_on_create` and `required_to_close` are independent: the first refuses a new ticket that does not answer it, the second refuses a close. A select needs a non-empty option list; the other types refuse one. The key is a slug the API and the stored answer both use, so it cannot collide with a ticket column.'
+            operationId: PostStaffTicketfields
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                archived:
+                                    description: true retires the field, false restores it.
+                                    type: boolean
+                                key:
+                                    description: 'Immutable in practice: clients send answers under it.'
+                                    type: string
+                                label:
+                                    maxLength: 120
+                                    type: string
+                                options:
+                                    description: Required for a select, refused for the other types.
+                                    items:
+                                        type: string
+                                    type: array
+                                required_on_create:
+                                    type: boolean
+                                required_to_close:
+                                    type: boolean
+                                sort_order:
+                                    type: integer
+                                type:
+                                    enum:
+                                        - text
+                                        - select
+                                        - checkbox
+                                    type: string
+                            required:
+                                - key
+                                - label
+                                - type
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    answer_count:
+                                        description: How many tickets carry an answer.
+                                        type: integer
+                                    archived:
+                                        description: 'A retired field: no longer asked, no longer required, existing answers kept.'
+                                        type: boolean
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    key:
+                                        description: The stable slug a client sends the answer under. Lower-case letters, digits and underscores.
+                                        type: string
+                                    label:
+                                        description: What the field is called on the form, and what a refused close names.
+                                        maxLength: 120
+                                        type: string
+                                    options:
+                                        description: The option set of a select field; empty for the other types.
+                                        items:
+                                            type: string
+                                        type: array
+                                    required_on_create:
+                                        description: A new ticket is refused while this is unanswered.
+                                        type: boolean
+                                    required_to_close:
+                                        description: Closing is refused while this is unanswered, and the refusal names the field.
+                                        type: boolean
+                                    sort_order:
+                                        type: integer
+                                    type:
+                                        enum:
+                                            - text
+                                            - select
+                                            - checkbox
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - key
+                                    - label
+                                    - type
+                                    - required_on_create
+                                    - required_to_close
+                                type: object
+                    description: The new field
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An invalid key, label, type or option list
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Create a ticket field
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/ticket-fields/{id}:
+        delete:
+            description: 'Archives the definition rather than deleting it: the field stops being asked and stops being required, and the answers already given stay readable on the tickets that carry them. A definition that tickets point at is never deletable, because those answers are part of a closed ticket''s record.'
+            operationId: DeleteStaffTicketfieldsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    answer_count:
+                                        description: How many tickets carry an answer.
+                                        type: integer
+                                    archived:
+                                        description: 'A retired field: no longer asked, no longer required, existing answers kept.'
+                                        type: boolean
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    key:
+                                        description: The stable slug a client sends the answer under. Lower-case letters, digits and underscores.
+                                        type: string
+                                    label:
+                                        description: What the field is called on the form, and what a refused close names.
+                                        maxLength: 120
+                                        type: string
+                                    options:
+                                        description: The option set of a select field; empty for the other types.
+                                        items:
+                                            type: string
+                                        type: array
+                                    required_on_create:
+                                        description: A new ticket is refused while this is unanswered.
+                                        type: boolean
+                                    required_to_close:
+                                        description: Closing is refused while this is unanswered, and the refusal names the field.
+                                        type: boolean
+                                    sort_order:
+                                        type: integer
+                                    type:
+                                        enum:
+                                            - text
+                                            - select
+                                            - checkbox
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - key
+                                    - label
+                                    - type
+                                    - required_on_create
+                                    - required_to_close
+                                type: object
+                    description: The archived field
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such field
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Retire a ticket field
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+        patch:
+            description: 'Every field is optional and an omitted one is left alone. A type change or an option removal is refused while tickets already answer the field (409-style invalid_input): an operator adds an option, or archives the field and creates a new one. `archived: false` restores a retired field.'
+            operationId: PatchStaffTicketfieldsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                archived:
+                                    description: true retires the field, false restores it.
+                                    type: boolean
+                                key:
+                                    description: 'Immutable in practice: clients send answers under it.'
+                                    type: string
+                                label:
+                                    maxLength: 120
+                                    type: string
+                                options:
+                                    description: Required for a select, refused for the other types.
+                                    items:
+                                        type: string
+                                    type: array
+                                required_on_create:
+                                    type: boolean
+                                required_to_close:
+                                    type: boolean
+                                sort_order:
+                                    type: integer
+                                type:
+                                    enum:
+                                        - text
+                                        - select
+                                        - checkbox
+                                    type: string
+                            required: []
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    answer_count:
+                                        description: How many tickets carry an answer.
+                                        type: integer
+                                    archived:
+                                        description: 'A retired field: no longer asked, no longer required, existing answers kept.'
+                                        type: boolean
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    key:
+                                        description: The stable slug a client sends the answer under. Lower-case letters, digits and underscores.
+                                        type: string
+                                    label:
+                                        description: What the field is called on the form, and what a refused close names.
+                                        maxLength: 120
+                                        type: string
+                                    options:
+                                        description: The option set of a select field; empty for the other types.
+                                        items:
+                                            type: string
+                                        type: array
+                                    required_on_create:
+                                        description: A new ticket is refused while this is unanswered.
+                                        type: boolean
+                                    required_to_close:
+                                        description: Closing is refused while this is unanswered, and the refusal names the field.
+                                        type: boolean
+                                    sort_order:
+                                        type: integer
+                                    type:
+                                        enum:
+                                            - text
+                                            - select
+                                            - checkbox
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - key
+                                    - label
+                                    - type
+                                    - required_on_create
+                                    - required_to_close
+                                type: object
+                    description: The updated field
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An invalid value, or a change that would strand an answer
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such field
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Change a ticket field
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:all
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/tickets:
         get:
             description: 'Every ticket, newest first, unscoped because a queue that shows one customer is not a queue. Filters: `status`, `priority`, `department`, `assignee` (a staff user id, or `unassigned`), and `q` (at least two characters, searched against the subject and the customer''s email and name). Each row carries the customer and the last message, so the queue renders without a second request.'
@@ -27075,6 +27867,297 @@ paths:
             x-permission: ticket:read:all
             x-rate-class: read
             x-staff-only: true
+        post:
+            description: 'An agent answering the phone cannot become the customer, so the customer is named in the body. The ticket records both: `opened_by` is the staff account and `opened_by_staff` marks it as staff-opened, while `customer_id` is the account it was opened for. The first message is recorded as a staff message, which is what the customer''s thread shows. A customer_id that does not exist is 404 not_found; a service_id must belong to that customer. A custom field the operator made required at creation is enforced here exactly as on the portal.'
+            operationId: PostStaffTickets
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                customer_id:
+                                    description: The billing account this ticket is opened for.
+                                    format: uuid
+                                    type: string
+                                department:
+                                    description: One of the configured departments from GET /api/v1/staff/tickets/meta.
+                                    type: string
+                                fields:
+                                    description: Answers to the operator's custom fields, keyed by field key.
+                                    type: object
+                                message:
+                                    properties:
+                                        body:
+                                            type: string
+                                        message_id:
+                                            description: An email Message-ID, for a ticket raised from an email. A duplicate is ignored.
+                                            type: string
+                                    required:
+                                        - body
+                                    type: object
+                                priority:
+                                    default: normal
+                                    enum:
+                                        - low
+                                        - normal
+                                        - high
+                                    type: string
+                                service_id:
+                                    description: One of the customer's own services, when the ticket is about one.
+                                    format: uuid
+                                    type: string
+                                subject:
+                                    maxLength: 200
+                                    type: string
+                            required:
+                                - customer_id
+                                - subject
+                                - message
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    fields:
+                                        description: The operator's custom fields, each with this ticket's answer or the fact that it has none. An unanswered field that is required to close is what the close refusal names.
+                                        items:
+                                            properties:
+                                                answer_count:
+                                                    description: How many tickets carry an answer.
+                                                    type: integer
+                                                answered:
+                                                    type: boolean
+                                                answered_at:
+                                                    format: date-time
+                                                    type: string
+                                                archived:
+                                                    description: 'A retired field: no longer asked, no longer required, existing answers kept.'
+                                                    type: boolean
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                key:
+                                                    description: The stable slug a client sends the answer under. Lower-case letters, digits and underscores.
+                                                    type: string
+                                                label:
+                                                    description: What the field is called on the form, and what a refused close names.
+                                                    maxLength: 120
+                                                    type: string
+                                                options:
+                                                    description: The option set of a select field; empty for the other types.
+                                                    items:
+                                                        type: string
+                                                    type: array
+                                                required_on_create:
+                                                    description: A new ticket is refused while this is unanswered.
+                                                    type: boolean
+                                                required_to_close:
+                                                    description: Closing is refused while this is unanswered, and the refusal names the field.
+                                                    type: boolean
+                                                sort_order:
+                                                    type: integer
+                                                type:
+                                                    enum:
+                                                        - text
+                                                        - select
+                                                        - checkbox
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                                value:
+                                                    description: A string for text and select, a boolean for checkbox, null when unanswered. Null is not the same as "" or false.
+                                                    nullable: true
+                                            required:
+                                                - id
+                                                - key
+                                                - label
+                                                - type
+                                                - required_on_create
+                                                - required_to_close
+                                                - answered
+                                            type: object
+                                        type: array
+                                    messages:
+                                        items:
+                                            properties:
+                                                attachments:
+                                                    items:
+                                                        properties:
+                                                            byte_size:
+                                                                maximum: 10485760
+                                                                type: integer
+                                                            content_type:
+                                                                type: string
+                                                            created_at:
+                                                                format: date-time
+                                                                type: string
+                                                            digest:
+                                                                type: string
+                                                            filename:
+                                                                type: string
+                                                            id:
+                                                                format: uuid
+                                                                type: string
+                                                            url:
+                                                                type: string
+                                                        required:
+                                                            - id
+                                                            - filename
+                                                            - content_type
+                                                            - byte_size
+                                                            - url
+                                                        type: object
+                                                    type: array
+                                                author:
+                                                    properties:
+                                                        id:
+                                                            format: uuid
+                                                            type: string
+                                                        name:
+                                                            type: string
+                                                    type: object
+                                                body:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                from_staff:
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                message_id:
+                                                    description: The email Message-ID a piped reply carried, when any.
+                                                    type: string
+                                                ticket_id:
+                                                    format: uuid
+                                                    type: string
+                                            required:
+                                                - id
+                                                - ticket_id
+                                                - body
+                                                - from_staff
+                                            type: object
+                                        type: array
+                                    ticket:
+                                        properties:
+                                            assigned_to:
+                                                format: uuid
+                                                type: string
+                                            closed_at:
+                                                format: date-time
+                                                type: string
+                                            created_at:
+                                                format: date-time
+                                                type: string
+                                            department:
+                                                type: string
+                                            id:
+                                                format: uuid
+                                                type: string
+                                            last_message:
+                                                properties:
+                                                    body:
+                                                        type: string
+                                                    from_staff:
+                                                        type: boolean
+                                                type: object
+                                            last_reply_at:
+                                                format: date-time
+                                                type: string
+                                            message_count:
+                                                type: integer
+                                            number:
+                                                example: TKT-000042
+                                                type: string
+                                            priority:
+                                                enum:
+                                                    - low
+                                                    - normal
+                                                    - high
+                                                type: string
+                                            service_id:
+                                                format: uuid
+                                                type: string
+                                            status:
+                                                enum:
+                                                    - open
+                                                    - replied
+                                                    - closed
+                                                type: string
+                                            subject:
+                                                maxLength: 200
+                                                type: string
+                                            updated_at:
+                                                format: date-time
+                                                type: string
+                                        required:
+                                            - id
+                                            - number
+                                            - subject
+                                            - status
+                                            - priority
+                                            - department
+                                        type: object
+                                required:
+                                    - ticket
+                                    - messages
+                                type: object
+                    description: A duplicate email delivery; the existing thread with duplicate=true
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A missing customer_id, or an invalid subject, department, priority or custom field
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Tickets are disabled
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such customer, or the service is not theirs
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Open a ticket on a customer's behalf
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:all
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/tickets/{id}:
         get:
             description: The same thread the customer sees, plus the customer record and the assignee's name.
@@ -27091,6 +28174,69 @@ paths:
                         application/json:
                             schema:
                                 properties:
+                                    fields:
+                                        description: The operator's custom fields, each with this ticket's answer or the fact that it has none. An unanswered field that is required to close is what the close refusal names.
+                                        items:
+                                            properties:
+                                                answer_count:
+                                                    description: How many tickets carry an answer.
+                                                    type: integer
+                                                answered:
+                                                    type: boolean
+                                                answered_at:
+                                                    format: date-time
+                                                    type: string
+                                                archived:
+                                                    description: 'A retired field: no longer asked, no longer required, existing answers kept.'
+                                                    type: boolean
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                key:
+                                                    description: The stable slug a client sends the answer under. Lower-case letters, digits and underscores.
+                                                    type: string
+                                                label:
+                                                    description: What the field is called on the form, and what a refused close names.
+                                                    maxLength: 120
+                                                    type: string
+                                                options:
+                                                    description: The option set of a select field; empty for the other types.
+                                                    items:
+                                                        type: string
+                                                    type: array
+                                                required_on_create:
+                                                    description: A new ticket is refused while this is unanswered.
+                                                    type: boolean
+                                                required_to_close:
+                                                    description: Closing is refused while this is unanswered, and the refusal names the field.
+                                                    type: boolean
+                                                sort_order:
+                                                    type: integer
+                                                type:
+                                                    enum:
+                                                        - text
+                                                        - select
+                                                        - checkbox
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                                value:
+                                                    description: A string for text and select, a boolean for checkbox, null when unanswered. Null is not the same as "" or false.
+                                                    nullable: true
+                                            required:
+                                                - id
+                                                - key
+                                                - label
+                                                - type
+                                                - required_on_create
+                                                - required_to_close
+                                                - answered
+                                            type: object
+                                        type: array
                                     messages:
                                         items:
                                             properties:
@@ -27262,7 +28408,7 @@ paths:
             x-rate-class: read
             x-staff-only: true
         patch:
-            description: Every field is optional and an omitted field is left alone; sending none of them is a 400. Setting the status to `closed` stamps closed_at; any other status clears it.
+            description: Every field is optional and an omitted field is left alone; sending none of them is a 400. Setting the status to `closed` stamps closed_at; any other status clears it. A change to `closed` is a close, so the close-time custom field requirement applies and the 409 names the field.
             operationId: PatchStaffTicketsById
             parameters:
                 - in: path
@@ -27380,6 +28526,12 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Problem'
                     description: No such ticket
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A close-required field is unanswered; the detail names it
                 "429":
                     content:
                         application/json:
@@ -27630,7 +28782,7 @@ paths:
             x-staff-only: true
     /api/v1/staff/tickets/{id}/close:
         post:
-            description: Closes any ticket. Not affected by the client_closing_disabled setting, which is about customers.
+            description: Closes any ticket. Not affected by the client_closing_disabled setting, which is about customers. A custom field the operator made required to close is enforced for staff too — a rule the person closing the ticket can ignore is not a rule — and the 409 names the field.
             operationId: PostStaffTicketsByIdClose
             parameters:
                 - in: path
@@ -27727,6 +28879,12 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Problem'
                     description: No such ticket
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A close-required field is unanswered; the detail names it
                 "429":
                     content:
                         application/json:
@@ -27743,6 +28901,147 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Close a ticket as staff
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: ticket:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tickets/{id}/fields:
+        put:
+            description: Same body and rules as the customer route; requires ticket:write:all.
+            operationId: PutStaffTicketsByIdFields
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                values:
+                                    additionalProperties:
+                                        nullable: true
+                                    description: Answers keyed by field key. A string for text and select, a boolean for checkbox. An omitted key is left alone; null or an empty string clears the answer. An unknown key, a value outside a select's options, or a value of the wrong type is refused with invalid_input naming the field.
+                                    type: object
+                            required:
+                                - values
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    fields:
+                                        items:
+                                            properties:
+                                                answer_count:
+                                                    description: How many tickets carry an answer.
+                                                    type: integer
+                                                answered:
+                                                    type: boolean
+                                                answered_at:
+                                                    format: date-time
+                                                    type: string
+                                                archived:
+                                                    description: 'A retired field: no longer asked, no longer required, existing answers kept.'
+                                                    type: boolean
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                key:
+                                                    description: The stable slug a client sends the answer under. Lower-case letters, digits and underscores.
+                                                    type: string
+                                                label:
+                                                    description: What the field is called on the form, and what a refused close names.
+                                                    maxLength: 120
+                                                    type: string
+                                                options:
+                                                    description: The option set of a select field; empty for the other types.
+                                                    items:
+                                                        type: string
+                                                    type: array
+                                                required_on_create:
+                                                    description: A new ticket is refused while this is unanswered.
+                                                    type: boolean
+                                                required_to_close:
+                                                    description: Closing is refused while this is unanswered, and the refusal names the field.
+                                                    type: boolean
+                                                sort_order:
+                                                    type: integer
+                                                type:
+                                                    enum:
+                                                        - text
+                                                        - select
+                                                        - checkbox
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                                value:
+                                                    description: A string for text and select, a boolean for checkbox, null when unanswered. Null is not the same as "" or false.
+                                                    nullable: true
+                                            required:
+                                                - id
+                                                - key
+                                                - label
+                                                - type
+                                                - required_on_create
+                                                - required_to_close
+                                                - answered
+                                            type: object
+                                        type: array
+                                type: object
+                    description: Every field, with this ticket's answers
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An unknown key or an invalid value
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such ticket
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Answer the custom fields on any ticket
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key

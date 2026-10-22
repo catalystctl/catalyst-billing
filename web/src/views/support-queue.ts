@@ -349,6 +349,9 @@ export default async function supportQueuePage(ctx: Ctx): Promise<Node> {
       actions: h(
         "div",
         { class: "row" },
+        // The phone call. Before this button existed the queue could reply, assign and close but
+        // not open, so an agent taking a call had nowhere to put it.
+        btn("Open a ticket", { href: "/support/new", size: "sm", variant: "primary", icon: "plus" }),
         btn("Refresh", { icon: "refresh", size: "sm", onclick: () => table.reload() }),
       ),
     }),

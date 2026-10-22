@@ -413,6 +413,14 @@ func (c *Client) GetAnnouncements(ctx context.Context, query url.Values, body an
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetAuthCaptcha calls GET /api/v1/auth/captcha.
+//
+// The human-challenge configuration for this installation
+func (c *Client) GetAuthCaptcha(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/auth/captcha"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetAuthMe calls GET /api/v1/auth/me.
 //
 // The current identity and its permissions

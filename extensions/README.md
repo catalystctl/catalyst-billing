@@ -1,14 +1,15 @@
 # Extension fixtures
 
-Two real extension executables live here. They are not examples: they are the
-conformance fixtures the whole product is tested against, and the reason the
-extension client can be tested for crashes, hangs, lost replies and oversized
-frames without a live payment provider.
+The fixtures below live here. They are not examples: they are the conformance
+fixtures the whole product is tested against, and the reason the extension client
+can be tested for crashes, hangs, lost replies and oversized frames without a live
+payment provider.
 
-| Fixture | Capabilities | Protocol |
+| Fixture or adapter | Capabilities | Protocol |
 | --- | --- | --- |
 | `fakegateway` | `gateway.*` | NDJSON JSON-RPC 2.0 on stdin/stdout |
 | `fakeprov` | `provisioner.*` | NDJSON JSON-RPC 2.0 on stdin/stdout |
+| `cpanel` | `provisioner.*` | NDJSON JSON-RPC 2.0 on stdin/stdout; calls WHM's `json-api` over HTTPS |
 
 Both are deterministic: ids come from a counter, nothing is random, and the same
 input always produces the same output. Both keep state in memory only, including
@@ -67,3 +68,40 @@ Every mutating call carries an `operation_key`. Replaying a key returns the
 original payment or resource instead of creating another one. `duplicate` is the
 negative fixture: it deliberately ignores the key so the idempotency tests have a
 case that must fail.
+
+## Real adapters
+
+`cpanel` is not a fixture. It is an adapter for a live WHM server, and its purpose
+is the same as the fixtures': keeping the protocol honest. A second provisioner
+that does not fit the first one's shape is the only evidence that the protocol is
+not shaped like the first one's provider.
+
+It manages hosting accounts on one WHM server and reads:
+
+| Variable | Meaning |
+| --- | --- |
+| `CPANEL_WHM_URL` | required; e.g. `https://whm.example.com:2087` |
+| `CPANEL_API_TOKEN` | required; a WHM API token, sent as `Authorization: whm root:TOKEN` |
+| `CPANEL_PLANS` | optional; `id:quota_mb:bandwidth_mb`,… (default one plan `default:1024:10240`) |
+| `CPANEL_DEFAULT_PLAN` | optional; the plan a call that names none gets |
+| `CPANEL_TIMEOUT_MS` | optional; per-call HTTP timeout, default 30000 |
+| `CPANEL_VERIFY_TLS` | optional; default on. Off prints a warning at startup |
+| `CPANEL_STATE_FILE` | optional; the operation ledger, default `/var/lib/catalyst/cpanel/operations.json` |
+
+Its failure modes are the ones a provider can actually produce, and each maps to a
+different JSON-RPC code because the core reacts differently to each:
+
+| Situation | Answer |
+| --- | --- |
+| WHM unreachable, answering 5xx, or answering something that is not the `json-api` envelope | `-32000`, never "not found" — the core waits instead of provisioning a duplicate |
+| WHM rejects the API token | `-32000`, naming `CPANEL_API_TOKEN` |
+| `metadata.result: 0`: a refusal on the merits | `-32005` carrying WHM's own reason |
+| The account is not in `listaccts` | `found:false` from `lookup`; `-32004` from `inspect`/`suspend`/`resume`; `terminate` succeeds with `changed:false` |
+| The account is already in the requested state | success with `changed:false`, and WHM is not called at all |
+| A name or domain cPanel would refuse | `-32005` before any request is sent |
+
+`metadata[cpanel_domain]` supplies the hosted domain; a create without one is
+refused locally. `metadata[cpanel_username]` is refused unless it equals the name
+derived from the operation key: WHM has no external id field, so a name the adapter
+cannot recompute from the key would leave `provisioner.lookup` unable to find an
+account it did not create, which is the duplicate the method exists to prevent.

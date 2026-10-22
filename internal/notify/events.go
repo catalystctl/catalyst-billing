@@ -343,9 +343,9 @@ func dedupeKey(eventKey, subject string) string {
 // most likely to click it.
 //
 // So each default points at the customer-visible destination, and where no customer view
-// exists yet (orders and tickets are P10/P11 work) it points at the customer's landing page
-// rather than at a staff route. The caller should pass the exact path — it knows the record and
-// the current route shape — and the default is only the fallback for a caller that does not.
+// does not exist yet (orders) it points at the customer's landing page rather than at a staff
+// route. The caller should pass the exact path — it knows the record and the current route shape
+// — and the default is only the fallback for a caller that does not.
 
 // PasswordReset sends the reset mail.
 //
@@ -627,7 +627,7 @@ func TicketMessage(ctx context.Context, tx pgx.Tx, queue *Queue, in TicketMessag
 		"ticket_subject":   in.Subject,
 		"author":           orDefault(in.Author, "Support"),
 		"ticket_excerpt":   excerpt(in.Excerpt, 400),
-		"ticket_url":       orDefault(in.TicketURL, "/tickets"),
+		"ticket_url":       orDefault(in.TicketURL, "/tickets/"+in.TicketID),
 	}
 	return dispatch(ctx, tx, queue, EventNewTicketMessage, Target{
 		UserID: in.UserID, Email: in.Email,

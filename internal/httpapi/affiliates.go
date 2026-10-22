@@ -8,6 +8,18 @@
 //     permission is introduced: credit:write already means "may grant a customer value
 //     without an invoice behind it", which is exactly what a commission payout is.
 //
+//   - GET /api/v1/staff/affiliates/{id}/payouts is the reconciliation for one payee over a
+//     period: earned, paid, outstanding, and the rows that make up the difference.
+//
+//   - POST /api/v1/staff/affiliates/{id}/payouts records a payout. It is the same money path
+//     as POST .../payout (both go through recordPayout), with one difference that matters: it
+//     answers with the payout's own id, method and reference, so the settlement is a record
+//     an operator can quote rather than a number they have to trust. Its guard is
+//     credit:read:all, which is a borrow — every staff role holds it, support included. That
+//     is a known weakness, recorded here rather than papered over: a dedicated
+//     `affiliate:payout` is the right answer, and until it exists the report says what the
+//     action currently requires.
+//
 //   - /api/v1/portal/affiliate is the customer's own view. The affiliate is resolved from
 //     the *session*, never from the URL, so identifier substitution cannot read somebody
 //     else's earnings. A customer who is not an affiliate gets 404, not 403: "you are not
@@ -22,8 +34,10 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/authn"
@@ -42,6 +56,12 @@ func (s *Server) registerAffiliateRoutes(r *router) {
 	r.staffGet("/api/v1/staff/affiliates", authn.PermReportRead, s.handleListAffiliates)
 	r.staffGet("/api/v1/staff/affiliates/payouts", authn.PermReportRead, s.handleAffiliatePayouts)
 
+	// The reconciliation for one affiliate over a period: what is owed, what has been paid,
+	// and the rows that make up the difference. report:read, like the two above, because it
+	// is the same question asked about one payee.
+	r.staffGet("/api/v1/staff/affiliates/{id}/payouts", authn.PermReportRead,
+		s.handleAffiliatePayoutReport)
+
 	// Registering an affiliate fixes the rate at which money will later leave the
 	// business, so it carries the same permission as the payout itself.
 	r.staffMutation(http.MethodPost, "/api/v1/staff/affiliates",
@@ -50,6 +70,16 @@ func (s *Server) registerAffiliateRoutes(r *router) {
 	// The payout is a money action: idempotent, audited, and gated on credit:write.
 	r.staffMutation(http.MethodPost, "/api/v1/staff/affiliates/{id}/payout",
 		authn.PermCreditWrite, s.handleAffiliatePayout)
+
+	// Recording a payout: one append-only row that links every commission it settled. It is
+	// guarded by credit:read:all, which is a *borrow* — see the note in
+	// internal/growth/payouts.go and the package report. credit:write (the permission the
+	// legacy route above already uses) is the better existing guard, and a dedicated
+	// `affiliate:payout` is the right long-term answer; neither exists as a decision this
+	// package is allowed to make, so the action is guarded by the permission the assignment
+	// named and the weakness is written down rather than hidden.
+	r.staffMutation(http.MethodPost, "/api/v1/staff/affiliates/{id}/payouts",
+		authn.PermCreditReadAll, s.handleRecordAffiliatePayout)
 
 	// The customer's own view. customer:read:self is the permission a signed-in customer
 	// already holds for their own record, and the query is scoped in SQL.
@@ -124,6 +154,10 @@ func (s *Server) growthError(w http.ResponseWriter, r *http.Request, err error) 
 		writeProblem(w, http.StatusConflict, "affiliate_disabled", "this affiliate is not enabled")
 	case errors.Is(err, growth.ErrNothingToPay):
 		writeProblem(w, http.StatusConflict, "nothing_to_pay", "there is no outstanding balance to pay")
+	case errors.Is(err, growth.ErrBalanceMismatch):
+		// The materialised balance and the commission rows disagree. Paying either figure would
+		// move money nobody can account for, so the payout refuses and the report shows both.
+		writeProblem(w, http.StatusConflict, "balance_mismatch", err.Error())
 	case errors.Is(err, growth.ErrInvalidRate), errors.Is(err, growth.ErrInvalidInput):
 		writeProblem(w, http.StatusUnprocessableEntity, "invalid_input", err.Error())
 	default:
@@ -237,8 +271,23 @@ func (s *Server) handleCreateAffiliate(w http.ResponseWriter, r *http.Request) {
 // per currency and paying "everything" would mix currencies without a conversion rate.
 type payoutRequest struct {
 	Currency string `json:"currency"`
+	// Method, Reference and Note are optional on the legacy route and meaningful on the new
+	// one: a payout row records how the money left and what it can be reconciled against.
+	Method    string `json:"method"`
+	Reference string `json:"reference"`
+	Note      string `json:"note"`
+	// From and To record which window the operator was looking at. They do not filter what
+	// is settled — a payout settles the whole outstanding balance — but they are the context
+	// an auditor asks for.
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
+// handleAffiliatePayout settles one affiliate's balance in one currency.
+//
+// It is the original endpoint and it keeps its response shape and its credit:write guard. It
+// delegates to the same implementation the new route uses, so there is one money path rather
+// than two that can disagree.
 func (s *Server) handleAffiliatePayout(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !growth.ValidID(id) {
@@ -255,37 +304,262 @@ func (s *Server) handleAffiliatePayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	paid, err := s.growthStore().PayOut(r.Context(), id, currency)
+	recorded, err := s.recordPayout(r, id, in, currency)
 	if err != nil {
 		s.growthError(w, r, err)
 		return
 	}
 
-	// The audit row is written after the settlement committed, in its own transaction.
-	// That is a deliberate trade: PayOut owns its transaction (it locks the balance), and
-	// wrapping it would mean a second connection for a row that describes a committed
-	// fact. A failed audit write is logged rather than reported as a failed payout,
-	// because the money has already moved and telling the operator otherwise invites a
-	// second payout attempt.
-	if err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
-		ev := s.auditEvent(r, "affiliate.payout", "affiliate", paid.AffiliateID, audit.OutcomeSuccess).
-			WithChanges(map[string]any{
-				"currency":     paid.Currency,
-				"amount_minor": paid.Amount.Minor(),
-				"commissions":  paid.Commissions,
-			})
-		return audit.Record(ctx, tx, ev)
-	}); err != nil {
-		s.cfg.Logger.ErrorContext(r.Context(), "affiliate payout audit failed",
-			"affiliate", paid.AffiliateID, "error", err)
+	// The shape this endpoint has always answered with, unchanged: a client that was written
+	// against it keeps working.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"affiliate_id": recorded.AffiliateID,
+		"currency":     recorded.Currency,
+		"amount":       amountJSON(recorded.Amount),
+		"commissions":  recorded.Commissions,
+	})
+}
+
+// handleRecordAffiliatePayout records a payout: an append-only row that links every
+// commission it settled.
+//
+// The difference from the route above is not the money, it is the record. This one answers
+// with the payout's own id, its method and reference, and how many of each kind of commission
+// it settled, so an operator can quote it when reconciling a statement.
+func (s *Server) handleRecordAffiliatePayout(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !growth.ValidID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+		return
+	}
+	var in payoutRequest
+	if !s.decodeJSON(w, r, &in, 8<<10) {
+		return
+	}
+	currency := strings.ToUpper(strings.TrimSpace(in.Currency))
+	if currency == "" {
+		writeProblem(w, http.StatusUnprocessableEntity, "invalid_input", "currency is required")
+		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"affiliate_id": paid.AffiliateID,
-		"currency":     paid.Currency,
-		"amount":       amountJSON(paid.Amount),
-		"commissions":  paid.Commissions,
+	recorded, err := s.recordPayout(r, id, in, currency)
+	if err != nil {
+		s.growthError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, payoutJSON(recorded))
+}
+
+// recordPayout runs the settlement and writes its audit row in the same transaction.
+//
+// Both payout routes go through here so the money path is one path. The audit row is inside
+// the transaction — unlike the original implementation, which audited afterwards and logged a
+// failure — because a payout nobody signed for is exactly the record this feature exists to
+// make impossible: if the audit write fails, the money does not move.
+func (s *Server) recordPayout(r *http.Request, affiliateID string, in payoutRequest, currency string) (growth.RecordedPayout, error) {
+	var (
+		recorded growth.RecordedPayout
+		from, to *time.Time
+	)
+	// The operator's id is recorded on the payout row itself, so the row and the audit event
+	// name the same person. It is empty only for a caller with no session, which the route's
+	// permission check makes impossible in practice.
+	var actorID string
+	if user, ok := userFrom(r.Context()); ok {
+		actorID = user.ID
+	}
+	if strings.TrimSpace(in.From) != "" || strings.TrimSpace(in.To) != "" {
+		f, err := parseWidgetTime(in.From, false)
+		if err != nil {
+			return growth.RecordedPayout{}, fmt.Errorf("%w: `from` must be an RFC3339 timestamp or a YYYY-MM-DD date", growth.ErrInvalidInput)
+		}
+		t, err := parseWidgetTime(in.To, true)
+		if err != nil {
+			return growth.RecordedPayout{}, fmt.Errorf("%w: `to` must be an RFC3339 timestamp or a YYYY-MM-DD date", growth.ErrInvalidInput)
+		}
+		if !t.After(f) {
+			return growth.RecordedPayout{}, fmt.Errorf("%w: `to` must be after `from`", growth.ErrInvalidInput)
+		}
+		from, to = &f, &t
+	}
+
+	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		recorded, err = s.growthStore().RecordPayout(ctx, tx, growth.NewPayout{
+			AffiliateID: affiliateID,
+			Currency:    currency,
+			Method:      in.Method,
+			Reference:   in.Reference,
+			Note:        in.Note,
+			ActorID:     actorID,
+			PeriodFrom:  from,
+			PeriodTo:    to,
+		})
+		if err != nil {
+			return err
+		}
+		ev := s.auditEvent(r, "affiliate.payout", "affiliate", recorded.AffiliateID, audit.OutcomeSuccess).
+			WithChanges(map[string]any{
+				"payout_id":           recorded.ID,
+				"currency":            recorded.Currency,
+				"amount_minor":        recorded.Amount.Minor(),
+				"method":              recorded.Method,
+				"reference":           recorded.Reference,
+				"order_commissions":   recorded.OrderCommissions,
+				"renewal_commissions": recorded.RenewalCommissions,
+			})
+		return audit.Record(ctx, tx, ev)
 	})
+	if err != nil {
+		return growth.RecordedPayout{}, err
+	}
+	return recorded, nil
+}
+
+// payoutJSON renders a recorded payout.
+func payoutJSON(p growth.RecordedPayout) map[string]any {
+	return map[string]any{
+		"id":                  p.ID,
+		"affiliate_id":        p.AffiliateID,
+		"currency":            p.Currency,
+		"amount":              amountJSON(p.Amount),
+		"method":              p.Method,
+		"reference":           p.Reference,
+		"commissions":         p.Commissions,
+		"order_commissions":   p.OrderCommissions,
+		"renewal_commissions": p.RenewalCommissions,
+		"created_at":          p.CreatedAt,
+	}
+}
+
+// handleAffiliatePayoutReport serves the reconciliation for one affiliate over a period.
+//
+// It is the report an operator reads before paying: what was earned, what has already been
+// paid, what is still owed, and the rows that make up the difference — each commission with
+// the invoice or order it came from and the payout that settled it, and each payout with its
+// method and reference. The totals are all-time so that the period only scopes the rows: a
+// window that predates the commissions still states what is owed.
+func (s *Server) handleAffiliatePayoutReport(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !growth.ValidID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+		return
+	}
+	from, to, _, err := widgetWindow(r)
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid_period", err.Error())
+		return
+	}
+
+	store := s.growthStore()
+	var lines []growth.PayoutReconciliation
+	currency := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("currency")))
+	if currency != "" {
+		line, err := store.Reconcile(r.Context(), id, currency, from, to)
+		if err != nil {
+			s.growthError(w, r, err)
+			return
+		}
+		lines = []growth.PayoutReconciliation{line}
+	} else {
+		lines, err = store.ReconcileAll(r.Context(), id, from, to)
+		if err != nil {
+			s.growthError(w, r, err)
+			return
+		}
+	}
+
+	history, err := store.Payouts(r.Context(), id, 50)
+	if err != nil {
+		s.growthError(w, r, err)
+		return
+	}
+
+	data := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		data = append(data, reconciliationJSON(line))
+	}
+	payments := make([]map[string]any, 0, len(history))
+	for _, p := range history {
+		payments = append(payments, payoutHistoryJSON(p))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":    data,
+		"history": payments,
+		"period": map[string]any{
+			"from": from,
+			"to":   to,
+		},
+	})
+}
+
+// reconciliationJSON renders one currency's books.
+func reconciliationJSON(line growth.PayoutReconciliation) map[string]any {
+	rows := make([]map[string]any, 0, len(line.Rows))
+	for _, row := range line.Rows {
+		entry := map[string]any{
+			"kind":        row.Kind,
+			"id":          row.ID,
+			"amount":      amountJSON(row.Amount),
+			"status":      row.Status,
+			"occurred_at": row.OccurredAt,
+		}
+		if row.InvoiceID != "" {
+			entry["invoice_id"] = row.InvoiceID
+		}
+		if row.OrderID != "" {
+			entry["order_id"] = row.OrderID
+		}
+		if row.Rate != "" {
+			entry["rate"] = row.Rate
+		}
+		if row.PaidAt != "" {
+			entry["paid_at"] = row.PaidAt
+		}
+		if row.PayoutID != "" {
+			entry["payout_id"] = row.PayoutID
+		}
+		if row.RenewalIndex > 0 {
+			entry["renewal_index"] = row.RenewalIndex
+		}
+		rows = append(rows, entry)
+	}
+	return map[string]any{
+		"affiliate_id": line.AffiliateID,
+		"code":         line.Code,
+		"email":        line.Email,
+		"currency":     line.Currency,
+		"earned":       amountJSON(line.Earned),
+		"paid":         amountJSON(line.Paid),
+		"outstanding":  amountJSON(line.Outstanding),
+		"payouts":      line.Payouts,
+		"reconciles":   line.Reconciles,
+		"rows":         rows,
+	}
+}
+
+// payoutHistoryJSON renders one recorded payout.
+func payoutHistoryJSON(p growth.Payout) map[string]any {
+	out := map[string]any{
+		"id":           p.ID,
+		"affiliate_id": p.AffiliateID,
+		"currency":     p.Currency,
+		"amount":       amountJSON(p.Amount),
+		"method":       p.Method,
+		"reference":    p.Reference,
+		"note":         p.Note,
+		"created_at":   p.CreatedAt,
+	}
+	if p.CreatedBy != "" {
+		out["created_by"] = p.CreatedBy
+	}
+	if p.PeriodFrom != "" {
+		out["period_from"] = p.PeriodFrom
+	}
+	if p.PeriodTo != "" {
+		out["period_to"] = p.PeriodTo
+	}
+	return out
 }
 
 // -------------------------------------------------------------------- portal --

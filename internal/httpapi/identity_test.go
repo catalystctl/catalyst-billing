@@ -875,3 +875,71 @@ func TestImpersonatingCannotEnrolMFA(t *testing.T) {
 		t.Fatalf("the operator's own session was refused as impersonating: %s", own.Body)
 	}
 }
+
+// A custom role must actually grant its permissions through the Authorizer — not merely be
+// stored. This is the end-to-end proof that the table and the permission check are joined:
+// create a role, assign it, and watch a route the role permits become reachable.
+//
+// It also proves the live refresh: the role is created while the server is running, so
+// without SetTableRoles being called after the write, the route would stay 403.
+func TestCustomRoleGrantsThroughTheAuthorizer(t *testing.T) {
+	env := newAuthEnv(t)
+	env.createUser(t, "admin7@example.test", "admin password 1", "administrator")
+	adminCookie, adminCSRF := env.login(t, "admin7@example.test", "admin password 1")
+
+	// A user with no staff role cannot read the audit log.
+	userID := env.createUser(t, "auditor@example.test", "auditor password 1", "")
+	userCookie, _ := env.login(t, "auditor@example.test", "auditor password 1")
+	if rec := env.get(t, "/api/v1/staff/audit", userCookie); rec.Code != http.StatusForbidden {
+		t.Fatalf("audit read before any role: status %d, want 403", rec.Code)
+	}
+
+	create := env.doIdentity(t, http.MethodPost, "/api/v1/staff/roles", adminCookie, adminCSRF,
+		map[string]any{
+			"name":        "t-live-auditor",
+			"description": "audit read only",
+			"permissions": []string{"audit:read"},
+		})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create role: %d %s", create.Code, create.Body)
+	}
+	var role struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &role); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	t.Cleanup(func() {
+		env.pool.Exec(context.Background(), `DELETE FROM staff_roles WHERE role_id = $1`, role.ID)
+		env.pool.Exec(context.Background(), `DELETE FROM roles WHERE id = $1`, role.ID)
+	})
+
+	if _, err := env.pool.Exec(context.Background(),
+		`INSERT INTO staff_roles (user_id, role_id) VALUES ($1, $2)`, userID, role.ID); err != nil {
+		t.Fatalf("assign role: %v", err)
+	}
+
+	// The route the role permits is now reachable, which only happens if the Authorizer
+	// resolved the custom role from the table.
+	rec := env.get(t, "/api/v1/staff/audit", userCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit read with audit:read from a custom role: status %d, want 200; body %s",
+			rec.Code, rec.Body)
+	}
+
+	// A route it does not permit stays refused: the role is a subset, not a promotion.
+	if rec := env.get(t, "/api/v1/staff/customers", userCookie); rec.Code != http.StatusForbidden {
+		t.Fatalf("customer read with only audit:read: status %d, want 403", rec.Code)
+	}
+
+	// Narrowing the role takes effect on the next request (the update refreshes the table).
+	narrow := env.doIdentity(t, http.MethodPut,
+		"/api/v1/staff/roles/"+role.ID+"/permissions", adminCookie, adminCSRF,
+		map[string]any{"permissions": []string{}})
+	if narrow.Code != http.StatusOK {
+		t.Fatalf("narrow role: %d %s", narrow.Code, narrow.Body)
+	}
+	if rec := env.get(t, "/api/v1/staff/audit", userCookie); rec.Code != http.StatusForbidden {
+		t.Fatalf("audit read after the permission was removed: status %d, want 403", rec.Code)
+	}
+}

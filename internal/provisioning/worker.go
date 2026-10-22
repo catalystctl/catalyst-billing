@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/extproto"
+	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
 )
@@ -107,6 +108,20 @@ type Worker struct {
 	LeaseDuration time.Duration
 	// Now is injectable for tests.
 	Now func() time.Time
+	// notify is the outbox the activation message is written to. It is optional: a worker with
+	// no queue still provisions, it just does not tell the customer. Nil is also what a test
+	// gets, so the provisioning tests are unaffected by the notification feature.
+	notify *notify.Queue
+}
+
+// WithNotifier attaches the notification outbox.
+//
+// It is a builder rather than a constructor argument so the existing call sites keep working and
+// so "no notifications" stays the default: a missing notifier must not stop a paid customer's
+// server from being created, which is the failure this package exists to avoid.
+func (w *Worker) WithNotifier(q *notify.Queue) *Worker {
+	w.notify = q
+	return w
 }
 
 // DefaultLeaseDuration is how long a claim is honoured when a Worker is constructed with
@@ -407,6 +422,17 @@ func (w *Worker) finish(ctx context.Context, op Operation, res Result) error {
 			}
 			if err := advanceOrder(ctx, tx, op.ServiceID); err != nil {
 				return err
+			}
+			// Tell the customer, with the product's own instructions (SF-11). It runs inside this
+			// transaction so the activation mail exists if and only if the service really became
+			// active, and its dedupe key is the service id so a retried operation does not send a
+			// second copy. A notifier that is not configured is a no-op; a notification that fails
+			// rolls the transition back and the operation is retried, which is the same treatment
+			// the invoice-paid message gets in internal/fulfilment.
+			if w.notify != nil {
+				if _, err := notify.ServiceActivated(ctx, tx, w.notify, op.ServiceID); err != nil {
+					return fmt.Errorf("provisioning: notify activation: %w", err)
+				}
 			}
 		case "suspend":
 			if _, err := tx.Exec(ctx, `

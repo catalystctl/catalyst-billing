@@ -247,6 +247,12 @@ func (s LogSender) Send(_ context.Context, to, subject, body string) error {
 // template that renders it as markup turns a billing panel into a phishing page.
 
 // PasswordResetMessage renders the reset mail.
+//
+// Deprecated: the wording is now the editable `password_reset` template, dispatched by
+// notify.PasswordReset, which also writes the inbox row and honours `mail.disable`. This
+// function is kept only so an out-of-tree caller still compiles; it is not used by this panel
+// and it should be deleted once nothing references it, because a second renderer for a security
+// mail is how the two get out of step.
 func PasswordResetMessage(to, link string, expires time.Duration) Message {
 	return Message{
 		Kind:    KindPasswordReset,
@@ -265,6 +271,10 @@ func PasswordResetMessage(to, link string, expires time.Duration) Message {
 }
 
 // EmailVerificationMessage renders the verification mail.
+//
+// Deprecated: the wording is now the editable `email_verification` template, dispatched by
+// notify.EmailVerification (used by both registration and the signed-in resend endpoint). Kept
+// for the same reason and with the same intent as PasswordResetMessage.
 func EmailVerificationMessage(to, link string, expires time.Duration) Message {
 	return Message{
 		Kind:    KindEmailVerification,
@@ -281,6 +291,10 @@ func EmailVerificationMessage(to, link string, expires time.Duration) Message {
 }
 
 // InvoiceIssuedMessage renders the "your invoice is ready" mail.
+//
+// Deprecated: notify.InvoiceIssued renders the editable `new_invoice_created` template. Two call
+// sites still use this one (register/checkout.go and httpapi/staff_write.go); moving them is a
+// separate change because it also decides whether those paths write an inbox row.
 func InvoiceIssuedMessage(to, number, total, dueAt, invoiceID string) Message {
 	return Message{
 		Kind:    KindInvoiceIssued,

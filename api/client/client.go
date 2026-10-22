@@ -1121,6 +1121,26 @@ func (c *Client) GetStaffDiscord(ctx context.Context, query url.Values, body any
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffGateways calls GET /api/v1/staff/gateways.
+//
+// # Read the payment gateway configuration
+//
+// Permission: gateway:write. Staff only.
+func (c *Client) GetStaffGateways(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/gateways"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffGatewaysTest calls GET /api/v1/staff/gateways/test.
+//
+// # Test the payment gateway connection
+//
+// Permission: gateway:write. Staff only.
+func (c *Client) GetStaffGatewaysTest(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/gateways/test"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffInvoices calls GET /api/v1/staff/invoices.
 //
 // # Invoice list across all customers
@@ -1302,6 +1322,26 @@ func (c *Client) GetStaffRefundsById(ctx context.Context, id string, query url.V
 // Permission: staff:manage. Staff only.
 func (c *Client) GetStaffRoles(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/roles"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffServers calls GET /api/v1/staff/servers.
+//
+// # Read the provisioning server configuration
+//
+// Permission: server:write. Staff only.
+func (c *Client) GetStaffServers(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/servers"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffServersTest calls GET /api/v1/staff/servers/test.
+//
+// # Test the provisioning server connection
+//
+// Permission: server:write. Staff only.
+func (c *Client) GetStaffServersTest(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/servers/test"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -2512,6 +2552,18 @@ func (c *Client) PutStaffDiscord(ctx context.Context, query url.Values, body any
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }
 
+// PutStaffGateways calls PUT /api/v1/staff/gateways.
+//
+// # Save the payment gateway configuration
+//
+// Permission: gateway:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PutStaffGateways(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/gateways"
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
 // PutStaffInvoicesByIdClientnote calls PUT /api/v1/staff/invoices/{id}/client-note.
 //
 // # Set or clear the client-visible note on an invoice
@@ -2551,6 +2603,18 @@ func (c *Client) PutStaffNotificationtemplatesByEventkey(ctx context.Context, ev
 func (c *Client) PutStaffRolesByIdPermissions(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/roles/{id}/permissions"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffServers calls PUT /api/v1/staff/servers.
+//
+// # Save the provisioning server configuration
+//
+// Permission: server:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PutStaffServers(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/servers"
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }
 

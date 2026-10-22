@@ -190,10 +190,14 @@ type ProductInput struct {
 	ImageID           *string `json:"image_id"`
 	Hidden            bool    `json:"hidden"`
 	SortOrder         int     `json:"sort_order"`
-	// EmailTemplate is the activation snippet. It is part of the product's *metadata*, so it is
-	// editable here; it is deliberately not part of the storefront read, because it is written
-	// for the person who already bought the product rather than for a visitor.
-	EmailTemplate string `json:"email_template"`
+	// EmailTemplate is the activation snippet, and it is part of the product's *metadata*: it is
+	// editable here and deliberately absent from the storefront read, because it is written for
+	// the person who already bought the product rather than for a visitor deciding whether to.
+	//
+	// It is a pointer because "not sent" and "set to empty" are different requests: the panel's
+	// product form predates this field, and a PUT that omits it must not silently erase an
+	// operator's instructions. An explicit "" clears it and falls back to the shipped default.
+	EmailTemplate *string `json:"email_template"`
 }
 
 // validateEmailTemplate normalises and bounds a product's activation snippet.
@@ -209,6 +213,14 @@ func validateEmailTemplate(s string) (string, error) {
 			ErrInvalidInput, MaxEmailTemplateBytes)
 	}
 	return s, nil
+}
+
+// derefString reads an optional string, treating nil as the empty string.
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // --------------------------------------------------------------- categories --
@@ -398,7 +410,7 @@ func (s *Store) CreateProductTx(ctx context.Context, q querier, in ProductInput)
 	if err != nil {
 		return Product{}, err
 	}
-	template, err := validateEmailTemplate(in.EmailTemplate)
+	template, err := validateEmailTemplate(derefString(in.EmailTemplate))
 	if err != nil {
 		return Product{}, err
 	}
@@ -464,15 +476,21 @@ func (s *Store) UpdateProductTx(ctx context.Context, q querier, id string, in Pr
 	if err != nil {
 		return Product{}, err
 	}
-	template, err := validateEmailTemplate(in.EmailTemplate)
-	if err != nil {
-		return Product{}, err
+	// nil means "leave the snippet alone"; an explicit empty string clears it. The COALESCE in
+	// the statement is what makes that true for the database as well as for Go.
+	var template any
+	if in.EmailTemplate != nil {
+		v, err := validateEmailTemplate(*in.EmailTemplate)
+		if err != nil {
+			return Product{}, err
+		}
+		template = v
 	}
 	tag, err := q.Exec(ctx, `
 		UPDATE products
 		   SET slug = $2, name = $3, short_description = $4, description = $5,
-		       description_format = $6, email_template = $7, category_id = $8,
-		       image_id = $9, hidden = $10, sort_order = $11
+		       description_format = $6, email_template = COALESCE($7, email_template),
+		       category_id = $8, image_id = $9, hidden = $10, sort_order = $11
 		 WHERE id = $1`,
 		id, in.Slug, strings.TrimSpace(in.Name), in.ShortDescription, description, format,
 		template, in.CategoryID, in.ImageID, in.Hidden, in.SortOrder)

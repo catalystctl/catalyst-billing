@@ -29,6 +29,15 @@ package authn
 //     any path in this file, and it never enters the audit trail (the redactor would catch
 //     it, but it is not put there in the first place).
 //
+//   - **A staff account is also a customer of the business.** Creating a login creates its
+//     billing identity in the same transaction, because an agent buys and holds services
+//     like anybody else and "an operator links the two rows by hand" was the only way to
+//     make that work — which is a step that is skipped once and then quietly broken. The
+//     link is to *their own* record and grants nothing over anyone else's: every
+//     customer-scoped query in the panel is scoped by that same link, and a staff member's
+//     reach is still decided by the role. `ensureBillingIdentity` states the three rules
+//     that keep it that way, and migration `0056` backfills the accounts that predate it.
+//
 // The role a user holds is a *name* rather than a table id on purpose: `staff_roles.role`
 // is the column the session code already reads, and 0026 keeps it in step with `role_id`.
 // A custom role therefore works here without this file knowing anything about the
@@ -71,6 +80,17 @@ var (
 	ErrInvalidEmail = errors.New("authn: a valid email address is required")
 	// ErrUnknownRole is returned for a role name the roles table does not hold.
 	ErrUnknownRole = errors.New("authn: no such role")
+	// ErrBillingAddressTaken is returned when the address already is *another login's*
+	// billing account. Two logins on one billing account would give the second one access to
+	// the first one's invoices through the customer-scoped path, so the account is refused
+	// rather than linked.
+	//
+	// It wraps ErrEmailTaken deliberately: the staff-create route answers a taken address with
+	// 409 `email_taken`, and the mapping lives in a handler this change does not own. Wrapping
+	// keeps the refusal correct and truthful — the address *does* already have a record — while
+	// the domain, an operator log and a test can still tell the two apart, and the message says
+	// which kind of record is in the way.
+	ErrBillingAddressTaken = fmt.Errorf("%w (the address is another login's billing record)", ErrEmailTaken)
 )
 
 // User statuses, mirroring the CHECK on users.status.
@@ -340,7 +360,14 @@ func (s *Service) CreateUser(ctx context.Context, req CreateUserRequest, auditor
 				userID, role, nullableID(req.ActorID)); err != nil {
 				return fmt.Errorf("authn: grant role: %w", err)
 			}
-		} else if err := attachExistingCustomer(ctx, tx, userID, email); err != nil {
+		}
+
+		// Staff and customers alike: an account that cannot be billed cannot buy, and
+		// "the operator will link it afterwards" is a step that gets forgotten. It runs
+		// after the role row so the billing record is never the only thing a failed create
+		// left behind.
+		identity, err := ensureBillingIdentity(ctx, tx, userID, email, name)
+		if err != nil {
 			return err
 		}
 
@@ -355,6 +382,10 @@ func (s *Service) CreateUser(ctx context.Context, req CreateUserRequest, auditor
 			"display_name":   name,
 			"role":           role,
 			"email_verified": req.EmailVerified,
+			// An access review asks "did creating this login attach it to a billing record
+			// that already existed", so the answer is in the trail rather than inferred.
+			"billing_account":         identity.CustomerID,
+			"billing_account_adopted": identity.Adopted,
 		})
 	})
 	if err != nil {
@@ -461,6 +492,14 @@ func (s *Service) UpdateUser(ctx context.Context, userID string, req UpdateUserR
 			// A changed address is unverified until somebody proves it again. Keeping the
 			// old verification would let a typo or a deliberate edit inherit a confirmation
 			// that was given for a different mailbox.
+			//
+			// The billing record's address is deliberately *not* rewritten. It is the address
+			// documents were issued to and the one future invoices print, so it follows the
+			// customer's billing details rather than their login; silently re-addressing a
+			// customer's invoices is a decision for the customers screen, which shows what it
+			// is about to change. It also keeps adoption safe: the record keeps the address it
+			// was created with, so a later login at the *old* address still finds it and is
+			// still refused it (it belongs to this account).
 			if _, err := tx.Exec(ctx, `
 				UPDATE users SET email = $2, email_verified_at = NULL, updated_at = now()
 				WHERE id = $1`, userID, newEmail); err != nil {
@@ -547,6 +586,13 @@ func (s *Service) UpdateUser(ctx context.Context, userID string, req UpdateUserR
 // login trail with a retention policy rather than an append-only record, so it is removed
 // with the account. Without that, every account created through the screen would be
 // permanently undeletable, because creating one writes an authentication event.
+//
+// The billing identity is the second thing that does not block, and it has to be stated
+// because 0056 gives every login one. A record `ensureBillingIdentity` created for this login
+// (`customers.provisioned_for_login`) is removed with it: it holds nothing but an address, and
+// leaving it behind would put a customer nobody can reach into the customer list. A record an
+// operator or an import created is *not* deleted — it carries a name, an address and possibly
+// attribution that outlive a login — so that case still refuses with "disable it instead".
 func (s *Service) DeleteUser(ctx context.Context, userID, actorID string, auditor audit.Auditor) error {
 	return s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var role string
@@ -583,26 +629,99 @@ func (s *Service) DeleteUser(ctx context.Context, userID, actorID string, audito
 		// authentication history — a login trail with a 180-day retention policy — not an
 		// append-only audit record, so it is deleted with the account below. The audit trail
 		// (`audit_events`) is the evidence, and it is what refuses the delete.
-		var accounts, auditRows, invoices int
-		if err := tx.QueryRow(ctx, `
-			SELECT (SELECT count(*) FROM customer_accounts WHERE user_id = $1),
-			       (SELECT count(*) FROM audit_events WHERE actor_id = $1),
-			       (SELECT count(*) FROM customer_accounts ca
-			         JOIN invoices i ON i.customer_id = ca.customer_id
-			        WHERE ca.user_id = $1)`, userID).
-			Scan(&accounts, &auditRows, &invoices); err != nil {
+		//
+		// The billing records are listed one by one because since 0056 every login has one, so
+		// "this account is linked to a customer record" can no longer be a refusal on its own:
+		// it would make every account undeletable, including the mistyped address created a
+		// minute ago. What decides is whether the record *is the login's own*, which is
+		// `customers.provisioned_for_login` — true only for a record this package created
+		// because a login needed one. A record an operator or an import created carries a name,
+		// an address and possibly attribution that outlive the login, and is never deleted
+		// here.
+		type billingLink struct {
+			customerID  string
+			provisioned bool
+			shared      bool
+		}
+		var (
+			links     []billingLink
+			auditRows int
+			invoices  int
+		)
+		if err := tx.QueryRow(ctx,
+			`SELECT (SELECT count(*) FROM audit_events WHERE actor_id = $1),
+			        (SELECT count(*) FROM customer_accounts ca
+			           JOIN invoices i ON i.customer_id = ca.customer_id
+			          WHERE ca.user_id = $1)`, userID).
+			Scan(&auditRows, &invoices); err != nil {
 			return fmt.Errorf("authn: check references: %w", err)
 		}
+
+		rows, err := tx.Query(ctx, `
+			SELECT ca.customer_id, c.provisioned_for_login,
+			       EXISTS (SELECT 1 FROM customer_accounts other
+			                WHERE other.customer_id = ca.customer_id
+			                  AND other.user_id <> ca.user_id)
+			FROM customer_accounts ca
+			JOIN customers c ON c.id = ca.customer_id
+			WHERE ca.user_id = $1
+			ORDER BY ca.created_at`, userID)
+		if err != nil {
+			return fmt.Errorf("authn: check billing records: %w", err)
+		}
+		for rows.Next() {
+			var l billingLink
+			if err := rows.Scan(&l.customerID, &l.provisioned, &l.shared); err != nil {
+				rows.Close()
+				return fmt.Errorf("authn: scan billing record: %w", err)
+			}
+			links = append(links, l)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("authn: read billing records: %w", err)
+		}
+
 		switch {
 		case invoices > 0:
 			return fmt.Errorf("%w: the account is the portal login for a customer with %d invoice(s); disable it instead",
 				ErrUserHasHistory, invoices)
-		case accounts > 0:
-			return fmt.Errorf("%w: the account is linked to a customer record; disable it instead",
-				ErrUserHasHistory)
 		case auditRows > 0:
 			return fmt.Errorf("%w: %d audit row(s) name it as the actor; disable it instead",
 				ErrUserHasHistory, auditRows)
+		}
+		for _, l := range links {
+			switch {
+			case l.shared:
+				return fmt.Errorf("%w: the account shares a billing record with another login; disable it instead",
+					ErrUserHasHistory)
+			case !l.provisioned:
+				// The record was not created for this login (an import, the customers screen, or a
+				// self-registration), so it may be the only place its name, address and attribution
+				// exist. Refuse rather than guess.
+				return fmt.Errorf("%w: the account is the portal login for a billing record that outlives it; disable it instead",
+					ErrUserHasHistory)
+			}
+		}
+
+		// The billing records this account was given are removed with it. They were created
+		// because a login needed one, they hold no invoices (the check above), and every
+		// other reference — a service, an order, a subscription, a billing profile — is a
+		// foreign key that refuses the delete below rather than letting billing history be
+		// cascaded away.
+		for _, l := range links {
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM customer_accounts WHERE user_id = $1 AND customer_id = $2`,
+				userID, l.customerID); err != nil {
+				return fmt.Errorf("authn: unlink billing record: %w", err)
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM customers WHERE id = $1`, l.customerID); err != nil {
+				if store.SQLState(err) == store.StateForeignKeyViolation {
+					return fmt.Errorf("%w: the account's billing record still holds services, orders or other billing history; disable it instead",
+						ErrUserHasHistory)
+				}
+				return fmt.Errorf("authn: delete billing record: %w", err)
+			}
 		}
 
 		// The role row is removed explicitly: `staff_roles.user_id` is NO ACTION, and a
@@ -840,34 +959,122 @@ func roleExists(ctx context.Context, tx pgx.Tx, name string) error {
 	return nil
 }
 
-// attachExistingCustomer links a new customer login to the billing record that already has
-// its address, when there is one and nobody owns it yet.
+// billingIdentity is the billing record a login was given, and how it got it.
+type billingIdentity struct {
+	// CustomerID is the `customers` row the login now owns.
+	CustomerID string
+	// Adopted is true when the record already existed — an imported customer whose address
+	// nobody could sign in with — and false when this call created it. The audit row records
+	// it because "did creating this login attach it to an existing billing record" is the
+	// question an access review asks about exactly this feature.
+	Adopted bool
+}
+
+// EnsureBillingIdentity gives an existing login its billing identity, for a caller that writes
+// the `users` row itself.
 //
-// It deliberately does not *create* the billing record: a customer row carries billing
-// profile, tax and attribution that belong to the customers package, and a login screen
-// inventing one would be a second, quieter way to create a customer. What it does fix is the
-// common onboarding case — an operator imported the customer months ago and is now giving
-// them a way in.
-func attachExistingCustomer(ctx context.Context, tx pgx.Tx, userID, email string) error {
-	var customerID string
+// The screen goes through `CreateUser`, which does this in the same transaction. The CLI
+// bootstrap cannot: `billing admin create-user` writes the row directly, because it has to work
+// before the panel does. Without this the first administrator of a fresh installation — the
+// account an operator is most likely to buy a test server with — would be the one account that
+// cannot buy anything, because migration `0056` had already run by the time it was created.
+//
+// It is the same function, so it is the same three rules: an existing link wins, an unowned
+// billing record at the address is adopted, and a record another login owns is refused with
+// `ErrBillingAddressTaken`.
+func EnsureBillingIdentity(ctx context.Context, tx pgx.Tx, userID, email, name string) (string, error) {
+	identity, err := ensureBillingIdentity(ctx, tx, userID, email, name)
+	if err != nil {
+		return "", err
+	}
+	return identity.CustomerID, nil
+}
+
+// ensureBillingIdentity guarantees that a login has a billing account of its own.
+//
+// **The decision: every account gets one, staff included.** A staff member is also a
+// customer of the business — they buy a server, they hold a subscription, they get an
+// invoice — and before this the only way to make that work was for an operator to create a
+// `customers` row by hand and link it, which is the kind of manual step that is done wrong
+// once and then left broken. A login with no billing identity cannot buy anything at all:
+// checkout and the portal both resolve the customer through `customer_accounts`.
+//
+// **What this must not do is grant anything.** The row written here is a `customer_accounts`
+// link, and every customer-scoped query in the panel is scoped by exactly that link
+// (`WHERE ca.user_id = $n`). A link to *their own* record therefore adds no reach over
+// anybody else's: a staff member's invoice access is still decided by `invoice:read:all`,
+// and their customer view sees only the record this function made for them. Three rules are
+// what keeps that true, and each one is deliberate:
+//
+//   - **An existing link wins.** The function is idempotent, so a second call cannot produce
+//     a second identity and no caller has to know whether one exists.
+//   - **An address that already has a billing record with no login is adopted, not
+//     duplicated.** `customers.email` is unique, one address is one billing account, and
+//     that record is the same person — the case where an operator imported the customer
+//     months ago and is now giving them a way in.
+//   - **An address whose billing record already belongs to another login is refused.** It is
+//     never adopted and never shared: a second link would let this account read somebody
+//     else's invoices through the customer-scoped path, which is the privilege escalation
+//     this feature must not introduce. It is also the one case where the unique index on
+//     `lower(customers.email)` would fail anyway, so the refusal is a code rather than a
+//     constraint violation.
+func ensureBillingIdentity(ctx context.Context, tx pgx.Tx, userID, email, name string) (billingIdentity, error) {
+	var existing string
 	err := tx.QueryRow(ctx, `
-		SELECT c.id
+		SELECT customer_id FROM customer_accounts
+		WHERE user_id = $1
+		ORDER BY created_at
+		LIMIT 1`, userID).Scan(&existing)
+	switch {
+	case err == nil:
+		return billingIdentity{CustomerID: existing, Adopted: true}, nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return billingIdentity{}, fmt.Errorf("authn: look up billing identity: %w", err)
+	}
+
+	var (
+		customerID string
+		linked     bool
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT c.id, EXISTS (SELECT 1 FROM customer_accounts ca WHERE ca.customer_id = c.id)
 		FROM customers c
 		WHERE lower(c.email) = $1
-		  AND NOT EXISTS (SELECT 1 FROM customer_accounts ca WHERE ca.customer_id = c.id)`,
-		email).Scan(&customerID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		ORDER BY c.created_at
+		LIMIT 1`, email).Scan(&customerID, &linked)
+
+	created := false
+	switch {
+	case err == nil && linked:
+		// The address is somebody else's billing account. Refuse: linking the two logins
+		// would hand this one their invoices, and "the operator typed the address" is not
+		// proof that the two are the same person.
+		return billingIdentity{}, fmt.Errorf("%w: %s", ErrBillingAddressTaken, email)
+	case err == nil:
+		// Adopted below.
+	case !errors.Is(err, pgx.ErrNoRows):
+		return billingIdentity{}, fmt.Errorf("authn: look up billing record: %w", err)
+	default:
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO customers (email, name, provisioned_for_login)
+			VALUES ($1, $2, true)
+			RETURNING id`,
+			email, name).Scan(&customerID); err != nil {
+			if isUniqueViolation(err) {
+				// A concurrent writer took the address between the read and the insert.
+				return billingIdentity{}, fmt.Errorf("%w: %s", ErrBillingAddressTaken, email)
+			}
+			return billingIdentity{}, fmt.Errorf("authn: create billing record: %w", err)
+		}
+		created = true
 	}
-	if err != nil {
-		return fmt.Errorf("authn: look up customer record: %w", err)
-	}
+
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO customer_accounts (user_id, customer_id, role) VALUES ($1, $2, 'owner')`,
 		userID, customerID); err != nil {
-		return fmt.Errorf("authn: link customer record: %w", err)
+		return billingIdentity{}, fmt.Errorf("authn: link billing record: %w", err)
 	}
-	return nil
+	return billingIdentity{CustomerID: customerID, Adopted: !created}, nil
 }
 
 // recordAudit writes one audit row inside the caller's transaction.

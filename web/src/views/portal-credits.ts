@@ -554,6 +554,11 @@ function kindLabel(kind: string | undefined): string {
       return "Applied to an invoice";
     case "refund":
       return "Refund";
+    case "credit_debit":
+      // A deduction an operator made. Named for what happened to the customer rather than for
+      // the ledger's vocabulary: "credit debit" is not a sentence anyone should read on their
+      // own statement.
+      return "Taken off by staff";
     case "adjustment":
       return "Adjustment";
     default:

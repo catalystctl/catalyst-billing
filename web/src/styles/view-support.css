@@ -468,3 +468,84 @@
     margin-left: 0;
   }
 }
+
+/* --------------------------------------------------------- custom fields -- */
+
+/* A ticket's custom fields, read-only. The label and the value are two columns rather than one
+ * line so a long answer wraps under its label instead of pushing the label out of the card. */
+.ticket-field-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ticket-field-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 34%) 1fr auto;
+  gap: var(--s-2);
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-sm);
+}
+
+.ticket-field-row:last-child {
+  border-bottom: 0;
+}
+
+.ticket-field-label {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.ticket-field-value {
+  color: var(--text);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* An unanswered field is a fact worth seeing, not an empty cell: the close button is refused
+ * because of it, so it reads as "Not answered" rather than as a blank. */
+.ticket-field-row--empty .ticket-field-value {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* The editor on the new-ticket and staff-create forms. It is a stack, so the fields read as one
+ * group rather than as part of the subject/department grid above them. */
+.ticket-fields-form {
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--line);
+}
+
+/* ------------------------------------------------- customer search picker -- */
+
+.ticket-customer-results {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  padding: var(--s-2);
+}
+
+.ticket-customer-result {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  justify-content: flex-start;
+  text-align: left;
+  width: 100%;
+  min-width: 0;
+}
+
+.ticket-customer-result .faint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* An archived definition stays in the list so an operator can restore it, but it is not in use,
+ * so the row is muted rather than hidden. */
+.is-muted td {
+  color: var(--text-faint);
+}

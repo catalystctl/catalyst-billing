@@ -14,12 +14,18 @@
 // This is the entry point the storefront and the operator panel were missing. Until
 // now `orders` only ever appeared in test fixtures: there was no way to create one,
 // so the whole "choose a product, pay, get it provisioned" path was unreachable.
+//
+// A line can also be charged at a negotiated price (Request.CustomPrice). The catalog is
+// never written to achieve it: `price_versions` keeps the amount the price list publishes,
+// and the override is recorded — with the reason that justifies it — on the order item and
+// the invoice line, which is where the charge actually lives.
 package orders
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
@@ -39,11 +45,55 @@ var (
 	// ErrInvalidSchedule is returned when a price version cannot be turned into a
 	// billing schedule (an unknown interval or timezone).
 	ErrInvalidSchedule = errors.New("orders: the price has no valid billing schedule")
+	// ErrCustomPriceReasonRequired is returned when a negotiated price is supplied
+	// without the reason that justifies it.
+	ErrCustomPriceReasonRequired = errors.New("orders: a custom price needs a reason")
+	// ErrCustomPriceReasonTooLong is returned when the justification is absurdly long,
+	// which is usually a paste rather than a sentence.
+	ErrCustomPriceReasonTooLong = errors.New("orders: the reason for a custom price must be at most 500 characters")
+	// ErrInvalidCustomPrice is returned for a negotiated price that is not a positive
+	// amount of minor units.
+	ErrInvalidCustomPrice = errors.New("orders: a custom price must be a positive amount in minor units")
 )
 
 // maxQuantity bounds a single line. A typo of "100000" should be a validation error,
 // not an invoice for a hundred thousand servers.
 const maxQuantity = 1000
+
+// maxCustomPriceMinor bounds a negotiated unit price (10,000,000.00 in a two-decimal
+// currency). It is a typo guard, not a policy: the same reason maxQuantity exists.
+const maxCustomPriceMinor = 1_000_000_000
+
+// maxCustomPriceReason bounds the justification so a pasted document cannot become a
+// free-text column nobody reads.
+const maxCustomPriceReason = 500
+
+// CustomPrice is a price a staff member typed for this line instead of the catalog's.
+//
+// It exists because a price list is shared and a deal is not: an operator agrees a number
+// with one customer, and the product's price must stay what everybody else pays. The catalog
+// is therefore never written — the amount lands on the order item and the invoice line, with
+// the reason, while `price_versions` keeps the amount it always had.
+//
+// The reason is not decoration. An amount nobody can explain later is indistinguishable from
+// a typo, so a custom price without one is refused rather than stored.
+//
+// A negotiated price is a property of *this invoice*. The subscription still points at the
+// price version, so the next renewal bills the catalog amount: changing what a subscription
+// renews at is a change to the subscription, not to one order, and this deliberately does not
+// do it. The line says "(negotiated price)" precisely so that difference is visible later.
+type CustomPrice struct {
+	// UnitMinor is what one unit costs, in the invoice currency's minor units.
+	//
+	// It replaces the catalog unit price *and* its setup fee: the number typed is the
+	// whole price of one unit. Keeping the catalog's setup fee alongside a negotiated
+	// price would charge a total that is not the number the operator agreed, which is
+	// the one thing a manual price must not do.
+	UnitMinor int64
+	// Reason is what the price is for. Mandatory, and recorded on both the order item
+	// and the invoice line so the document explains itself.
+	Reason string
+}
 
 // Request is one purchase.
 type Request struct {
@@ -54,6 +104,10 @@ type Request struct {
 	PriceVersionID string
 	// Quantity defaults to 1 when zero.
 	Quantity int
+	// CustomPrice, when set, is charged instead of the price version's amount. The price
+	// version is still required: it names what is bought (and so what gets provisioned),
+	// while the amount comes from the override. Nil means "charge the catalog price".
+	CustomPrice *CustomPrice
 
 	// Merchant, Terms and Series are the document defaults, passed in rather than
 	// reached for, so this package has no opinion about configuration.
@@ -84,6 +138,11 @@ type Result struct {
 	Status string
 	// Total is the invoice total, including tax, in the invoice currency.
 	Total money.Amount
+	// ManualPrice is true when the line was charged at a negotiated price rather than a
+	// catalog one, so a caller can say so without re-reading the document.
+	ManualPrice bool
+	// UnitMinor is the amount charged per unit, in the invoice currency's minor units.
+	UnitMinor int64
 }
 
 // Service creates orders.
@@ -132,6 +191,9 @@ func (s *Service) Create(ctx context.Context, tx pgx.Tx, req Request) (Result, e
 	if s == nil || s.issuer == nil {
 		return Result{}, fmt.Errorf("orders: invoice issuance is not configured")
 	}
+	if err := req.validateCustomPrice(); err != nil {
+		return Result{}, err
+	}
 
 	p, err := loadPrice(ctx, tx, req.PriceVersionID)
 	if err != nil {
@@ -156,12 +218,16 @@ func (s *Service) Create(ctx context.Context, tx pgx.Tx, req Request) (Result, e
 		return Result{}, fmt.Errorf("orders: load customer: %w", err)
 	}
 
+	// The money side of the line, after any negotiated override. Everything below prices from
+	// `pr`, never from `p`, so there is exactly one place where "catalog or custom" is decided.
+	pr := req.pricingFor(p)
+
 	// A one-time or free price is not a schedule. It is charged once (or not at all) and
 	// produces a service with no subscription, so it takes the branch that never computes a
 	// period and never writes a `subscriptions` row — the two things that would otherwise make
 	// a renewal possible.
 	if !catalog.Recurring(p.Interval) {
-		return s.createOnce(ctx, tx, req, p, cur)
+		return s.createOnce(ctx, tx, req, p, pr, cur)
 	}
 
 	start, end, err := periodFor(p, req.Now)
@@ -169,8 +235,8 @@ func (s *Service) Create(ctx context.Context, tx pgx.Tx, req Request) (Result, e
 		return Result{}, err
 	}
 
-	lineMinor := p.Amount * int64(req.Quantity)
-	setupMinor := p.Setup * int64(req.Quantity)
+	lineMinor := pr.unitMinor * int64(req.Quantity)
+	setupMinor := pr.setupMinor * int64(req.Quantity)
 
 	var orderID string
 	if err := tx.QueryRow(ctx, `
@@ -180,12 +246,13 @@ func (s *Service) Create(ctx context.Context, tx pgx.Tx, req Request) (Result, e
 		return Result{}, fmt.Errorf("orders: insert order: %w", err)
 	}
 
-	description := p.description()
+	description := pr.description(p)
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO order_items (order_id, price_version_id, description, quantity,
-			unit_minor, line_minor, setup_minor, position)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 1)`,
-		orderID, p.ID, description, req.Quantity, p.Amount, lineMinor, setupMinor,
+			unit_minor, line_minor, setup_minor, position, manual_price, manual_price_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $9)`,
+		orderID, p.ID, description, req.Quantity, pr.unitMinor, lineMinor, setupMinor,
+		pr.manual, pr.reasonArg(),
 	); err != nil {
 		return Result{}, fmt.Errorf("orders: insert order item: %w", err)
 	}
@@ -204,21 +271,10 @@ func (s *Service) Create(ctx context.Context, tx pgx.Tx, req Request) (Result, e
 		return Result{}, fmt.Errorf("orders: insert subscription: %w", err)
 	}
 
-	// The invoice is priced from the catalog line, not from the order total, so the
-	// configured pricer computes net, tax and total exactly as it does for every other
-	// document.
-	lines := []billing.Line{{
-		Description:   description,
-		QuantityMilli: int64(req.Quantity) * 1000,
-		UnitPrice:     money.New(p.Amount, cur),
-	}}
-	if p.Setup > 0 {
-		lines = append(lines, billing.Line{
-			Description:   description + " — setup",
-			QuantityMilli: int64(req.Quantity) * 1000,
-			UnitPrice:     money.New(p.Setup, cur),
-		})
-	}
+	// The invoice is priced from the line's unit price — the catalog's, or the negotiated
+	// one — not from the order total, so the configured pricer computes net, tax and total
+	// exactly as it does for every other document.
+	lines := invoiceLines(pr, p, description, req.Quantity, cur)
 
 	customer := billing.CustomerDetails{ID: req.CustomerID}
 	if err := billing.FillCustomer(ctx, tx, &customer); err != nil {
@@ -250,6 +306,11 @@ func (s *Service) Create(ctx context.Context, tx pgx.Tx, req Request) (Result, e
 	if err != nil {
 		return Result{}, err
 	}
+	if pr.manual {
+		if err := markManualLine(ctx, tx, invoiceID, pr.reason); err != nil {
+			return Result{}, err
+		}
+	}
 	issued, err := s.issuer.Issue(ctx, tx, invoiceID, req.Series)
 	if err != nil {
 		return Result{}, err
@@ -270,6 +331,8 @@ func (s *Service) Create(ctx context.Context, tx pgx.Tx, req Request) (Result, e
 		SubscriptionID: subscriptionID,
 		Status:         "pending_payment",
 		Total:          issued.Totals.Total,
+		ManualPrice:    pr.manual,
+		UnitMinor:      pr.unitMinor,
 	}, nil
 }
 
@@ -289,11 +352,11 @@ func (s *Service) Create(ctx context.Context, tx pgx.Tx, req Request) (Result, e
 //
 // Nothing in this path touches `subscriptions`. That is the invariant the renewal engine relies
 // on, and it is why a one-time purchase cannot be billed twice by a bug in the scanner.
-func (s *Service) createOnce(ctx context.Context, tx pgx.Tx, req Request, p price, cur money.Currency) (Result, error) {
-	lineMinor := p.Amount * int64(req.Quantity)
-	setupMinor := p.Setup * int64(req.Quantity)
+func (s *Service) createOnce(ctx context.Context, tx pgx.Tx, req Request, p price, pr pricing, cur money.Currency) (Result, error) {
+	lineMinor := pr.unitMinor * int64(req.Quantity)
+	setupMinor := pr.setupMinor * int64(req.Quantity)
 	totalMinor := lineMinor + setupMinor
-	description := p.description()
+	description := pr.description(p)
 
 	status := "pending_payment"
 	if totalMinor == 0 {
@@ -311,10 +374,11 @@ func (s *Service) createOnce(ctx context.Context, tx pgx.Tx, req Request, p pric
 	var itemID string
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO order_items (order_id, price_version_id, description, quantity,
-			unit_minor, line_minor, setup_minor, position)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
+			unit_minor, line_minor, setup_minor, position, manual_price, manual_price_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $9)
 		RETURNING id`,
-		orderID, p.ID, description, req.Quantity, p.Amount, lineMinor, setupMinor,
+		orderID, p.ID, description, req.Quantity, pr.unitMinor, lineMinor, setupMinor,
+		pr.manual, pr.reasonArg(),
 	).Scan(&itemID); err != nil {
 		return Result{}, fmt.Errorf("orders: insert order item: %w", err)
 	}
@@ -325,25 +389,16 @@ func (s *Service) createOnce(ctx context.Context, tx pgx.Tx, req Request, p pric
 			return Result{}, err
 		}
 		return Result{
-			OrderID:    orderID,
-			ServiceIDs: []string{serviceID},
-			Status:     "paid",
-			Total:      money.New(0, cur),
+			OrderID:     orderID,
+			ServiceIDs:  []string{serviceID},
+			Status:      "paid",
+			Total:       money.New(0, cur),
+			ManualPrice: pr.manual,
+			UnitMinor:   pr.unitMinor,
 		}, nil
 	}
 
-	lines := []billing.Line{{
-		Description:   description,
-		QuantityMilli: int64(req.Quantity) * 1000,
-		UnitPrice:     money.New(p.Amount, cur),
-	}}
-	if p.Setup > 0 {
-		lines = append(lines, billing.Line{
-			Description:   description + " — setup",
-			QuantityMilli: int64(req.Quantity) * 1000,
-			UnitPrice:     money.New(p.Setup, cur),
-		})
-	}
+	lines := invoiceLines(pr, p, description, req.Quantity, cur)
 
 	customer := billing.CustomerDetails{ID: req.CustomerID}
 	if err := billing.FillCustomer(ctx, tx, &customer); err != nil {
@@ -369,6 +424,11 @@ func (s *Service) createOnce(ctx context.Context, tx pgx.Tx, req Request, p pric
 	if err != nil {
 		return Result{}, err
 	}
+	if pr.manual {
+		if err := markManualLine(ctx, tx, invoiceID, pr.reason); err != nil {
+			return Result{}, err
+		}
+	}
 	issued, err := s.issuer.Issue(ctx, tx, invoiceID, req.Series)
 	if err != nil {
 		return Result{}, err
@@ -386,7 +446,126 @@ func (s *Service) createOnce(ctx context.Context, tx pgx.Tx, req Request, p pric
 		InvoiceNumber: issued.Number,
 		Status:        "pending_payment",
 		Total:         issued.Totals.Total,
+		ManualPrice:   pr.manual,
+		UnitMinor:     pr.unitMinor,
 	}, nil
+}
+
+// invoiceLines is what the document charges for one order line.
+//
+// Both purchase branches build their lines here so the amount and the provenance cannot drift
+// apart. The amount is the (possibly negotiated) unit price. The provenance is the price
+// version the line was priced from, recorded on the invoice line itself: an order invoice has
+// an order behind it, so nothing needs it to provision, but a reader of the document can then
+// see which catalog price a negotiated amount was agreed against. `product_id` is deliberately
+// left nil — the order item names the product, and a line that named one would make the
+// invoice's own "what does this sell" query compete with the order's.
+func invoiceLines(pr pricing, p price, description string, quantity int, cur money.Currency) []billing.Line {
+	versionID := p.ID
+	lines := []billing.Line{{
+		Description:    description,
+		QuantityMilli:  int64(quantity) * 1000,
+		UnitPrice:      money.New(pr.unitMinor, cur),
+		PriceVersionID: &versionID,
+	}}
+	if pr.setupMinor > 0 {
+		lines = append(lines, billing.Line{
+			Description:    description + " — setup",
+			QuantityMilli:  int64(quantity) * 1000,
+			UnitPrice:      money.New(pr.setupMinor, cur),
+			PriceVersionID: &versionID,
+		})
+	}
+	return lines
+}
+
+// pricing is the money side of one line after any negotiated override.
+type pricing struct {
+	unitMinor  int64
+	setupMinor int64
+	// manual is true when unitMinor came from a staff member rather than from a price
+	// version. It is what makes the order item and the invoice line say so.
+	manual bool
+	reason string
+}
+
+// pricingFor decides, in one place, whether a line is charged at the catalog price or at the
+// negotiated one. Nothing else in this file reads p.Amount or p.Setup, so there is no second
+// place where the override could be forgotten.
+func (r Request) pricingFor(p price) pricing {
+	if r.CustomPrice != nil {
+		return pricing{unitMinor: r.CustomPrice.UnitMinor, manual: true, reason: r.CustomPrice.Reason}
+	}
+	return pricing{unitMinor: p.Amount, setupMinor: p.Setup}
+}
+
+// reasonArg is the value of the `manual_price_reason` column: nil for a catalog-priced line,
+// so the table constraint that ties a reason to a manual price holds for both kinds of line.
+func (pr pricing) reasonArg() any {
+	if !pr.manual {
+		return nil
+	}
+	return pr.reason
+}
+
+// description is the line text on the order, the invoice and the invoice's snapshot.
+//
+// A negotiated line says so in the text as well as in the columns, because the text is what a
+// customer and a PDF reader see: a document that shows a different amount from the price list
+// and does not say why is a document that invites a support ticket.
+func (pr pricing) description(p price) string {
+	if pr.manual {
+		return p.description() + " (negotiated price)"
+	}
+	return p.description()
+}
+
+// validateCustomPrice rejects a negotiated price that cannot be justified or cannot be charged.
+//
+// The reason is checked before the amount: an operator who typed an amount and no reason has
+// made one mistake, and telling them the amount was fine is the more useful message.
+func (r *Request) validateCustomPrice() error {
+	if r.CustomPrice == nil {
+		return nil
+	}
+	reason := strings.TrimSpace(r.CustomPrice.Reason)
+	if reason == "" {
+		return ErrCustomPriceReasonRequired
+	}
+	if len(reason) > maxCustomPriceReason {
+		return ErrCustomPriceReasonTooLong
+	}
+	if r.CustomPrice.UnitMinor <= 0 || r.CustomPrice.UnitMinor > maxCustomPriceMinor {
+		return ErrInvalidCustomPrice
+	}
+	// Normalise the copy, so a reason stored in the database is the one that was checked
+	// rather than the one that was typed.
+	r.CustomPrice = &CustomPrice{UnitMinor: r.CustomPrice.UnitMinor, Reason: reason}
+	return nil
+}
+
+// markManualLine records on the invoice line that its amount was negotiated.
+//
+// The line is written by the invoice issuer, which prices from the catalog and knows nothing
+// about a deal. This is the one fact the order knows and the document does not, so it is
+// written here — while the invoice is still a draft, because `invoice_lines_guard` freezes a
+// line the moment it is issued. That freeze is the point: the record of *why* an amount was
+// charged must be as immutable as the amount.
+//
+// The line with position 1 is the priced line: a negotiated price replaces the catalog unit
+// price and its setup fee, so an overridden order has exactly one line.
+func markManualLine(ctx context.Context, tx pgx.Tx, invoiceID, reason string) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE invoice_lines
+		SET manual_price = true, manual_price_reason = $2
+		WHERE invoice_id = $1 AND position = 1`, invoiceID, reason)
+	if err != nil {
+		return fmt.Errorf("orders: record negotiated price: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("orders: record negotiated price: %d lines marked, want 1", tag.RowsAffected())
+	}
+	return nil
 }
 
 // createService writes the service and its create-operation for a purchase that is delivered

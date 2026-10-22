@@ -236,10 +236,18 @@ func adminCreateUser(args []string) error {
 			VALUES ($1, $2, $3, now()) RETURNING id`, *email, hash, *name).Scan(&userID); err != nil {
 			return err
 		}
-		if *role == "" {
-			return nil
+		if *role != "" {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO staff_roles (user_id, role) VALUES ($1, $2)`, userID, *role); err != nil {
+				return err
+			}
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO staff_roles (user_id, role) VALUES ($1, $2)`, userID, *role)
+		// A login is also a customer of the business: it gets its billing identity here, by the
+		// same rule the screen applies, so the bootstrap administrator can buy and hold a
+		// service without anybody linking two rows by hand afterwards. This writes a
+		// `customer_accounts` link to the account's *own* billing record and grants nothing
+		// else — permissions still come from the role.
+		_, err := authn.EnsureBillingIdentity(ctx, tx, userID, *email, *name)
 		return err
 	})
 	if err != nil {

@@ -48,6 +48,10 @@ var (
 	ErrClosingDisabled = errors.New("tickets: customers may not close tickets")
 	// ErrAttachmentTooLarge is returned before an oversized upload is stored.
 	ErrAttachmentTooLarge = errors.New("tickets: attachment too large")
+	// ErrAttachmentType is returned when an upload's content type is not on the allowlist.
+	// It is separate from ErrInvalidInput because the answer is a different status (415) and
+	// a different action (convert or zip the file), not "fix the form".
+	ErrAttachmentType = errors.New("tickets: attachment type not allowed")
 	// ErrDuplicate is returned when an inbound message id has already been imported.
 	ErrDuplicate = errors.New("tickets: duplicate message")
 )
@@ -160,6 +164,10 @@ type Ticket struct {
 	CustomerEmail string
 	CustomerName  string
 	AssigneeName  string
+	// OpenedByStaff is true when a member of the team opened this ticket rather than the
+	// customer. OpenedBy then holds the staff user, and the pair is what makes "who opened
+	// this, and for whom" a fact rather than a guess from the first message's author.
+	OpenedByStaff bool
 }
 
 // Message is one message in a thread.
@@ -193,6 +201,11 @@ type Attachment struct {
 type Thread struct {
 	Ticket   Ticket
 	Messages []Message
+	// Fields are the custom field definitions with this ticket's answers, in display order.
+	// A definition the ticket has not answered is present with Answered=false, so the screen
+	// can show what is still outstanding — which is exactly what a close-time requirement
+	// needs it to show.
+	Fields []FieldAnswer
 	// Duplicate is true when an inbound email Message-ID had already been imported.
 	// The thread is then the one that already exists, unchanged.
 	Duplicate bool
@@ -311,6 +324,13 @@ type CreateInput struct {
 	Body string
 	// MessageID is an email Message-ID for a piped ticket, when any.
 	MessageID string
+	// OpenedByStaff marks a ticket a member of the team opened on the customer's behalf.
+	// UserID is then the staff account, and the first message is recorded as theirs — which
+	// is what the customer's thread shows, because a support agent wrote it.
+	OpenedByStaff bool
+	// FieldValues are answers to the configured custom fields, keyed by field key. A value
+	// that is not a configured field, or is of the wrong type for its field, is refused.
+	FieldValues map[string]any
 	// Attachments are stored with the first message, in the same transaction.
 	Attachments []AttachmentInput
 	// Now is the creation instant; zero uses the store clock.
@@ -417,6 +437,22 @@ func (s *Store) CreateTx(ctx context.Context, tx pgx.Tx, in CreateInput) (Thread
 	if in.CustomerID == "" {
 		return Thread{}, fmt.Errorf("%w: a customer is required", ErrInvalidInput)
 	}
+	if in.OpenedByStaff {
+		// A staff member opens a ticket *for* a customer, so the customer must exist. A
+		// missing one is not_found rather than a foreign-key violation rendered as a 500:
+		// the caller named an account, and there is no such account.
+		if !validUUID(in.CustomerID) {
+			return Thread{}, ErrNotFound
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM customers WHERE id = $1)`, in.CustomerID).Scan(&exists); err != nil {
+			return Thread{}, fmt.Errorf("tickets: check customer: %w", err)
+		}
+		if !exists {
+			return Thread{}, ErrNotFound
+		}
+	}
 	if in.ServiceID != "" {
 		// A ticket may only reference a service the caller owns. Checking it here
 		// makes "that service is someone else's" the same answer as "no such
@@ -439,6 +475,19 @@ func (s *Store) CreateTx(ctx context.Context, tx pgx.Tx, in CreateInput) (Thread
 	if now.IsZero() {
 		now = s.clock()
 	}
+
+	// Custom fields are validated before the ticket exists, so a refused answer leaves no
+	// ticket and no allocated number behind. `normalized` is what the value table will store;
+	// `checkCreateAnswers` reads it rather than the raw request, because "answered" must mean
+	// "has a value the database would keep" and not "the key was present".
+	normalized, err := s.normalizedCreateAnswers(ctx, tx, in.FieldValues)
+	if err != nil {
+		return Thread{}, err
+	}
+	if err := checkCreateAnswers(ctx, tx, normalized); err != nil {
+		return Thread{}, err
+	}
+
 	number, err := Series.Allocate(ctx, tx)
 	if err != nil {
 		return Thread{}, err
@@ -447,19 +496,19 @@ func (s *Store) CreateTx(ctx context.Context, tx pgx.Tx, in CreateInput) (Thread
 	var ticket Ticket
 	err = tx.QueryRow(ctx, `
 		INSERT INTO tickets (number, customer_id, user_id, service_id, subject, department,
-			priority, status, opened_by, last_reply_at, created_at, updated_at)
+			priority, status, opened_by, opened_by_staff, last_reply_at, created_at, updated_at)
 		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7, 'open',
-			NULLIF($3, '')::uuid, $8, $8, $8)
+			NULLIF($3, '')::uuid, $9, $8, $8, $8)
 		RETURNING id, COALESCE(number, ''), customer_id, COALESCE(user_id::text, ''),
 			COALESCE(service_id::text, ''), subject, department, priority, status,
 			COALESCE(assigned_to::text, ''), COALESCE(opened_by::text, ''),
-			last_reply_at, closed_at, created_at, updated_at`,
+			last_reply_at, closed_at, created_at, updated_at, opened_by_staff`,
 		number.Format(), in.CustomerID, in.UserID, in.ServiceID, in.Subject, in.Department,
-		in.Priority, now,
+		in.Priority, now, in.OpenedByStaff,
 	).Scan(&ticket.ID, &ticket.Number, &ticket.CustomerID, &ticket.UserID, &ticket.ServiceID,
 		&ticket.Subject, &ticket.Department, &ticket.Priority, &ticket.Status,
 		&ticket.AssignedTo, &ticket.OpenedBy, &ticket.LastReplyAt, &ticket.ClosedAt,
-		&ticket.CreatedAt, &ticket.UpdatedAt)
+		&ticket.CreatedAt, &ticket.UpdatedAt, &ticket.OpenedByStaff)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Thread{}, ErrDuplicate
@@ -467,7 +516,10 @@ func (s *Store) CreateTx(ctx context.Context, tx pgx.Tx, in CreateInput) (Thread
 		return Thread{}, fmt.Errorf("tickets: insert ticket: %w", err)
 	}
 
-	msg, duplicate, err := insertMessage(ctx, tx, ticket.ID, in.UserID, false, in.Body, in.MessageID, now)
+	// The first message is the opener's. For a ticket the team opened, that is a staff
+	// message, and the customer's thread says so.
+	msg, duplicate, err := insertMessage(ctx, tx, ticket.ID, in.UserID, in.OpenedByStaff,
+		in.Body, in.MessageID, now)
 	if err != nil {
 		return Thread{}, err
 	}
@@ -482,7 +534,24 @@ func (s *Store) CreateTx(ctx context.Context, tx pgx.Tx, in CreateInput) (Thread
 			return Thread{}, err
 		}
 	}
+	if len(normalized) > 0 {
+		if err := s.setValuesTx(ctx, tx, ticket.ID, normalized); err != nil {
+			return Thread{}, err
+		}
+	}
 	return s.threadTx(ctx, tx, ticket.ID)
+}
+
+// normalizedCreateAnswers validates a new ticket's answers against the configured fields.
+func (s *Store) normalizedCreateAnswers(ctx context.Context, q querier, values map[string]any) (map[string]any, error) {
+	if len(values) == 0 {
+		return map[string]any{}, nil
+	}
+	fields, err := fieldsFrom(ctx, q, true)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeAnswers(fields, values)
 }
 
 func validateCreate(in CreateInput, settings Settings) error {
@@ -708,6 +777,10 @@ func (s *Store) CloseAsCustomer(ctx context.Context, customerID, ticketID string
 }
 
 // CloseAsCustomerTx closes a customer's ticket inside a caller's transaction.
+//
+// A field the operator made required-to-close is enforced here, inside the transaction that
+// closes the ticket and after the row lock: a concurrent answer cannot slip between the check
+// and the write, and a refused close changes nothing.
 func (s *Store) CloseAsCustomerTx(ctx context.Context, tx pgx.Tx, customerID, ticketID string) (Ticket, error) {
 	settings, err := settingsFrom(ctx, tx)
 	if err != nil {
@@ -719,15 +792,27 @@ func (s *Store) CloseAsCustomerTx(ctx context.Context, tx pgx.Tx, customerID, ti
 	if !validUUID(ticketID) || !validUUID(customerID) {
 		return Ticket{}, ErrNotFound
 	}
-	now := s.clock()
-	tag, err := tx.Exec(ctx, `
-		UPDATE tickets SET status = 'closed', closed_at = $3, updated_at = $3
-		WHERE id = $1 AND customer_id = $2`, ticketID, customerID, now)
-	if err != nil {
-		return Ticket{}, fmt.Errorf("tickets: close ticket: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
+
+	// Lock first, then check, then write: the requirement is about the ticket's answers at the
+	// instant it closes, not at the instant the request arrived.
+	var exists bool
+	err = tx.QueryRow(ctx, `SELECT true FROM tickets WHERE id = $1 AND customer_id = $2 FOR UPDATE`,
+		ticketID, customerID).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return Ticket{}, ErrNotFound
+	}
+	if err != nil {
+		return Ticket{}, fmt.Errorf("tickets: lock ticket: %w", err)
+	}
+	if err := requireCloseAnswers(ctx, tx, ticketID); err != nil {
+		return Ticket{}, err
+	}
+
+	now := s.clock()
+	if _, err := tx.Exec(ctx, `
+		UPDATE tickets SET status = 'closed', closed_at = $3, updated_at = $3
+		WHERE id = $1 AND customer_id = $2`, ticketID, customerID, now); err != nil {
+		return Ticket{}, fmt.Errorf("tickets: close ticket: %w", err)
 	}
 	return s.ticketByCustomerTx(ctx, tx, customerID, ticketID)
 }
@@ -743,20 +828,29 @@ func (s *Store) CloseAsStaff(ctx context.Context, ticketID string) (Ticket, erro
 	return out, err
 }
 
-// CloseAsStaffTx closes a ticket inside a caller's transaction.
+// CloseAsStaffTx closes a ticket inside a caller's transaction. The close-time field requirement
+// applies to staff too: a rule the person closing the ticket can ignore is not a rule.
 func (s *Store) CloseAsStaffTx(ctx context.Context, tx pgx.Tx, ticketID string) (Ticket, error) {
 	if !validUUID(ticketID) {
 		return Ticket{}, ErrNotFound
 	}
-	now := s.clock()
-	tag, err := tx.Exec(ctx, `
-		UPDATE tickets SET status = 'closed', closed_at = $2, updated_at = $2
-		WHERE id = $1`, ticketID, now)
-	if err != nil {
-		return Ticket{}, fmt.Errorf("tickets: close ticket: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
+	var exists bool
+	err := tx.QueryRow(ctx, `SELECT true FROM tickets WHERE id = $1 FOR UPDATE`, ticketID).Scan(&exists)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return Ticket{}, ErrNotFound
+	}
+	if err != nil {
+		return Ticket{}, fmt.Errorf("tickets: lock ticket: %w", err)
+	}
+	if err := requireCloseAnswers(ctx, tx, ticketID); err != nil {
+		return Ticket{}, err
+	}
+
+	now := s.clock()
+	if _, err := tx.Exec(ctx, `
+		UPDATE tickets SET status = 'closed', closed_at = $2, updated_at = $2
+		WHERE id = $1`, ticketID, now); err != nil {
+		return Ticket{}, fmt.Errorf("tickets: close ticket: %w", err)
 	}
 	return s.staffTicketTx(ctx, tx, ticketID)
 }
@@ -774,7 +868,11 @@ func (s *Store) ThreadForCustomer(ctx context.Context, customerID, ticketID stri
 	if err != nil {
 		return Thread{}, err
 	}
-	return Thread{Ticket: ticket, Messages: messages}, nil
+	fields, err := valuesForTicket(ctx, s.pool, ticketID)
+	if err != nil {
+		return Thread{}, err
+	}
+	return Thread{Ticket: ticket, Messages: messages, Fields: fields}, nil
 }
 
 func (s *Store) ticketByCustomer(ctx context.Context, customerID, ticketID string) (Ticket, error) {
@@ -859,7 +957,11 @@ func (s *Store) ThreadForStaff(ctx context.Context, ticketID string) (Thread, er
 		if err != nil {
 			return err
 		}
-		out = Thread{Ticket: ticket, Messages: messages}
+		fields, err := valuesForTicket(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		out = Thread{Ticket: ticket, Messages: messages, Fields: fields}
 		return nil
 	})
 	return out, err
@@ -1028,6 +1130,15 @@ func (s *Store) UpdateStaffTx(ctx context.Context, tx pgx.Tx, ticketID string, i
 		return Ticket{}, fmt.Errorf("tickets: lock ticket: %w", err)
 	}
 
+	// A status change to `closed` is a close, whichever endpoint asked for it. Without this
+	// the queue's edit dialog would be a way around the close-time requirement the close
+	// button enforces.
+	if in.Status == "closed" {
+		if err := requireCloseAnswers(ctx, tx, ticketID); err != nil {
+			return Ticket{}, err
+		}
+	}
+
 	now := s.clock()
 	args := []any{ticketID, now}
 	set := "updated_at = $2"
@@ -1111,7 +1222,7 @@ const ticketSelect = `
 	COALESCE(t.service_id::text, ''), t.subject, t.department, t.priority, t.status,
 	COALESCE(t.assigned_to::text, ''), COALESCE(t.opened_by::text, ''),
 	t.last_reply_at, t.closed_at, t.created_at, t.updated_at,
-	COALESCE(m.n, 0), m.last_staff, COALESCE(m.last_body, '')`
+	COALESCE(m.n, 0), m.last_staff, COALESCE(m.last_body, ''), t.opened_by_staff`
 
 const ticketLateral = `
 	LEFT JOIN LATERAL (
@@ -1140,7 +1251,7 @@ func scanTicket(sc rowScanner) (Ticket, error) {
 	err := sc.Scan(&t.ID, &t.Number, &t.CustomerID, &t.UserID, &t.ServiceID, &t.Subject,
 		&t.Department, &t.Priority, &t.Status, &t.AssignedTo, &t.OpenedBy,
 		&t.LastReplyAt, &t.ClosedAt, &t.CreatedAt, &t.UpdatedAt,
-		&t.MessageCount, &t.LastMessageFromStaff, &t.LastMessageBody)
+		&t.MessageCount, &t.LastMessageFromStaff, &t.LastMessageBody, &t.OpenedByStaff)
 	if err != nil {
 		return Ticket{}, err
 	}
@@ -1152,7 +1263,7 @@ func scanStaffTicket(sc rowScanner) (Ticket, error) {
 	err := sc.Scan(&t.ID, &t.Number, &t.CustomerID, &t.UserID, &t.ServiceID, &t.Subject,
 		&t.Department, &t.Priority, &t.Status, &t.AssignedTo, &t.OpenedBy,
 		&t.LastReplyAt, &t.ClosedAt, &t.CreatedAt, &t.UpdatedAt,
-		&t.MessageCount, &t.LastMessageFromStaff, &t.LastMessageBody,
+		&t.MessageCount, &t.LastMessageFromStaff, &t.LastMessageBody, &t.OpenedByStaff,
 		&t.CustomerEmail, &t.CustomerName, &t.AssigneeName)
 	if err != nil {
 		return Ticket{}, err
@@ -1169,7 +1280,11 @@ func (s *Store) threadTx(ctx context.Context, q querier, ticketID string) (Threa
 	if err != nil {
 		return Thread{}, err
 	}
-	return Thread{Ticket: ticket, Messages: messages}, nil
+	fields, err := valuesForTicket(ctx, q, ticketID)
+	if err != nil {
+		return Thread{}, err
+	}
+	return Thread{Ticket: ticket, Messages: messages, Fields: fields}, nil
 }
 
 func (s *Store) messagesTx(ctx context.Context, q querier, ticketID string) ([]Message, error) {

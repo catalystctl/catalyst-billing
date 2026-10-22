@@ -31,6 +31,11 @@ func registerTicketStaffRoutes(r *router) {
 	r.staffGet("/api/v1/staff/tickets", authn.PermTicketReadAll, r.s.handleStaffTickets)
 	r.staffGet("/api/v1/staff/tickets/meta", authn.PermTicketReadAll, r.s.handleStaffTicketMeta)
 	r.staffGet("/api/v1/staff/tickets/{id}", authn.PermTicketReadAll, r.s.handleStaffTicket)
+	// Opening a ticket *for* a customer. It is a write, so it needs ticket:write:all; the
+	// customer is named in the body rather than taken from the session, which is the whole
+	// point — an agent answering the phone cannot become the customer.
+	r.staffMutation(http.MethodPost, "/api/v1/staff/tickets",
+		authn.PermTicketWriteAll, r.s.handleStaffTicketCreate)
 	r.staffMutation(http.MethodPost, "/api/v1/staff/tickets/{id}/replies",
 		authn.PermTicketWriteAll, r.s.handleStaffTicketReply)
 	r.staffMutation(http.MethodPost, "/api/v1/staff/tickets/{id}/close",
@@ -42,27 +47,119 @@ func registerTicketStaffRoutes(r *router) {
 }
 
 // handleStaffTicketMeta is what the queue's filter bar and edit dialog need: the
-// configured departments, the fixed priority and status lists, and the settings that
-// change what a support agent may do.
+// configured departments, the fixed priority and status lists, the custom fields a new ticket
+// asks for, and the settings that change what a support agent may do.
 func (s *Server) handleStaffTicketMeta(w http.ResponseWriter, r *http.Request) {
 	if !s.requireTickets(w) {
 		return
 	}
-	settings, err := s.ticketStore().Settings(r.Context())
+	body, err := s.ticketFormMeta(r.Context())
 	if err != nil {
 		s.ticketsError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":                 !settings.Disabled,
-		"client_closing_disabled": settings.ClientClosingDisabled,
-		"departments":             settings.Departments,
-		"priorities":              tickets.Priorities,
-		"statuses":                tickets.Statuses,
-		"autoclose_days":          settings.AutoCloseDays,
-		"max_attachment_bytes":    tickets.MaxAttachmentBytes,
-		"max_subject_length":      tickets.MaxSubjectLen,
+	writeJSON(w, http.StatusOK, body)
+}
+
+// createStaffTicketRequest is the body of a ticket the team opens on a customer's behalf.
+//
+// `customer_id` is explicit and required: unlike the portal route there is no session customer to
+// fall back to, and guessing one would be the worst possible guess. `service_id` is optional and,
+// as on the portal, must belong to that customer.
+type createStaffTicketRequest struct {
+	CustomerID string         `json:"customer_id"`
+	Subject    string         `json:"subject"`
+	Department string         `json:"department"`
+	Priority   string         `json:"priority"`
+	ServiceID  string         `json:"service_id"`
+	Message    messageBody    `json:"message"`
+	Fields     map[string]any `json:"fields"`
+}
+
+// handleStaffTicketCreate opens a ticket for a named customer.
+//
+// The ticket records both halves of "who opened this": `opened_by` is the staff account (and
+// `opened_by_staff` marks it as staff-opened), and `customer_id` is the account it was opened for.
+// The first message is recorded as a staff message, because it is one — the customer's thread says
+// "Support team" above it, which is the truth.
+func (s *Server) handleStaffTicketCreate(w http.ResponseWriter, r *http.Request) {
+	if !s.requireTickets(w) {
+		return
+	}
+	var req createStaffTicketRequest
+	if !s.decodeJSON(w, r, &req, 64<<10) {
+		return
+	}
+	if strings.TrimSpace(req.CustomerID) == "" {
+		writeProblem(w, http.StatusBadRequest, "invalid_input",
+			"a customer_id is required: a ticket the team opens is opened for somebody")
+		return
+	}
+	user, _ := userFrom(r.Context())
+
+	var thread tickets.Thread
+	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		thread, err = s.ticketStore().CreateTx(ctx, tx, tickets.CreateInput{
+			CustomerID:    strings.TrimSpace(req.CustomerID),
+			UserID:        user.ID,
+			OpenedByStaff: true,
+			ServiceID:     strings.TrimSpace(req.ServiceID),
+			Subject:       req.Subject,
+			Department:    req.Department,
+			Priority:      req.Priority,
+			Body:          req.Message.Body,
+			MessageID:     req.Message.MessageID,
+			FieldValues:   req.Fields,
+		})
+		if err != nil {
+			return err
+		}
+		if thread.Duplicate {
+			return nil
+		}
+		return audit.Record(ctx, tx, s.auditEvent(r, "ticket.create_on_behalf", "ticket", thread.Ticket.ID,
+			audit.OutcomeSuccess).WithChanges(map[string]any{
+			"number":          thread.Ticket.Number,
+			"customer_id":     thread.Ticket.CustomerID,
+			"opened_by":       user.ID,
+			"opened_by_staff": true,
+			"department":      thread.Ticket.Department,
+			"priority":        thread.Ticket.Priority,
+			"service_id":      thread.Ticket.ServiceID,
+		}))
 	})
+	if err != nil {
+		s.ticketsError(w, r, err)
+		return
+	}
+
+	// Read the thread back in the staff shape. The store's create returns the customer-agnostic
+	// row, and the queue's version of it carries the customer record — which is the first thing
+	// an agent needs to see after opening a ticket for someone.
+	full, err := s.ticketStore().ThreadForStaff(r.Context(), thread.Ticket.ID)
+	if err != nil {
+		s.ticketsError(w, r, err)
+		return
+	}
+	full.Duplicate = thread.Duplicate
+
+	if full.Duplicate {
+		body := threadJSON(full, true)
+		body["duplicate"] = true
+		writeJSON(w, http.StatusOK, body)
+		return
+	}
+
+	s.publish(events.Event{Kind: "ticket.created", CustomerID: thread.Ticket.CustomerID,
+		Permission: string(authn.PermTicketReadAll),
+		Data: map[string]any{
+			"ticket_id":       thread.Ticket.ID,
+			"number":          thread.Ticket.Number,
+			"subject":         thread.Ticket.Subject,
+			"opened_by_staff": true,
+		}})
+	writeJSON(w, http.StatusCreated, threadJSON(full, true))
 }
 
 // handleStaffTickets lists the queue.

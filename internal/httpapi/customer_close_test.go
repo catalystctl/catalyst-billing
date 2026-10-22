@@ -849,6 +849,82 @@ func TestClosingACustomerRecordNeverDisablesAStaffLogin(t *testing.T) {
 	}
 }
 
+// The same guarantee, through the path that actually happens: an operator created through the API.
+//
+// The test above contrives the staff/customer link by hand, which is not how it arrives in
+// production — since 0056 every login is given a billing record at creation, so *every* operator
+// has a customer record with `provisioned_for_login = true` and nobody had to link anything. This
+// drives the real route (`POST /api/v1/staff/users`, which calls CreateUser and therefore
+// ensureBillingIdentity), closes the provisioned record, and asserts the operator survives it.
+// Without the staff-role exclusion in disableCustomerLogins this is the default way to lock
+// yourself out of the panel: create a colleague, then close the record they were born with.
+func TestClosingAProvisionedStaffRecordNeverDisablesTheOperator(t *testing.T) {
+	env := newStaffEnv(t)
+	env.createUser(t, "root@example.test", "root password 1", "administrator")
+	rootCookie, rootCSRF := env.login(t, "root@example.test", "root password 1")
+
+	// Create a colleague through the API, so 0056 gives them a billing record automatically.
+	rec := env.doUser(t, http.MethodPost, "/api/v1/staff/users", rootCookie, rootCSRF, map[string]any{
+		"email":        "colleague@example.test",
+		"display_name": "Colleague",
+		"password":     "a long enough password",
+		"role":         "support",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create colleague: status %d, body %s", rec.Code, rec.Body)
+	}
+	var colleagueID string
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT id::text FROM users WHERE email = 'colleague@example.test'`).Scan(&colleagueID); err != nil {
+		t.Fatalf("read colleague: %v", err)
+	}
+
+	// 0056 did the linking: there is a provisioned record and no operator touched it.
+	var (
+		provisionedCustomer string
+		provisioned         bool
+	)
+	if err := env.pool.QueryRow(context.Background(), `
+		SELECT c.id::text, c.provisioned_for_login
+		FROM customer_accounts ca JOIN customers c ON c.id = ca.customer_id
+		WHERE ca.user_id = $1`, colleagueID).Scan(&provisionedCustomer, &provisioned); err != nil {
+		t.Fatalf("the colleague has no billing record, so this test is not exercising 0056: %v", err)
+	}
+	if !provisioned {
+		t.Fatal("the colleague's record is not marked provisioned_for_login, so 0056 is not in effect")
+	}
+
+	// The colleague's own record is closed, by the other operator.
+	closed := env.doUser(t, http.MethodDelete, "/api/v1/staff/customers/"+provisionedCustomer,
+		rootCookie, rootCSRF, map[string]any{"reason": "the record was created by mistake"})
+	if closed.Code != http.StatusOK {
+		t.Fatalf("close the provisioned record: status %d, body %s", closed.Code, closed.Body)
+	}
+
+	// The colleague is still an operator: not disabled, still signed in, still able to work.
+	var (
+		status string
+		role   string
+	)
+	if err := env.pool.QueryRow(context.Background(), `
+		SELECT u.status, COALESCE(sr.role, '')
+		FROM users u LEFT JOIN staff_roles sr ON sr.user_id = u.id
+		WHERE u.id = $1`, colleagueID).Scan(&status, &role); err != nil {
+		t.Fatalf("read the colleague: %v", err)
+	}
+	if status != "active" {
+		t.Fatalf("closing a provisioned staff record disabled the operator: status = %q, role = %q",
+			status, role)
+	}
+	colleagueCookie, _ := env.login(t, "colleague@example.test", "a long enough password")
+	if me := env.get(t, "/api/v1/auth/me", colleagueCookie); me.Code != http.StatusOK {
+		t.Fatalf("the colleague cannot sign in after their record was closed: status %d", me.Code)
+	}
+	if list := env.get(t, "/api/v1/staff/customers", colleagueCookie); list.Code != http.StatusOK {
+		t.Fatalf("the colleague can no longer read the customer list: status %d", list.Code)
+	}
+}
+
 // Closing a customer record needs a stated reason, and a role without customer:write:all cannot do
 // it at all.
 func TestStaffDeleteCustomerRequiresReasonAndPermission(t *testing.T) {

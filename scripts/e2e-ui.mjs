@@ -809,9 +809,13 @@ try {
     requireTable: true,
   });
 
+  // The rate table is the screen; the import card is the surface that lets an installation stop
+  // typing rates by hand. Both are asserted because a screen that renders its table and silently
+  // loses its configuration card is exactly the regression a screenshot review misses: the page
+  // looks right, and there is no longer any way to configure a source.
   await assertNewScreen("tax-rates", {
     path: "/tax-rates",
-    expect: ["Tax rates", ...(seededTaxRate ? [seededTaxRate] : [])],
+    expect: ["Tax rates", "External source", ...(seededTaxRate ? [seededTaxRate] : [])],
     requireTable: true,
   });
 
@@ -849,6 +853,23 @@ try {
     expect: ["Tickets", ...(seededTicket ? [seededTicket] : [])],
   });
 
+  // What the desk asks for, and what must be answered before a ticket can be closed. The
+  // placeholder that used to stand at this route is gone: the screen lists the configured fields
+  // (or an empty state that explains what a field is) and offers to add one.
+  await assertNewScreen("ticket-fields", {
+    path: "/ticket-fields",
+    expect: ["Ticket fields", "Required to close"],
+    absent: ["Not built yet"],
+  });
+
+  // Opening a ticket on a customer's behalf — the phone call the queue could not record before.
+  // The form is the customer's form plus the customer picker, and the picker is the thing that
+  // proves this screen is the staff one.
+  await assertNewScreen("support-new", {
+    path: "/support/new",
+    expect: ["Open a ticket", "Find the customer"],
+  });
+
   await assertNewScreen("logs", { path: "/logs", expect: ["Logs"] });
 
   await assertNewScreen("announcements", {
@@ -861,9 +882,56 @@ try {
     expect: ["Cancellations"],
   });
 
-  // The staff credit screen is the one that has not landed: it is a placeholder module. It is
-  // in the list deliberately so the report says so rather than omitting it.
-  await assertNewScreen("credits-staff", { path: "/credits", expect: ["Credit"] });
+  // The staff credit screen lists balances and moves credit in both directions. The debit action
+  // is the half that a read-only balance screen leaves to SQL, so it is checked by name: a screen
+  // that renders a balance and offers no way to correct one is the gap this screen closed.
+  const creditsScreen = await assertNewScreen("credits-staff", {
+    path: "/credits",
+    expect: ["Credit", ...(customerEmail ? [customerEmail] : [])],
+  });
+  if (creditsScreen.status === "present" && customerEmail) {
+    // The seeded customer holds credit, so the row that carries it must offer the deduction. The
+    // controls are read from the DOM rather than assumed: a handler with no button is a feature
+    // no operator can reach.
+    const controls = await evaluate(
+      "[...document.querySelectorAll('button')].map((b) => (b.textContent || '').trim())",
+    );
+    check(
+      "credits-staff: offers a debit action",
+      Array.isArray(controls) && controls.some((label) => /^debit$/i.test(String(label))),
+      JSON.stringify(controls),
+    );
+    // And the dialog behind it must open with the fields the server requires, or the action is a
+    // button that cannot do anything. The button is clicked by its label rather than by position:
+    // the page head has actions of its own and "the first button" is not the debit one.
+    const clickedDebit = await evaluate(`(() => {
+      const el = [...document.querySelectorAll('button')]
+        .find((b) => /^debit$/i.test((b.textContent || '').trim()));
+      if (!el) return false;
+      el.click();
+      return true;
+    })()`);
+    if (clickedDebit) {
+      const opened = await until(
+        "the debit dialog",
+        "document.querySelector('[role=dialog]') !== null",
+        3_000,
+      )
+        .then(() => true)
+        .catch(() => false);
+      check("credits-staff: the debit action opens a dialog", opened, "no dialog appeared");
+      if (opened) {
+        const dialog = await pageText();
+        check(
+          "credits-staff: the debit dialog asks for a reason",
+          /reason/i.test(dialog),
+          dialog.slice(0, 200),
+        );
+        await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+        await until("the debit dialog to close", "document.querySelector('[role=dialog]') === null", 3_000).catch(() => {});
+      }
+    }
+  }
   await assertNewScreen("affiliates", { path: "/affiliates", expect: ["Affiliates"] });
   await assertNewScreen("locales", { path: "/locales", expect: ["Locales", "Languages"] });
   await assertNewScreen("imports", { path: "/imports", expect: ["Imports", "The dump"] });

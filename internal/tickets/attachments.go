@@ -40,6 +40,64 @@ type AttachmentInput struct {
 	Bytes       []byte
 }
 
+// AllowedAttachmentTypes is the closed set of file types an upload may carry.
+//
+// It is an allowlist, not a blocklist, because a blocklist was the bug: "downgrade the types a
+// browser renders" leaves every type nobody thought of accepted as itself. The set below is what
+// a support desk actually receives — screenshots, logs, PDFs, spreadsheets and archives — plus
+// application/octet-stream for a file whose type is genuinely unknown, which is stored and served
+// as an opaque download.
+//
+// What is deliberately absent: text/html, image/svg+xml, application/javascript, text/xml and
+// their relatives. They are refused rather than downgraded, because a ticket is not a place to
+// hand a support agent a document that executes. The refusal names the accepted types, so a
+// customer with a .html file knows to zip it instead of guessing.
+var AllowedAttachmentTypes = []string{
+	"image/png",
+	"image/jpeg",
+	"image/gif",
+	"image/webp",
+	"application/pdf",
+	"text/plain",
+	"text/csv",
+	"text/markdown",
+	"application/json",
+	"application/zip",
+	"application/gzip",
+	"application/x-tar",
+	"application/x-7z-compressed",
+	"application/x-rar-compressed",
+	"application/msword",
+	"application/vnd.ms-excel",
+	"application/vnd.ms-powerpoint",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	"application/vnd.oasis.opendocument.text",
+	"application/vnd.oasis.opendocument.spreadsheet",
+	// The honest answer for a file with no type: stored and served as opaque bytes, never as
+	// something a browser would render on our origin.
+	"application/octet-stream",
+}
+
+// allowedAttachmentTypeSet is AllowedAttachmentTypes as a lookup, built once.
+var allowedAttachmentTypeSet = func() map[string]struct{} {
+	out := make(map[string]struct{}, len(AllowedAttachmentTypes))
+	for _, t := range AllowedAttachmentTypes {
+		out[t] = struct{}{}
+	}
+	return out
+}()
+
+// IsAllowedAttachmentType reports whether the normalised type is on the allowlist.
+func IsAllowedAttachmentType(contentType string) bool {
+	_, ok := allowedAttachmentTypeSet[strings.TrimSpace(strings.ToLower(contentType))]
+	return ok
+}
+
+// AttachmentTypeList renders the allowlist for an error message.
+func AttachmentTypeList() string { return strings.Join(AllowedAttachmentTypes, ", ") }
+
 // ValidateAttachment checks a file before it is stored.
 func ValidateAttachment(in AttachmentInput) (AttachmentInput, error) {
 	filename := strings.TrimSpace(filepath.Base(strings.ReplaceAll(in.Filename, `\`, `/`)))
@@ -57,7 +115,14 @@ func ValidateAttachment(in AttachmentInput) (AttachmentInput, error) {
 			len(in.Bytes), MaxAttachmentBytes)
 	}
 	in.Filename = filename
-	in.ContentType = SafeContentType(filename, in.ContentType)
+	// The allowlist is applied to the type the file would be *stored* as, so an extension that
+	// implies a refused type (a .svg with no Content-Type) is refused too.
+	normalized := normalizedContentType(filename, in.ContentType)
+	if !IsAllowedAttachmentType(normalized) {
+		return in, fmt.Errorf("%w: %q is not an accepted file type (accepted: %s)",
+			ErrAttachmentType, normalized, AttachmentTypeList())
+	}
+	in.ContentType = SafeContentType(filename, normalized)
 	return in, nil
 }
 
@@ -68,13 +133,12 @@ func ValidateAttachment(in AttachmentInput) (AttachmentInput, error) {
 // else a browser would treat as a document is served as an opaque download instead.
 // The original name is still in the filename, so the customer's file is not
 // mislabelled to them.
+//
+// AllowedAttachmentTypes already refuses those types, so this is the second line of
+// defence: a type that reaches storage by a path that skipped ValidateAttachment still
+// cannot be served as a document.
 func SafeContentType(filename, claimed string) string {
-	normalized := strings.TrimSpace(strings.ToLower(strings.Split(claimed, ";")[0]))
-	if normalized == "" {
-		if byExt := mime.TypeByExtension(strings.ToLower(filepath.Ext(filename))); byExt != "" {
-			normalized = strings.TrimSpace(strings.ToLower(strings.Split(byExt, ";")[0]))
-		}
-	}
+	normalized := normalizedContentType(filename, claimed)
 	if normalized == "" {
 		return "application/octet-stream"
 	}
@@ -93,6 +157,19 @@ func SafeContentType(filename, claimed string) string {
 		strings.HasPrefix(normalized, "application/xml"),
 		strings.HasPrefix(normalized, "text/xml"):
 		return "application/octet-stream"
+	}
+	return normalized
+}
+
+// normalizedContentType is the lower-cased type without parameters: what the client claimed, or
+// what the extension implies when the client claimed nothing. It is the input to both the
+// allowlist and the downgrade above, so the two cannot disagree about what a file is.
+func normalizedContentType(filename, claimed string) string {
+	normalized := strings.TrimSpace(strings.ToLower(strings.Split(claimed, ";")[0]))
+	if normalized == "" {
+		if byExt := mime.TypeByExtension(strings.ToLower(filepath.Ext(filename))); byExt != "" {
+			normalized = strings.TrimSpace(strings.ToLower(strings.Split(byExt, ";")[0]))
+		}
 	}
 	return normalized
 }

@@ -42,6 +42,7 @@ import {
 import {
   bytesLabel,
   clientGaps,
+  customFieldControls,
   gapExplanation,
   normaliseThread,
   ticketHref,
@@ -182,6 +183,12 @@ function renderForm(ctx: Ctx, meta: TicketMeta, services: PortalServiceOption[])
   const gaps = clientGaps(ctx);
   const files = gaps.canUpload ? filePicker(maxBytes) : null;
 
+  // The operator's custom fields, drawn from the same meta payload as the departments. A field
+  // marked required-at-creation is checked here as a courtesy and again by the handler, which is
+  // the actual rule; the client-side check exists so the customer is not sent back to a form they
+  // have to re-read to find the blank one.
+  const custom = customFieldControls(meta.custom_fields);
+
   const errorHost = h("div");
   const submit = btn("Open ticket", { variant: "primary", type: "submit", icon: "send" }) as HTMLButtonElement;
   const cancel = btn("Cancel", { href: "/tickets", variant: "ghost" });
@@ -224,6 +231,14 @@ function renderForm(ctx: Ctx, meta: TicketMeta, services: PortalServiceOption[])
       required: true,
       hint: "Error text, timestamps and what you changed last are all useful.",
     }),
+    custom
+      ? h(
+          "div",
+          { class: "stack-sm" },
+          h("div", { class: "field-hint" }, "The team asks for these on every ticket."),
+          custom.el,
+        )
+      : null,
     files
       ? field({
           label: "Attachments",
@@ -264,6 +279,21 @@ function renderForm(ctx: Ctx, meta: TicketMeta, services: PortalServiceOption[])
         return;
       }
 
+      // A required custom field is named, not counted: "answer the required fields" on a form
+      // with nine of them is a puzzle.
+      const missing = custom?.missingRequired() ?? [];
+      if (missing.length > 0) {
+        errorHost.replaceChildren(
+          banner(
+            "danger",
+            missing.length === 1 ? `${missing[0]} is required` : `${missing.length} required fields are blank`,
+            `The team asks for this before the ticket is opened: ${missing.join(", ")}.`,
+          ),
+        );
+        custom?.focusFirst(missing);
+        return;
+      }
+
       // The client-side cap. A file over it is named in the message rather than silently
       // dropped, and nothing is sent.
       const tooBig = (files?.files() ?? []).filter((file) => file.size > maxBytes);
@@ -286,6 +316,7 @@ function renderForm(ctx: Ctx, meta: TicketMeta, services: PortalServiceOption[])
           priority: priority.value,
           service_id: service.value || undefined,
           message: { body: bodyValue },
+          fields: answeredFields(custom),
         });
         thread = normaliseThread(created);
       } catch (err) {
@@ -340,6 +371,18 @@ function renderForm(ctx: Ctx, meta: TicketMeta, services: PortalServiceOption[])
       ),
     }),
   );
+}
+
+/** The answers worth sending: a null is "unanswered", which is what the server already assumes,
+ *  so it is omitted rather than sent. A `false` checkbox is a real answer and is kept. */
+export function answeredFields(custom: ReturnType<typeof customFieldControls>): Record<string, string | boolean> | undefined {
+  if (!custom) return undefined;
+  const out: Record<string, string | boolean> = {};
+  for (const [key, value] of Object.entries(custom.values())) {
+    if (value === null) continue;
+    out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 // ------------------------------------------------------------ attachments --
@@ -441,6 +484,9 @@ function createFailure(err: unknown): HTMLElement {
       return banner("warning", "Support tickets are switched off", "This installation is not taking new tickets.");
     case "invalid_input":
       return banner("danger", "Something in the form was refused", err.detail || "Check the subject, department, priority and message.");
+    case "required_field_missing":
+      // The detail names the field: the handler builds it from the definition's label.
+      return banner("danger", "A field the team asks for is blank", err.detail || "Fill in the highlighted field and send again.");
     case "not_found":
       return banner(
         "danger",

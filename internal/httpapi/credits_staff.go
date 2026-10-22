@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -11,26 +12,33 @@ import (
 
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/credit"
+	"github.com/catalyst/billing/internal/events"
 	"github.com/catalyst/billing/internal/ledger"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/paginate"
 	"github.com/catalyst/billing/internal/portal"
 )
 
-// The staff credit read surface (CRD-07, E5.2).
+// The staff credit surface (CRD-07, E5.2).
 //
 // The grant itself already exists — `POST /api/v1/staff/customers/{id}/credit`, guarded by
 // credit:write, which issues a numbered credit note and posts it to the subledger. What was
 // missing was the *reading* half: an operator could not find out who holds credit, or look
 // at a grant after making it, without SQL.
 //
-// So this file is three reads and nothing else:
+// So the first half of this file is three reads:
 //
 //   - who holds credit, and how much, per currency — the list an operator starts from;
 //   - the grants that have been made, newest first — the audit trail as a screen;
 //   - one grant with its credit note, its audit rows and the balance it left behind.
 //
-// Three decisions shape the queries:
+// The second half is the direction that did not exist at all: taking credit **away**. A debit
+// is a journal entry of its own kind (`credit_debit`, migration 0051) with a mandatory reason,
+// refusing to take the balance below zero, idempotent on its Idempotency-Key, and audited in
+// the same transaction. It needs credit:write for the same reason a grant does — it is a money
+// movement — while reading the list of deductions needs only credit:read:all.
+//
+// Four decisions shape the queries:
 //
 //  1. **The balance is derived, never stored.** `customer_credit` is a liability account and
 //     its value is the sum of its journal entries, exactly as the customer's own portal reads
@@ -41,9 +49,14 @@ import (
 //  3. **credit:read:all, not credit:write.** Seeing what a customer is owed is an audit
 //     question; granting credit is a money movement. Support holds the first and not the
 //     second, which is why reading here cannot be a side effect of the write permission.
+//  4. **A debit is read from the journal, not from a table of debits.** The balance is the sum
+//     of the `customer_credit` entries, so the list of deductions is read from the same rows. A
+//     second table describing the same deduction could disagree with the ledger, and the ledger
+//     would be right.
 
 func init() {
 	RegisterRoutes("36-credit-staff", registerStaffCreditReads)
+	RegisterRoutes("37-credit-debit", registerStaffCreditDebit)
 }
 
 func registerStaffCreditReads(r *router) {
@@ -53,6 +66,15 @@ func registerStaffCreditReads(r *router) {
 		r.s.handleStaffCreditGrants)
 	r.staffGet("/api/v1/staff/credit/grants/{id}", authn.PermCreditReadAll,
 		r.s.handleStaffCreditGrant)
+	r.staffGet("/api/v1/staff/credit/debits", authn.PermCreditReadAll,
+		r.s.handleStaffCreditDebits)
+}
+
+// registerStaffCreditDebit registers the deduction. It is a mutation: CSRF-protected and with a
+// required Idempotency-Key, because "press it again" must not take the credit twice.
+func registerStaffCreditDebit(r *router) {
+	r.staffMutation(http.MethodPost, "/api/v1/staff/customers/{id}/credit/debit",
+		authn.PermCreditWrite, r.s.handleStaffDebitCredit)
 }
 
 // creditCustomer is one row of the credit list.
@@ -472,13 +494,23 @@ func (s *Server) handleStaffCreditGrant(w http.ResponseWriter, r *http.Request) 
 // transaction that made the change, so what it says about a note is the evidence rather than a
 // description of it. `changes` is already redacted at write time.
 func (s *Server) creditNoteAudit(ctx context.Context, noteID string) ([]map[string]any, error) {
+	return s.creditAudit(ctx, "credit_note", noteID)
+}
+
+// creditAudit reads the audit rows written against one target of any type.
+//
+// The target type is a parameter because a debit is not a credit note: it has no document, and
+// its evidence is the audit row written with the posting (target type `credit_debit`). Reading
+// both through one function keeps the row shape identical, which is what lets a client render a
+// grant's evidence and a debit's evidence with the same component.
+func (s *Server) creditAudit(ctx context.Context, targetType, targetID string) ([]map[string]any, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT a.id, a.action, a.outcome, COALESCE(a.actor_id::text, ''),
 		       COALESCE(u.email, ''), a.created_at, a.changes
 		FROM audit_events a
 		LEFT JOIN users u ON u.id = a.actor_id
-		WHERE a.target_type = 'credit_note' AND a.target_id = $1
-		ORDER BY a.id`, noteID)
+		WHERE a.target_type = $1 AND a.target_id = $2
+		ORDER BY a.id`, targetType, targetID)
 	if err != nil {
 		return nil, err
 	}
@@ -524,7 +556,12 @@ func (s *Server) creditNoteAudit(ctx context.Context, noteID string) ([]map[stri
 // reported as absent, because the grant is already committed and the client must not be told
 // the grant failed when it did not.
 func (s *Server) latestCreditGrantAudit(ctx context.Context, noteID string) map[string]any {
-	rows, err := s.creditNoteAudit(ctx, noteID)
+	return s.latestCreditAudit(ctx, "credit_note", noteID)
+}
+
+// latestCreditAudit returns the newest audit row for a target, or nil when there is none.
+func (s *Server) latestCreditAudit(ctx context.Context, targetType, targetID string) map[string]any {
+	rows, err := s.creditAudit(ctx, targetType, targetID)
 	if err != nil || len(rows) == 0 {
 		return nil
 	}
@@ -584,4 +621,177 @@ func escapeLikePattern(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// ------------------------------------------------------------ taking credit away --
+
+// handleStaffDebitCredit takes credit away from a customer.
+//
+// The body is amount, currency and reason, all required. The reason is not a formality: it
+// becomes the memo on the `customer_credit` entry, which is what the customer's own credit
+// history renders, and it is copied into the audit row written inside the posting's transaction.
+// A deduction with no explanation is indistinguishable from a bug to the person whose balance
+// moved, which is the whole reason this endpoint exists rather than a note in a ticket.
+//
+// The refusals are deliberate and distinct:
+//
+//   - 400 invalid_amount / reason_required / invalid_currency — the request is incomplete, so
+//     nothing was attempted and nothing was written;
+//   - 409 insufficient_credit — the request is well-formed but the account cannot support it.
+//     The balance is unchanged: a debit is refused rather than clamped, because taking part of
+//     what was asked for would leave the operator and the customer disagreeing about what
+//     happened;
+//   - 404 not_found — no such customer;
+//   - 409 idempotency_key_reused — the key already belongs to a different deduction. A replay of
+//     the same request returns the original entry instead, which is what makes a dropped
+//     connection safe to retry.
+func (s *Server) handleStaffDebitCredit(w http.ResponseWriter, r *http.Request) {
+	if s.pool == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "storage_unavailable", "no database configured")
+		return
+	}
+	customerID := r.PathValue("id")
+	if !portal.ValidID(customerID) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such customer")
+		return
+	}
+
+	var req struct {
+		AmountMinor int64  `json:"amount_minor"`
+		Currency    string `json:"currency"`
+		Reason      string `json:"reason"`
+	}
+	if !s.decodeJSON(w, r, &req, 8<<10) {
+		return
+	}
+	if req.AmountMinor <= 0 {
+		writeProblem(w, http.StatusBadRequest, "invalid_amount", "the amount must be positive")
+		return
+	}
+	if strings.TrimSpace(req.Reason) == "" {
+		writeProblem(w, http.StatusBadRequest, "reason_required",
+			"a debit needs a reason: the customer sees it on their own credit history")
+		return
+	}
+	if strings.TrimSpace(req.Currency) == "" {
+		writeProblem(w, http.StatusBadRequest, "invalid_currency", "a currency is required")
+		return
+	}
+
+	// The route wrapper already required the key and replays a stored response for it. The key
+	// is passed on anyway, because the domain layer derives the entry's identity from it: that
+	// is what makes the debit safe even if the wrapper is bypassed, and it is what makes the
+	// ledger's (kind, reference_type, reference_id) unique key the second line of defence.
+	user, _ := userFrom(r.Context())
+	key := strings.TrimSpace(r.Header.Get(idempotencyHeader))
+
+	// The reason is handed to the auditor as well as to the domain: the audit row carries it even
+	// if a future caller of the domain method forgets to put it in its changes, and the auditor is
+	// what stamps the request's correlation id and source address on the row.
+	debit, err := s.creditServiceWithReason(r, req.Reason).Debit(r.Context(), credit.DebitRequest{
+		CustomerID:  customerID,
+		AmountMinor: req.AmountMinor,
+		Currency:    req.Currency,
+		Reason:      req.Reason,
+		DebitedBy:   user.ID,
+		Key:         key,
+	})
+	switch {
+	case err == nil:
+	case errors.Is(err, credit.ErrNotFound):
+		writeProblem(w, http.StatusNotFound, "not_found", "no such customer")
+		return
+	case errors.Is(err, credit.ErrInsufficientCredit):
+		// 409, not 400: the request is well-formed and the customer exists; the account cannot
+		// absorb it. Nothing was written, so the balance the message quotes is still the balance.
+		writeProblem(w, http.StatusConflict, "insufficient_credit", err.Error())
+		return
+	case errors.Is(err, credit.ErrKeyReused):
+		writeProblem(w, http.StatusConflict, "idempotency_key_reused",
+			"that Idempotency-Key was already used for a different debit")
+		return
+	case errors.Is(err, credit.ErrInvalidRequest):
+		writeProblem(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	default:
+		s.staffError(w, r, err)
+		return
+	}
+
+	if !debit.AlreadyDebited {
+		// The event says a balance moved, which is what a dashboard or a webhook consumer needs
+		// to know. It carries no reason: the reason is customer-visible in their own history and
+		// in the audit row, and broadcasting it would send an internal note to every subscriber.
+		s.publish(events.Event{
+			Kind:       "credit.debited",
+			Permission: string(authn.PermCustomerReadAll),
+			Data: map[string]any{
+				"customer_id":  debit.CustomerID,
+				"debit_id":     debit.ID,
+				"amount_minor": debit.AmountMinor,
+				"currency":     debit.Currency,
+			},
+		})
+	}
+
+	cur := moneyFor(debit.Currency)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":          debit.ID,
+		"customer_id": debit.CustomerID,
+		"amount":      amountJSON(money.New(debit.AmountMinor, cur)),
+		"balance":     amountJSON(money.New(debit.BalanceMinor, cur)),
+		"reason":      debit.Reason,
+		"kind":        string(ledger.KindCreditDebit),
+		"replayed":    debit.AlreadyDebited,
+		"audit":       s.latestCreditAudit(r.Context(), "credit_debit", debit.ID),
+	})
+}
+
+// handleStaffCreditDebits lists staff deductions, newest first.
+//
+// The rows come from the journal, not from a table of debits: the deduction is a posting, and a
+// list built from a second table could disagree with the balance it is meant to explain. The
+// operator is read from the audit row written with the posting.
+func (s *Server) handleStaffCreditDebits(w http.ResponseWriter, r *http.Request) {
+	if s.pool == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "storage_unavailable", "no database configured")
+		return
+	}
+	customerID := strings.TrimSpace(r.URL.Query().Get("customer_id"))
+	if customerID != "" && !portal.ValidID(customerID) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such customer")
+		return
+	}
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > 200 {
+			writeProblem(w, http.StatusBadRequest, "invalid_query", "limit must be between 1 and 200")
+			return
+		}
+		limit = parsed
+	}
+
+	rows, err := credit.DebitsFor(r.Context(), s.pool, customerID, limit)
+	if err != nil {
+		s.cfg.Logger.ErrorContext(r.Context(), "credit debit list failed", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal_error",
+			"the request could not be completed")
+		return
+	}
+
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{
+			"id":               row.ID,
+			"customer_id":      row.CustomerID,
+			"customer_email":   row.CustomerEmail,
+			"amount":           amountJSON(money.New(row.AmountMinor, moneyFor(row.Currency))),
+			"reason":           row.Reason,
+			"created_at":       row.CreatedAt.UTC(),
+			"created_by":       row.DebitedBy,
+			"created_by_email": row.DebitedByMail,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"debits": out})
 }

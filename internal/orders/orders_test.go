@@ -3,10 +3,13 @@ package orders_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/orders"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/catalyst/billing/internal/store/storetest"
@@ -450,5 +453,309 @@ func TestOneTimeServiceIsInvisibleToRenewalAndDunning(t *testing.T) {
 	}
 	if nextBill != nil {
 		t.Fatalf("the portal would claim a next-bill date of %s for a one-time service", nextBill)
+	}
+}
+
+// ------------------------------------------------------------ custom price --
+
+// catalog is the price list, read back exactly as a customer sees it. It is a separate type
+// from anything the purchase returns on purpose: the assertion "the catalog did not change"
+// must be made by reading the catalog, not by trusting the order.
+type catalog struct {
+	amount, setup int64
+	versions      int
+	productName   string
+}
+
+func (f *fixture) catalogFor(t *testing.T) catalog {
+	t.Helper()
+	var c catalog
+	if err := f.pool.QueryRow(context.Background(), `
+		SELECT pv.amount_minor, pv.setup_minor,
+		       (SELECT count(*) FROM price_versions WHERE product_id = $2),
+		       (SELECT name FROM products WHERE id = $2)
+		  FROM price_versions pv
+		 WHERE pv.id = $1`, f.priceID, f.prodID).
+		Scan(&c.amount, &c.setup, &c.versions, &c.productName); err != nil {
+		t.Fatalf("read catalog: %v", err)
+	}
+	return c
+}
+
+// A negotiated price is charged to the one customer it was agreed with and recorded on the
+// order item and the invoice line. The catalog — the price list every other customer pays —
+// must be byte-identical afterwards, which is why this test reads it before and after rather
+// than only asserting on the invoice.
+func TestCustomPriceIsRecordedAndLeavesTheCatalogAlone(t *testing.T) {
+	f := newFixture(t)
+	before := f.catalogFor(t)
+
+	const reason = "annual prepay discount agreed by sales"
+	res, err := f.create(t, orders.Request{
+		Quantity:    2,
+		CustomPrice: &orders.CustomPrice{UnitMinor: 500, Reason: reason},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ctx := context.Background()
+
+	if !res.ManualPrice || res.UnitMinor != 500 {
+		t.Fatalf("result = manual %v unit %d, want a manual 500 line", res.ManualPrice, res.UnitMinor)
+	}
+	// 2 x 5.00, and no catalog setup fee: the negotiated number is the whole price.
+	if got, want := res.Total.Minor(), int64(1000); got != want {
+		t.Fatalf("total = %d, want %d", got, want)
+	}
+
+	// The order item says what was charged and why.
+	var (
+		unit, line, setup int64
+		manual            bool
+		itemReason        *string
+		itemDescription   string
+		itemPrice         string
+	)
+	if err := f.pool.QueryRow(ctx, `
+		SELECT unit_minor, line_minor, setup_minor, manual_price, manual_price_reason,
+		       description, price_version_id
+		  FROM order_items WHERE order_id = $1`, res.OrderID).
+		Scan(&unit, &line, &setup, &manual, &itemReason, &itemDescription, &itemPrice); err != nil {
+		t.Fatalf("read item: %v", err)
+	}
+	if unit != 500 || line != 1000 || setup != 0 {
+		t.Fatalf("item money = unit %d line %d setup %d, want 500/1000/0", unit, line, setup)
+	}
+	if !manual || itemReason == nil || *itemReason != reason {
+		t.Fatalf("item manual=%v reason=%v, want true/%q", manual, itemReason, reason)
+	}
+	// The price version still names what was bought: it is provenance for provisioning,
+	// not the amount.
+	if itemPrice != f.priceID {
+		t.Fatalf("item price version = %s, want %s", itemPrice, f.priceID)
+	}
+	// The line text says it is negotiated, so a document reader can tell without a join.
+	if want := "VPS — Monthly (negotiated price)"; itemDescription != want {
+		t.Fatalf("item description = %q, want %q", itemDescription, want)
+	}
+
+	// The invoice line — the immutable record of what was charged — carries the override and
+	// its reason too, and only one line exists because the setup fee was replaced.
+	var (
+		lines          int
+		invUnit        int64
+		invManual      bool
+		invReason      *string
+		invPrice       *string
+		invDescription string
+	)
+	if err := f.pool.QueryRow(ctx, `
+		SELECT count(*) FROM invoice_lines WHERE invoice_id = $1`, res.InvoiceID).Scan(&lines); err != nil {
+		t.Fatalf("count lines: %v", err)
+	}
+	if lines != 1 {
+		t.Fatalf("invoice lines = %d, want 1: a negotiated price replaces the setup line", lines)
+	}
+	if err := f.pool.QueryRow(ctx, `
+		SELECT unit_minor, manual_price, manual_price_reason, price_version_id, description
+		  FROM invoice_lines WHERE invoice_id = $1 AND position = 1`, res.InvoiceID).
+		Scan(&invUnit, &invManual, &invReason, &invPrice, &invDescription); err != nil {
+		t.Fatalf("read invoice line: %v", err)
+	}
+	if invUnit != 500 {
+		t.Fatalf("invoice unit = %d, want 500", invUnit)
+	}
+	if !invManual || invReason == nil || *invReason != reason {
+		t.Fatalf("invoice line manual=%v reason=%v, want true/%q", invManual, invReason, reason)
+	}
+	if invPrice == nil || *invPrice != f.priceID {
+		t.Fatalf("invoice line price version = %v, want %s", invPrice, f.priceID)
+	}
+	if invDescription != itemDescription {
+		t.Fatalf("invoice description = %q, want %q", invDescription, itemDescription)
+	}
+
+	// The subscription still points at the catalog version, so provisioning reads a real plan.
+	var subPrice string
+	if err := f.pool.QueryRow(ctx, `SELECT price_version_id FROM subscriptions WHERE id = $1`,
+		res.SubscriptionID).Scan(&subPrice); err != nil {
+		t.Fatalf("read subscription: %v", err)
+	}
+	if subPrice != f.priceID {
+		t.Fatalf("subscription price version = %s, want %s", subPrice, f.priceID)
+	}
+
+	// And the thing the whole change is about: the price list is exactly what it was.
+	if after := f.catalogFor(t); after != before {
+		t.Fatalf("catalog changed: before %+v after %+v", before, after)
+	}
+	if before.amount != 1200 || before.setup != 500 || before.versions != 1 {
+		t.Fatalf("fixture catalog = %+v, want one 1200/500 version", before)
+	}
+}
+
+// The reason is not optional: an amount nobody can explain later is indistinguishable from a
+// typo, so the order is refused rather than stored. Nothing may be written on the way out.
+func TestCustomPriceWithoutAReasonIsRefused(t *testing.T) {
+	f := newFixture(t)
+
+	for name, reason := range map[string]string{
+		"empty":      "",
+		"whitespace": "   \t\n ",
+	} {
+		if _, err := f.create(t, orders.Request{
+			CustomPrice: &orders.CustomPrice{UnitMinor: 500, Reason: reason},
+		}); !errors.Is(err, orders.ErrCustomPriceReasonRequired) {
+			t.Fatalf("%s reason: err = %v, want ErrCustomPriceReasonRequired", name, err)
+		}
+	}
+
+	// Too long to be a reason.
+	if _, err := f.create(t, orders.Request{
+		CustomPrice: &orders.CustomPrice{UnitMinor: 500, Reason: strings.Repeat("x", 501)},
+	}); !errors.Is(err, orders.ErrCustomPriceReasonTooLong) {
+		t.Fatalf("long reason: err = %v, want ErrCustomPriceReasonTooLong", err)
+	}
+
+	var counts struct{ orders, items, invoices int }
+	if err := f.pool.QueryRow(context.Background(), `
+		SELECT (SELECT count(*) FROM orders), (SELECT count(*) FROM order_items),
+		       (SELECT count(*) FROM invoices)`).
+		Scan(&counts.orders, &counts.items, &counts.invoices); err != nil {
+		t.Fatal(err)
+	}
+	if counts.orders != 0 || counts.items != 0 || counts.invoices != 0 {
+		t.Fatalf("a refused order left rows behind: %+v", counts)
+	}
+}
+
+// A custom price is an amount, not a blank cheque: it must be a positive number of minor
+// units, and a zero or negative one is a mistake rather than a discount.
+func TestCustomPriceMustBeAChargeableAmount(t *testing.T) {
+	f := newFixture(t)
+
+	for _, unit := range []int64{0, -1, -500, 1_000_000_001} {
+		_, err := f.create(t, orders.Request{
+			CustomPrice: &orders.CustomPrice{UnitMinor: unit, Reason: "typo"},
+		})
+		if !errors.Is(err, orders.ErrInvalidCustomPrice) {
+			t.Fatalf("unit %d: err = %v, want ErrInvalidCustomPrice", unit, err)
+		}
+	}
+}
+
+// A one-time price is the branch that issues an invoice without a subscription; the override
+// must work there too, or "sell this setup fee at a negotiated price" silently charges the
+// catalog amount.
+func TestCustomPriceOnAOneTimePrice(t *testing.T) {
+	f := newFixture(t)
+	priceID := f.addPrice(t, 20, "one_time", 25000, 0)
+
+	res, err := f.create(t, orders.Request{
+		PriceVersionID: priceID,
+		CustomPrice:    &orders.CustomPrice{UnitMinor: 19900, Reason: "matched a competitor quote"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got, want := res.Total.Minor(), int64(19900); got != want {
+		t.Fatalf("total = %d, want %d", got, want)
+	}
+	if res.SubscriptionID != "" {
+		t.Fatalf("subscription = %q, want none for a one-time price", res.SubscriptionID)
+	}
+	var (
+		unit   int64
+		manual bool
+		reason *string
+	)
+	if err := f.pool.QueryRow(context.Background(), `
+		SELECT unit_minor, manual_price, manual_price_reason
+		  FROM invoice_lines WHERE invoice_id = $1`, res.InvoiceID).Scan(&unit, &manual, &reason); err != nil {
+		t.Fatalf("read invoice line: %v", err)
+	}
+	if unit != 19900 || !manual || reason == nil || *reason != "matched a competitor quote" {
+		t.Fatalf("invoice line = %d/%v/%v", unit, manual, reason)
+	}
+	// Still not the catalog.
+	var catalogAmount int64
+	if err := f.pool.QueryRow(context.Background(),
+		`SELECT amount_minor FROM price_versions WHERE id = $1`, priceID).Scan(&catalogAmount); err != nil {
+		t.Fatal(err)
+	}
+	if catalogAmount != 25000 {
+		t.Fatalf("catalog amount = %d, want 25000", catalogAmount)
+	}
+}
+
+// The coupling of "manual" and "why" is a table constraint, not a Go convention, so a future
+// writer that has never read this package cannot record an unexplained override. Both tables
+// are exercised: the order item through a real order, the invoice line through a draft (the
+// only state in which a line may be written at all).
+func TestDatabaseRefusesAManualPriceWithoutAReason(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	res, err := f.create(t, orders.Request{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	cur, ok := money.LookupCurrency("USD")
+	if !ok {
+		t.Fatal("USD is not a known currency")
+	}
+	issuer := billing.NewIssuer(billing.FixedTaxPricer{Policy: "no-tax", Jurisdiction: "none"})
+	var draftID string
+	if err := f.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		customer := billing.CustomerDetails{ID: f.custID}
+		if err := billing.FillCustomer(ctx, tx, &customer); err != nil {
+			return err
+		}
+		id, _, _, err := issuer.CreateDraft(ctx, tx, billing.IssueRequest{
+			CustomerID: f.custID,
+			Lines: []billing.Line{{
+				Description: "a line", QuantityMilli: 1000, UnitPrice: money.New(100, cur),
+			}},
+			Merchant: billing.Merchant{Name: "Catalyst", CountryCode: "GB"},
+			Customer: customer,
+			Terms:    "Payable on issue",
+			DueAt:    testNow.AddDate(0, 0, 30),
+		})
+		draftID = id
+		return err
+	}); err != nil {
+		t.Fatalf("draft invoice: %v", err)
+	}
+
+	statements := map[string]string{
+		"order item": `
+			UPDATE order_items SET %s WHERE order_id = $1`,
+		"invoice line": `
+			UPDATE invoice_lines SET %s WHERE invoice_id = $1`,
+	}
+	targets := map[string]string{"order item": res.OrderID, "invoice line": draftID}
+
+	for table, statement := range statements {
+		id := targets[table]
+		// A manual flag with no reason.
+		if _, err := f.pool.Exec(ctx, fmt.Sprintf(statement, "manual_price = true"), id); err == nil {
+			t.Fatalf("%s accepted a manual price with no reason", table)
+		}
+		// Whitespace is not a reason.
+		if _, err := f.pool.Exec(ctx,
+			fmt.Sprintf(statement, "manual_price = true, manual_price_reason = '   '"), id); err == nil {
+			t.Fatalf("%s accepted a blank reason", table)
+		}
+		// A reason on a catalog-priced line explains nothing, so it is refused too.
+		if _, err := f.pool.Exec(ctx,
+			fmt.Sprintf(statement, "manual_price_reason = 'because'"), id); err == nil {
+			t.Fatalf("%s accepted a reason with no manual price", table)
+		}
+		// The pair, together, is the record this exists for.
+		if _, err := f.pool.Exec(ctx,
+			fmt.Sprintf(statement, "manual_price = true, manual_price_reason = 'because'"), id); err != nil {
+			t.Fatalf("%s refused a manual price with a reason: %v", table, err)
+		}
 	}
 }

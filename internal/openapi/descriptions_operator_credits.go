@@ -19,7 +19,7 @@ package openapi
 
 func init() { RegisterDescriptions(operatorCreditOperations) }
 
-// operatorCreditOperations is the prose for the staff credit reads.
+// operatorCreditOperations is the prose for the staff credit reads and the debit write.
 func operatorCreditOperations() map[string]Operation {
 	creditCustomer := map[string]any{
 		"type":     "object",
@@ -70,6 +70,69 @@ func operatorCreditOperations() map[string]Operation {
 	}
 
 	return map[string]Operation{
+		"POST /api/v1/staff/customers/{id}/credit/debit": {
+			Summary: "Take credit away from a customer",
+			Description: "Deducts from the customer's credit balance and records it as an append-only journal entry of kind " +
+				"`credit_debit` (debit `customer_credit`, credit `revenue`) — never an edit of an existing entry, so the balance " +
+				"stays the sum of its entries. `reason` is required: it becomes the memo on the customer-credit entry, which is what " +
+				"the customer's own credit history renders, and it is copied into the audit row written inside the same " +
+				"transaction. A debit larger than the balance is **refused** with `insufficient_credit` (409) rather than clamped, so " +
+				"the balance can never go negative and the operator's intent and the books cannot silently differ. The " +
+				"`Idempotency-Key` is required and becomes the entry's identity: a double-submit replays the original deduction " +
+				"instead of taking the credit twice, and the same key presented with different content is refused with " +
+				"`idempotency_key_reused`. Requires `credit:write` — this is a money movement, not a read.",
+			Responses: []Response{
+				{Status: 201, Description: "The deduction, the balance it left and its audit row", Schema: map[string]any{
+					"type":     "object",
+					"required": []string{"id", "customer_id", "amount", "balance", "reason", "kind", "replayed"},
+					"properties": map[string]any{
+						"id":          map[string]any{"type": "string", "format": "uuid", "description": "the journal entry's reference id, derived from the Idempotency-Key"},
+						"customer_id": map[string]any{"type": "string", "format": "uuid"},
+						"amount":      AmountRef(),
+						"balance":     AmountRef(),
+						"reason":      map[string]any{"type": "string"},
+						"kind":        map[string]any{"type": "string", "enum": []string{"credit_debit"}},
+						"replayed":    map[string]any{"type": "boolean"},
+						"audit":       auditRow,
+					},
+				}},
+				{Status: 400, Description: "The amount is not positive, the reason is missing, or the currency is unknown", Schema: ProblemRef()},
+				{Status: 404, Description: "No such customer", Schema: ProblemRef()},
+				{Status: 409, Description: "`insufficient_credit` (the balance cannot support the debit) or `idempotency_key_reused`", Schema: ProblemRef()},
+			},
+		},
+		"GET /api/v1/staff/credit/debits": {
+			Summary: "Staff credit deductions, newest first",
+			Description: "Every `credit_debit` posting, read from the journal rather than from a table of deductions: the deduction " +
+				"*is* the posting, and a list assembled from a second table could disagree with the balance it is meant to explain. " +
+				"Each row carries the reason (the entry's memo, the same text the customer sees) and the operator from the audit row " +
+				"written with the posting, which is empty rather than absent when that row cannot be found. Filter with " +
+				"`customer_id` for one account's history.",
+			Responses: []Response{
+				{Status: 200, Description: "The deductions", Schema: map[string]any{
+					"type":     "object",
+					"required": []string{"debits"},
+					"properties": map[string]any{
+						"debits": map[string]any{"type": "array", "items": map[string]any{
+							"type":     "object",
+							"required": []string{"id", "customer_id", "amount", "reason", "created_at"},
+							"properties": map[string]any{
+								"id":               map[string]any{"type": "string", "format": "uuid"},
+								"customer_id":      map[string]any{"type": "string", "format": "uuid"},
+								"customer_email":   map[string]any{"type": "string"},
+								"amount":           AmountRef(),
+								"reason":           map[string]any{"type": "string"},
+								"created_at":       map[string]any{"type": "string", "format": "date-time"},
+								"created_by":       map[string]any{"type": "string"},
+								"created_by_email": map[string]any{"type": "string"},
+							},
+						}},
+					},
+				}},
+				{Status: 400, Description: "`limit` is out of range", Schema: ProblemRef()},
+				{Status: 404, Description: "`customer_id` is not a customer id", Schema: ProblemRef()},
+			},
+		},
 		"GET /api/v1/staff/credit/customers": {
 			Summary: "Customers with their credit balances",
 			Description: "One row per customer, with the balance **per currency** — never a total, because the product has no exchange " +

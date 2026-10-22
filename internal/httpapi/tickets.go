@@ -172,6 +172,14 @@ func ticketJSON(t tickets.Ticket) map[string]any {
 			"body":       t.LastMessageBody,
 		}
 	}
+	if t.OpenedByStaff {
+		// A ticket the team opened on the customer's behalf. The customer sees this too: it is
+		// their record of who started the conversation, not an internal note.
+		out["opened_by_staff"] = true
+		if t.OpenedBy != "" {
+			out["opened_by"] = t.OpenedBy
+		}
+	}
 	return out
 }
 
@@ -202,6 +210,10 @@ func threadJSON(th tickets.Thread, staff bool) map[string]any {
 	return map[string]any{
 		"ticket":   row,
 		"messages": messages,
+		// The custom fields, each with this ticket's answer or the fact that it has none. The
+		// unanswered ones are what the close button's refusal is about, so they are always
+		// present rather than filtered out.
+		"fields": fieldAnswersJSON(th.Fields),
 	}
 }
 
@@ -240,6 +252,39 @@ func (s *Server) handlePortalTickets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
+// ticketFormMeta is the configuration both ticket forms need: the departments, the fixed lists,
+// the attachment cap and allowlist, and the custom fields the operator configured.
+//
+// It is one function because the customer's form and the staff form must ask the same questions —
+// a field that is required when a customer opens a ticket is required when an agent opens one on
+// their behalf, or the rule is decorative.
+func (s *Server) ticketFormMeta(ctx context.Context) (map[string]any, error) {
+	settings, err := s.ticketStore().Settings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fields, err := s.ticketStore().Fields(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, ticketFieldJSON(field))
+	}
+	return map[string]any{
+		"enabled":                  !settings.Disabled,
+		"client_closing_disabled":  settings.ClientClosingDisabled,
+		"departments":              settings.Departments,
+		"priorities":               tickets.Priorities,
+		"statuses":                 tickets.Statuses,
+		"autoclose_days":           settings.AutoCloseDays,
+		"max_attachment_bytes":     tickets.MaxAttachmentBytes,
+		"max_subject_length":       tickets.MaxSubjectLen,
+		"allowed_attachment_types": tickets.AllowedAttachmentTypes,
+		"custom_fields":            out,
+	}, nil
+}
+
 // handlePortalTicketMeta is what the new-ticket form needs before it can be drawn:
 // the configured departments, the fixed priority list, and whether the operator has
 // switched the feature off.
@@ -247,20 +292,12 @@ func (s *Server) handlePortalTicketMeta(w http.ResponseWriter, r *http.Request) 
 	if !s.requireTickets(w) {
 		return
 	}
-	settings, err := s.ticketStore().Settings(r.Context())
+	body, err := s.ticketFormMeta(r.Context())
 	if err != nil {
 		s.ticketsError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":                 !settings.Disabled,
-		"client_closing_disabled": settings.ClientClosingDisabled,
-		"departments":             settings.Departments,
-		"priorities":              tickets.Priorities,
-		"statuses":                tickets.Statuses,
-		"max_attachment_bytes":    tickets.MaxAttachmentBytes,
-		"max_subject_length":      tickets.MaxSubjectLen,
-	})
+	writeJSON(w, http.StatusOK, body)
 }
 
 // handlePortalTicket serves one thread.
@@ -283,7 +320,8 @@ func (s *Server) handlePortalTicket(w http.ResponseWriter, r *http.Request) {
 // createTicketRequest is the body of a new ticket.
 //
 // There is no customer id: it comes from the session. A caller cannot open a ticket
-// on someone else's account.
+// on someone else's account. (The staff route, which may, takes one explicitly — see
+// createStaffTicketRequest in tickets_staff.go.)
 type createTicketRequest struct {
 	Subject    string `json:"subject"`
 	Department string `json:"department"`
@@ -293,6 +331,10 @@ type createTicketRequest struct {
 	// so the shape matches a reply, and so a future field (an email Message-ID from a
 	// piped ticket) has somewhere to live.
 	Message messageBody `json:"message"`
+	// Fields are the answers to the operator's custom fields, keyed by field key. A field
+	// the operator marked required-at-creation must be present, or the ticket is refused and
+	// the refusal names it.
+	Fields map[string]any `json:"fields"`
 }
 
 type messageBody struct {
@@ -321,14 +363,15 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		thread, err = s.ticketStore().CreateTx(ctx, tx, tickets.CreateInput{
-			CustomerID: customerID,
-			UserID:     user.ID,
-			ServiceID:  strings.TrimSpace(req.ServiceID),
-			Subject:    req.Subject,
-			Department: req.Department,
-			Priority:   req.Priority,
-			Body:       req.Message.Body,
-			MessageID:  req.Message.MessageID,
+			CustomerID:  customerID,
+			UserID:      user.ID,
+			ServiceID:   strings.TrimSpace(req.ServiceID),
+			Subject:     req.Subject,
+			Department:  req.Department,
+			Priority:    req.Priority,
+			Body:        req.Message.Body,
+			MessageID:   req.Message.MessageID,
+			FieldValues: req.Fields,
 		})
 		if err != nil {
 			return err
@@ -469,9 +512,21 @@ func (s *Server) handlePortalTicketClose(w http.ResponseWriter, r *http.Request)
 // ticketsError maps a domain error to a stable code. A client branches on the code,
 // so the mapping lives in one place rather than in each handler.
 func (s *Server) ticketsError(w http.ResponseWriter, r *http.Request, err error) {
+	// A required custom field is the one refusal whose *text* matters: the detail names the field,
+	// because "a required field is missing" on a form with nine fields is a puzzle. Closing is a
+	// conflict with the ticket's state (409); creating is a bad request (400).
+	var required *tickets.RequiredFieldError
 	switch {
 	case errors.Is(err, tickets.ErrNotFound):
 		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+	case errors.Is(err, tickets.ErrFieldNotFound):
+		writeProblem(w, http.StatusNotFound, "not_found", "no such ticket field")
+	case errors.As(err, &required):
+		status := http.StatusBadRequest
+		if required.OnClose {
+			status = http.StatusConflict
+		}
+		writeProblem(w, status, "required_field_missing", required.Error())
 	case errors.Is(err, tickets.ErrDisabled):
 		writeProblem(w, http.StatusForbidden, "tickets_disabled",
 			"support tickets are disabled on this installation")
@@ -487,6 +542,9 @@ func (s *Server) ticketsError(w http.ResponseWriter, r *http.Request, err error)
 	case errors.Is(err, tickets.ErrAttachmentTooLarge):
 		writeProblem(w, http.StatusRequestEntityTooLarge, "attachment_too_large",
 			"the attachment exceeds 10 MB")
+	case errors.Is(err, tickets.ErrAttachmentType):
+		writeProblem(w, http.StatusUnsupportedMediaType, "attachment_type_not_allowed",
+			invalidInputDetail(err))
 	case errors.Is(err, tickets.ErrInvalidInput):
 		writeProblem(w, http.StatusBadRequest, "invalid_input", invalidInputDetail(err))
 	case errors.Is(err, paginate.ErrInvalidCursor):
@@ -503,8 +561,14 @@ func (s *Server) ticketsError(w http.ResponseWriter, r *http.Request, err error)
 // reads as a sentence rather than as a log line. It never contains a database
 // message: ErrInvalidInput is only produced by the validation in internal/tickets.
 func invalidInputDetail(err error) string {
-	detail := strings.TrimPrefix(err.Error(), "tickets: invalid input: ")
-	detail = strings.TrimPrefix(detail, "tickets: ")
+	detail := err.Error()
+	for _, prefix := range []string{
+		"tickets: invalid input: ",
+		"tickets: attachment type not allowed: ",
+		"tickets: ",
+	} {
+		detail = strings.TrimPrefix(detail, prefix)
+	}
 	if detail == "" {
 		return "the request is invalid"
 	}

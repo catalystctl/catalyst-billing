@@ -26,6 +26,7 @@ import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import {
   avatar,
+  badge,
   banner,
   btn,
   card,
@@ -46,16 +47,20 @@ import {
   attachmentLink,
   bytesLabel,
   clientGaps,
+  customFieldControls,
+  fieldAnswerRow,
   gapExplanation,
   humanTicketStatus,
   isStaffTickets,
   normaliseThread,
   patchTicket,
+  saveTicketFields,
   ticketPath,
   ticketPriorityBadge,
   ticketStatusBadge,
   unavailableReason,
   uploadTicketAttachment,
+  type TicketFieldValue,
   type TicketMessage,
   type TicketMeta,
   type TicketRow,
@@ -250,6 +255,9 @@ function renderThread(ctx: Ctx, thread: TicketThread, meta: TicketMeta | null, r
     "div",
     { class: "stack" },
     detailsCard(ticket, staff),
+    // The custom fields sit beside the conversation for both audiences: a customer needs to see
+    // which blank field is refusing the close, and an agent needs to be able to fill it in.
+    fieldsCard(ctx, ticket, thread.fields, canWrite, reload),
     staff ? staffControls(ctx, ticket, meta, reload) : null,
   );
 
@@ -276,6 +284,14 @@ function detailsCard(ticket: TicketRow, staff: boolean): HTMLElement {
         : null,
       kv("Messages", h("span", { class: "mono" }, String(ticket.message_count))),
       kv("Opened", h("span", { title: dateTime(ticket.created_at) }, dateTime(ticket.created_at))),
+      // A ticket the team opened on the customer's behalf says so, for both audiences: it is the
+      // customer's record of who started the conversation, not an internal note.
+      ticket.opened_by_staff
+        ? kv(
+            "Opened by",
+            h("span", { class: "row-wrap" }, "Support team", badge("on the customer's behalf", "info")),
+          )
+        : null,
       ticket.last_reply_at ? kv("Last reply", h("span", { title: dateTime(ticket.last_reply_at) }, dateTime(ticket.last_reply_at))) : null,
       ticket.closed_at ? kv("Closed", h("span", { title: dateTime(ticket.closed_at) }, dateTime(ticket.closed_at))) : null,
       ticket.service_id
@@ -313,6 +329,101 @@ function messageBlock(ctx: Ctx, message: TicketMessage, staff: boolean): HTMLEle
       : null,
     message.message_id ? h("div", { class: "ticket-msg-meta" }, `via email · ${message.message_id}`) : null,
   );
+}
+
+// ----------------------------------------------------------- custom fields --
+
+/** The operator's custom fields on this ticket: what is answered, what is still blank, and — for
+ *  anyone who may write — a form to answer them.
+ *
+ *  It is a card rather than a row in Details because a close-required field is an *action*: the
+ *  ticket cannot be closed until it is answered, so the screen that offers the close button has to
+ *  offer the answer next to it. The server's refusal names the field; this is where it is filled
+ *  in. */
+function fieldsCard(
+  ctx: Ctx,
+  ticket: TicketRow,
+  fields: TicketFieldValue[],
+  canWrite: boolean,
+  reload: () => void,
+): HTMLElement | null {
+  if (!Array.isArray(fields) || fields.length === 0) return null;
+
+  const unanswered = fields.filter((field) => !field.answered);
+  const requiredBlank = unanswered.filter((field) => field.required_to_close);
+
+  const list = h(
+    "div",
+    { class: "stack-sm ticket-field-list" },
+    ...fields.map((field) => fieldAnswerRow(field)),
+  );
+
+  const firstBlank = requiredBlank[0];
+  const notice =
+    requiredBlank.length === 0
+      ? null
+      : banner(
+          "warning",
+          requiredBlank.length === 1 && firstBlank
+            ? `${firstBlank.label} must be answered before this ticket can be closed`
+            : `${requiredBlank.length} fields must be answered before this ticket can be closed`,
+          requiredBlank.map((field) => field.label).join(", "),
+        );
+
+  if (!canWrite) {
+    return card({ title: "Ticket fields", sub: "What this desk asks for on every ticket.", body: list, foot: notice });
+  }
+
+  const controls = customFieldControls(fields);
+  const errorHost = h("div");
+  const save = btn("Save fields", { variant: "primary", size: "sm", type: "submit" }) as HTMLButtonElement;
+
+  const form = h(
+    "form",
+    { class: "stack-sm", novalidate: true },
+    errorHost,
+    controls ? controls.el : null,
+    h("div", { class: "row-wrap" }, save),
+  );
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void withBusy(ctx, save, async () => {
+      errorHost.replaceChildren();
+      const values = controls?.values() ?? {};
+      // Only what this form knows about: an answer already given is shown in its control, so the
+      // whole set is sent and the merge is idempotent.
+      try {
+        await saveTicketFields(ctx, ticket.id, values);
+      } catch (err) {
+        if (err instanceof ApiError) {
+          if (err.code === "required_field_missing") {
+            errorHost.replaceChildren(
+              banner("danger", "A required field is still blank", err.detail || "Fill it in and save again."),
+            );
+            return;
+          }
+          errorHost.replaceChildren(
+            banner("danger", "The fields were not saved", err.detail || err.code),
+          );
+          return;
+        }
+        errorHost.replaceChildren(banner("danger", "The fields were not saved", "The server could not be reached."));
+        return;
+      }
+      ctx.toast("Ticket fields saved", { tone: "success" });
+      ctx.api.invalidate("/api/v1/portal/tickets");
+      ctx.api.invalidate("/api/v1/staff/tickets");
+      reload();
+    });
+  });
+
+  return card({
+    title: "Ticket fields",
+    sub: "What this desk asks for on every ticket. A field required to close blocks the close button until it is answered.",
+    body: h("div", { class: "stack" }, list, form),
+    foot: notice,
+  });
 }
 
 // ------------------------------------------------------------------ reply --

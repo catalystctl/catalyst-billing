@@ -8,12 +8,17 @@
 
 import { ApiError } from "../lib/api";
 import { fill, h, swap } from "../lib/dom";
+import { tx } from "../lib/i18n";
 import { brandMark, icon } from "../lib/icons";
 import { loadSession } from "../lib/session";
 import type { AuthCtx } from "../lib/types";
 import { btn, field, input } from "../ui/kit";
 
 export const meta = { title: "Sign in" };
+
+// The page title is set by the shell from `meta`, which is a module-level constant and therefore
+// cannot follow a language switch; a translated <title> needs a hook in the shell that does not
+// exist yet. Everything the person reads on the page itself is translated.
 
 /** A provider the server offers, from `GET /api/v1/auth/providers`. */
 interface Provider {
@@ -25,23 +30,54 @@ interface Provider {
 
 /** What the server says when a social callback refused. The server sends a code, not a
  *  sentence, because the wording belongs to the screen — `account_exists` in particular has to
- *  explain that accounts are never merged, which is a decision rather than an error. */
-const SOCIAL_ERRORS: Record<string, string> = {
-  account_exists:
-    "An account with that email address already exists. Sign in with your password below, then link the provider from your security page — accounts are never merged automatically.",
-  no_account:
-    "No account is linked to that identity. Sign in with your password first, then link the provider from your security page.",
-  email_mismatch: "The provider's email address is not this account's, so it was not linked.",
-  email_unverified: "The provider did not confirm that email address, so it was not linked.",
-  identity_taken: "That provider account is already linked to a different account.",
-  state_invalid: "That sign-in link expired or was already used. Start again.",
-  provider_denied: "The provider did not complete the sign-in.",
-  provider_failed: "The provider could not be reached. Try again, or sign in with your password.",
-  mfa_required:
-    "This account uses two-step verification. Sign in with your password so the code can be checked.",
-  account_disabled: "This account is disabled. Ask an administrator to re-enable it.",
-  account_missing: "The account this identity was linked to no longer exists.",
-};
+ *  explain that accounts are never merged, which is a decision rather than an error.
+ *
+ *  A function rather than a table, because a table is built once at import and would keep the
+ *  language the module was first loaded in after the visitor switches.
+ */
+function socialError(code: string): string {
+  switch (code) {
+    case "account_exists":
+      return tx(
+        "login.social.account_exists",
+        "An account with that email address already exists. Sign in with your password below, then link the provider from your security page — accounts are never merged automatically.",
+      );
+    case "no_account":
+      return tx(
+        "login.social.no_account",
+        "No account is linked to that identity. Sign in with your password first, then link the provider from your security page.",
+      );
+    case "email_mismatch":
+      return tx(
+        "login.social.email_mismatch",
+        "The provider's email address is not this account's, so it was not linked.",
+      );
+    case "email_unverified":
+      return tx("login.social.email_unverified", "The provider did not confirm that email address, so it was not linked.");
+    case "identity_taken":
+      return tx("login.social.identity_taken", "That provider account is already linked to a different account.");
+    case "state_invalid":
+      return tx("login.social.state_invalid", "That sign-in link expired or was already used. Start again.");
+    case "provider_denied":
+      return tx("login.social.provider_denied", "The provider did not complete the sign-in.");
+    case "provider_failed":
+      return tx(
+        "login.social.provider_failed",
+        "The provider could not be reached. Try again, or sign in with your password.",
+      );
+    case "mfa_required":
+      return tx(
+        "login.social.mfa_required",
+        "This account uses two-step verification. Sign in with your password so the code can be checked.",
+      );
+    case "account_disabled":
+      return tx("login.social.account_disabled", "This account is disabled. Ask an administrator to re-enable it.");
+    case "account_missing":
+      return tx("login.social.account_missing", "The account this identity was linked to no longer exists.");
+    default:
+      return tx("login.social.unknown", "The sign-in could not be completed. Try again, or use your password.");
+  }
+}
 
 export default async function loginPage(ctx: AuthCtx): Promise<Node> {
   const providers = await loadProviders(ctx);
@@ -60,22 +96,29 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
     h(
       "div",
       { class: "auth-pitch" },
-      h("h2", null, "Every invoice, every posting, one honest ledger."),
-      h("p", null, "The operator panel for the billing engine: customers, invoices, services and the money that connects them."),
+      h("h2", null, tx("login.pitch.title", "Every invoice, every posting, one honest ledger.")),
+      h(
+        "p",
+        null,
+        tx(
+          "login.pitch.body",
+          "The operator panel for the billing engine: customers, invoices, services and the money that connects them.",
+        ),
+      ),
       h(
         "div",
         { class: "auth-points" },
-        point("Immutable postings, corrections by reversal"),
-        point("Dual approval on money that moves"),
-        point("An audit trail that names a person"),
+        point(tx("login.pitch.point.postings", "Immutable postings, corrections by reversal")),
+        point(tx("login.pitch.point.approval", "Dual approval on money that moves")),
+        point(tx("login.pitch.point.audit", "An audit trail that names a person")),
       ),
     ),
     h(
       "div",
       { class: "auth-foot" },
-      h("span", null, "Self-hosted"),
+      h("span", null, tx("auth.foot.self_hosted", "Self-hosted")),
       h("span", null, "·"),
-      h("span", null, "No third-party scripts"),
+      h("span", null, tx("auth.foot.no_scripts", "No third-party scripts")),
     ),
   );
 
@@ -107,10 +150,7 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
   const showSocialNotice = (): void => {
     const code = ctx.query.get("social_error");
     if (!code) return;
-    showError(
-      SOCIAL_ERRORS[code] ?? "The sign-in could not be completed. Try again, or use your password.",
-      code,
-    );
+    showError(socialError(code), code);
   };
 
   const signIn = (): void => {
@@ -129,18 +169,18 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
       name: "password",
       type: "password",
       autocomplete: "current-password",
-      placeholder: "Your password",
+      placeholder: tx("login.password.placeholder", "Your password"),
       required: true,
     });
-    const submit = btn("Sign in", { variant: "primary", type: "submit", block: true });
+    const submit = btn(tx("login.submit", "Sign in"), { variant: "primary", type: "submit", block: true });
 
     const form = h(
       "form",
       { class: "auth-form", novalidate: true },
       errorHost,
-      field({ label: "Email", control: email, id: "email" }),
+      field({ label: tx("login.email.label", "Email"), control: email, id: "email" }),
       field({
-        label: "Password",
+        label: tx("login.password.label", "Password"),
         control: password,
         id: "password",
       }),
@@ -148,7 +188,7 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
       h(
         "div",
         { class: "auth-links" },
-        h("a", { href: "/forgot-password" }, "Forgot your password?"),
+        h("a", { href: "/forgot-password" }, tx("login.forgot", "Forgot your password?")),
         // The way to create an account.
         //
         // `/register` has existed and worked as a public route for a while, and nothing on this
@@ -159,7 +199,7 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
         // It is rendered unconditionally: whether a shop accepts registrations is the server's
         // decision (POST /api/v1/auth/register answers `registration_unavailable` when it does
         // not), and hiding the link on a guess would make the page lie in the other direction.
-        h("a", { href: "/register" }, "Create an account"),
+        h("a", { href: "/register" }, tx("login.create_account", "Create an account")),
       ),
     );
 
@@ -168,7 +208,7 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
       void (async () => {
         errorHost.replaceChildren();
         if (!email.value.trim() || !password.value) {
-          showError("Enter your email and password.");
+          showError(tx("login.error.empty", "Enter your email and password."));
           return;
         }
         if (submit instanceof HTMLButtonElement) submit.disabled = true;
@@ -188,23 +228,26 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
           }
           const session = await loadSession(ctx.api);
           if (!session) {
-            showError("The session could not be established.", "session_missing");
+            showError(tx("login.error.no_session", "The session could not be established."), "session_missing");
             return;
           }
           ctx.onSignedIn(session);
         } catch (err) {
           if (err instanceof ApiError) {
             if (err.code === "too_many_attempts") {
-              showError("Too many attempts. Wait a few minutes and try again.", err.code);
+              showError(tx("login.error.too_many", "Too many attempts. Wait a few minutes and try again."), err.code);
             } else if (err.code === "overloaded") {
-              showError("The server is busy. Try again in a moment.", err.code);
+              showError(tx("login.error.overloaded", "The server is busy. Try again in a moment."), err.code);
             } else if (err.code === "account_disabled") {
-              showError("This account is disabled. Ask an administrator to re-enable it.", err.code);
+              showError(
+                tx("login.error.account_disabled", "This account is disabled. Ask an administrator to re-enable it."),
+                err.code,
+              );
             } else {
-              showError("That email and password do not match an account.", err.code);
+              showError(tx("login.error.bad_credentials", "That email and password do not match an account."), err.code);
             }
           } else {
-            showError("The server could not be reached.");
+            showError(tx("login.error.unreachable", "The server could not be reached."));
           }
         } finally {
           if (submit instanceof HTMLButtonElement) submit.disabled = false;
@@ -218,12 +261,20 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
       h(
         "div",
         { class: "auth-head" },
-        h("h1", null, "Sign in"),
-        h("p", null, "Use the account your administrator created for you."),
+        h("h1", null, tx("login.title", "Sign in")),
+        h(
+          "p",
+          null,
+          tx("login.subtitle", "Use the account your administrator created for you."),
+        ),
       ),
       formHost,
       providerBlock(providers),
-      h("p", { class: "auth-switch" }, "Customer? Your invoices are in the same portal."),
+      h(
+        "p",
+        { class: "auth-switch" },
+        tx("login.customer_note", "Customer? Your invoices are in the same portal."),
+      ),
     );
     window.requestAnimationFrame(() => email.focus());
   };
@@ -237,7 +288,7 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
         maxlength: 1,
         autocomplete: i === 0 ? "one-time-code" : "off",
         class: "otp-digit",
-        "aria-label": `Digit ${i + 1}`,
+        "aria-label": tx("login.mfa.digit", "Digit {{n}}", { n: i + 1 }),
       }),
     );
     const codeRow = h("div", { class: "otp" }, ...digits);
@@ -245,17 +296,22 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
       id: "recovery",
       type: "text",
       autocomplete: "off",
-      placeholder: "Recovery code",
+      placeholder: tx("login.mfa.recovery_placeholder", "Recovery code"),
       class: "input--mono",
     });
-    const submit = btn("Verify", { variant: "primary", type: "submit", block: true });
+    const submit = btn(tx("login.mfa.submit", "Verify"), { variant: "primary", type: "submit", block: true });
     let usingRecovery = false;
 
     const form = h(
       "form",
       { class: "auth-form", novalidate: true },
       errorHost,
-      h("div", { class: "field" }, h("span", { class: "field-label" }, "Authentication code"), codeRow),
+      h(
+        "div",
+        { class: "field" },
+        h("span", { class: "field-label" }, tx("login.mfa.code_label", "Authentication code")),
+        codeRow,
+      ),
       h("div", { class: "field", hidden: true }, recovery),
       submit,
       h(
@@ -275,12 +331,14 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
               (usingRecovery ? recovery : digits[0])?.focus();
             },
           },
-          usingRecovery ? "Use an authenticator code" : "Use a recovery code",
+          usingRecovery
+            ? tx("login.mfa.use_authenticator", "Use an authenticator code")
+            : tx("login.mfa.use_recovery", "Use a recovery code"),
         ),
         h(
           "button",
           { class: "linkish", type: "button", onclick: () => signIn() },
-          "Start over",
+          tx("login.mfa.start_over", "Start over"),
         ),
       ),
     );
@@ -289,11 +347,11 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
     const submitCode = async () => {
       const code = usingRecovery ? recovery.value.trim() : readCode();
       if (!usingRecovery && code.length !== 6) {
-        showError("Enter all six digits.");
+        showError(tx("login.mfa.error.six_digits", "Enter all six digits."));
         return;
       }
       if (!code) {
-        showError("Enter your recovery code.");
+        showError(tx("login.mfa.error.recovery_required", "Enter your recovery code."));
         return;
       }
       if (submit instanceof HTMLButtonElement) submit.disabled = true;
@@ -305,17 +363,17 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
         );
         const session = await loadSession(ctx.api);
         if (!session) {
-          showError("The session could not be established.", "session_missing");
+          showError(tx("login.error.no_session", "The session could not be established."), "session_missing");
           return;
         }
         ctx.onSignedIn(session);
       } catch (err) {
         const message =
           err instanceof ApiError && err.code === "invalid_code"
-            ? "That code is not valid. Codes change every 30 seconds."
+            ? tx("login.mfa.error.invalid", "That code is not valid. Codes change every 30 seconds.")
             : err instanceof ApiError
-              ? err.detail || "The code could not be verified."
-              : "The server could not be reached.";
+              ? err.detail || tx("login.mfa.error.unverified", "The code could not be verified.")
+              : tx("login.error.unreachable", "The server could not be reached.");
         showError(message, err instanceof ApiError ? err.code : undefined);
         if (!usingRecovery) {
           for (const d of digits) d.value = "";
@@ -357,11 +415,22 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
       h(
         "div",
         { class: "auth-head" },
-        h("h1", null, "Two-step verification"),
-        h("p", null, "Enter the six-digit code from your authenticator app."),
+        h("h1", null, tx("login.mfa.title", "Two-step verification")),
+        h(
+          "p",
+          null,
+          tx("login.mfa.subtitle", "Enter the six-digit code from your authenticator app."),
+        ),
       ),
       formHost,
-      h("p", { class: "auth-note" }, "Your password was accepted. This step keeps the account safe if it is ever reused elsewhere."),
+      h(
+        "p",
+        { class: "auth-note" },
+        tx(
+          "login.mfa.note",
+          "Your password was accepted. This step keeps the account safe if it is ever reused elsewhere.",
+        ),
+      ),
     );
     swap(formHost, form);
     window.requestAnimationFrame(() => digits[0]?.focus());
@@ -398,7 +467,7 @@ function providerBlock(providers: Provider[]): Node | null {
         class: "auth-links",
         style: "justify-content: center; color: var(--text-faint)",
       },
-      h("span", null, "or continue with"),
+      h("span", null, tx("login.providers.or", "or continue with")),
     ),
     h(
       "div",
@@ -408,7 +477,7 @@ function providerBlock(providers: Provider[]): Node | null {
           href: provider.start_url,
           icon: "external",
           block: true,
-          title: `Sign in with ${provider.name}`,
+          title: tx("login.providers.with", "Sign in with {{provider}}", { provider: provider.name }),
         }),
       ),
     ),

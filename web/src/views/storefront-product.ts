@@ -9,6 +9,7 @@
 import { ApiError } from "../lib/api";
 import { h, swap } from "../lib/dom";
 import { money, type Amount } from "../lib/format";
+import { currentLocale, enabledLocales, languageSwitcher, onLocaleChange, setLocale, tx } from "../lib/i18n";
 import { brandMark, icon } from "../lib/icons";
 import { descriptionBody } from "../lib/richtext";
 import type { AuthCtx } from "../lib/types";
@@ -44,7 +45,8 @@ interface Product {
 }
 
 // A fallback for an interval the server did not label. The server's `interval_label` is what is
-// normally shown, because it knows about intervals this file has never heard of.
+// normally shown, because it knows about intervals this file has never heard of. The labels
+// here are translated because this is the path a visitor reads when the server sent none.
 const INTERVAL_LABEL: Record<string, string> = {
   monthly: "per month",
   quarterly: "per quarter",
@@ -55,13 +57,17 @@ const INTERVAL_LABEL: Record<string, string> = {
 };
 
 function intervalLabel(price: Price): string {
-  return price.interval_label || INTERVAL_LABEL[price.interval] || price.interval;
+  if (price.interval_label) return price.interval_label;
+  const fallback = INTERVAL_LABEL[price.interval];
+  return fallback ? tx(`storefront.interval.${price.interval}`, fallback) : price.interval;
 }
 
 export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node> {
   const slug = ctx.params.slug ?? window.location.pathname.split("/").pop() ?? "";
   const host = h("div", { class: "store" }, skeletonPage());
   const controller = new AbortController();
+  // Kept so a language switch re-renders the page from the response already in hand.
+  let latest: Product | null = null;
 
   const load = async () => {
     try {
@@ -69,6 +75,7 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
         cache: false,
         signal: controller.signal,
       });
+      latest = product;
       swap(host, render(product));
     } catch (err) {
       if (controller.signal.aborted) return;
@@ -88,13 +95,20 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
       h(
         "div",
         { class: "store-section" },
-        h("h1", { class: "store-title" }, "That product is not available"),
+        h("h1", { class: "store-title" }, tx("storefront.product.missing_title", "That product is not available")),
         h(
           "p",
           { class: "store-sub" },
-          "It may have been unpublished, or the link may be out of date. The catalog lists everything currently for sale.",
+          tx(
+            "storefront.product.missing_body",
+            "It may have been unpublished, or the link may be out of date. The catalog lists everything currently for sale.",
+          ),
         ),
-        h("div", { class: "row" }, btn("See all products", { href: "/products", variant: "primary" })),
+        h(
+          "div",
+          { class: "row" },
+          btn(tx("storefront.product.see_all", "See all products"), { href: "/products", variant: "primary" }),
+        ),
       ),
       footer(),
     );
@@ -112,9 +126,10 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
       h(
         "nav",
         { class: "store-nav" },
-        h("a", { href: "/products" }, "Products"),
-        h("a", { href: "/login" }, "Sign in"),
-        h("a", { class: "btn btn--primary btn--sm", href: "/login" }, "Client area"),
+        h("a", { href: "/products" }, tx("storefront.nav.products", "Products")),
+        h("a", { href: "/login" }, tx("storefront.nav.signin", "Sign in")),
+        languageSelect(),
+        h("a", { class: "btn btn--primary btn--sm", href: "/login" }, tx("storefront.nav.client_area", "Client area")),
       ),
     );
 
@@ -126,10 +141,20 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
       h(
         "span",
         { class: "store-foot-links" },
-        h("a", { href: "/login" }, "Client area"),
-        h("a", { href: "/api/v1/catalog", "data-native": "true" }, "Catalog API"),
+        h("a", { href: "/login" }, tx("storefront.footer.client_area", "Client area")),
+        h("a", { href: "/api/v1/catalog", "data-native": "true" }, tx("storefront.footer.catalog_api", "Catalog API")),
       ),
     );
+
+  /** The same control the index has, built by the same helper. */
+  const languageSelect = (): HTMLElement | null =>
+    languageSwitcher({
+      locales: enabledLocales(),
+      selected: currentLocale(),
+      label: tx("storefront.language.label", "Language"),
+      id: "storefront-locale",
+      onSelect: (code) => void setLocale(code),
+    });
 
   const render = (product: Product): Node => {
     // The plans arrive in the operator's order (`price_versions.sort_order`), and that order is
@@ -157,7 +182,7 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
             "a",
             { class: "store-back", href: "/products" },
             icon("chevronLeft", 13),
-            "All products",
+            tx("storefront.product.all_products", "All products"),
           ),
           h(
             "div",
@@ -172,7 +197,7 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
             h(
               "div",
               null,
-              h("div", { class: "store-card-cat" }, product.category_name || "Product"),
+              h("div", { class: "store-card-cat" }, product.category_name || tx("storefront.card.product", "Product")),
               h("h1", { class: "store-title store-title--sm" }, product.name),
               product.short_description
                 ? h("p", { class: "store-sub" }, product.short_description)
@@ -185,20 +210,31 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
           h(
             "div",
             { class: "store-includes" },
-            include("checkCircle", "Provisioned automatically after payment"),
-            include("checkCircle", "An invoice you can download and a ledger you can audit"),
+            include("checkCircle", tx("storefront.product.include_provisioned", "Provisioned automatically after payment")),
+            include(
+              "checkCircle",
+              tx("storefront.product.include_invoice", "An invoice you can download and a ledger you can audit"),
+            ),
             // A one-time product has no period to cancel at the end of, so promising one would
             // be a claim the checkout cannot honour.
-            anyRecurring ? include("checkCircle", "Cancel at the end of any paid period") : null,
+            anyRecurring
+              ? include("checkCircle", tx("storefront.product.include_cancel", "Cancel at the end of any paid period"))
+              : null,
           ),
         ),
         h(
           "aside",
           { class: "store-product-buy" },
           h("div", { class: "store-buy-card" },
-            h("div", { class: "store-buy-label" }, prices.length > 1 ? "Plans" : "Price"),
+            h(
+              "div",
+              { class: "store-buy-label" },
+              prices.length > 1
+                ? tx("storefront.product.plans", "Plans")
+                : tx("storefront.product.price", "Price"),
+            ),
             prices.length === 0
-              ? h("p", { class: "dim" }, "This product has no price yet.")
+              ? h("p", { class: "dim" }, tx("storefront.product.no_price", "This product has no price yet."))
               : h(
                   "div",
                   { class: "store-plans" },
@@ -227,7 +263,7 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
                               { class: "store-plan-setup" },
                               "+ ",
                               money(price.setup),
-                              " setup",
+                              ` ${tx("storefront.product.setup", "setup")}`,
                             )
                           : null,
                       ),
@@ -237,7 +273,7 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
             h(
               "div",
               { class: "stack-sm" },
-              btn(cheapest ? "Order this plan" : "Contact us", {
+              btn(cheapest ? tx("storefront.product.order", "Order this plan") : tx("storefront.product.contact", "Contact us"), {
                 href: buyHref,
                 variant: "primary",
                 size: "lg",
@@ -246,7 +282,10 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
               h(
                 "p",
                 { class: "store-buy-note" },
-                "You will sign in first — an order belongs to an account, so we can put the invoice and the server in the same place.",
+                tx(
+                  "storefront.product.buy_note",
+                  "You will sign in first — an order belongs to an account, so we can put the invoice and the server in the same place.",
+                ),
               ),
             ),
           ),
@@ -258,6 +297,14 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
 
   const include = (iconName: "checkCircle", text: string) =>
     h("div", { class: "store-include" }, icon(iconName, 15), h("span", null, text));
+
+  const unsubscribe = onLocaleChange(() => {
+    if (!host.isConnected) {
+      unsubscribe();
+      return;
+    }
+    if (latest) swap(host, render(latest));
+  });
 
   void load();
   return host;

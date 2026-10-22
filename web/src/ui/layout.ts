@@ -12,6 +12,7 @@
 import { ApiError, type Page } from "../lib/api";
 import { h, debounce, fill, on, swap } from "../lib/dom";
 import { initials } from "../lib/format";
+import { languageSwitcher, tx, type LocaleOption } from "../lib/i18n";
 import { brandMark, icon, type IconName } from "../lib/icons";
 import type { Crumb, Ctx, Session } from "../lib/types";
 import { avatar, badge, btn, emptyState, iconBtn, spinner } from "./kit";
@@ -151,6 +152,16 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
   });
 
   return groups
+    // The labels are translated here, at the point the table is finalised, rather than at each
+    // entry: the navigation stays a plain list of destinations — the thing this file is read
+    // for — and the key is derived from the English label (`shell.nav.system_settings`) instead
+    // of being a second identifier to keep in step. The one cost is that renaming a label
+    // renames its key, which is visible in the diff and cheap to re-translate.
+    .map((group) => ({
+      ...group,
+      label: shellLabel("group", group.label),
+      items: group.items.map((item) => ({ ...item, label: shellLabel("nav", item.label) })),
+    }))
     // Two filters, both of which must hold. The permission check hides an action the server would
     // refuse; the route check hides a link the router cannot serve. The second one is what makes
     // "a link in the panel is never a bug" true: the navigation and the route table are generated
@@ -164,13 +175,29 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
     .filter((group) => group.items.length > 0);
 }
 
+/** `"System settings"` → `tx("shell.nav.system_settings", "System settings")`. */
+function shellLabel(scope: "nav" | "group", label: string): string {
+  const key = label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return tx(`shell.${scope}.${key}`, label);
+}
+
 export interface ShellOptions {
   session: Session;
   theme: "dark" | "light";
+  /** The languages this installation offers. Empty or single-entry means no switcher at all. */
+  locales: LocaleOption[];
+  /** The locale the shell is currently rendering in. */
+  locale: string;
   navigate: (path: string) => void;
   onToggleTheme: () => void;
   onLogout: () => void;
   onOpenPalette: () => void;
+  /** Called with the chosen code. The app persists it and rebuilds the shell and the current
+   *  screen in the new language. */
+  onLocaleChange: (code: string) => void;
 }
 
 export interface Shell {
@@ -190,15 +217,30 @@ function isActive(item: NavItem, path: string): boolean {
 }
 
 export function createShell(options: ShellOptions): Shell {
-  const nav = h("nav", { class: "nav", "aria-label": "Primary" });
+  const nav = h("nav", { class: "nav", "aria-label": tx("shell.nav.primary", "Primary") });
   const crumbsHost = h("div", { class: "crumb" });
-  const liveHost = h("span", { class: "live", title: "Live updates" }, h("span", { class: "live-dot" }), h("span", null, "Live"));
+  const liveHost = h(
+    "span",
+    { class: "live", title: tx("shell.live.title", "Live updates") },
+    h("span", { class: "live-dot" }),
+    h("span", null, tx("shell.live.on", "Live")),
+  );
   const userHost = h("div");
   const themeBtn = iconBtn(
     options.theme === "dark" ? "sun" : "moon",
-    options.theme === "dark" ? "Switch to light theme" : "Switch to dark theme",
+    options.theme === "dark"
+      ? tx("shell.theme.to_light", "Switch to light theme")
+      : tx("shell.theme.to_dark", "Switch to dark theme"),
     options.onToggleTheme,
   );
+  // Null when the installation offers one language — the common case — so the toolbar has no
+  // control that cannot do anything.
+  const localeSwitch = languageSwitcher({
+    locales: options.locales,
+    selected: options.locale,
+    onSelect: options.onLocaleChange,
+    id: "locale-switch",
+  });
   // A stable handle: app.ts swaps the glyph after a toggle without rebuilding the shell.
   themeBtn.id = "theme-toggle";
 
@@ -241,26 +283,26 @@ export function createShell(options: ShellOptions): Shell {
     const user = session.user;
     const name = user.display_name || user.email;
     const menu = h("div", { class: "menu", hidden: true });
-    const roles = user.roles.length > 0 ? user.roles.join(", ") : "Customer";
+    const roles = user.roles.length > 0 ? user.roles.join(", ") : tx("shell.role.customer", "Customer");
 
     fill(
       menu,
       h("div", { class: "menu-label" }, user.email),
       h("div", { class: "menu-label" }, roles),
       h("div", { class: "menu-sep" }),
-      h("a", { class: "menu-item", href: "/settings" }, icon("sliders", 15), "Account settings"),
+      h("a", { class: "menu-item", href: "/settings" }, icon("sliders", 15), tx("shell.menu.settings", "Account settings")),
       session.permissions.has("apikey:manage")
-        ? h("a", { class: "menu-item", href: "/api-keys" }, icon("key", 15), "API keys")
+        ? h("a", { class: "menu-item", href: "/api-keys" }, icon("key", 15), tx("shell.menu.api_keys", "API keys"))
         : null,
       session.user.is_staff
-        ? h("a", { class: "menu-item", href: "/portal" }, icon("globe", 15), "Customer portal")
+        ? h("a", { class: "menu-item", href: "/portal" }, icon("globe", 15), tx("shell.menu.portal", "Customer portal"))
         : null,
       h("div", { class: "menu-sep" }),
       h(
         "button",
         { class: "menu-item menu-item--danger", type: "button", onclick: options.onLogout },
         icon("logout", 15),
-        "Sign out",
+        tx("shell.menu.sign_out", "Sign out"),
       ),
     );
 
@@ -304,7 +346,7 @@ export function createShell(options: ShellOptions): Shell {
 
   const sidebar = h(
     "aside",
-    { class: "sidebar", "aria-label": "Sidebar" },
+    { class: "sidebar", "aria-label": tx("shell.sidebar.label", "Sidebar") },
     h(
       "div",
       { class: "sidebar-head" },
@@ -327,7 +369,7 @@ export function createShell(options: ShellOptions): Shell {
       {
         class: "btn btn--ghost btn--icon sidebar-toggle",
         type: "button",
-        "aria-label": "Open navigation",
+        "aria-label": tx("shell.nav.open", "Open navigation"),
         onclick: () => app.classList.toggle("nav-open"),
       },
       icon("menu", 16),
@@ -336,12 +378,18 @@ export function createShell(options: ShellOptions): Shell {
     h(
       "div",
       { class: "topbar-actions" },
+      localeSwitch,
       liveHost,
       h(
         "button",
-        { class: "search-trigger", type: "button", onclick: options.onOpenPalette, title: "Search (Ctrl/⌘ K)" },
+        {
+          class: "search-trigger",
+          type: "button",
+          onclick: options.onOpenPalette,
+          title: tx("shell.search.title", "Search (Ctrl/⌘ K)"),
+        },
         icon("search", 14),
-        h("span", null, "Search"),
+        h("span", null, tx("shell.search.label", "Search")),
         h("kbd", { class: "kbd" }, "⌘K"),
       ),
       themeBtn,
@@ -363,7 +411,7 @@ export function createShell(options: ShellOptions): Shell {
   fill(app, sidebar, scrim, main);
   renderNav(options.session);
   renderUser(options.session);
-  setCrumbs([{ label: "Dashboard" }]);
+  setCrumbs([{ label: tx("shell.crumb.dashboard", "Dashboard") }]);
 
   function setActive(path: string) {
     for (const el of nav.querySelectorAll<HTMLAnchorElement>(".nav-item")) {
@@ -389,8 +437,14 @@ export function createShell(options: ShellOptions): Shell {
   function setLive(state: "live" | "offline") {
     liveHost.classList.toggle("is-live", state === "live");
     const label = liveHost.lastElementChild;
-    if (label) label.textContent = state === "live" ? "Live" : "Reconnecting";
-    liveHost.title = state === "live" ? "Live updates connected" : "Live updates reconnecting";
+    if (label) {
+      label.textContent =
+        state === "live" ? tx("shell.live.on", "Live") : tx("shell.live.reconnecting", "Reconnecting");
+    }
+    liveHost.title =
+      state === "live"
+        ? tx("shell.live.connected", "Live updates connected")
+        : tx("shell.live.reconnecting_title", "Live updates reconnecting");
   }
 
   return {
@@ -433,28 +487,28 @@ export function openPalette(options: PaletteOptions): { close(): void } {
     }
   }
   if (ctx.can("invoice:write:all")) {
-    commands.push({ label: "New invoice", icon: "plus", href: "/invoices/new", group: "Actions" });
+    commands.push({ label: tx("shell.palette.new_invoice", "New invoice"), icon: "plus", href: "/invoices/new", group: tx("shell.palette.group.actions", "Actions") });
   }
 
   const list = h("div", { class: "palette-list" });
   const input = h("input", {
     type: "text",
-    placeholder: "Search pages, customers, invoices…",
+    placeholder: tx("shell.palette.placeholder", "Search pages, customers, invoices…"),
     autocomplete: "off",
     spellcheck: "false",
-    "aria-label": "Search",
+    "aria-label": tx("shell.palette.label", "Search"),
   });
   const palette = h(
     "div",
-    { class: "palette", role: "dialog", "aria-modal": "true", "aria-label": "Command palette" },
+    { class: "palette", role: "dialog", "aria-modal": "true", "aria-label": tx("shell.palette.dialog", "Command palette") },
     h("div", { class: "palette-input" }, icon("search", 16), input),
     list,
     h(
       "div",
       { class: "palette-foot" },
-      h("span", { class: "row" }, h("kbd", { class: "kbd" }, "↑"), h("kbd", { class: "kbd" }, "↓"), "to move"),
-      h("span", { class: "row" }, h("kbd", { class: "kbd" }, "↵"), "to open"),
-      h("span", { class: "row" }, h("kbd", { class: "kbd" }, "esc"), "to close"),
+      h("span", { class: "row" }, h("kbd", { class: "kbd" }, "↑"), h("kbd", { class: "kbd" }, "↓"), tx("shell.palette.move", "to move")),
+      h("span", { class: "row" }, h("kbd", { class: "kbd" }, "↵"), tx("shell.palette.open", "to open")),
+      h("span", { class: "row" }, h("kbd", { class: "kbd" }, "esc"), tx("shell.palette.close", "to close")),
       h("span", { class: "spacer" }),
       h("span", null, "Catalyst"),
     ),
@@ -472,8 +526,8 @@ export function openPalette(options: PaletteOptions): { close(): void } {
       swap(
         list,
         emptyState({
-          title: "Nothing found",
-          body: "Try a page name, or a customer's email address.",
+          title: tx("shell.palette.empty_title", "Nothing found"),
+          body: tx("shell.palette.empty_body", "Try a page name, or a customer's email address."),
           icon: "search",
         }),
       );
@@ -530,7 +584,7 @@ export function openPalette(options: PaletteOptions): { close(): void } {
         ...page.data.map((c) => ({
           href: `/customers/${c.id}`,
           label: c.name || c.email,
-          sub: c.name ? c.email : "Customer",
+          sub: c.name ? c.email : tx("shell.role.customer", "Customer"),
           icon: "user" as IconName,
         })),
       ];

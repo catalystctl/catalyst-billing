@@ -462,11 +462,7 @@ func TestRoleGrantsExactlyItsSubset(t *testing.T) {
 	// Exactly the two granted staff permissions are present.
 	var staffPerms []string
 	for p := range perms {
-		switch p {
-		case authn.PermCustomerReadSelf, authn.PermCustomerWriteSelf,
-			authn.PermInvoiceReadSelf, authn.PermInvoicePaySelf,
-			authn.PermServiceReadSelf, authn.PermServiceCancelSelf,
-			authn.PermServiceUpgradeSelf, authn.PermTicketReadSelf, authn.PermTicketWriteSelf:
+		if authn.IsCustomerPermission(p) {
 			continue // the customer baseline every signed-in user holds
 		}
 		staffPerms = append(staffPerms, string(p))

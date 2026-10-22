@@ -187,9 +187,79 @@ var definitions = []Definition{
 	{Group: "mail", Key: "smtp_encryption", Kind: KindString, Default: "starttls",
 		Choices: []string{"none", "starttls", "tls"}},
 	{Group: "mail", Key: "smtp_from", Kind: KindString, Default: ""},
+	// Inbound piping (TKT-11). A reply to a ticket notification is imported either by an
+	// IMAP poller or by the provider posting to the piping endpoint; both need the same
+	// address so a reply can be attributed to a ticket, and the webhook needs a shared
+	// secret because the endpoint is public.
+	{Group: "mail", Key: "piping_address", Kind: KindString, Default: ""},
+	{Group: "mail", Key: "piping_secret", Kind: KindString, Default: "", Secret: true},
+	{Group: "mail", Key: "imap_host", Kind: KindString, Default: ""},
+	{Group: "mail", Key: "imap_port", Kind: KindInt, Default: "993"},
+	{Group: "mail", Key: "imap_username", Kind: KindString, Default: ""},
+	{Group: "mail", Key: "imap_password", Kind: KindString, Default: "", Secret: true},
 
 	// ------------------------------------------------------------ announcements --
 	{Group: "announcements", Key: "enabled", Kind: KindBool, Default: "true"},
+
+	// ----------------------------------------------------------------- checkout --
+	// TOS acceptance at checkout. `general.tos` holds the text the customer is shown; these
+	// decide whether the checkbox is required and whether the storefront offers a currency
+	// switcher at all.
+	{Group: "checkout", Key: "tos_required", Kind: KindBool, Default: "false"},
+	{Group: "checkout", Key: "currency_switcher", Kind: KindBool, Default: "true"},
+
+	// -------------------------------------------------------------- affiliates --
+	// A commission rate is an exact rational string, never a float: 10% is `10%`, and
+	// `money.ParseRatio` is what reads it. `recurring_cycles` bounds how many renewal
+	// invoices earn a commission (0 = every renewal, which is a deliberate choice, not a
+	// missing value).
+	{Group: "affiliates", Key: "enabled", Kind: KindBool, Default: "false"},
+	{Group: "affiliates", Key: "rate", Kind: KindString, Default: "10%"},
+	{Group: "affiliates", Key: "recurring", Kind: KindBool, Default: "false"},
+	{Group: "affiliates", Key: "recurring_cycles", Kind: KindInt, Default: "0"},
+
+	// ------------------------------------------------------------------ gateway --
+	// One configured gateway at a time. The provider name selects the extension; the two
+	// secrets are the only secrets in the group and are redacted on every read path.
+	{Group: "gateway", Key: "provider", Kind: KindString, Default: ""},
+	{Group: "gateway", Key: "enabled", Kind: KindBool, Default: "false"},
+	{Group: "gateway", Key: "publishable_key", Kind: KindString, Default: ""},
+	{Group: "gateway", Key: "secret_key", Kind: KindString, Default: "", Secret: true},
+	{Group: "gateway", Key: "webhook_secret", Kind: KindString, Default: "", Secret: true},
+	// off_session_enabled lets a renewal charge a saved payment method without the customer
+	// present. It is off by default because it is the one setting that moves money with no
+	// human in the loop.
+	{Group: "gateway", Key: "off_session_enabled", Kind: KindBool, Default: "false"},
+
+	// ------------------------------------------------------------------ servers --
+	{Group: "servers", Key: "provider", Kind: KindString, Default: ""},
+	{Group: "servers", Key: "panel_url", Kind: KindString, Default: ""},
+	{Group: "servers", Key: "api_key", Kind: KindString, Default: "", Secret: true},
+
+	// --------------------------------------------------------------------- push --
+	// Web push needs a VAPID key pair: the public half is served to the browser, the private
+	// half signs the push. Without both, the portal hides the "enable notifications" button
+	// rather than offering one that cannot work.
+	{Group: "push", Key: "enabled", Kind: KindBool, Default: "false"},
+	{Group: "push", Key: "vapid_public_key", Kind: KindString, Default: ""},
+	{Group: "push", Key: "vapid_private_key", Kind: KindString, Default: "", Secret: true},
+	{Group: "push", Key: "subject", Kind: KindString, Default: "mailto:no-reply@localhost"},
+
+	// ------------------------------------------------------------------ captcha --
+	{Group: "captcha", Key: "provider", Kind: KindString, Default: "none",
+		Choices: []string{"none", "turnstile", "recaptcha", "hcaptcha"}},
+	{Group: "captcha", Key: "site_key", Kind: KindString, Default: ""},
+	{Group: "captcha", Key: "secret_key", Kind: KindString, Default: "", Secret: true},
+
+	// --------------------------------------------------------------------- i18n --
+	{Group: "i18n", Key: "default_locale", Kind: KindString, Default: "en"},
+	{Group: "i18n", Key: "enabled_locales", Kind: KindJSON, Default: `["en"]`},
+
+	// ------------------------------------------------------------------ updates --
+	{Group: "updates", Key: "channel", Kind: KindString, Default: "stable",
+		Choices: []string{"stable", "beta"}},
+	{Group: "updates", Key: "check_url", Kind: KindString, Default: ""},
+	{Group: "updates", Key: "telemetry", Kind: KindBool, Default: "false"},
 }
 
 // index maps "group.key" to its definition.

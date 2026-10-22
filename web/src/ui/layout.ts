@@ -76,6 +76,26 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
         { label: "System settings", href: "/settings/system", icon: "settings", permission: "settings:write" },
       ],
     });
+    // Integrations and platform. Grouped separately because these are the screens that carry
+    // provider credentials or replace the running binary, so they are not "configuration" in
+    // the catalogue sense.
+    groups.push({
+      label: "Integrations",
+      items: [
+        { label: "Gateways", href: "/gateways", icon: "card", permission: "gateway:write" },
+        { label: "Servers", href: "/servers", icon: "layers", permission: "server:write" },
+        { label: "Marketplace", href: "/marketplace", icon: "box", permission: "extension:manage" },
+      ],
+    });
+    groups.push({
+      label: "Platform",
+      items: [
+        { label: "Imports", href: "/imports", icon: "database", permission: "import:write" },
+        { label: "Locales", href: "/locales", icon: "globe", permission: "i18n:write" },
+        { label: "OAuth clients", href: "/oauth-clients", icon: "key", permission: "oauth:manage" },
+        { label: "Updates", href: "/settings/updates", icon: "sparkles", permission: "update:manage" },
+      ],
+    });
     groups.push({
       label: "Trust",
       items: [

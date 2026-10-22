@@ -17,7 +17,7 @@ import { route, type Route } from "./lib/router";
  *  `/` is deliberately included: it is the storefront for a visitor and the dashboard for
  *  staff, and which one you get is decided by the session, not by the URL. A storefront
  *  behind a login is not a storefront. */
-export const PUBLIC_PATHS = new Set(["/", "/login", "/forgot-password", "/reset-password", "/verify", "/products"]);
+export const PUBLIC_PATHS = new Set(["/", "/login", "/register", "/forgot-password", "/reset-password", "/verify", "/products"]);
 
 /** True when `path` is public, including the storefront's subtrees.
  *
@@ -123,6 +123,20 @@ export const routes: Route[] = [
   route("/portal/security", () => import("./views/portal-security")),
   route("/portal/notifications", () => import("./views/portal-notifications")),
   route("/portal/payment-methods", () => import("./views/portal-payment-methods")),
+
+  // ---- platform and integration screens ---------------------------------------------------
+  //
+  // Each of these is the operator half of a P4/P6 epic: the gateway and server adapters, the
+  // importer, locales, OAuth2 clients, updates and the extension marketplace. Declaring the
+  // route before the module exists is deliberate — the router renders an honest "not in this
+  // build" state, so a half-landed feature is visible instead of a dead link.
+  route("/gateways", () => import("./views/gateways")),
+  route("/servers", () => import("./views/servers")),
+  route("/imports", () => import("./views/imports")),
+  route("/locales", () => import("./views/locales")),
+  route("/oauth-clients", () => import("./views/oauth-clients")),
+  route("/settings/updates", () => import("./views/updates")),
+  route("/marketplace", () => import("./views/marketplace")),
 ];
 
 /** True when a route for `path` is declared.
@@ -173,4 +187,11 @@ export const SEGMENT_LABELS: Record<string, string> = {
   security: "Security",
   notifications: "Notifications",
   "payment-methods": "Payment methods",
+  gateways: "Payment gateways",
+  servers: "Provisioning servers",
+  imports: "Imports",
+  locales: "Locales",
+  "oauth-clients": "OAuth clients",
+  updates: "Updates",
+  marketplace: "Marketplace",
 };

@@ -26,6 +26,20 @@ const (
 	PermServiceUpgradeSelf Permission = "service:upgrade:self"
 	PermTicketReadSelf     Permission = "ticket:read:self"
 	PermTicketWriteSelf    Permission = "ticket:write:self"
+	// PermOrderCreateSelf lets a customer place an order for themselves. It is separate from
+	// invoice:pay:self because placing an order is not paying one: a zero-total order never
+	// produces an invoice, so borrowing the pay permission made a free product require a
+	// capability it never exercises.
+	PermOrderCreateSelf Permission = "order:create:self"
+	// PermServiceWriteSelf lets a customer label and describe their own service. It is
+	// separate from service:read:self because a rename is a write that an operator may want
+	// to withhold while still letting the customer see what they bought.
+	PermServiceWriteSelf Permission = "service:write:self"
+	// PermPaymentMethodReadSelf and PermPaymentMethodWriteSelf cover a saved payment method:
+	// the stored instrument a renewal charges off-session. A customer may see and replace
+	// their own; the provider token is never returned to them.
+	PermPaymentMethodReadSelf  Permission = "paymentmethod:read:self"
+	PermPaymentMethodWriteSelf Permission = "paymentmethod:write:self"
 
 	// Staff permissions, split by the role that needs them.
 	PermCustomerReadAll  Permission = "customer:read:all"
@@ -129,6 +143,27 @@ const (
 
 	// PermAnnouncementWrite publishes storefront and dashboard announcements.
 	PermAnnouncementWrite Permission = "announcement:write"
+
+	// --- operator breadth ------------------------------------------------------
+
+	// PermCreditReadAll reads the customer credit ledger across accounts. It is separate from
+	// credit:write because seeing what a customer is owed is an audit question while granting
+	// credit is a money movement.
+	PermCreditReadAll Permission = "credit:read:all"
+	// PermServiceWriteAll edits a service's operator-facing metadata: its label, description
+	// and custom properties. It is not service:upgrade, which changes what is billed.
+	PermServiceWriteAll Permission = "service:write:all"
+	// PermI18nWrite edits locales and message translations.
+	PermI18nWrite Permission = "i18n:write"
+	// PermImportWrite runs an importer: it writes customers, orders and invoices in bulk,
+	// which is a bigger hammer than customer:write:all and deserves its own grant.
+	PermImportWrite Permission = "import:write"
+	// PermOAuthManage registers OAuth2 clients and their scopes. A client acts on behalf of
+	// a user, so registering one is an access decision, not a settings edit.
+	PermOAuthManage Permission = "oauth:manage"
+	// PermUpdateManage checks for and applies panel updates. It is the one permission that can
+	// replace the running binary.
+	PermUpdateManage Permission = "update:manage"
 )
 
 // Role is a named bundle of permissions.
@@ -164,6 +199,8 @@ var rolePermissions = map[Role][]Permission{
 		PermNotificationWrite, PermCreditWrite,
 		PermGatewayWrite, PermServerWrite,
 		PermLogRead, PermAnnouncementWrite,
+		PermCreditReadAll, PermServiceWriteAll, PermI18nWrite, PermImportWrite,
+		PermOAuthManage, PermUpdateManage,
 	},
 	RoleBilling: {
 		PermCustomerReadAll, PermCustomerWriteAll,
@@ -177,6 +214,9 @@ var rolePermissions = map[Role][]Permission{
 		PermCouponReadAll, PermCouponWrite, PermTaxWrite, PermCurrencyWrite, PermConfigWrite,
 		PermCreditWrite, PermNotificationWrite,
 		PermTicketReadAll, PermTicketWriteAll,
+		// A clerk answers "what is this customer owed", corrects the label a customer sees, and
+		// runs a customer import. They do not manage OAuth clients or replace the binary.
+		PermCreditReadAll, PermServiceWriteAll, PermI18nWrite, PermImportWrite,
 	},
 	// Support can place and clear a hold, which is exactly the "stop, do not touch this"
 	// instruction a first-line agent needs while a dispute is open. Support cannot suspend,
@@ -188,6 +228,9 @@ var rolePermissions = map[Role][]Permission{
 		PermTicketReadSelf, PermTicketWriteSelf,
 		PermTicketReadAll, PermTicketWriteAll,
 		PermLogRead,
+		// Support reads a balance to answer "why is my invoice like this" and corrects the
+		// label on a service so the customer's portal says what the box actually is.
+		PermCreditReadAll, PermServiceWriteAll,
 		// A support agent may mint a read-only key for their own tooling. The key can only carry
 		// scopes the agent already holds, which is why this is safe to grant here.
 		PermAPIKeyManage,
@@ -198,6 +241,9 @@ var rolePermissions = map[Role][]Permission{
 		PermCustomerReadAll,
 		PermServerWrite,
 		PermAuditRead,
+		PermServiceWriteAll,
+		// The infrastructure role is the one that has to take a security patch at 02:00.
+		PermUpdateManage,
 	},
 }
 
@@ -206,8 +252,10 @@ var rolePermissions = map[Role][]Permission{
 var customerPermissions = []Permission{
 	PermCustomerReadSelf, PermCustomerWriteSelf,
 	PermInvoiceReadSelf, PermInvoicePaySelf,
-	PermServiceReadSelf, PermServiceCancelSelf, PermServiceUpgradeSelf,
+	PermOrderCreateSelf,
+	PermServiceReadSelf, PermServiceCancelSelf, PermServiceUpgradeSelf, PermServiceWriteSelf,
 	PermTicketReadSelf, PermTicketWriteSelf,
+	PermPaymentMethodReadSelf, PermPaymentMethodWriteSelf,
 }
 
 // Authorizer answers authorization questions.

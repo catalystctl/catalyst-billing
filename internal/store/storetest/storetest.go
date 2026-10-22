@@ -503,6 +503,26 @@ func verifyTableClassification(ctx context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
+// RegisterTables adds mutable tables to the truncate list.
+//
+// It exists so a feature that creates a table can classify it in its own file instead of
+// editing one shared list, which is where parallel work collides. Registration happens in
+// an init function, before any test runs, so the slice is read-only by then.
+//
+// A table nobody registers still fails the classification check: this makes adding a table
+// *possible* without a shared edit, not optional.
+func RegisterTables(names ...string) {
+	Tables = append(Tables, names...)
+}
+
+// RegisterReferenceTables declares migration-seeded tables that must never be truncated.
+//
+// It is the counterpart of RegisterTables for configuration data: a locale catalog or a
+// seeded rate table is data a test reads, not state a test creates.
+func RegisterReferenceTables(names ...string) {
+	ReferenceTables = append(ReferenceTables, names...)
+}
+
 // ReferenceTables is seeded by migrations and is never truncated, because it is
 // configuration or chart-of-accounts data that the application reads but does
 // not create.

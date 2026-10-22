@@ -198,54 +198,121 @@ func Placeholders(tmpl string) []string {
 	}
 }
 
-// UnknownPlaceholders returns the placeholders in t that its event does not supply, sorted
-// and de-duplicated. An unknown event reports nothing here; the handler refuses the key
-// before this is reached, and inventing "every placeholder is unknown" for a template whose
-// event does not exist would be a misleading answer.
-func UnknownPlaceholders(t Template) []string {
+// templateField is one editable field a placeholder can appear in, named the way the operator
+// sees it in the editor rather than the way the struct names it.
+type templateField struct {
+	Label string
+	Value string
+}
+
+// templateFields lists every field a placeholder can appear in, subject first.
+//
+// The subject is listed first because it is the field this check exists for: a bad word in a
+// page of body text is noticed while writing it, and a bad word in a one-line subject is not —
+// and a subject is the line a customer reads in a list of mail, before opening anything.
+func templateFields(t Template) []templateField {
+	return []templateField{
+		{Label: "subject", Value: t.Subject},
+		{Label: "body", Value: t.Body},
+		{Label: "inbox title", Value: t.InAppTitle},
+		{Label: "inbox body", Value: t.InAppBody},
+		{Label: "inbox link", Value: t.InAppURL},
+	}
+}
+
+// unknownPlaceholderFinding is one unknown placeholder and the field it was written in.
+type unknownPlaceholderFinding struct {
+	Field string
+	Name  string
+}
+
+// unknownPlaceholderFindings returns every unknown placeholder, with its field, in the order
+// the fields are read and the placeholders appear.
+func unknownPlaceholderFindings(t Template) []unknownPlaceholderFinding {
 	known := map[string]struct{}{}
-	if variables, err := TemplateVariables(t.EventKey); err == nil {
-		for _, v := range variables {
-			known[v.Name] = struct{}{}
-		}
-	} else {
+	variables, err := TemplateVariables(t.EventKey)
+	if err != nil {
+		// The event is not in the catalogue. The handler refuses the key before this is
+		// reached, and inventing "every placeholder is unknown" for a template whose event
+		// does not exist would be a misleading answer.
 		return nil
 	}
+	for _, v := range variables {
+		known[v.Name] = struct{}{}
+	}
 
-	seen := map[string]struct{}{}
-	var out []string
-	for _, field := range []string{t.Subject, t.Body, t.InAppTitle, t.InAppBody, t.InAppURL} {
-		for _, name := range Placeholders(field) {
+	var out []unknownPlaceholderFinding
+	for _, field := range templateFields(t) {
+		for _, name := range Placeholders(field.Value) {
 			if _, ok := known[name]; ok {
 				continue
 			}
-			if _, dup := seen[name]; dup {
-				continue
-			}
-			seen[name] = struct{}{}
-			out = append(out, name)
+			out = append(out, unknownPlaceholderFinding{Field: field.Label, Name: name})
 		}
+	}
+	return out
+}
+
+// UnknownPlaceholders returns the placeholders in t that its event does not supply, sorted
+// and de-duplicated across every field.
+func UnknownPlaceholders(t Template) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, finding := range unknownPlaceholderFindings(t) {
+		if _, dup := seen[finding.Name]; dup {
+			continue
+		}
+		seen[finding.Name] = struct{}{}
+		out = append(out, finding.Name)
 	}
 	sort.Strings(out)
 	return out
 }
+
+// unknownPlaceholderError is the refusal, and its message *is* the sentence an operator reads.
+//
+// It is a type rather than fmt.Errorf("%w: …") so the detail the API returns reads as one
+// sentence instead of a Go error chain ("notify: a template uses … : invoice_paid does not
+// supply …"). errors.Is still finds ErrUnknownPlaceholder, so the handlers match on the same
+// sentinel and the mapping does not change.
+type unknownPlaceholderError struct{ detail string }
+
+func (e unknownPlaceholderError) Error() string { return e.detail }
+
+// Is reports this error as ErrUnknownPlaceholder.
+func (e unknownPlaceholderError) Is(target error) bool { return target == ErrUnknownPlaceholder }
 
 // ValidateTemplate refuses a template whose placeholders the renderer does not know.
 //
 // It is called by SaveTemplate, so every write path — the staff editor, the reset action, a
 // test — is checked, and the refusal happens where the wording is stored rather than at the
 // moment a customer's payment fails to produce a mail.
+//
+// The message names the offending placeholder *and the field it was written in*, then lists the
+// vocabulary the event does supply. Both halves matter: "invalid placeholder" makes an operator
+// hunt for the mistake, and naming it without naming the alternatives leaves them guessing at a
+// spelling. The vocabulary is small by construction (five or six words), so listing it is
+// cheaper than a rule to go and look up.
 func ValidateTemplate(t Template) error {
-	unknown := UnknownPlaceholders(t)
-	if len(unknown) == 0 {
+	findings := unknownPlaceholderFindings(t)
+	if len(findings) == 0 {
 		return nil
 	}
-	quoted := make([]string, 0, len(unknown))
-	for _, name := range unknown {
-		quoted = append(quoted, "{{"+name+"}}")
+
+	offending := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		offending = append(offending, "{{"+finding.Name+"}} ("+finding.Field+")")
 	}
-	return fmt.Errorf("%w: %s does not supply %s", ErrUnknownPlaceholder, t.EventKey,
-		strings.Join(quoted, ", "))
+
+	msg := t.EventKey + " does not supply " + strings.Join(offending, ", ")
+	if variables, err := TemplateVariables(t.EventKey); err == nil && len(variables) > 0 {
+		available := make([]string, 0, len(variables))
+		for _, v := range variables {
+			available = append(available, "{{"+v.Name+"}}")
+		}
+		msg += ". It supplies: " + strings.Join(available, ", ")
+	}
+	return unknownPlaceholderError{detail: msg}
 }
 
 // Preview is a draft template rendered for the operator.

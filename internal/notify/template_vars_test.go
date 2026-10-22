@@ -142,8 +142,13 @@ func TestSaveTemplateRefusesAnUnknownPlaceholder(t *testing.T) {
 	if !errors.Is(err, notify.ErrUnknownPlaceholder) {
 		t.Fatalf("save error = %v, want ErrUnknownPlaceholder", err)
 	}
-	if !strings.Contains(err.Error(), "{{invoice_nuber}}") {
-		t.Fatalf("the refusal does not name the placeholder: %v", err)
+	// The refusal names the placeholder, the field it was written in, and the vocabulary the
+	// event does supply — an operator who typed a plausible word needs the real ones in front of
+	// them, not a rule to go and look up.
+	for _, want := range []string{"{{invoice_nuber}}", "(subject)", "{{invoice_number}}", "{{total}}"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the refusal does not contain %q: %v", want, err)
+		}
 	}
 
 	// Nothing was written: the stored row still renders.
@@ -156,6 +161,50 @@ func TestSaveTemplateRefusesAnUnknownPlaceholder(t *testing.T) {
 	}
 	if strings.Contains(after.Subject, "invoice_nuber") {
 		t.Fatalf("the typo reached the stored template: %q", after.Subject)
+	}
+}
+
+// A placeholder in the *subject* is the same bug as one in the body, and it is the easier one
+// to miss: the subject is one line, and it is the line a customer reads before opening anything.
+func TestSaveTemplateRefusesAnUnknownPlaceholderInTheSubject(t *testing.T) {
+	pool := storetest.DB(t)
+	ctx := context.Background()
+	seedTemplates(t, pool)
+
+	before, err := notify.TemplateFor(ctx, pool, notify.EventPasswordReset)
+	if err != nil {
+		t.Fatalf("read template: %v", err)
+	}
+
+	// The body is valid; only the subject carries a word the event does not supply.
+	_, err = notify.SaveTemplate(ctx, pool, notify.Template{
+		EventKey:     notify.EventPasswordReset,
+		Name:         before.Name,
+		Subject:      "Reset the password for {{account_email}}",
+		Body:         before.Body,
+		InAppTitle:   before.InAppTitle,
+		InAppBody:    before.InAppBody,
+		InAppURL:     before.InAppURL,
+		Enabled:      true,
+		MailEnabled:  true,
+		InAppEnabled: true,
+	})
+	if !errors.Is(err, notify.ErrUnknownPlaceholder) {
+		t.Fatalf("save error = %v, want ErrUnknownPlaceholder", err)
+	}
+	if !strings.Contains(err.Error(), "(subject)") {
+		t.Fatalf("the refusal does not say which field: %v", err)
+	}
+	if !strings.Contains(err.Error(), "{{email}}") {
+		t.Fatalf("the refusal does not list the placeholders the event supplies: %v", err)
+	}
+
+	after, err := notify.TemplateFor(ctx, pool, notify.EventPasswordReset)
+	if err != nil {
+		t.Fatalf("re-read template: %v", err)
+	}
+	if after.Subject != before.Subject {
+		t.Fatalf("a refused save changed the stored subject: %q", after.Subject)
 	}
 }
 

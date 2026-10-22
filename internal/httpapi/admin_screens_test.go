@@ -186,8 +186,31 @@ func TestNotificationTemplateRefusesAnUnknownPlaceholder(t *testing.T) {
 	if p := decodeProblem(t, rec); p.Code != "unknown_placeholder" {
 		t.Fatalf("code = %q, want unknown_placeholder", p.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "reset_link") {
-		t.Fatalf("the refusal does not name the placeholder: %s", rec.Body)
+	// The refusal names the placeholder, the field it was written in, and the vocabulary the
+	// event does supply. "Invalid placeholder" alone would make the operator hunt for the
+	// mistake and then guess at the right spelling.
+	for _, want := range []string{"{{reset_link}}", "(body)", "{{email}}", "{{link}}"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("the refusal does not contain %q: %s", want, rec.Body)
+		}
+	}
+
+	// A placeholder in the subject is the same bug and the easier one to miss: it is one line,
+	// and it is the line a customer reads before opening the message.
+	rec = env.doJSON(t, http.MethodPut, "/api/v1/staff/notification-templates/password_reset",
+		env.billing, env.billingCSRF, map[string]any{
+			"subject": "Reset the password for {{account_email}}",
+			"body":    "Use this link: {{link}}",
+		})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("save with an unknown placeholder in the subject: status %d, want 422; body %s",
+			rec.Code, rec.Body)
+	}
+	if p := decodeProblem(t, rec); p.Code != "unknown_placeholder" {
+		t.Fatalf("subject code = %q, want unknown_placeholder", p.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "(subject)") {
+		t.Fatalf("the refusal does not say the subject is where the mistake is: %s", rec.Body)
 	}
 
 	// Nothing was stored: the row still has its original wording.

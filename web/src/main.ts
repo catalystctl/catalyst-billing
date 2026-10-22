@@ -20,6 +20,7 @@ import "./styles/view-portal.css";
 import "./styles/view-storefront.css";
 import "./styles/view-catalog.css";
 import "./styles/view-commerce.css";
+import "./styles/view-support.css";
 
 import { bootstrap } from "./app";
 

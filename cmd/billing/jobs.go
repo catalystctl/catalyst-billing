@@ -9,6 +9,7 @@ import (
 
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/checkout"
+	"github.com/catalyst/billing/internal/credit"
 	"github.com/catalyst/billing/internal/dunning"
 	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/fulfilment"
@@ -36,6 +37,23 @@ type jobSpec struct {
 // running it twice, or running two workers, is safe. The kill switches below are
 // the operator's emergency brake: a misbehaving gateway or provisioner can be
 // stopped without a deploy.
+// newSettlementApplier builds the chain that applies a settled payment.
+//
+// There are two kinds of settled payment and only one of them is an invoice. A credit deposit is
+// a payment with no invoice behind it: the money is not revenue, it is a liability the shop owes
+// back, and it must be posted to the customer's balance instead of paying for anything. The
+// deposit applier recognises that case and falls through to fulfilment for everything else.
+//
+// It is a named function rather than an inline expression because the failure it prevents is
+// silent: with the plain applier a deposit settles, the invoice is marked paid, and the customer's
+// balance stays zero — the customer has paid and received nothing, and no error was logged.
+// TestSettlementApplierRoutesDeposits calls this directly, so removing the wrapper is a red test
+// rather than a support ticket three weeks later.
+func newSettlementApplier(pool *store.Pool) payments.Applier {
+	return credit.NewDepositApplier(pool,
+		fulfilment.NewApplier(pool).WithNotifier(notify.NewQueue(pool)))
+}
+
 func buildJobs(pool *store.Pool, logger *slog.Logger, apiServer *httpapi.Server) (*extensionCache, []jobSpec) {
 	var jobs []jobSpec
 
@@ -62,8 +80,7 @@ func buildJobs(pool *store.Pool, logger *slog.Logger, apiServer *httpapi.Server)
 				// Amount verification is always attached in production: a settled
 				// payment is only applied when it matches the recorded checkout.
 				processor := payments.NewProcessor(pool, inbox, gw,
-					envOr("BILLING_GATEWAY_ACCOUNT", ""),
-					fulfilment.NewApplier(pool).WithNotifier(notify.NewQueue(pool))).
+					envOr("BILLING_GATEWAY_ACCOUNT", ""), newSettlementApplier(pool)).
 					WithAttempts(checkout.LookupFor(pool))
 				results, err := processor.Process(ctx, 50)
 				for _, r := range results {

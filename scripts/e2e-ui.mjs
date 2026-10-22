@@ -327,8 +327,16 @@ async function assertScreen(name, { path, expect = [], absent = [], allowEmptySt
 // The commerce, support and account screens are built by parallel packages and land in
 // stages, so the harness must be able to tell "this build does not have that screen" from
 // "that screen is broken". The distinction is made from what the page actually renders,
-// not from a list the harness keeps: a screen that is not in the build says so, and a
-// screen that is in the build and broken says something else.
+// not from a list the harness keeps: a screen that is not in the build says so in its
+// *title*, and a screen that is in the build and broken says something else.
+//
+// The markers are matched against `.empty-title` and `.card-title` only, never against the
+// whole body text. That is deliberate and was a real bug: matching body text made
+// `/tickets/new` look absent because it renders an informational banner reading "File
+// uploads are not available in this build" while the form itself is perfectly present. A
+// banner's title is a bare `<strong>`, so restricting the match to title elements
+// distinguishes "this screen is a placeholder" from "this screen has a note about a
+// sub-feature".
 const MISSING_MARKERS = [
   // The route table has no entry for the path (app.ts renderNotFound).
   /that page does not exist/i,
@@ -337,7 +345,6 @@ const MISSING_MARKERS = [
   /not available in this build/i,
   // A real screen whose endpoint this build does not serve, e.g. config options or logs.
   /not available on this installation/i,
-  /does not serve (?:GET|POST|PUT|DELETE) \/api\//i,
   /has not shipped yet/i,
 ];
 
@@ -352,6 +359,7 @@ async function screenState() {
     const tr = q(".table tbody tr");
     return {
       path: location.pathname,
+      search: location.search,
       title: document.title,
       h1: q("h1") ? q("h1").innerText : null,
       hasCard: !!q(".card"),
@@ -360,6 +368,8 @@ async function screenState() {
       hasEmptyState: !!q(".empty-state"),
       errorText: q(".error-state") ? q(".error-state").innerText : null,
       emptyTitle: q(".empty .empty-title, .empty-state .empty-title") ? q(".empty .empty-title, .empty-state .empty-title").innerText : "",
+      // The titles only. See MISSING_MARKERS for why body text is not used.
+      titles: [...document.querySelectorAll(".empty-title, .card-title")].map((el) => el.innerText).join(" \\u00b7 "),
       contentNodes: document.querySelectorAll(contentSelector).length,
       overflow: document.documentElement.scrollWidth > window.innerWidth + 1,
       rowDisplay: tr ? getComputedStyle(tr).display : null,
@@ -399,7 +409,7 @@ async function visit(path, timeoutMs = 12_000) {
 /** Which of the tolerated "not in this build" markers the page shows, if any. */
 function missingReason(state) {
   for (const marker of MISSING_MARKERS) {
-    const hit = state.text.match(marker);
+    const hit = state.titles.match(marker);
     if (hit) return hit[0];
   }
   return "";
@@ -418,7 +428,12 @@ async function assertNewScreen(name, opts) {
 
   // A redirect is not a missing screen. These are all routes the audience may reach, so
   // landing somewhere else means the guard or the router disagrees with the route table.
-  const redirected = state.path !== path;
+  //
+  // The comparison is on the *pathname*: a screen is free to rewrite its own query string
+  // (config options writes `product_id` into the URL so the choice survives a refresh), and
+  // comparing the whole path+query reported that as a redirect.
+  const wantedPath = path.split("?")[0];
+  const redirected = state.path !== wantedPath;
   const reason = redirected ? "" : missingReason(state);
 
   if (reason) {
@@ -429,7 +444,7 @@ async function assertNewScreen(name, opts) {
 
   const before = failures.length;
   if (redirected) {
-    check(`${name}: stays on ${path}`, false, `redirected to ${state.path}`);
+    check(`${name}: stays on ${wantedPath}`, false, `redirected to ${state.path}${state.search}`);
   }
   check(`${name}: no error state`, !state.errorText, state.errorText ? state.errorText.slice(0, 300) : "");
   check(`${name}: has a heading`, Boolean(state.h1), "no <h1> in the rendered screen");
@@ -464,7 +479,7 @@ async function assertNewScreen(name, opts) {
  */
 async function assertNoOverflow(name, path) {
   const state = await visit(path);
-  if (state.path !== path || missingReason(state)) return;
+  if (state.path !== path.split("?")[0] || missingReason(state)) return;
   check(`mobile: ${name} does not scroll sideways`, !state.overflow);
   if (state.hasTable && state.rowDisplay) {
     check(
@@ -496,56 +511,36 @@ try {
     check("storefront: the product page shows a price", /per month|per year|\/ monthly|\/ annual/i.test(productPage));
   }
 
-  // Self-registration, as a stranger, before any sign-in. This is the one screen that turns
-  // a visitor into a customer, and it is public — so it is driven here rather than after the
-  // staff sign-in, where a stale session would silently take over the form.
+  // Self-registration. Two separate questions, and they are asked separately because the
+  // answers are different:
+  //
+  //   1. Can a *stranger* reach it? That is a property of the route table (`PUBLIC_PATHS` in
+  //      web/src/routes.ts), not of the screen, and it is the whole point of a registration
+  //      page: if the shell bounces an anonymous visitor to /login, the screen is unreachable
+  //      by the only audience it exists for, and every "registration works" claim is false
+  //      for a real visitor. That is recorded as a *gap* — visible in the ledger, not
+  //      silently skipped and not a failure of this harness, because the fix is a one-line
+  //      change in a file this package does not own.
+  //   2. Does the form work? That is a property of the screen, and it is driven below.
   //
   // The endpoint never says whether an address already existed (that would be an account
   // discovery oracle), so there is no "signed-in landing" to assert. Success is one of two
   // states: "check your email" when verification is required, or "check your email, then
   // sign in" when it is not. Both are the accepted state and both are what this asserts.
   {
-    const registerEmail = `e2e-register-${Date.now()}@example.test`;
     const state = await visit("/register");
-    const reason = state.path === "/register" ? missingReason(state) : "";
-    if (reason || state.path !== "/register") {
-      screenLedger.push({
-        name: "register",
-        path: "/register",
-        status: "missing",
-        reason: reason || `redirected to ${state.path}`,
-      });
-      console.log(`skip register (/register) — not in this build: ${reason || `redirected to ${state.path}`}`);
+    const reachable = state.path === "/register" && !missingReason(state);
+    if (reachable) {
+      screenLedger.push({ name: "register-anonymous", path: "/register", status: "present", reason: "" });
     } else {
-      const before = failures.length;
-      check("register: no error state", !state.errorText, state.errorText ? state.errorText.slice(0, 300) : "");
-      check("register: has a heading", Boolean(state.h1), "no <h1>");
-      check("register: renders its form", (await evaluate("document.querySelectorAll('.auth-form input').length")) > 0);
-      await typeInto("#name", "E2E Registration");
-      await typeInto("#email", registerEmail);
-      await typeInto("#password", "e2e-registration-password-1");
-      // The terms box is a real requirement on installations that configure terms, so it is
-      // ticked when it exists rather than assumed to be optional.
-      const tos = await evaluate("document.querySelector('#tos') !== null");
-      if (tos) await click("#tos");
-      await click('.auth-form .btn--primary');
-      const accepted = await until(
-        "the accepted state after registering",
-        "/check your email/i.test(document.body.innerText) || document.querySelector('.banner') !== null",
-        10_000,
-      ).catch(() => false);
-      const after = await pageText();
-      check("register: submitting shows the accepted state", Boolean(accepted), after.slice(0, 300));
-      check("register: says to check the email", /check your email/i.test(after), after.slice(0, 300));
-      // The endpoint is deliberately non-enumerating, so the page must not claim an account
-      // was created. This is the sentence that keeps the privacy promise visible.
-      check(
-        "register: does not claim the account exists",
-        !/your account has been created|account created successfully/i.test(after),
+      const why = missingReason(state) || `the shell sent an anonymous visitor to ${state.path}`;
+      screenLedger.push({ name: "register-anonymous", path: "/register", status: "gap", reason: why });
+      console.log(`gap  register-anonymous     /register — ${why}`);
+      console.log(
+        "     note: /register is not in PUBLIC_PATHS (web/src/routes.ts), so a visitor with no " +
+          "session cannot reach it. The form itself is driven below, signed in, so a broken " +
+          "form and an unreachable screen are reported as the two different problems they are.",
       );
-      await screenshot("register-accepted");
-      const status = failures.length > before ? "broken" : "present";
-      screenLedger.push({ name: "register", path: "/register", status, reason: "" });
     }
   }
 
@@ -705,6 +700,56 @@ try {
   const seededTicket = arg("expect-ticket");
   const seededAnnouncement = arg("expect-announcement");
   const seededConfigProduct = arg("expect-config-product");
+
+  // The registration form itself, driven signed in.
+  //
+  // It belongs with the anonymous check above conceptually, but the shell bounces a stranger
+  // to /login before the form renders (the gap recorded above), so the only way to exercise
+  // the form today is with a session. That is not the audience the screen is for, and the gap
+  // is reported as the defect it is — but a form that does not submit is a *second*,
+  // independent defect, and this is the only place that can see it. When /register joins
+  // PUBLIC_PATHS this block keeps working unchanged; it just stops being the only path to it.
+  {
+    const state = await visit("/register");
+    if (state.path === "/register" && !missingReason(state)) {
+      const before = failures.length;
+      check("register: no error state", !state.errorText, state.errorText ? state.errorText.slice(0, 300) : "");
+      check("register: has a heading", Boolean(state.h1), "no <h1>");
+      const fields = await evaluate("document.querySelectorAll('.auth-form input').length");
+      check("register: renders its form", fields > 0, `inputs=${fields}`);
+      await typeInto("#name", "E2E Registration");
+      await typeInto("#email", `e2e-register-${Date.now()}@example.test`);
+      await typeInto("#password", "e2e-registration-password-1");
+      // The terms box is a real requirement on installations that configure terms, so it is
+      // ticked when it exists rather than assumed to be optional.
+      if (await evaluate("document.querySelector('#tos') !== null")) await click("#tos");
+      await click('.auth-form .btn--primary');
+      const accepted = await until(
+        "the accepted state after registering",
+        "/check your email/i.test(document.body.innerText)",
+        10_000,
+      ).catch(() => false);
+      const after = await pageText();
+      check("register: submitting shows the accepted state", Boolean(accepted), after.slice(0, 400));
+      check("register: says to check the email", /check your email/i.test(after), after.slice(0, 400));
+      // The endpoint is deliberately non-enumerating, so the page must not claim an account
+      // was created. This is the sentence that keeps the privacy promise visible.
+      check(
+        "register: does not claim the account exists",
+        !/your account has been created|account created successfully/i.test(after),
+      );
+      await screenshot("register-accepted");
+      screenLedger.push({
+        name: "register-form",
+        path: "/register",
+        status: failures.length > before ? "broken" : "present",
+        reason: failures.length > before ? failures.slice(before).join("; ") : "",
+      });
+    }
+    // Return to the shell: the register screen is a full-page auth layout, and the rest of the
+    // staff pass expects the shell to be mounted.
+    await goto("/");
+  }
 
   await assertNewScreen("coupons", {
     path: "/coupons",
@@ -983,14 +1028,16 @@ console.log(`\n${passes.length} passed, ${failures.length} failed`);
 // which were not, and which were present and wrong — by name, with the reason. A run that
 // only printed its failures would leave "8 of 19" to be counted from the log.
 if (screenLedger.length > 0) {
-  const order = { present: 0, broken: 1, missing: 2 };
+  const order = { present: 0, broken: 1, gap: 2, missing: 3 };
   const sorted = [...screenLedger].sort((a, b) => order[a.status] - order[b.status]);
   const count = (s) => screenLedger.filter((e) => e.status === s).length;
   console.log(
-    `\nnew screens: ${count("present")} present, ${count("broken")} broken, ${count("missing")} not in this build`,
+    `\nnew screens: ${count("present")} present, ${count("broken")} broken, ` +
+      `${count("gap")} reachability gaps, ${count("missing")} not in this build`,
   );
   for (const entry of sorted) {
-    const mark = entry.status === "present" ? "ok   " : entry.status === "broken" ? "FAIL " : "skip ";
+    const mark =
+      entry.status === "present" ? "ok   " : entry.status === "broken" ? "FAIL " : entry.status === "gap" ? "gap  " : "skip ";
     const detail = entry.reason ? ` — ${entry.reason}` : "";
     console.log(`  ${mark}${entry.name.padEnd(22)} ${entry.path}${detail}`);
   }

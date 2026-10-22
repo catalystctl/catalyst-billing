@@ -39,28 +39,47 @@ cleanup() {
   # behind on every run fills the audit log with noise, makes the catalog grow a product per
   # run, and eventually changes what the next run sees — a test that mutates the fixture it
   # asserts on stops being a test.
+  #
+  # The order matters and it is not obvious, so it is written down here:
+  #
+  #   1. Delete the rows this script added that `admin purge-test-data` does not know about.
+  #      Its step list predates the commerce tables, so a ticket pointing at the customer
+  #      blocks `DELETE FROM customers` with a foreign-key error, and that aborts the whole
+  #      purge transaction — which is how three runs in a row leaked a staff account, a
+  #      customer and a product catalogue entry while the script reported `|| true`.
+  #   2. Purge the accounts, which also removes the journal rows the credit posting wrote
+  #      (those tables refuse DELETE by trigger, so purge is the only thing that can do it).
+  #   3. Delete the catalog, whose price versions are referenced by the cart line and must
+  #      therefore go after the cart.
   if [[ -n "${SEEDED:-}" ]]; then
+    psql "$BILLING_DATABASE_URL" -q -v ON_ERROR_STOP=0 >/dev/null 2>&1 <<SQL || true
+-- Rows the purge does not know about. Children before parents throughout.
+DELETE FROM ticket_messages WHERE ticket_id IN (
+  SELECT id FROM tickets WHERE subject LIKE 'e2e-ticket-%');
+DELETE FROM tickets WHERE subject LIKE 'e2e-ticket-%';
+-- The cart belongs to the customer and cascades, but its *item* is what blocks deleting a
+-- price version, so the item goes first and the cart with it.
+DELETE FROM cart_items WHERE cart_id IN (
+  SELECT c.id FROM carts c JOIN customers cu ON cu.id = c.customer_id
+  WHERE cu.email LIKE 'e2e-%@example.test');
+DELETE FROM carts WHERE customer_id IN (
+  SELECT id FROM customers WHERE email LIKE 'e2e-%@example.test');
+DELETE FROM config_option_prices WHERE config_option_id IN (
+  SELECT id FROM config_options WHERE name LIKE 'e2e-option-%');
+DELETE FROM config_options WHERE name LIKE 'e2e-option-%';
+DELETE FROM coupon_products WHERE coupon_id IN (
+  SELECT id FROM coupons WHERE code LIKE 'E2E-%');
+DELETE FROM coupon_redemptions WHERE coupon_id IN (
+  SELECT id FROM coupons WHERE code LIKE 'E2E-%');
+DELETE FROM coupons WHERE code LIKE 'E2E-%';
+DELETE FROM tax_rates WHERE name LIKE 'e2e-tax-%';
+DELETE FROM announcements WHERE title LIKE 'e2e-announcement-%';
+DELETE FROM currencies WHERE code LIKE 'ZZ%';
+SQL
     # --force is required because a developer's database is usually not named "test"; the
     # pattern is what scopes the deletion, and it only matches this script's own accounts.
     ./bin/billing admin purge-test-data --pattern "e2e-%@example.test" --yes --force >/dev/null 2>&1 || true
     psql "$BILLING_DATABASE_URL" -q -v ON_ERROR_STOP=0 >/dev/null 2>&1 <<SQL || true
--- The commerce/support fixtures this script seeds. They are matched on the run stamp in a
--- column the row owns (a code, a name, a title), not on a customer, because a coupon and a
--- currency are installation-wide configuration and have no customer to hang from.
-DELETE FROM ticket_messages WHERE ticket_id IN (
-  SELECT id FROM tickets WHERE subject LIKE 'e2e-ticket-${STAMP}%');
-DELETE FROM tickets WHERE subject LIKE 'e2e-ticket-${STAMP}%';
-DELETE FROM config_option_prices WHERE config_option_id IN (
-  SELECT id FROM config_options WHERE name LIKE 'e2e-option-${STAMP}%');
-DELETE FROM config_options WHERE name LIKE 'e2e-option-${STAMP}%';
-DELETE FROM coupon_products WHERE coupon_id IN (
-  SELECT id FROM coupons WHERE code LIKE 'E2E-${STAMP}%');
-DELETE FROM coupon_redemptions WHERE coupon_id IN (
-  SELECT id FROM coupons WHERE code LIKE 'E2E-${STAMP}%');
-DELETE FROM coupons WHERE code LIKE 'E2E-${STAMP}%';
-DELETE FROM tax_rates WHERE name LIKE 'e2e-tax-${STAMP}%';
-DELETE FROM announcements WHERE title LIKE 'e2e-announcement-${STAMP}%';
-DELETE FROM currencies WHERE code = '${CURRENCY_CODE}';
 DELETE FROM services WHERE external_id LIKE 'e2e-svc-%';
 DELETE FROM price_versions WHERE product_id IN (
   SELECT id FROM products WHERE slug LIKE 'e2e-hosting-%' OR slug LIKE 'e2e-product-%' OR slug LIKE 'e2e-hidden-%');

@@ -8,6 +8,8 @@ interface MeResponse {
   permissions: string[] | null;
   csrf_token: string;
   expires_at: string;
+  /** Set by an operator's MFA reset: the account owes the panel a new second factor. */
+  mfa_enrolment_required?: boolean;
 }
 
 /** Reads the current identity, or null when nobody is signed in. */
@@ -23,6 +25,8 @@ export async function loadSession(api: Api): Promise<Session | null> {
       permissions: new Set(me.permissions ?? []),
       csrfToken: me.csrf_token,
       expiresAt: me.expires_at,
+      // The server may omit the field on a build without the route; absent means "nothing owed".
+      mfaEnrolmentRequired: me.mfa_enrolment_required === true,
     };
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) return null;

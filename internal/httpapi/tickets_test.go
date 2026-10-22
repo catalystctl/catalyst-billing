@@ -734,6 +734,12 @@ func TestTicketAttachmentSizeCap(t *testing.T) {
 
 // The download is served with the stored (normalised) type, nosniff and an attachment
 // disposition, so an uploaded page can never run on our origin.
+//
+// Since the allowlist landed, "never run on our origin" is enforced twice: a type a browser
+// renders (text/html, image/svg+xml, JavaScript, XML) is refused outright with 415, and every
+// download is served as an attachment with nosniff and a sandboxing CSP whatever its type is.
+// This test pins both halves, because the second is what protects an *accepted* type that a
+// browser would still treat as a document if the headers were missing.
 func TestTicketAttachmentContentType(t *testing.T) {
 	env := newTicketEnv(t)
 	env.seedCustomer(t, "alice@example.test", "Alice")
@@ -742,10 +748,22 @@ func TestTicketAttachmentContentType(t *testing.T) {
 	bobCookie, _ := env.login(t, "bob@example.test", "customer password 1")
 	ticketID, _ := env.openTicket(t, cookie, csrf, "screenshot")
 
-	// The uploader claims text/html. It must be stored as an opaque download.
+	// A type a browser would render is refused, not stored. That is the allowlist.
 	rec := env.uploadAttachment(t,
 		"/api/v1/portal/tickets/"+ticketID+"/attachments?filename=evil.html",
 		cookie, csrf, "text/html", []byte("<script>alert(1)</script>"))
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("html upload = %d, want 415: %s", rec.Code, rec.Body)
+	}
+	if code := problemOf(t, rec); code != "attachment_type_not_allowed" {
+		t.Fatalf("code = %q, want attachment_type_not_allowed", code)
+	}
+
+	// An accepted type is stored as itself — the *claimed* type, not the extension: a text file
+	// named .html is a text file, and the download below proves the browser is told so.
+	rec = env.uploadAttachment(t,
+		"/api/v1/portal/tickets/"+ticketID+"/attachments?filename=evil.html",
+		cookie, csrf, "text/plain", []byte("<script>alert(1)</script>"))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("upload = %d: %s", rec.Code, rec.Body)
 	}
@@ -757,8 +775,8 @@ func TestTicketAttachmentContentType(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.ContentType != "application/octet-stream" {
-		t.Fatalf("stored content type = %q, want application/octet-stream", stored.ContentType)
+	if stored.ContentType != "text/plain" {
+		t.Fatalf("stored content type = %q, want text/plain", stored.ContentType)
 	}
 	if stored.URL == "" {
 		t.Fatal("the attachment body must carry its download URL")
@@ -770,8 +788,8 @@ func TestTicketAttachmentContentType(t *testing.T) {
 		t.Fatalf("download = %d: %s", rec.Code, rec.Body)
 	}
 	h := rec.Header()
-	if got := h.Get("Content-Type"); got != "application/octet-stream" {
-		t.Fatalf("Content-Type = %q, want application/octet-stream", got)
+	if got := h.Get("Content-Type"); got != "text/plain" {
+		t.Fatalf("Content-Type = %q, want text/plain", got)
 	}
 	if got := h.Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
@@ -799,7 +817,7 @@ func TestTicketAttachmentContentType(t *testing.T) {
 	}
 	problemOf(t, rec)
 
-	// A safe type is preserved.
+	// A log file is preserved as itself.
 	rec = env.uploadAttachment(t, "/api/v1/portal/tickets/"+ticketID+"/attachments?filename=log.txt",
 		cookie, csrf, "text/plain", []byte("line one"))
 	if rec.Code != http.StatusCreated {

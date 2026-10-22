@@ -47,12 +47,17 @@ const (
 	KindRefund        Kind = "refund"
 	KindCreditNote    Kind = "credit_note"
 	KindAdjustment    Kind = "adjustment"
+	// KindCreditDebit is a staff deduction from a customer's credit balance (migration 0051).
+	// It is its own kind rather than an adjustment because the class of event is what an
+	// operator filters on: "why did this balance drop" must not return grants and claw-backs
+	// in one undifferentiated list. The entries are debit customer_credit, credit revenue.
+	KindCreditDebit Kind = "credit_debit"
 )
 
 // Valid reports whether the kind is one the schema accepts.
 func (k Kind) Valid() bool {
 	switch k {
-	case KindInvoiceIssued, KindPayment, KindRefund, KindCreditNote, KindAdjustment:
+	case KindInvoiceIssued, KindPayment, KindRefund, KindCreditNote, KindAdjustment, KindCreditDebit:
 		return true
 	default:
 		return false
@@ -71,6 +76,10 @@ const (
 	// reference from the credit note that granted the credit, because granting and spending are two
 	// economic events and a replay of one must not be mistaken for the other.
 	RefCreditApplication ReferenceType = "credit_application"
+	// RefCreditDebit is a staff deduction from a customer's credit balance. Its reference id is
+	// derived from the request's idempotency key, so replaying the request finds the existing
+	// posting instead of deducting twice.
+	RefCreditDebit ReferenceType = "credit_debit"
 )
 
 // Entry is one side of a posting. Exactly one of Debit and Credit is set.

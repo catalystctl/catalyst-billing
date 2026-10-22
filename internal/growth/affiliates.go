@@ -90,6 +90,211 @@ func (s *Store) Create(ctx context.Context, tx pgx.Tx, in NewAffiliate) (Affilia
 	return s.byID(ctx, tx, id)
 }
 
+// ------------------------------------------------ staff control over a payee --
+
+// maxReasonLength bounds a suspension or deletion reason. The reason is shown to the next
+// operator and stored in the audit row; a sentence is useful, a document is not.
+const maxReasonLength = 500
+
+// lockAffiliateState reads the part of the row a state change decides against, under a row
+// lock.
+//
+// The lock is what makes "suspend" and "delete" mutually exclusive: without it two
+// operators acting at the same moment could each read "not deleted", and the second UPDATE
+// would overwrite the first operator's decision.
+func lockAffiliateState(ctx context.Context, tx pgx.Tx, id string) (suspended, deleted bool, err error) {
+	var suspendedAt, deletedAt *time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT suspended_at, deleted_at FROM affiliates WHERE id = $1 FOR UPDATE`, id,
+	).Scan(&suspendedAt, &deletedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, ErrNotFound
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("growth: lock affiliate: %w", err)
+	}
+	return suspendedAt != nil, deletedAt != nil, nil
+}
+
+// cleanReason trims and validates a suspension or deletion reason.
+func cleanReason(reason string) (string, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		// A ban with no reason is a decision the next operator cannot review and the
+		// affiliate cannot be told about. It is refused rather than defaulted to "".
+		return "", fmt.Errorf("%w: a reason is required", ErrInvalidInput)
+	}
+	if len(reason) > maxReasonLength {
+		return "", fmt.Errorf("%w: the reason must be at most %d characters",
+			ErrInvalidInput, maxReasonLength)
+	}
+	return reason, nil
+}
+
+// actorArg renders an operator id for a nullable uuid column. An empty id — a caller with
+// no session, which the routes make impossible in practice — becomes NULL rather than an
+// invalid uuid.
+func actorArg(id string) any {
+	if ValidID(id) {
+		return id
+	}
+	return nil
+}
+
+// Suspend bans an affiliate: their code stops attributing signups and no further commission
+// is recorded for them.
+//
+// It stops future earning and nothing else. A balance already earned is untouched — a ban is
+// not a confiscation, and the money the affiliate is owed is still owed. Both halves of the
+// refusal are already enforced by 0025's `enabled` flag (affiliateForCode and
+// recordCommission), which is why this is a state change on that flag and not a new column.
+//
+// Suspending an already-suspended affiliate is a no-op: the instant and the reason on the
+// row are the record of the first decision, and a second click must not rewrite them.
+func (s *Store) Suspend(ctx context.Context, tx pgx.Tx, id, reason, actorID string) (Affiliate, error) {
+	if tx == nil {
+		return Affiliate{}, fmt.Errorf("%w: a suspension needs a transaction", ErrInvalidInput)
+	}
+	if !ValidID(id) {
+		return Affiliate{}, ErrNotFound
+	}
+	reason, err := cleanReason(reason)
+	if err != nil {
+		return Affiliate{}, err
+	}
+	suspended, deleted, err := lockAffiliateState(ctx, tx, id)
+	if err != nil {
+		return Affiliate{}, err
+	}
+	if deleted {
+		// A deleted affiliate is already out of the programme. Suspending one would record
+		// a second, contradicting decision about the same row.
+		return Affiliate{}, fmt.Errorf("%w: %s", ErrAffiliateDeleted, id)
+	}
+	if !suspended {
+		if _, err := tx.Exec(ctx, `
+			UPDATE affiliates
+			SET enabled = false, suspended_at = now(), suspended_reason = $2,
+			    suspended_by = $3, updated_at = now()
+			WHERE id = $1`, id, reason, actorArg(actorID)); err != nil {
+			return Affiliate{}, fmt.Errorf("growth: suspend affiliate: %w", err)
+		}
+	}
+	return s.byID(ctx, tx, id)
+}
+
+// Reinstate puts a suspended affiliate back into the programme.
+//
+// It is idempotent: reinstating an active affiliate clears nothing and succeeds, because the
+// caller's intent ("this affiliate should be able to earn") is already true. A deleted
+// affiliate cannot be reinstated — deletion is the end of the record, not a longer
+// suspension.
+func (s *Store) Reinstate(ctx context.Context, tx pgx.Tx, id, actorID string) (Affiliate, error) {
+	if tx == nil {
+		return Affiliate{}, fmt.Errorf("%w: reinstating needs a transaction", ErrInvalidInput)
+	}
+	if !ValidID(id) {
+		return Affiliate{}, ErrNotFound
+	}
+	_, deleted, err := lockAffiliateState(ctx, tx, id)
+	if err != nil {
+		return Affiliate{}, err
+	}
+	if deleted {
+		return Affiliate{}, fmt.Errorf("%w: %s", ErrAffiliateDeleted, id)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE affiliates
+		SET enabled = true, suspended_at = NULL, suspended_reason = '',
+		    suspended_by = NULL, updated_at = now()
+		WHERE id = $1`, id); err != nil {
+		return Affiliate{}, fmt.Errorf("growth: reinstate affiliate: %w", err)
+	}
+	return s.byID(ctx, tx, id)
+}
+
+// Delete archives an affiliate: they leave the programme for good, and everything they
+// earned stays.
+//
+// It is deliberately NOT a DELETE of the row. `affiliate_referrals` and
+// `affiliate_recurring_commissions` reference `affiliates` with no ON DELETE rule, so the
+// database already refuses to remove an affiliate that earned anything — and that refusal is
+// the correct behaviour, not an obstacle. A deleted affiliate with unpaid commission is a
+// debt we still owe: the commission rows are its explanation, the balance is its total, and
+// the payout report has to keep naming the payee so the debt can be settled. `deleted_at`
+// takes the affiliate out of the list, out of new attribution and out of further commission
+// (it is also `enabled = false`), and leaves the ledger readable and payable.
+//
+// Deleting an already-deleted affiliate is a no-op, so a retried request does not rewrite
+// when it happened.
+func (s *Store) Delete(ctx context.Context, tx pgx.Tx, id, reason, actorID string) (Affiliate, error) {
+	if tx == nil {
+		return Affiliate{}, fmt.Errorf("%w: a deletion needs a transaction", ErrInvalidInput)
+	}
+	if !ValidID(id) {
+		return Affiliate{}, ErrNotFound
+	}
+	reason, err := cleanReason(reason)
+	if err != nil {
+		return Affiliate{}, err
+	}
+	_, deleted, err := lockAffiliateState(ctx, tx, id)
+	if err != nil {
+		return Affiliate{}, err
+	}
+	if deleted {
+		return s.byID(ctx, tx, id)
+	}
+	// The suspension fields are cleared with the deletion, because "deleted" subsumes
+	// "suspended" and the CHECK in 0053 keeps it that way: the state of an affiliate has
+	// one answer, and the history of how it got there is the audit log.
+	if _, err := tx.Exec(ctx, `
+		UPDATE affiliates
+		SET enabled = false, deleted_at = now(), deleted_reason = $2, deleted_by = $3,
+		    suspended_at = NULL, suspended_reason = '', suspended_by = NULL,
+		    updated_at = now()
+		WHERE id = $1`, id, reason, actorArg(actorID)); err != nil {
+		return Affiliate{}, fmt.Errorf("growth: delete affiliate: %w", err)
+	}
+	return s.byID(ctx, tx, id)
+}
+
+// SetCommissionRate sets the affiliate's commission rate.
+//
+// The rate is an exact rational parsed by ParseRate, which bounds it at 100%: a rate the
+// code cannot parse, or one above 1, would either fail a paid order or pay out more than the
+// order took. It is stored canonically (`1/10`, never `0.1`).
+//
+// It applies to future commissions only, and that is a property of the schema rather than of
+// this function: every commission row captures the rate that produced it (0025's
+// `commission_rate`, 0043's on renewals), so changing the rate here cannot restate what a
+// past order earned. A custom rate is therefore never retroactive.
+func (s *Store) SetCommissionRate(ctx context.Context, tx pgx.Tx, id, rate string) (Affiliate, error) {
+	if tx == nil {
+		return Affiliate{}, fmt.Errorf("%w: a rate change needs a transaction", ErrInvalidInput)
+	}
+	if !ValidID(id) {
+		return Affiliate{}, ErrNotFound
+	}
+	_, canonical, err := ParseRate(rate)
+	if err != nil {
+		return Affiliate{}, err
+	}
+	_, deleted, err := lockAffiliateState(ctx, tx, id)
+	if err != nil {
+		return Affiliate{}, err
+	}
+	if deleted {
+		return Affiliate{}, fmt.Errorf("%w: %s", ErrAffiliateDeleted, id)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE affiliates SET commission_rate = $2, updated_at = now()
+		WHERE id = $1`, id, canonical); err != nil {
+		return Affiliate{}, fmt.Errorf("growth: set commission rate: %w", err)
+	}
+	return s.byID(ctx, tx, id)
+}
+
 // ByUserID resolves the affiliate for a signed-in user. A user who is not an affiliate
 // is ErrNotFound, which the portal endpoint turns into "you are not an affiliate" rather
 // than an error.
@@ -116,16 +321,37 @@ func (s *Store) Get(ctx context.Context, id string) (Affiliate, error) {
 	return s.byID(ctx, s.db(), id)
 }
 
-// List returns every affiliate, newest first, with balances and referral counts.
-func (s *Store) List(ctx context.Context) ([]Affiliate, error) {
-	rows, err := s.db().Query(ctx, `
-		SELECT a.id, a.user_id, coalesce(u.email, ''), a.code, a.commission_rate,
-		       a.payout_method, a.enabled, a.created_at,
-		       (SELECT count(*) FROM affiliate_referrals r
-		         WHERE r.affiliate_id = a.id AND r.order_id IS NULL)
-		FROM affiliates a
-		LEFT JOIN users u ON u.id = a.user_id
-		ORDER BY a.created_at DESC`)
+// ListOptions narrows the affiliate list. The zero value is "the programme as it stands
+// today": every affiliate who has not been deleted.
+type ListOptions struct {
+	// IncludeDeleted adds the archived affiliates. It exists because a deleted affiliate
+	// with an unpaid balance is still a debt, and the screen that pays debts has to be able
+	// to show the payee it is paying. It is off by default: an archived affiliate is not
+	// somebody to enrol, suspend or reason about.
+	IncludeDeleted bool
+}
+
+// affiliateProjection is the one description of an affiliate row.
+//
+// The list and the single-row read share it, so a column added to one cannot go missing
+// from the other — which is the bug that makes a screen show an empty status for exactly
+// the rows an operator most needs it for.
+const affiliateProjection = `
+	SELECT a.id, a.user_id, coalesce(u.email, ''), a.code, a.commission_rate,
+	       a.payout_method, a.enabled, a.created_at,
+	       a.suspended_at, a.suspended_reason, a.deleted_at, a.deleted_reason,
+	       (SELECT count(*) FROM affiliate_referrals r
+	         WHERE r.affiliate_id = a.id AND r.order_id IS NULL)
+	FROM affiliates a
+	LEFT JOIN users u ON u.id = a.user_id`
+
+// List returns affiliates, newest first, with balances and referral counts.
+func (s *Store) List(ctx context.Context, opts ListOptions) ([]Affiliate, error) {
+	where := ""
+	if !opts.IncludeDeleted {
+		where = " WHERE a.deleted_at IS NULL"
+	}
+	rows, err := s.db().Query(ctx, affiliateProjection+where+" ORDER BY a.created_at DESC")
 	if err != nil {
 		return nil, fmt.Errorf("growth: list affiliates: %w", err)
 	}
@@ -147,22 +373,16 @@ func (s *Store) List(ctx context.Context) ([]Affiliate, error) {
 	if len(out) == 0 {
 		return out, nil
 	}
-	if err := s.attachBalances(ctx, out, index); err != nil {
+	if err := attachBalances(ctx, s.db(), out, index); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// byID loads one affiliate and its balances.
+// byID loads one affiliate and its balances. It reads through q rather than the pool, so a
+// caller inside a transaction sees the row it has just changed.
 func (s *Store) byID(ctx context.Context, q Querier, id string) (Affiliate, error) {
-	a, err := scanAffiliate(q.QueryRow(ctx, `
-		SELECT a.id, a.user_id, coalesce(u.email, ''), a.code, a.commission_rate,
-		       a.payout_method, a.enabled, a.created_at,
-		       (SELECT count(*) FROM affiliate_referrals r
-		         WHERE r.affiliate_id = a.id AND r.order_id IS NULL)
-		FROM affiliates a
-		LEFT JOIN users u ON u.id = a.user_id
-		WHERE a.id = $1`, id))
+	a, err := scanAffiliate(q.QueryRow(ctx, affiliateProjection+" WHERE a.id = $1", id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Affiliate{}, ErrNotFound
 	}
@@ -170,7 +390,7 @@ func (s *Store) byID(ctx context.Context, q Querier, id string) (Affiliate, erro
 		return Affiliate{}, err
 	}
 	items := []Affiliate{a}
-	if err := s.attachBalances(ctx, items, map[string]int{a.ID: 0}); err != nil {
+	if err := attachBalances(ctx, q, items, map[string]int{a.ID: 0}); err != nil {
 		return Affiliate{}, err
 	}
 	return items[0], nil
@@ -181,27 +401,46 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-// scanAffiliate reads the shared affiliate projection.
+// scanAffiliate reads the shared affiliate projection and derives the status.
+//
+// The derivation is the only place the three states are decided. `enabled` gates earning
+// (0025), so it — not a stored label — is what "suspended" means; `deleted_at` is the
+// archive. A row that was disabled before 0053 has no suspension record and still reads as
+// suspended, which is the truthful answer: it does not earn.
 func scanAffiliate(row rowScanner) (Affiliate, error) {
 	var (
-		a         Affiliate
-		createdAt time.Time
+		a                      Affiliate
+		createdAt              time.Time
+		suspendedAt, deletedAt *time.Time
 	)
 	if err := row.Scan(&a.ID, &a.UserID, &a.Email, &a.Code, &a.CommissionRate,
-		&a.PayoutMethod, &a.Enabled, &createdAt, &a.ReferredCount); err != nil {
+		&a.PayoutMethod, &a.Enabled, &createdAt, &suspendedAt, &a.SuspendedReason,
+		&deletedAt, &a.DeletedReason, &a.ReferredCount); err != nil {
 		return Affiliate{}, err
 	}
 	a.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+	switch {
+	case deletedAt != nil:
+		a.Status = AffiliateDeleted
+		a.DeletedAt = deletedAt.UTC().Format(time.RFC3339)
+	case !a.Enabled:
+		a.Status = AffiliateSuspended
+		if suspendedAt != nil {
+			a.SuspendedAt = suspendedAt.UTC().Format(time.RFC3339)
+		}
+	default:
+		a.Status = AffiliateActive
+	}
 	return a, nil
 }
 
 // attachBalances fills Balances for the given affiliates with one query.
-func (s *Store) attachBalances(ctx context.Context, items []Affiliate, index map[string]int) error {
+func attachBalances(ctx context.Context, q Querier, items []Affiliate, index map[string]int) error {
 	ids := make([]string, 0, len(items))
 	for _, a := range items {
 		ids = append(ids, a.ID)
 	}
-	rows, err := s.db().Query(ctx, `
+	rows, err := q.Query(ctx, `
 		SELECT affiliate_id, currency, balance_minor, paid_minor
 		FROM affiliate_balances WHERE affiliate_id = ANY($1::uuid[])
 		ORDER BY currency`, ids)
@@ -579,7 +818,7 @@ func recordCommission(ctx context.Context, tx pgx.Tx, customerID, orderID, curre
 func (s *Store) PayoutReport(ctx context.Context) ([]PayoutLine, error) {
 	rows, err := s.db().Query(ctx, `
 		SELECT b.affiliate_id, a.code, a.user_id, coalesce(u.email, ''), b.currency,
-		       b.balance_minor, b.paid_minor,
+		       b.balance_minor, b.paid_minor, a.deleted_at IS NOT NULL,
 		       (SELECT count(*) FROM affiliate_referrals r
 		         WHERE r.affiliate_id = b.affiliate_id
 		           AND r.currency = b.currency
@@ -602,7 +841,7 @@ func (s *Store) PayoutReport(ctx context.Context) ([]PayoutLine, error) {
 			owed, lifetime int64
 		)
 		if err := rows.Scan(&line.AffiliateID, &line.Code, &line.UserID, &line.Email,
-			&line.Currency, &owed, &lifetime, &line.PendingCommissions); err != nil {
+			&line.Currency, &owed, &lifetime, &line.Deleted, &line.PendingCommissions); err != nil {
 			return nil, fmt.Errorf("growth: scan payout line: %w", err)
 		}
 		cur, err := currencyOf(line.Currency)

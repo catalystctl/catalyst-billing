@@ -60,6 +60,10 @@ export interface RequestOptions {
   noIdempotency?: boolean;
   /** A mutation that must not send the CSRF header (public entry points). */
   noCSRF?: boolean;
+  /** A body that is sent verbatim rather than JSON-encoded: a file upload. */
+  raw?: BodyInit;
+  /** The Content-Type of a raw body. */
+  contentType?: string;
 }
 
 const CSRF_HEADER = "X-CSRF-Token";
@@ -147,9 +151,37 @@ export class Api {
     return this.request<T>("DELETE", path, { ...options, body });
   }
 
+  /**
+   * A mutation whose body is *not* JSON.
+   *
+   * A file upload is the reason this exists: `post()` JSON-encodes its body, so a `File` would
+   * arrive as `{}` — a 9 MB PDF stored as two bytes. The bytes are sent as they are, with the
+   * caller's own Content-Type, and everything else (CSRF, the idempotency key, the 401 handler,
+   * the problem+json envelope) is the same as any other mutation. That is the whole point of
+   * adding a method here rather than calling `fetch` from the screen: a second HTTP client would
+   * be the one that is silently wrong the next time one of those four changes.
+   */
+  async postRaw<T>(
+    path: string,
+    body: BodyInit,
+    options: RequestOptions & { contentType?: string } = {},
+  ): Promise<T> {
+    return this.request<T>("POST", path, {
+      ...options,
+      raw: body,
+      contentType: options.contentType ?? "application/octet-stream",
+    });
+  }
+
   private async request<T>(method: string, path: string, options: RequestOptions): Promise<T> {
     const headers: Record<string, string> = { Accept: "application/json" };
-    if (options.body !== undefined) headers["Content-Type"] = "application/json";
+    if (options.raw !== undefined) {
+      // A raw body carries its own type. The browser must not add one, and it must not add a
+      // charset to a binary: the server's allowlist reads the type exactly as sent.
+      headers["Content-Type"] = options.contentType ?? "application/octet-stream";
+    } else if (options.body !== undefined) {
+      headers["Content-Type"] = "application/json";
+    }
 
     if (method !== "GET") {
       this.invalidate();
@@ -168,7 +200,12 @@ export class Api {
         method,
         headers,
         credentials: "same-origin",
-        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        body:
+          options.raw !== undefined
+            ? options.raw
+            : options.body === undefined
+              ? undefined
+              : JSON.stringify(options.body),
         signal: options.signal ?? null,
         // A redirect from the API is never expected; following one would turn a JSON
         // request into an HTML fetch of the sign-in page.
@@ -185,7 +222,32 @@ export class Api {
 
     if (response.status === 204) return undefined as T;
 
-    const contentType = response.headers.get("Content-Type") ?? "";
+    /**
+ * True when a 401 means the session itself is gone, rather than a credential the user just typed.
+ *
+ * A 401 is not one thing. The credential endpoints legitimately answer 401 for a *wrong secret*
+ * while the session is perfectly healthy: disabling two-factor with a mistyped code, confirming an
+ * enrolment, changing a password with the wrong current one. Treating every 401 as "session
+ * expired" signed the user out mid-dialog and discarded the enrolment secret they were half way
+ * through typing — the flow looked broken when the server was answering correctly.
+ *
+ * This is an allowlist, not a denylist of the credential codes. A new credential endpoint added
+ * later gets the safe behaviour by default; the alternative would silently sign people out every
+ * time someone adds one.
+ */
+function isSessionDead(code: string | undefined): boolean {
+  return (
+    code === "unauthenticated" ||
+    code === "authentication_required" ||
+    code === "operator_session_ended" ||
+    // No code at all means the response was not our problem+json (a proxy 401, say), which we
+    // cannot interpret as a credential failure, so it keeps the old behaviour.
+    code === undefined ||
+    code === ""
+  );
+}
+
+const contentType = response.headers.get("Content-Type") ?? "";
     const isJSON = contentType.includes("json");
     const payload: unknown = isJSON ? await response.json().catch(() => null) : await response.text().catch(() => "");
 
@@ -194,7 +256,7 @@ export class Api {
         payload && typeof payload === "object"
           ? (payload as Problem)
           : { title: response.statusText, detail: typeof payload === "string" ? payload.slice(0, 300) : "" };
-      if (response.status === 401) this.onUnauthorized?.();
+      if (response.status === 401 && isSessionDead(problem.code)) this.onUnauthorized?.();
       throw new ApiError(response.status, problem);
     }
 

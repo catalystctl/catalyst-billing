@@ -38,6 +38,7 @@ import (
 
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/lifecycle"
+	"github.com/catalyst/billing/internal/tax"
 )
 
 func init() {
@@ -161,6 +162,17 @@ var workerJobs = []automationJob{
 		KillSwitch: lifecycle.TerminationKillSwitch,
 		Settings:   []string{"cronjob.terminate_days"},
 		Source:     "internal/lifecycle/lifecycle.go",
+	},
+	// The tax-rate refresh. Its interval is the worker's *tick*, not the refresh cadence: the
+	// source's own `refresh_interval_hours` (configured on the tax-rates screen) decides whether a
+	// tick fetches anything, so an installation that wants a daily refresh is not polled hourly.
+	// There is no kill switch: switching the source off on that screen is the brake, and it stops
+	// the fetch itself rather than only the scheduler's share of it.
+	{
+		Name:     tax.JobName,
+		Interval: tax.JobInterval,
+		Summary:  "Fetches the configured external tax-rate source and applies what it says, recording provenance and never replacing a rate an operator typed.",
+		Source:   "cmd/billing/jobs.go",
 	},
 }
 

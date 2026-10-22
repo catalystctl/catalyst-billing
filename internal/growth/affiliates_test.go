@@ -3,6 +3,7 @@ package growth_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/catalyst/billing/internal/growth"
@@ -481,5 +482,474 @@ func TestByUserIDIsScoped(t *testing.T) {
 	// The referred customer is not an affiliate.
 	if _, err := w.store.ByUserID(ctx, w.customerUser); !errors.Is(err, growth.ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// ------------------------------------------------------- staff control (0053) --
+
+// anotherPaidOrder adds a second paid order and its paid invoice for the same referred
+// customer, so a test can ask "what does the *next* order earn?".
+func (w *world) anotherPaidOrder(t *testing.T, totalMinor int64, number string) (orderID, invoiceID string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := w.pool.QueryRow(ctx, `
+		INSERT INTO orders (customer_id, status, currency, total_minor)
+		VALUES ($1, 'paid', 'USD', $2) RETURNING id`, w.customerID, totalMinor).Scan(&orderID); err != nil {
+		t.Fatalf("order: %v", err)
+	}
+	if err := w.pool.QueryRow(ctx, `
+		INSERT INTO invoices (number, customer_id, order_id, status, currency,
+			subtotal_minor, tax_minor, total_minor, amount_paid_minor, issued_at, snapshot)
+		VALUES ($1, $2, $3, 'paid', 'USD', $4, 0, $4, $4, now(), '{"schema_version":1}'::jsonb)
+		RETURNING id`, number, w.customerID, orderID, totalMinor).Scan(&invoiceID); err != nil {
+		t.Fatalf("invoice: %v", err)
+	}
+	return orderID, invoiceID
+}
+
+// commissionOn records the commission for a paid invoice, returning the error so a test can
+// assert the refusal.
+func (w *world) commissionOn(t *testing.T, invoiceID string) (growth.Referral, error) {
+	t.Helper()
+	ctx := context.Background()
+	var (
+		out growth.Referral
+		err error
+	)
+	if txErr := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		out, err = growth.RecordCommissionForPaidInvoice(ctx, tx, invoiceID)
+		return nil
+	}); txErr != nil {
+		t.Fatalf("transaction: %v", txErr)
+	}
+	return out, err
+}
+
+// suspend is the store call under test, in its own transaction.
+func (w *world) suspend(t *testing.T, reason string) growth.Affiliate {
+	t.Helper()
+	ctx := context.Background()
+	var out growth.Affiliate
+	if err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		out, err = w.store.Suspend(ctx, tx, w.affiliateID, reason, "")
+		return err
+	}); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	return out
+}
+
+// A suspended affiliate earns nothing more, and their link attributes nobody.
+//
+// This is the whole point of the ban: the switch that stops the money is the same `enabled`
+// flag the commission path already reads (0025), so the assertion is about the money, not
+// about a label. The commission earned *before* the suspension is untouched — a ban stops
+// future earning, it is not a confiscation.
+func TestSuspendedAffiliateAccruesNoCommission(t *testing.T) {
+	w := newWorld(t, "10%")
+	ctx := context.Background()
+
+	first, err := w.commissionOn(t, w.invoiceID)
+	if err != nil {
+		t.Fatalf("first commission: %v", err)
+	}
+	if first.Commission.Minor() != 1235 {
+		t.Fatalf("first commission = %d, want 1235", first.Commission.Minor())
+	}
+
+	suspended := w.suspend(t, "chargebacks on every referral")
+	if suspended.Status != growth.AffiliateSuspended {
+		t.Fatalf("status = %q, want %q", suspended.Status, growth.AffiliateSuspended)
+	}
+	if suspended.Enabled {
+		t.Fatal("a suspended affiliate is still enabled")
+	}
+	if suspended.SuspendedAt == "" || suspended.SuspendedReason != "chargebacks on every referral" {
+		t.Fatalf("the suspension was not recorded: %+v", suspended)
+	}
+
+	// The next order of the referred customer earns nothing, and that refusal is the
+	// affiliate's state, not an accident of the order.
+	nextOrder, nextInvoice := w.anotherPaidOrder(t, 20000, "INV-G2")
+	if _, err := w.commissionOn(t, nextInvoice); !errors.Is(err, growth.ErrAffiliateDisabled) {
+		t.Fatalf("commission for a suspended affiliate: err = %v, want ErrAffiliateDisabled", err)
+	}
+	var rows int
+	if err := w.pool.QueryRow(ctx, `
+		SELECT count(*) FROM affiliate_referrals WHERE order_id = $1`, nextOrder).Scan(&rows); err != nil {
+		t.Fatalf("count commissions: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("%d commission rows for an order paid to a suspended affiliate, want 0", rows)
+	}
+
+	// And their referral link attributes nobody while they are suspended: a banned affiliate
+	// does not get to keep recruiting.
+	err = w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var fresh string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO customers (email, name) VALUES ('after-ban@example.test', 'After Ban')
+			RETURNING id`).Scan(&fresh); err != nil {
+			return err
+		}
+		_, err := growth.AttributeSignup(ctx, tx, "PARTNER10", fresh)
+		return err
+	})
+	if !errors.Is(err, growth.ErrUnknownCode) {
+		t.Fatalf("attribution with a suspended code: err = %v, want ErrUnknownCode", err)
+	}
+
+	// What was already earned is still owed: the ban did not confiscate it, and the payout
+	// report still names them.
+	var balance int64
+	if err := w.pool.QueryRow(ctx, `
+		SELECT balance_minor FROM affiliate_balances
+		WHERE affiliate_id = $1 AND currency = 'USD'`, w.affiliateID).Scan(&balance); err != nil {
+		t.Fatalf("load balance: %v", err)
+	}
+	if balance != 1235 {
+		t.Fatalf("balance after suspension = %d, want 1235 (a ban is not a confiscation)", balance)
+	}
+	lines, err := w.store.PayoutReport(ctx)
+	if err != nil {
+		t.Fatalf("payout report: %v", err)
+	}
+	if len(lines) != 1 || lines[0].Owed.Minor() != 1235 {
+		t.Fatalf("payout report = %+v, want the suspended affiliate owed 1235", lines)
+	}
+
+	// Reinstating puts them back to work with the rate they had, and the next order earns.
+	var reinstated growth.Affiliate
+	if err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		reinstated, err = w.store.Reinstate(ctx, tx, w.affiliateID, "")
+		return err
+	}); err != nil {
+		t.Fatalf("reinstate: %v", err)
+	}
+	if reinstated.Status != growth.AffiliateActive || !reinstated.Enabled {
+		t.Fatalf("after reinstatement: %+v", reinstated)
+	}
+	if reinstated.SuspendedAt != "" || reinstated.SuspendedReason != "" {
+		t.Fatalf("the suspension record survived the reinstatement: %+v", reinstated)
+	}
+	if reinstated.CommissionRate != "1/10" {
+		t.Fatalf("rate after reinstatement = %q, want 1/10", reinstated.CommissionRate)
+	}
+	third, err := w.commissionOn(t, nextInvoice)
+	if err != nil {
+		t.Fatalf("commission after reinstatement: %v", err)
+	}
+	if third.Commission.Minor() != 2000 {
+		t.Fatalf("commission after reinstatement = %d, want 2000", third.Commission.Minor())
+	}
+}
+
+// A suspension needs a reason, and a second suspension does not rewrite the first one's
+// record. Both are what make the ban reviewable.
+func TestSuspendRequiresAReasonAndIsIdempotent(t *testing.T) {
+	w := newWorld(t, "10%")
+	ctx := context.Background()
+
+	for _, bad := range []string{"", "   "} {
+		err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := w.store.Suspend(ctx, tx, w.affiliateID, bad, "")
+			return err
+		})
+		if !errors.Is(err, growth.ErrInvalidInput) {
+			t.Fatalf("suspend with reason %q: err = %v, want ErrInvalidInput", bad, err)
+		}
+	}
+
+	first := w.suspend(t, "first decision")
+	second := w.suspend(t, "second decision")
+	if second.SuspendedAt != first.SuspendedAt {
+		t.Fatalf("the second suspension moved the timestamp: %q then %q",
+			first.SuspendedAt, second.SuspendedAt)
+	}
+	if second.SuspendedReason != "first decision" {
+		t.Fatalf("the second suspension rewrote the reason to %q", second.SuspendedReason)
+	}
+
+	// A long reason is refused rather than silently truncated.
+	err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := w.store.Suspend(ctx, tx, w.affiliateID, strings.Repeat("x", 501), "")
+		return err
+	})
+	if !errors.Is(err, growth.ErrInvalidInput) {
+		t.Fatalf("over-long reason: err = %v, want ErrInvalidInput", err)
+	}
+}
+
+// A custom rate is bounded at 100% and is never retroactive: the commission rows already
+// recorded keep the rate that produced them, because the rate is captured on the row.
+func TestSetCommissionRateIsBoundedAndNotRetroactive(t *testing.T) {
+	w := newWorld(t, "10%")
+	ctx := context.Background()
+
+	first, err := w.commissionOn(t, w.invoiceID)
+	if err != nil {
+		t.Fatalf("commission at 10%%: %v", err)
+	}
+	if first.Commission.Minor() != 1235 || first.Rate != "1/10" {
+		t.Fatalf("first commission = %d at %q, want 1235 at 1/10",
+			first.Commission.Minor(), first.Rate)
+	}
+
+	var updated growth.Affiliate
+	if err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		// A percentage, a decimal and a fraction are the same rate; the stored form is the
+		// exact rational, never the decimal that happened to parse.
+		updated, err = w.store.SetCommissionRate(ctx, tx, w.affiliateID, "25%")
+		return err
+	}); err != nil {
+		t.Fatalf("set rate: %v", err)
+	}
+	if updated.CommissionRate != "1/4" {
+		t.Fatalf("stored rate = %q, want 1/4", updated.CommissionRate)
+	}
+
+	// The recorded commission is untouched: not the amount, not the captured rate, not the
+	// balance it contributes to.
+	var minor int64
+	var rate string
+	if err := w.pool.QueryRow(ctx, `
+		SELECT commission_minor, commission_rate FROM affiliate_referrals
+		WHERE order_id = $1`, w.orderID).Scan(&minor, &rate); err != nil {
+		t.Fatalf("load commission: %v", err)
+	}
+	if minor != 1235 || rate != "1/10" {
+		t.Fatalf("the recorded commission changed to %d at %q, want 1235 at 1/10", minor, rate)
+	}
+	var balance int64
+	if err := w.pool.QueryRow(ctx, `
+		SELECT balance_minor FROM affiliate_balances
+		WHERE affiliate_id = $1 AND currency = 'USD'`, w.affiliateID).Scan(&balance); err != nil {
+		t.Fatalf("load balance: %v", err)
+	}
+	if balance != 1235 {
+		t.Fatalf("balance = %d after a rate change, want 1235", balance)
+	}
+
+	// The next order earns the new rate: 25% of 20000 is 5000.
+	_, nextInvoice := w.anotherPaidOrder(t, 20000, "INV-G3")
+	next, err := w.commissionOn(t, nextInvoice)
+	if err != nil {
+		t.Fatalf("commission at 25%%: %v", err)
+	}
+	if next.Commission.Minor() != 5000 || next.Rate != "1/4" {
+		t.Fatalf("second commission = %d at %q, want 5000 at 1/4",
+			next.Commission.Minor(), next.Rate)
+	}
+
+	// Above 100% is refused and changes nothing: a 150% commission pays out more than the
+	// order took.
+	for _, bad := range []string{"150%", "1.5", "3/2", "-10%", "abc", ""} {
+		err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := w.store.SetCommissionRate(ctx, tx, w.affiliateID, bad)
+			return err
+		})
+		if !errors.Is(err, growth.ErrInvalidRate) {
+			t.Fatalf("rate %q: err = %v, want ErrInvalidRate", bad, err)
+		}
+	}
+	after, err := w.store.Get(ctx, w.affiliateID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if after.CommissionRate != "1/4" {
+		t.Fatalf("a refused rate change altered the stored rate to %q", after.CommissionRate)
+	}
+
+	// 100% is the inclusive bound and 0% is a legitimate "no commission" rate.
+	for _, good := range []string{"100%", "0"} {
+		if err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := w.store.SetCommissionRate(ctx, tx, w.affiliateID, good)
+			return err
+		}); err != nil {
+			t.Fatalf("rate %q: unexpected error %v", good, err)
+		}
+	}
+}
+
+// Deleting an affiliate keeps the ledger: the commission rows stay, the balance stays owed
+// and payable, and the payee leaves the list.
+//
+// A deleted affiliate with unpaid commission is a debt, and the delete path is an archive for
+// exactly that reason — the foreign keys from affiliate_referrals would refuse a real DELETE,
+// and that refusal is correct rather than an obstacle to work around.
+func TestDeleteAffiliatePreservesCommissionAndDebt(t *testing.T) {
+	w := newWorld(t, "10%")
+	ctx := context.Background()
+
+	if _, err := w.commissionOn(t, w.invoiceID); err != nil {
+		t.Fatalf("commission: %v", err)
+	}
+
+	var deleted growth.Affiliate
+	if err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		deleted, err = w.store.Delete(ctx, tx, w.affiliateID, "left the programme", "")
+		return err
+	}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if deleted.Status != growth.AffiliateDeleted || deleted.Enabled {
+		t.Fatalf("after deletion: %+v", deleted)
+	}
+	if deleted.DeletedAt == "" || deleted.DeletedReason != "left the programme" {
+		t.Fatalf("the deletion was not recorded: %+v", deleted)
+	}
+
+	// The ledger is intact: one attribution and one commission, still worth 1235.
+	var referrals, commissions int
+	if err := w.pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE order_id IS NULL),
+		       count(*) FILTER (WHERE order_id IS NOT NULL)
+		FROM affiliate_referrals WHERE affiliate_id = $1`, w.affiliateID,
+	).Scan(&referrals, &commissions); err != nil {
+		t.Fatalf("count referrals: %v", err)
+	}
+	if referrals != 1 || commissions != 1 {
+		t.Fatalf("after deletion: %d attributions and %d commissions, want 1 and 1",
+			referrals, commissions)
+	}
+	var minor int64
+	if err := w.pool.QueryRow(ctx, `
+		SELECT commission_minor FROM affiliate_referrals WHERE order_id = $1`,
+		w.orderID).Scan(&minor); err != nil {
+		t.Fatalf("load commission: %v", err)
+	}
+	if minor != 1235 {
+		t.Fatalf("commission after deletion = %d, want 1235", minor)
+	}
+
+	// The debt is still on the payout report, and it is still payable: archiving the payee
+	// does not forgive what we owe them.
+	lines, err := w.store.PayoutReport(ctx)
+	if err != nil {
+		t.Fatalf("payout report: %v", err)
+	}
+	if len(lines) != 1 || lines[0].Owed.Minor() != 1235 || !lines[0].Deleted {
+		t.Fatalf("payout report = %+v, want the deleted affiliate owed 1235 and marked deleted",
+			lines)
+	}
+	paid, err := w.store.PayOut(ctx, w.affiliateID, "USD")
+	if err != nil {
+		t.Fatalf("paying a deleted affiliate: %v", err)
+	}
+	if paid.Amount.Minor() != 1235 {
+		t.Fatalf("paid = %d, want 1235", paid.Amount.Minor())
+	}
+
+	// The list hides them by default and shows them when asked, which is what makes the
+	// archive reachable for an audit.
+	active, err := w.store.List(ctx, growth.ListOptions{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("%d affiliates in the list after deletion, want 0", len(active))
+	}
+	all, err := w.store.List(ctx, growth.ListOptions{IncludeDeleted: true})
+	if err != nil {
+		t.Fatalf("list with deleted: %v", err)
+	}
+	if len(all) != 1 || all[0].Status != growth.AffiliateDeleted {
+		t.Fatalf("list with deleted = %+v, want the archived affiliate", all)
+	}
+
+	// Nothing new can be decided about an archived affiliate, and nothing new accrues.
+	_, nextInvoice := w.anotherPaidOrder(t, 5000, "INV-G4")
+	if _, err := w.commissionOn(t, nextInvoice); !errors.Is(err, growth.ErrAffiliateDisabled) {
+		t.Fatalf("commission for a deleted affiliate: err = %v, want ErrAffiliateDisabled", err)
+	}
+	for name, call := range map[string]func(context.Context, pgx.Tx) error{
+		"suspend": func(ctx context.Context, tx pgx.Tx) error {
+			_, err := w.store.Suspend(ctx, tx, w.affiliateID, "too late", "")
+			return err
+		},
+		"reinstate": func(ctx context.Context, tx pgx.Tx) error {
+			_, err := w.store.Reinstate(ctx, tx, w.affiliateID, "")
+			return err
+		},
+		"set rate": func(ctx context.Context, tx pgx.Tx) error {
+			_, err := w.store.SetCommissionRate(ctx, tx, w.affiliateID, "50%")
+			return err
+		},
+	} {
+		err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error { return call(ctx, tx) })
+		if !errors.Is(err, growth.ErrAffiliateDeleted) {
+			t.Fatalf("%s on a deleted affiliate: err = %v, want ErrAffiliateDeleted", name, err)
+		}
+	}
+
+	// A repeated deletion is a no-op, not a second archive.
+	var again growth.Affiliate
+	if err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		again, err = w.store.Delete(ctx, tx, w.affiliateID, "again", "")
+		return err
+	}); err != nil {
+		t.Fatalf("second delete: %v", err)
+	}
+	if again.DeletedAt != deleted.DeletedAt || again.DeletedReason != "left the programme" {
+		t.Fatalf("the second deletion rewrote the record: %+v", again)
+	}
+}
+
+// Deleting needs a reason, for the same reason suspending does: the archive is a decision
+// somebody has to be able to review later.
+func TestDeleteRequiresAReason(t *testing.T) {
+	w := newWorld(t, "10%")
+	ctx := context.Background()
+	err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := w.store.Delete(ctx, tx, w.affiliateID, "  ", "")
+		return err
+	})
+	if !errors.Is(err, growth.ErrInvalidInput) {
+		t.Fatalf("delete without a reason: err = %v, want ErrInvalidInput", err)
+	}
+	// Nothing changed.
+	got, err := w.store.Get(ctx, w.affiliateID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != growth.AffiliateActive {
+		t.Fatalf("status = %q after a refused deletion, want active", got.Status)
+	}
+}
+
+// The state changes are refused for an affiliate that does not exist, rather than silently
+// succeeding against nothing.
+func TestStateChangesRefuseUnknownAffiliate(t *testing.T) {
+	w := newWorld(t, "10%")
+	ctx := context.Background()
+	const missing = "00000000-0000-0000-0000-000000000000"
+	calls := map[string]func(context.Context, pgx.Tx) error{
+		"suspend": func(ctx context.Context, tx pgx.Tx) error {
+			_, err := w.store.Suspend(ctx, tx, missing, "reason", "")
+			return err
+		},
+		"reinstate": func(ctx context.Context, tx pgx.Tx) error {
+			_, err := w.store.Reinstate(ctx, tx, missing, "")
+			return err
+		},
+		"delete": func(ctx context.Context, tx pgx.Tx) error {
+			_, err := w.store.Delete(ctx, tx, missing, "reason", "")
+			return err
+		},
+		"set rate": func(ctx context.Context, tx pgx.Tx) error {
+			_, err := w.store.SetCommissionRate(ctx, tx, missing, "10%")
+			return err
+		},
+	}
+	for name, call := range calls {
+		err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error { return call(ctx, tx) })
+		if !errors.Is(err, growth.ErrNotFound) {
+			t.Fatalf("%s on an unknown affiliate: err = %v, want ErrNotFound", name, err)
+		}
 	}
 }

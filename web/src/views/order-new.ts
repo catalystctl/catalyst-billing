@@ -1,10 +1,14 @@
 // Creating an order: buy a catalog price for a billing account.
 //
-// Two decisions shape this screen:
+// Three decisions shape this screen:
 //
-//  - The price is chosen from the catalog, never typed. The API takes a price version id
-//    and reads the amount from it, so the client cannot propose a price — the select below
-//    is a picker, not an input.
+//  - The price is chosen from the catalog, never typed — except in the one place where typing
+//    it is the point. A price version id is what the API takes for the *product*, so the select
+//    below is a picker, not an input; the amount is read from the version.
+//  - A negotiated price is a separate, explicit field: an amount plus a reason. The API stores
+//    it as an override on the line and never writes the catalog, so one customer's deal cannot
+//    become everybody's price. The amount is sent as integer minor units, parsed from the
+//    currency's own scale — never `Number(x) * 100`.
 //  - The customer is optional. Leaving it unset bills the acting staff member: a staff user
 //    who is the billing account should not have to link an account to an account before
 //    they can buy something. Choosing someone else is the "sell to this customer" case.
@@ -14,6 +18,7 @@ import { debounce, h } from "../lib/dom";
 import { moneyWithCode, type Amount } from "../lib/format";
 import type { Ctx } from "../lib/types";
 import {
+  amountFromInput,
   banner,
   btn,
   card,
@@ -23,6 +28,7 @@ import {
   pageHead,
   searchInput,
   select,
+  textarea,
 } from "../ui/kit";
 
 export const meta = { title: "New order", crumb: "New order" };
@@ -56,6 +62,8 @@ interface CreatedOrder {
   invoice_id: string;
   number: string;
   status: string;
+  manual_price?: boolean;
+  custom_price_minor?: number;
 }
 
 const INTERVAL_LABEL: Record<string, string> = {
@@ -174,6 +182,74 @@ export default async function orderNewPage(ctx: Ctx): Promise<Node> {
   const priceSelect = select([], { id: "order-price" });
   const quantity = input({ id: "order-quantity", type: "number", min: 1, max: 1000, value: 1 });
 
+  // ----------------------------------------------------------- custom price --
+  //
+  // Both fields are always on the page rather than behind a disclosure: a staff member looking
+  // for "sell this at 5.00" must find it, and a browser test must be able to reach it without
+  // first discovering a toggle. Leaving the amount empty means "catalog price".
+  const customPrice = input({
+    id: "order-custom-price",
+    type: "text",
+    inputmode: "decimal",
+    placeholder: "e.g. 5.00",
+    autocomplete: "off",
+  });
+  const customReason = textarea({
+    id: "order-custom-reason",
+    maxlength: 500,
+    placeholder: "Why this customer pays a different price — recorded on the order and the invoice",
+  });
+  const customPreview = h("p", { class: "field-hint" });
+
+  /** The catalog price currently selected, if any. */
+  const chosenPrice = (): Price | undefined =>
+    products.find((p) => p.id === productSelect.value)?.prices.find((price) => price.id === priceSelect.value);
+
+  /**
+   * The typed amount in minor units, or null when it is empty or not a number.
+   *
+   * The scale comes from the chosen price's currency, so 5.00 is 500 in USD and 5 in JPY.
+   */
+  const typedCustomMinor = (): number | null => {
+    const raw = customPrice.value.trim();
+    if (raw === "") return null;
+    return amountFromInput(raw, chosenPrice()?.amount.scale ?? 2);
+  };
+
+  const paintCustomPreview = () => {
+    const price = chosenPrice();
+    const raw = customPrice.value.trim();
+    if (raw === "") {
+      customPreview.textContent = price
+        ? `Charging the catalog price: ${moneyWithCode(price.amount)} per unit.`
+        : "";
+      return;
+    }
+    const minor = typedCustomMinor();
+    if (minor === null) {
+      customPreview.textContent = "That is not an amount this currency can express.";
+      return;
+    }
+    const charged = moneyWithCode({
+      minor,
+      currency: price?.currency ?? "USD",
+      scale: price?.amount.scale ?? 2,
+    });
+    // A negotiated price is this invoice's price, not the subscription's: a renewal bills the
+    // catalog amount. Saying so here is cheaper than explaining it on the next invoice.
+    const renewalNote =
+      price && price.interval !== "one_time" && price.interval !== "free"
+        ? " Renewals will bill the catalog price."
+        : "";
+    customPreview.textContent = price
+      ? `This order charges ${charged} per unit instead of the catalog ${moneyWithCode(
+          price.amount,
+        )}, with no setup fee. The catalog is not changed.${renewalNote}`
+      : `This order charges ${charged} per unit. The catalog is not changed.${renewalNote}`;
+  };
+
+  customPrice.addEventListener("input", paintCustomPreview);
+
   const paintPrices = () => {
     const product = products.find((p) => p.id === productSelect.value);
     const prices = product?.prices ?? [];
@@ -189,9 +265,13 @@ export default async function orderNewPage(ctx: Ctx): Promise<Node> {
       ),
     );
     priceSelect.disabled = prices.length === 0;
+    paintCustomPreview();
   };
 
   productSelect.addEventListener("change", paintPrices);
+  // The preview quotes the amount in the chosen price's currency and scale, so a currency
+  // switch has to repaint it.
+  priceSelect.addEventListener("change", paintCustomPreview);
 
   // --------------------------------------------------------------- the page --
   const submit = btn("Create order", { type: "submit", variant: "primary", icon: "plus" });
@@ -210,13 +290,53 @@ export default async function orderNewPage(ctx: Ctx): Promise<Node> {
       return;
     }
 
+    // A custom price is an amount and a reason, or neither. The three ways to get it wrong are
+    // checked here so the operator sees the problem before an order exists; the server refuses
+    // all three as well, because the screen is a courtesy and the handler is the rule.
+    const reason = customReason.value.trim();
+    const typedAmount = customPrice.value.trim() !== "";
+    const customMinor = typedCustomMinor();
+    if (typedAmount && customMinor === null) {
+      errorHost.replaceChildren(
+        banner("danger", "Invalid custom price", "Enter the amount as a number, e.g. 5.00."),
+      );
+      return;
+    }
+    if (typedAmount && customMinor !== null && customMinor <= 0) {
+      errorHost.replaceChildren(
+        banner("danger", "Invalid custom price", "A custom price must be greater than zero."),
+      );
+      return;
+    }
+    if (typedAmount && reason === "") {
+      errorHost.replaceChildren(
+        banner(
+          "danger",
+          "A custom price needs a reason",
+          "Say why this customer pays a different price. It is recorded on the order and the invoice, so a later reader can tell it apart from a catalog price.",
+        ),
+      );
+      return;
+    }
+    if (!typedAmount && reason !== "") {
+      errorHost.replaceChildren(
+        banner("danger", "Missing custom price", "A reason was entered but no amount: enter the price, or clear the reason."),
+      );
+      return;
+    }
+
     const body: Record<string, unknown> = { price_version_id: priceVersionID, quantity: qty };
     if (selectedCustomer) body.customer_id = selectedCustomer.id;
+    if (customMinor !== null) {
+      // Integer minor units, already scaled by the currency: the server never sees a float.
+      body.custom_price_minor = customMinor;
+      body.custom_price_reason = reason;
+    }
 
     if (submit instanceof HTMLButtonElement) submit.disabled = true;
     try {
       const created = await ctx.api.post<CreatedOrder>("/api/v1/staff/orders", body);
-      ctx.toast("Order created", {
+      ctx.toast(created.manual_price ? "Order created at a custom price" : "Order created", {
         tone: "success",
         detail: created.number ? `${created.number} · awaiting payment` : "Awaiting payment",
       });
@@ -245,13 +365,35 @@ export default async function orderNewPage(ctx: Ctx): Promise<Node> {
     card({ title: "Billing account", sub: "Who is being billed", body: customerHost }),
     card({
       title: "Product",
-      sub: "Priced from the catalog — the amount is never sent by this form",
+      sub: "Priced from the catalog, or at a negotiated price for this customer",
       body: h(
         "div",
         { class: "stack" },
         field({ label: "Product", control: productSelect, id: "order-product" }),
         field({ label: "Price", control: priceSelect, id: "order-price", hint: "Prices are versioned; an issued invoice keeps the version it was sold at." }),
         field({ label: "Quantity", control: quantity, id: "order-quantity", hint: "1 to 1000" }),
+      ),
+    }),
+    card({
+      title: "Custom price",
+      sub: "For this order only — the catalog price is never changed",
+      body: h(
+        "div",
+        { class: "stack" },
+        field({
+          label: "Price per unit",
+          control: customPrice,
+          id: "order-custom-price",
+          hint: "Leave empty to charge the catalog price. A custom price replaces the catalog price and its setup fee for this order, and is recorded on the invoice as manually priced.",
+        }),
+        field({
+          label: "Reason",
+          control: customReason,
+          id: "order-custom-reason",
+          required: true,
+          hint: "Required with a custom price. Written to the order and the invoice, so the amount can be explained later.",
+        }),
+        customPreview,
       ),
     }),
     h("div", { class: "row" }, h("span", { class: "spacer" }), submit),
@@ -298,6 +440,7 @@ export default async function orderNewPage(ctx: Ctx): Promise<Node> {
           productSelect.value = product.id;
           paintPrices();
           priceSelect.value = wanted;
+          paintCustomPreview();
           break;
         }
       }

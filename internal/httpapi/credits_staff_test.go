@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/catalyst/billing/internal/credit"
+	"github.com/catalyst/billing/internal/portal"
 )
 
 // The staff credit read surface (CRD-07, E5.2).
@@ -362,5 +365,339 @@ func TestStaffCreditGrantDetailBalanceFollowsTheLedger(t *testing.T) {
 	}
 	if detail.Balance.Minor != 4000 {
 		t.Fatalf("balance = %d, want 4000 (the note is 3000, the balance is the ledger's)", detail.Balance.Minor)
+	}
+}
+
+// ------------------------------------------------------ taking credit away --
+
+// debitCredit takes credit away through the API and returns the response body.
+//
+// The key is explicit because the interesting cases are about it: a replay must be the same
+// debit, and a different key must be a second one.
+func (e *staffEnv) debitCredit(t *testing.T, customerID string, minor int64, reason, key string) *httptest.ResponseRecorder {
+	t.Helper()
+	return e.postJSONWithKey(t, "/api/v1/staff/customers/"+customerID+"/credit/debit",
+		e.billing, e.billingCSRF, map[string]any{
+			"amount_minor": minor,
+			"currency":     "USD",
+			"reason":       reason,
+		}, key)
+}
+
+// staffCreditBalance reads a customer's USD balance from the staff list.
+func (e *staffEnv) staffCreditBalance(t *testing.T, customerID string) int64 {
+	t.Helper()
+	rec := e.get(t, "/api/v1/staff/credit/customers?limit=200", e.billing)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("customers: status %d; body %s", rec.Code, rec.Body)
+	}
+	rows, _ := decodePage[staffCreditCustomer](t, rec.Body.Bytes())
+	for _, row := range rows {
+		if row.ID != customerID {
+			continue
+		}
+		for _, balance := range row.Balances {
+			if balance.Currency == "USD" {
+				return balance.Minor
+			}
+		}
+		return 0
+	}
+	t.Fatalf("customer %s is not in the credit list", customerID)
+	return 0
+}
+
+// An operator takes credit away, and the reason is on the customer's own statement.
+//
+// The second half is the acceptance criterion that matters most: a deduction the customer cannot
+// explain is indistinguishable from a bug, so the reason is written as the memo on the
+// customer_credit entry — the same rows their portal reads — and it must arrive there.
+func TestStaffCreditDebitTakesCreditAway(t *testing.T) {
+	e := newStaffEnv(t)
+	customerID, _ := e.seedCustomer(t, "debit@example.test", "Debited Customer")
+	e.grantCredit(t, customerID, 3000, "goodwill after an outage")
+
+	// The customer's own statement is served by the portal, which a staff-only environment does
+	// not wire up by default.
+	e.srv.WithPortal(portal.New(e.pool))
+
+	rec := e.debitCredit(t, customerID, 1200,
+		"granted twice by mistake; the second note is withdrawn", "debit-http-1")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("debit: status %d; body %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		ID     string `json:"id"`
+		Amount struct {
+			Minor    int64  `json:"minor"`
+			Currency string `json:"currency"`
+		} `json:"amount"`
+		Balance struct {
+			Minor int64 `json:"minor"`
+		} `json:"balance"`
+		Reason   string `json:"reason"`
+		Kind     string `json:"kind"`
+		Replayed bool   `json:"replayed"`
+		Audit    *struct {
+			Action    string `json:"action"`
+			Outcome   string `json:"outcome"`
+			ActorMail string `json:"actor_email"`
+			Changes   struct {
+				Reason string `json:"reason"`
+			} `json:"changes"`
+		} `json:"audit"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body: %v\n%s", err, rec.Body)
+	}
+	if body.ID == "" || body.Amount.Minor != 1200 || body.Amount.Currency != "USD" {
+		t.Fatalf("amount = %+v (id %q)", body.Amount, body.ID)
+	}
+	if body.Balance.Minor != 1800 {
+		t.Fatalf("balance = %d, want 1800", body.Balance.Minor)
+	}
+	if body.Kind != "credit_debit" || body.Replayed {
+		t.Fatalf("kind = %q replayed = %v", body.Kind, body.Replayed)
+	}
+	// The audit row is read back, not assumed: it was written inside the posting's transaction.
+	if body.Audit == nil || body.Audit.Action != "credit.debit" || body.Audit.Outcome != "success" {
+		t.Fatalf("audit = %+v", body.Audit)
+	}
+	if body.Audit.ActorMail != "billing@example.test" {
+		t.Fatalf("audit actor = %q, want the operator", body.Audit.ActorMail)
+	}
+	if body.Audit.Changes.Reason != body.Reason {
+		t.Fatalf("the audit row's reason = %q, want %q", body.Audit.Changes.Reason, body.Reason)
+	}
+	if got := e.staffCreditBalance(t, customerID); got != 1800 {
+		t.Fatalf("listed balance = %d, want 1800", got)
+	}
+
+	// The customer reads their own history and sees the reason beside the deduction.
+	cookie, _ := e.login(t, "debit@example.test", "customer password 1")
+	history := e.get(t, "/api/v1/portal/credits/transactions", cookie)
+	if history.Code != http.StatusOK {
+		t.Fatalf("history: status %d; body %s", history.Code, history.Body)
+	}
+	var statement struct {
+		Transactions []struct {
+			Kind        string `json:"kind"`
+			Description string `json:"description"`
+			Memo        string `json:"memo"`
+			Amount      struct {
+				Minor int64 `json:"minor"`
+			} `json:"amount"`
+		} `json:"transactions"`
+	}
+	if err := json.Unmarshal(history.Body.Bytes(), &statement); err != nil {
+		t.Fatalf("body: %v\n%s", err, history.Body)
+	}
+	var seen bool
+	for _, row := range statement.Transactions {
+		if row.Kind != "credit_debit" {
+			continue
+		}
+		seen = true
+		if row.Amount.Minor != -1200 {
+			t.Fatalf("the customer's row reads %d, want -1200", row.Amount.Minor)
+		}
+		if row.Description != body.Reason || row.Memo != body.Reason {
+			t.Fatalf("the customer's row says %q / %q, want the operator's reason %q",
+				row.Description, row.Memo, body.Reason)
+		}
+	}
+	if !seen {
+		t.Fatalf("the deduction is not on the customer's statement: %+v", statement.Transactions)
+	}
+
+	// The operator's own list of deductions shows the same entry and who made it.
+	list := e.get(t, "/api/v1/staff/credit/debits?customer_id="+customerID, e.support)
+	if list.Code != http.StatusOK {
+		t.Fatalf("debits: status %d; body %s", list.Code, list.Body)
+	}
+	var debits struct {
+		Debits []struct {
+			ID            string `json:"id"`
+			CustomerID    string `json:"customer_id"`
+			CustomerEmail string `json:"customer_email"`
+			Reason        string `json:"reason"`
+			Amount        struct {
+				Minor int64 `json:"minor"`
+			} `json:"amount"`
+			CreatedByMail string `json:"created_by_email"`
+		} `json:"debits"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &debits); err != nil {
+		t.Fatalf("body: %v\n%s", err, list.Body)
+	}
+	if len(debits.Debits) != 1 {
+		t.Fatalf("%d debits listed, want 1: %+v", len(debits.Debits), debits.Debits)
+	}
+	row := debits.Debits[0]
+	if row.ID != body.ID || row.Reason != body.Reason || row.Amount.Minor != 1200 {
+		t.Fatalf("listed debit = %+v", row)
+	}
+	if row.CustomerEmail != "debit@example.test" || row.CreatedByMail != "billing@example.test" {
+		t.Fatalf("listed debit names %q / %q", row.CustomerEmail, row.CreatedByMail)
+	}
+}
+
+// A debit larger than the balance is refused with a stable code, and the balance does not move.
+//
+// This is the criterion that credit must not go negative silently. The status is 409 rather than
+// 400 because the request is well-formed: the account cannot absorb it, and the answer is no.
+func TestStaffCreditDebitAboveBalanceIsRefused(t *testing.T) {
+	e := newStaffEnv(t)
+	customerID, _ := e.seedCustomer(t, "overdebit@example.test", "Over Debited")
+	e.grantCredit(t, customerID, 500, "small grant")
+
+	rec := e.debitCredit(t, customerID, 501, "one minor unit too many", "debit-http-over")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %s", rec.Code, rec.Body)
+	}
+	if !containsCode(rec.Body.Bytes(), "insufficient_credit") {
+		t.Fatalf("body = %s, want insufficient_credit", rec.Body)
+	}
+	if got := e.staffCreditBalance(t, customerID); got != 500 {
+		t.Fatalf("balance = %d, want the untouched 500", got)
+	}
+
+	// Nothing was recorded as a deduction, so the operator's list is still empty.
+	list := e.get(t, "/api/v1/staff/credit/debits?customer_id="+customerID, e.billing)
+	if list.Code != http.StatusOK {
+		t.Fatalf("debits: status %d; body %s", list.Code, list.Body)
+	}
+	var debits struct {
+		Debits []map[string]any `json:"debits"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &debits); err != nil {
+		t.Fatalf("body: %v\n%s", err, list.Body)
+	}
+	if len(debits.Debits) != 0 {
+		t.Fatalf("a refused debit was listed: %+v", debits.Debits)
+	}
+
+	// The exact balance is allowed: the rule is "never below zero", not "never all of it".
+	if ok := e.debitCredit(t, customerID, 500, "the whole balance", "debit-http-exact"); ok.Code != http.StatusCreated {
+		t.Fatalf("debit of the exact balance: status %d; body %s", ok.Code, ok.Body)
+	}
+	if got := e.staffCreditBalance(t, customerID); got != 0 {
+		t.Fatalf("balance = %d, want 0", got)
+	}
+}
+
+// A double-submit adds once.
+//
+// The route wrapper replays the stored response for a repeated key, and the domain layer derives
+// the entry's identity from the same key, so the balance moves exactly once whichever layer
+// notices the repeat.
+func TestStaffCreditDebitIsIdempotentOnTheKey(t *testing.T) {
+	e := newStaffEnv(t)
+	customerID, _ := e.seedCustomer(t, "idem@example.test", "Idempotent Customer")
+	e.grantCredit(t, customerID, 2000, "seed")
+
+	first := e.debitCredit(t, customerID, 750, "chargeback outside the gateway", "debit-http-idem")
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first: status %d; body %s", first.Code, first.Body)
+	}
+	second := e.debitCredit(t, customerID, 750, "chargeback outside the gateway", "debit-http-idem")
+	if second.Code != http.StatusCreated {
+		t.Fatalf("second: status %d; body %s", second.Code, second.Body)
+	}
+	if got := e.staffCreditBalance(t, customerID); got != 1250 {
+		t.Fatalf("balance = %d after a double-submit, want 1250", got)
+	}
+
+	// One deduction, not two.
+	list := e.get(t, "/api/v1/staff/credit/debits?customer_id="+customerID, e.billing)
+	var debits struct {
+		Debits []struct {
+			Amount struct {
+				Minor int64 `json:"minor"`
+			} `json:"amount"`
+		} `json:"debits"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &debits); err != nil {
+		t.Fatalf("body: %v\n%s", err, list.Body)
+	}
+	if len(debits.Debits) != 1 || debits.Debits[0].Amount.Minor != 750 {
+		t.Fatalf("debits = %+v, want exactly one of 750", debits.Debits)
+	}
+
+	// A different key is a second, distinct deduction.
+	if third := e.debitCredit(t, customerID, 250, "a separate correction", "debit-http-idem-2"); third.Code != http.StatusCreated {
+		t.Fatalf("third: status %d; body %s", third.Code, third.Body)
+	}
+	if got := e.staffCreditBalance(t, customerID); got != 1000 {
+		t.Fatalf("balance = %d, want 1000", got)
+	}
+}
+
+// Taking credit away needs credit:write and a reason; reading the list needs only credit:read:all.
+func TestStaffCreditDebitGuards(t *testing.T) {
+	e := newStaffEnv(t)
+	customerID, _ := e.seedCustomer(t, "guarded-debit@example.test", "Guarded Debit")
+	e.grantCredit(t, customerID, 1000, "seed")
+
+	// Anonymous is refused before the body is read. The key is supplied so the request fails on
+	// authentication rather than on the key's shape, which is validated first by design.
+	anon := httptest.NewRequest(http.MethodPost,
+		"/api/v1/staff/customers/"+customerID+"/credit/debit",
+		strings.NewReader(`{"amount_minor":100,"currency":"USD","reason":"anonymous"}`))
+	anon.Header.Set("Content-Type", "application/json")
+	anon.Header.Set("Idempotency-Key", "anonymous-debit-attempt")
+	anonRec := httptest.NewRecorder()
+	e.srv.Handler().ServeHTTP(anonRec, anon)
+	if anonRec.Code != http.StatusUnauthorized && anonRec.Code != http.StatusForbidden {
+		t.Fatalf("anonymous: status %d, want 401/403", anonRec.Code)
+	}
+
+	// Support reads the ledger and may not move money.
+	support := e.postJSON(t, "/api/v1/staff/customers/"+customerID+"/credit/debit",
+		e.support, e.supportCSRF, map[string]any{
+			"amount_minor": 100, "currency": "USD", "reason": "support should not",
+		})
+	if support.Code != http.StatusForbidden {
+		t.Fatalf("support: status %d, want 403; body %s", support.Code, support.Body)
+	}
+	if !containsCode(support.Body.Bytes(), "forbidden") {
+		t.Fatalf("body = %s, want a forbidden problem document", support.Body)
+	}
+	if got := e.staffCreditBalance(t, customerID); got != 1000 {
+		t.Fatalf("balance = %d, want the untouched 1000", got)
+	}
+
+	// A debit with no reason is a 400 with a stable code, because the reason is the whole point.
+	noReason := e.postJSON(t, "/api/v1/staff/customers/"+customerID+"/credit/debit",
+		e.billing, e.billingCSRF, map[string]any{
+			"amount_minor": 100, "currency": "USD", "reason": "   ",
+		})
+	if noReason.Code != http.StatusBadRequest || !containsCode(noReason.Body.Bytes(), "reason_required") {
+		t.Fatalf("no reason: status %d; body %s", noReason.Code, noReason.Body)
+	}
+
+	// A non-positive amount is a 400 as well.
+	for _, amount := range []int64{0, -100} {
+		bad := e.postJSON(t, "/api/v1/staff/customers/"+customerID+"/credit/debit",
+			e.billing, e.billingCSRF, map[string]any{
+				"amount_minor": amount, "currency": "USD", "reason": "why",
+			})
+		if bad.Code != http.StatusBadRequest || !containsCode(bad.Body.Bytes(), "invalid_amount") {
+			t.Fatalf("amount %d: status %d; body %s", amount, bad.Code, bad.Body)
+		}
+	}
+
+	// An unknown customer is a 404 before anything is posted.
+	missing := e.debitCredit(t, "00000000-0000-0000-0000-000000000000", 100, "why", "debit-http-missing")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("unknown customer: status %d, want 404; body %s", missing.Code, missing.Body)
+	}
+	if bad := e.get(t, "/api/v1/staff/credit/debits?customer_id=nope", e.billing); bad.Code != http.StatusNotFound {
+		t.Fatalf("bogus customer id on the list: status %d, want 404", bad.Code)
+	}
+
+	// Support can read the deduction list: seeing what was taken is an audit question.
+	if rec := e.get(t, "/api/v1/staff/credit/debits", e.support); rec.Code != http.StatusOK {
+		t.Fatalf("support list: status %d; body %s", rec.Code, rec.Body)
 	}
 }

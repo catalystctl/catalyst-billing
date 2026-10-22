@@ -292,6 +292,16 @@ func (s *Service) ConfirmMFA(ctx context.Context, userID, code string) ([]string
 			WHERE user_id = $1 AND kind = 'totp'`, userID); err != nil {
 			return fmt.Errorf("authn: confirm mfa credential: %w", err)
 		}
+		// A confirmed enrolment answers an operator's reset demand. The three columns are
+		// cleared together: the demand is what the screens read, and the timestamp and actor are
+		// only meaningful while the demand is outstanding (the audit row keeps the history).
+		if _, err := tx.Exec(ctx, `
+			UPDATE users
+			SET mfa_enrolment_required = false, mfa_reset_at = NULL, mfa_reset_by = NULL,
+			    updated_at = now()
+			WHERE id = $1 AND mfa_enrolment_required`, userID); err != nil {
+			return fmt.Errorf("authn: clear mfa enrolment demand: %w", err)
+		}
 		// Old codes are discarded: two sets would both work, and the older one is the one an
 		// attacker is more likely to have.
 		if _, err := tx.Exec(ctx, `DELETE FROM mfa_recovery_codes WHERE user_id = $1`, userID); err != nil {

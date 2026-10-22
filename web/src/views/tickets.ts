@@ -27,6 +27,8 @@ import {
   btn,
   emptyState,
   errorState,
+  field,
+  input,
   pageHead,
   select,
   skeletonTable,
@@ -82,12 +84,47 @@ export interface TicketRow {
   last_message?: { from_staff: boolean; body: string };
   customer?: { id: string; email: string; name: string };
   assignee_name?: string;
+  /** True when a member of the team opened this ticket, rather than the customer. `opened_by` is
+   *  then the staff user's id. Both are absent on a ticket the customer wrote. */
+  opened_by_staff?: boolean;
+  opened_by?: string;
 }
 
 /** A ticket and its messages. */
 export interface TicketThread {
   ticket: TicketRow;
   messages: TicketMessage[];
+  /** The operator's custom fields, each with this ticket's answer or the fact that it has none.
+   *  Present for both audiences: a customer needs to see which field a refused close is about. */
+  fields: TicketFieldValue[];
+}
+
+/** One configured field, as `ticketFieldJSON` emits it. */
+export interface TicketField {
+  id: string;
+  key: string;
+  label: string;
+  type: "text" | "select" | "checkbox" | string;
+  options: string[];
+  required_on_create: boolean;
+  required_to_close: boolean;
+  sort_order: number;
+  archived: boolean;
+  /** How many tickets carry an answer. What tells an operator that archiving keeps the history. */
+  answer_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A field plus one ticket's answer to it.
+ *
+ *  `value` is a string for text and select and a boolean for checkbox, and `null` when the field is
+ *  unanswered — which is not the same as "" or false, and the reason the server stores the answer
+ *  in typed columns rather than a JSON blob. */
+export interface TicketFieldValue extends TicketField {
+  answered: boolean;
+  value: string | boolean | null;
+  answered_at?: string;
 }
 
 /** What `GET .../tickets/meta` answers: the form's configuration, not a ticket. */
@@ -100,6 +137,11 @@ export interface TicketMeta {
   max_attachment_bytes: number;
   max_subject_length: number;
   autoclose_days?: number;
+  /** The types an upload may carry. The server enforces it; the form states it before a 10 MB
+   *  file is sent, because a 415 after the upload is a worse answer than a sentence before it. */
+  allowed_attachment_types?: string[];
+  /** The fields a new ticket asks for. */
+  custom_fields?: TicketField[];
 }
 
 /** A row that is not a ticket and not an error: "there is nothing here for you".
@@ -673,7 +715,7 @@ export function normaliseTickets(payload: unknown): { rows: TicketRow[]; next: s
 
 /** Reads a thread defensively. A missing `messages` is an empty thread, not an error. */
 export function normaliseThread(payload: unknown): TicketThread {
-  const body = (payload ?? {}) as { ticket?: unknown; messages?: unknown };
+  const body = (payload ?? {}) as { ticket?: unknown; messages?: unknown; fields?: unknown };
   const ticket = body.ticket as TicketRow | undefined;
   if (!ticket || typeof ticket.id !== "string") {
     // A 200 with no ticket is not an `ApiError`: it is a response this build cannot read, and
@@ -683,6 +725,9 @@ export function normaliseThread(payload: unknown): TicketThread {
   return {
     ticket,
     messages: Array.isArray(body.messages) ? (body.messages as TicketMessage[]) : [],
+    // `null` where an array is expected is a wire habit, not a fact about this ticket: a ticket
+    // with no configured fields has no fields, and that is an empty list.
+    fields: Array.isArray(body.fields) ? (body.fields as TicketFieldValue[]) : [],
   };
 }
 
@@ -713,26 +758,20 @@ export function unavailableReason(err: unknown): NotAvailable | null {
 // ------------------------------------------------------- requests the client
 //                                                         cannot yet express --
 //
-// Two things these screens must do are not expressible through `Api` as it stands:
+// One thing these screens must do is still not expressible through every build of `Api`:
 //
-//   1. The staff edit is `PATCH /api/v1/staff/tickets/{id}`. `Api` has get/post/put/del and no
-//      `patch`, so a status change has no method to travel on.
-//   2. The attachment upload is a *raw body*: the file's own bytes, with the name in `?filename=`
-//      and the type in Content-Type. `Api.post` JSON-encodes its body, so a File would arrive as
-//      `{}` — a 9 MB PDF stored as two bytes of JSON.
+//   The attachment upload is a *raw body*: the file's own bytes, with the name in `?filename=`
+//   and the type in Content-Type. `Api.post` JSON-encodes its body, so a File would arrive as
+//   `{}` — a 9 MB PDF stored as two bytes of JSON. `Api.postRaw` is that method; it was added to
+//   lib/api.ts, so this is a capability check for a client that predates it rather than a
+//   permanent gap.
 //
-// Both are deliberately **not** worked around with a local `fetch`. A second HTTP client here
-// would re-implement CSRF, the idempotency key, the problem+json envelope and the 401 → sign-in
+// It is deliberately **not** worked around with a local `fetch`. A second HTTP client here would
+// re-implement CSRF, the idempotency key, the problem+json envelope and the 401 → sign-in
 // redirect, and the ticket screens would then be the ones that are silently wrong the next time
-// one of those four changes. So the capability is detected instead: `ctx.api.patch` and
-// `ctx.api.postRaw` are called when the client has them, and when it does not the screen says so
-// plainly and offers the action it *can* do. Nothing here is dead UI, and nothing bypasses
-// `ctx.api`.
-//
-// The moment `lib/api.ts` grows the two methods, these controls appear with no edit to this file:
-//
-//   patch<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T>
-//   postRaw<T>(path: string, body: BodyInit, options?: RequestOptions & { contentType?: string }): Promise<T>
+// one of those four changes. So the capability is detected instead: `ctx.api.postRaw` is called
+// when the client has it, and when it does not the screen says so plainly and offers the action
+// it *can* do. Nothing here is dead UI, and nothing bypasses `ctx.api`.
 //
 // (The attachment *download* needs neither: it is an `<a href>` to the API path, which is what
 // `attachmentLink` renders. The handler sets `Content-Disposition: attachment`, so the browser
@@ -769,9 +808,9 @@ export function clientGaps(ctx: Ctx): ClientGaps {
  *  uploads are working. Each caller names its own gap. */
 export function gapExplanation(which: "patch" | "upload"): string {
   if (which === "patch") {
-    return "Changing a ticket is a PATCH request, and this build's API client only speaks GET, POST, PUT and DELETE, so the change cannot be sent. Nothing has changed. The work is a `patch()` method in web/src/lib/api.ts, not a change to this screen.";
+    return "Changing a ticket is a PATCH request, and this build's API client cannot send one, so the change cannot be sent. Nothing has changed.";
   }
-  return "Attaching a file is a raw-body POST, and this build's API client JSON-encodes every body, so a file would arrive as an empty object. Nothing is uploaded and nothing is lost — the ticket or reply is created without the file. The work is a `postRaw()` method in web/src/lib/api.ts, not a change to this screen.";
+  return "Attaching a file is a raw-body POST, and this build's API client cannot send one, so a file would arrive as an empty object. Nothing is uploaded and nothing is lost — the ticket or reply is created without the file.";
 }
 
 /** Changes status, priority or department on a staff ticket. Only the fields that moved are
@@ -807,7 +846,14 @@ export async function assignTicket(ctx: Ctx, id: string, assignee: string): Prom
  *  The cap is checked by the caller before this runs (that is what the client-side refusal in
  *  ticket-new.ts is for) and again by the server, which answers 413 `attachment_too_large`. The
  *  body is the file and nothing else, so `filename` and the message it belongs to travel in the
- *  query string — the shape `internal/httpapi/ticket_attachments.go` reads. */
+ *  query string — the shape `internal/httpapi/ticket_attachments.go` reads.
+ *
+ *  The endpoint is chosen from the session, exactly as the list and thread are: a staff member's
+ *  upload goes to `/api/v1/staff/tickets/{id}/attachments` (ticket:write:all, any ticket), a
+ *  customer's to the portal route (ticket:write:self, their own). Posting a staff upload to the
+ *  portal route is the defect this fixes: the portal handler resolves the caller's *customer*, a
+ *  staff login has none, and the upload answered 404 — a working endpoint with no working
+ *  button. */
 export async function uploadTicketAttachment(
   ctx: Ctx,
   ticketID: string,
@@ -822,8 +868,177 @@ export async function uploadTicketAttachment(
       code: "client_unsupported",
     });
   }
-  return api.postRaw<TicketAttachment>(`/api/v1/portal/tickets/${encodeURIComponent(ticketID)}/attachments`, file, {
+  const path = `${ticketsBase(ctx)}/${encodeURIComponent(ticketID)}/attachments`;
+  return api.postRaw<TicketAttachment>(path, file, {
     query: { filename: file.name, message_id: messageID },
     contentType: file.type || "application/octet-stream",
   });
+}
+
+/** The custom-field endpoints for the caller. */
+export function ticketFieldsPath(ctx: Ctx, id: string): string {
+  return `${ticketsBase(ctx)}/${encodeURIComponent(id)}/fields`;
+}
+
+/** Answers one or more custom fields on a ticket.
+ *
+ *  `values` is keyed by field key. An omitted key is left alone and `null` clears an answer, which
+ *  is the server's rule and the reason this is a merge rather than a replace: a screen that shows
+ *  one field must not blank the other eight. */
+export async function saveTicketFields(
+  ctx: Ctx,
+  ticketID: string,
+  values: Record<string, string | boolean | null>,
+): Promise<TicketFieldValue[]> {
+  const body = await ctx.api.put<{ fields?: unknown }>(ticketFieldsPath(ctx, ticketID), { values });
+  return Array.isArray(body.fields) ? (body.fields as TicketFieldValue[]) : [];
+}
+
+// ------------------------------------------------------- custom field controls --
+
+/** The controls for a set of custom fields, plus the two questions a caller needs answered about
+ *  them: what the answers are, and which required ones are still blank.
+ *
+ *  One implementation for three screens — the customer's new-ticket form, the staff one, and the
+ *  thread's field editor — because three copies of "how is a checkbox required" would be three
+ *  answers that disagree. The rule the server applies is the rule here: a required text or select
+ *  must be non-empty, and a *required checkbox must be ticked* (an unticked required checkbox is
+ *  sent as `null`, not `false`, so the server refuses it rather than recording a "no" nobody
+ *  asked for). An optional checkbox sends its real value, because `false` is an answer. */
+export interface CustomFieldControls {
+  el: HTMLElement;
+  /** The answers keyed by field key, ready for the API. */
+  values(): Record<string, string | boolean | null>;
+  /** The labels of the required fields that are unanswered, in display order. */
+  missingRequired(): string[];
+  /** Moves focus to the first control whose label is in `labels`, and returns whether it found one. */
+  focusFirst(labels: string[]): boolean;
+}
+
+export function customFieldControls(
+  fields: TicketField[] | TicketFieldValue[] | undefined,
+): CustomFieldControls | null {
+  const list = Array.isArray(fields) ? fields : [];
+  if (list.length === 0) return null;
+
+  const controls: Array<{
+    def: TicketField | TicketFieldValue;
+    el: HTMLInputElement | HTMLSelectElement;
+    checkbox: boolean;
+  }> = [];
+
+  const rows = list.map((def) => {
+    const id = `ticket-field-${def.key}`;
+    const current = "value" in def ? def.value : null;
+    const required = def.required_on_create || def.required_to_close;
+
+    if (def.type === "checkbox") {
+      const box = input({ type: "checkbox", id, name: def.key, checked: current === true }) as HTMLInputElement;
+      controls.push({ def, el: box, checkbox: true });
+      return h(
+        "div",
+        { class: "field" },
+        h("label", { class: "checkbox", for: id }, box, h("span", null, def.label)),
+        requirementHint(def) ? h("span", { class: "field-hint" }, requirementHint(def)) : null,
+      );
+    }
+
+    if (def.type === "select") {
+      const options = Array.isArray(def.options) ? def.options.filter((value) => typeof value === "string") : [];
+      const chosen = select(
+        [
+          { value: "", label: options.length > 0 ? "Not answered" : "No options configured" },
+          ...options.map((value) => ({ value, label: value })),
+        ],
+        { id, name: def.key, value: typeof current === "string" ? current : "" },
+      );
+      if (options.length === 0) chosen.disabled = true;
+      controls.push({ def, el: chosen, checkbox: false });
+      return field({ label: def.label, control: chosen, id, required, hint: requirementHint(def) });
+    }
+
+    const text = input({
+      id,
+      name: def.key,
+      value: typeof current === "string" ? current : "",
+      maxlength: 2000,
+      autocomplete: "off",
+    });
+    controls.push({ def, el: text, checkbox: false });
+    return field({ label: def.label, control: text, id, required, hint: requirementHint(def) });
+  });
+
+  const el = h("div", { class: "stack-sm ticket-fields-form" }, ...rows);
+
+  return {
+    el,
+    values() {
+      const out: Record<string, string | boolean | null> = {};
+      for (const control of controls) {
+        const required = control.def.required_on_create || control.def.required_to_close;
+        if (control.checkbox) {
+          const checked = (control.el as HTMLInputElement).checked;
+          // An unticked required checkbox is "unanswered", not "no".
+          out[control.def.key] = checked ? true : required ? null : false;
+          continue;
+        }
+        const raw = control.el.value.trim();
+        out[control.def.key] = raw === "" ? null : raw;
+      }
+      return out;
+    },
+    missingRequired() {
+      const missing: string[] = [];
+      for (const control of controls) {
+        const required = control.def.required_on_create || control.def.required_to_close;
+        if (!required) continue;
+        if (control.checkbox) {
+          if (!(control.el as HTMLInputElement).checked) missing.push(control.def.label);
+          continue;
+        }
+        if (control.el.value.trim() === "") missing.push(control.def.label);
+      }
+      return missing;
+    },
+    focusFirst(labels: string[]) {
+      for (const control of controls) {
+        if (!labels.includes(control.def.label)) continue;
+        control.el.focus();
+        return true;
+      }
+      return false;
+    },
+  };
+}
+
+/** The sentence under a field, naming which requirement it carries. */
+function requirementHint(field: TicketField): string | undefined {
+  if (field.required_on_create && field.required_to_close) {
+    return "Required to open a ticket, and again before it can be closed.";
+  }
+  if (field.required_on_create) return "Required to open a ticket.";
+  if (field.required_to_close) return "Required before the ticket can be closed.";
+  return undefined;
+}
+
+/** Renders one answered field as a read-only row: the label and the answer, or a marker that it is
+ *  still blank. Used by the thread, where the value is the record rather than a form. */
+export function fieldAnswerRow(answer: TicketFieldValue): HTMLElement {
+  const value =
+    answer.value === true
+      ? "Yes"
+      : answer.value === false
+        ? "No"
+        : typeof answer.value === "string" && answer.value !== ""
+          ? answer.value
+          : null;
+  return h(
+    "div",
+    { class: `ticket-field-row${value === null ? " ticket-field-row--empty" : ""}` },
+    h("span", { class: "ticket-field-label" }, answer.label),
+    h("span", { class: "ticket-field-value" }, value ?? "Not answered"),
+    answer.required_to_close && value === null
+      ? badge("required to close", "warning")
+      : null,
+  );
 }

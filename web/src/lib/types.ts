@@ -22,6 +22,10 @@ export interface Session {
   permissions: Set<string>;
   csrfToken: string;
   expiresAt: string;
+  /** True when the account owes the panel a second factor: an operator reset it, or it is
+   *  otherwise required. The shell sends the customer to the enrolment screen while it is set,
+   *  and `ctx.refreshSession()` clears it once a new factor is confirmed. */
+  mfaEnrolmentRequired: boolean;
 }
 
 export interface RouteContext {

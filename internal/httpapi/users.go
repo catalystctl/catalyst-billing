@@ -23,6 +23,20 @@ import (
 //	PATCH  /api/v1/staff/users/{id}           display name, email, role, enable/disable
 //	DELETE /api/v1/staff/users/{id}           only when nothing depends on the account
 //	POST   /api/v1/staff/users/{id}/password  set a password (never returned)
+//	GET    /api/v1/staff/users/{id}/security  the account's second-factor state
+//	POST   /api/v1/staff/users/{id}/mfa/reset remove a second factor the target cannot remove
+//
+// The last two are the staff half of the customer overview's security panel. A customer's
+// credential lives in the same `users` table as an agent's, so `/password` is the same route for
+// both — a customer's password is set through it from /customers/{id} exactly as an agent's is
+// from /users. Nothing here branches on "is this a customer": the account is the account.
+//
+// The MFA reset is the one operation that genuinely needs its own route. `POST
+// /api/v1/auth/mfa/disable` is self-service and demands the account's own password *and* a
+// current code, which is correct for a customer acting on their own account and impossible for
+// support to satisfy on somebody's behalf. The reset therefore lives here, under staff:manage,
+// removes the enrolment without either secret, and leaves `mfa_enrolment_required` behind so the
+// next session is asked for a new factor rather than quietly dropping to password-only.
 //
 // Everything is guarded by staff:manage, the permission that already governs roles and
 // impersonation: creating a login is the act of granting somebody access to the panel.
@@ -53,6 +67,10 @@ func registerUsers(r *router) {
 		authn.PermStaffManage, r.s.handleStaffUserDelete)
 	r.staffMutation(http.MethodPost, "/api/v1/staff/users/{id}/password",
 		authn.PermStaffManage, r.s.handleStaffUserSetPassword)
+	r.staffGet("/api/v1/staff/users/{id}/security",
+		authn.PermStaffManage, r.s.handleStaffUserSecurity)
+	r.staffMutation(http.MethodPost, "/api/v1/staff/users/{id}/mfa/reset",
+		authn.PermStaffManage, r.s.handleStaffUserResetMFA)
 }
 
 // userJSON is the wire shape of an account.
@@ -277,6 +295,78 @@ func (s *Server) handleStaffUserSetPassword(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// handleStaffUserSecurity serves GET /api/v1/staff/users/{id}/security.
+//
+// Three facts, so the customer screen can offer the right action instead of a button that fails:
+// whether a factor is confirmed, how many recovery codes are left, and whether a reset has left
+// an outstanding enrolment demand. A screen that showed "Reset two-factor" without knowing the
+// first would have to guess, and guessing produces a 409 the operator reads as a bug.
+func (s *Server) handleStaffUserSecurity(w http.ResponseWriter, r *http.Request) {
+	if s.auth == nil || s.auth.Service == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "auth_not_configured", "authentication is not configured")
+		return
+	}
+	id := r.PathValue("id")
+	if !validUUID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such user")
+		return
+	}
+
+	status, err := s.auth.Service.MFAStatusFor(r.Context(), id)
+	if err != nil {
+		s.userAdminError(w, r, err)
+		return
+	}
+
+	var resetBy any
+	if status.ResetBy != "" {
+		resetBy = status.ResetBy
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id":                  id,
+		"has_mfa":                  status.HasMFA,
+		"enrolled_at":              timeOrNil(status.EnrolledAt),
+		"recovery_codes_remaining": status.RecoveryCodesRemaining,
+		"enrolment_required":       status.EnrolmentRequired,
+		"reset_at":                 timeOrNil(status.ResetAt),
+		"reset_by":                 resetBy,
+	})
+}
+
+// handleStaffUserResetMFA removes another account's second factor.
+//
+// The response says what was destroyed and what happens next, and nothing about the secret: the
+// reset removes an enrolment, it does not reveal one. `enrolment_required` is the contract the
+// portal reads — the account's next session is told to enrol a new factor.
+func (s *Server) handleStaffUserResetMFA(w http.ResponseWriter, r *http.Request) {
+	if s.auth == nil || s.auth.Service == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "auth_not_configured", "authentication is not configured")
+		return
+	}
+	id := r.PathValue("id")
+	if !validUUID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such user")
+		return
+	}
+	operator, _ := userFrom(r.Context())
+
+	res, err := s.auth.Service.ResetMFA(r.Context(), id, operator.ID,
+		s.auditorFor(r, "second factor reset by an operator"))
+	if err != nil {
+		s.userAdminError(w, r, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":                          "mfa_reset",
+		"user_id":                         id,
+		"target_email":                    res.TargetEmail,
+		"recovery_codes_removed":          res.RecoveryCodesRemoved,
+		"enrolment_required":              true,
+		"next_sign_in_requires_enrolment": true,
+	})
+}
+
 // userAdminError maps a user-administration error to a response.
 //
 // The two refusals that matter are `last_administrator` and `self_lockout`: they are the
@@ -297,6 +387,14 @@ func (s *Server) userAdminError(w http.ResponseWriter, r *http.Request, err erro
 		writeProblem(w, http.StatusConflict, "self_lockout", err.Error())
 	case errors.Is(err, authn.ErrUserHasHistory):
 		writeProblem(w, http.StatusConflict, "user_has_history", err.Error())
+	case errors.Is(err, authn.ErrMFANotEnrolled):
+		// Resetting nothing would still leave an enrolment demand behind, which would tell a
+		// customer who never enrolled that they must. So it is a refusal, not a no-op.
+		writeProblem(w, http.StatusConflict, "mfa_not_enrolled",
+			"this account has no confirmed second factor to reset")
+	case errors.Is(err, authn.ErrMFAKeyMissing):
+		writeProblem(w, http.StatusServiceUnavailable, "mfa_unavailable",
+			"MFA is not configured on this server")
 	case errors.Is(err, authn.ErrUnknownRole), errors.Is(err, authn.ErrRoleNotFound):
 		writeProblem(w, http.StatusBadRequest, "unknown_role", err.Error())
 	case errors.Is(err, authn.ErrInvalidEmail):

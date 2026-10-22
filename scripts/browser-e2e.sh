@@ -19,6 +19,25 @@ cd "$(dirname "$0")/.."
 
 BASE="${1:-}"
 SERVER_PID=""
+
+# One run at a time.
+#
+# The harness seeds and truncates installation-wide rows — the support desk's switch, a currency,
+# an announcement, the staff account — in the shared development database. Two runs overlapping
+# do not merely interleave: the second run's seed deletes the first run's staff user while the
+# first is still driving a browser, and every screen then redirects to /login. The failure looks
+# like a session bug in the panel and is not.
+#
+# An exclusive lock on the script itself is the whole fix. It is taken with `flock` where that
+# exists and skipped where it does not, because a harness that refuses to run on a machine without
+# util-linux would be worse than one that can be run twice by accident.
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"${TMPDIR:-/tmp}/catalyst-billing-e2e.lock"
+  if ! flock -n 9; then
+    echo "FAIL: another browser-e2e run holds the lock; wait for it to finish" >&2
+    exit 1
+  fi
+fi
 SHOTS="${E2E_SCREENSHOTS:-}"
 STAMP="$(date +%s)"
 # A currency code is `^[A-Z0-9]{2,12}$`, so the run stamp rides along in it: "ZZ" plus ten

@@ -51,6 +51,9 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
         { label: "Payments", href: "/payments", icon: "card", permission: "payment:reconcile" },
         { label: "Coupons", href: "/coupons", icon: "tag", permission: "coupon:read:all" },
         { label: "Credit", href: "/credits", icon: "wallet", permission: "credit:write" },
+        // Affiliates sits under Revenue rather than Growth because the screen is a payout report:
+        // an operator opens it to reconcile what is owed, not to watch a channel perform.
+        { label: "Affiliates", href: "/affiliates", icon: "percent", permission: "report:read" },
       ],
     });
     groups.push({

@@ -812,6 +812,7 @@ try {
   // The staff credit screen is the one that has not landed: it is a placeholder module. It is
   // in the list deliberately so the report says so rather than omitting it.
   await assertNewScreen("credits-staff", { path: "/credits", expect: ["Credit"] });
+  await assertNewScreen("affiliates", { path: "/affiliates", expect: ["Affiliates"] });
 
   // Gateway and provisioner configuration. These two are the screens an operator must be able
   // to use before the panel can take money or build a server, so they get more than a heading

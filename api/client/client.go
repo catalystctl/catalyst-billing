@@ -997,6 +997,18 @@ func (c *Client) GetStaffAffiliates(ctx context.Context, query url.Values, body 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffAffiliatesByIdPayouts calls GET /api/v1/staff/affiliates/{id}/payouts.
+//
+// # Reconcile one affiliate's earnings over a period
+//
+// Permission: report:read. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffAffiliatesByIdPayouts(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/affiliates/{id}/payouts"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffAffiliatesPayouts calls GET /api/v1/staff/affiliates/payouts.
 //
 // # The payout report
@@ -1330,6 +1342,16 @@ func (c *Client) GetStaffCustomersByIdPortalServices(ctx context.Context, id str
 // Permission: report:read. Staff only.
 func (c *Client) GetStaffDashboard(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/dashboard"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffDashboardWidgets calls GET /api/v1/staff/dashboard/widgets.
+//
+// # Dashboard widgets over a selectable period
+//
+// Permission: report:read. Staff only.
+func (c *Client) GetStaffDashboardWidgets(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/dashboard/widgets"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -2221,6 +2243,20 @@ func (c *Client) PostStaffAffiliates(ctx context.Context, query url.Values, body
 // id is the id path parameter.
 func (c *Client) PostStaffAffiliatesByIdPayout(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/affiliates/{id}/payout"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffAffiliatesByIdPayouts calls POST /api/v1/staff/affiliates/{id}/payouts.
+//
+// # Record a payout
+//
+// Permission: credit:read:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffAffiliatesByIdPayouts(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/affiliates/{id}/payouts"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }

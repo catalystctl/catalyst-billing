@@ -119,6 +119,7 @@ export const routes: Route[] = [
   route("/support", () => import("./views/support-queue")),
 
   route("/credits", () => import("./views/credits")),
+  route("/affiliates", () => import("./views/affiliates")),
   route("/portal/credits", () => import("./views/portal-credits")),
   route("/portal/security", () => import("./views/portal-security")),
   route("/portal/notifications", () => import("./views/portal-notifications")),
@@ -184,6 +185,7 @@ export const SEGMENT_LABELS: Record<string, string> = {
   tickets: "Tickets",
   support: "Support",
   credits: "Credit",
+  affiliates: "Affiliates",
   security: "Security",
   notifications: "Notifications",
   "payment-methods": "Payment methods",

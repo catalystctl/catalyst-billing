@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 )
 
 // Permission is a named capability. The set is closed and explicit: a permission
@@ -210,10 +211,41 @@ var customerPermissions = []Permission{
 }
 
 // Authorizer answers authorization questions.
-type Authorizer struct{}
+type Authorizer struct {
+	// table holds the permission set of an operator-defined role, keyed by role name. The four
+	// system roles are compiled in (`rolePermissions`) because the code's separation of duties
+	// depends on them and they must not be editable; a custom role is a row, so its permissions
+	// come from here.
+	//
+	// It is a map rather than a callback on purpose: an Authorizer is read on every guarded
+	// request, and a database round trip per request would put the permission check on the hot
+	// path of a page load. The map is refreshed when a role changes, which is rare and already
+	// an audited action.
+	table map[Role][]Permission
+	// mu guards table against a concurrent refresh while a request is reading it.
+	mu sync.RWMutex
+}
 
 // NewAuthorizer constructs an Authorizer.
 func NewAuthorizer() *Authorizer { return &Authorizer{} }
+
+// SetTableRoles replaces the operator-defined role permissions.
+//
+// A system role name passed here is ignored: the four compiled-in roles are what the rest of the
+// code assumes, and letting a row redefine "administrator" would mean a database edit could
+// grant a permission the deployment never intended.
+func (a *Authorizer) SetTableRoles(perms map[Role][]Permission) {
+	clean := make(map[Role][]Permission, len(perms))
+	for role, ps := range perms {
+		if _, system := rolePermissions[role]; system {
+			continue
+		}
+		clean[role] = ps
+	}
+	a.mu.Lock()
+	a.table = clean
+	a.mu.Unlock()
+}
 
 // Permissions returns the effective permission set for a user, which is the union
 // of the customer baseline and every staff role held.
@@ -222,9 +254,24 @@ func (a *Authorizer) Permissions(u User) map[Permission]struct{} {
 	for _, p := range customerPermissions {
 		out[p] = struct{}{}
 	}
+	a.mu.RLock()
+	table := a.table
+	a.mu.RUnlock()
 	for _, r := range u.Roles {
-		for _, p := range rolePermissions[Role(r)] {
-			out[p] = struct{}{}
+		// A compiled-in role wins. A custom role resolves from the table, so an operator can
+		// define "support lead" without a deploy — but cannot shadow a system role.
+		if ps, system := rolePermissions[Role(r)]; system {
+			for _, p := range ps {
+				out[p] = struct{}{}
+			}
+			continue
+		}
+		for _, p := range table[Role(r)] {
+			// Only a declared permission is granted, so a stray row cannot widen the surface
+			// beyond what the binary knows how to check.
+			if knownPermission(p) {
+				out[p] = struct{}{}
+			}
 		}
 	}
 	return out

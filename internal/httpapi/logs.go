@@ -8,6 +8,11 @@
 //   - `error_logs` is what failed in the process.
 //   - `http_logs` is what the process served, and how long it took.
 //
+// The email viewer deliberately returns no message body. A password-reset mail's body
+// carries a working token, so a log viewer that rendered it would be a way to take over any
+// account whose reset mail an operator can find — and "an operator" includes a support
+// agent holding log:read.
+//
 // They are tables rather than only stdout because an operator without a log aggregator
 // still has to answer "what failed last night" from the panel. That is also why the writers
 // below are exported functions rather than something the request middleware calls inline:
@@ -15,10 +20,10 @@
 // depending on the HTTP handler set, and a failed write must never fail the request it is
 // describing.
 //
-// Redaction is a property of the write, not of the read. A body or a header that is stored
-// is stored in a backup, a replica and a `pg_dump`, so an Authorization header or a
-// password must not reach the table in the first place. `redactLogDetail` is the one place
-// that rule lives.
+// Redaction happens on the way in first, because a stored credential is stored in a backup,
+// a replica and a `pg_dump` as well. `redactLogText` is the one rule, applied by both
+// writers; the readers apply it again as defence in depth, so a row that reached the table
+// another way (an older build, a hand-run INSERT) still cannot leak through the viewer.
 //
 // Every list is keyset-paginated with internal/paginate: the tables grow on every request,
 // so an OFFSET page would repeat or skip rows while an operator scrolls — and the row it

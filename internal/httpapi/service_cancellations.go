@@ -13,14 +13,17 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/catalyst/billing/internal/authn"
+	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/portal"
 	"github.com/catalyst/billing/internal/service"
+	"github.com/jackc/pgx/v5"
 )
 
 func init() {
@@ -146,6 +149,13 @@ func (s *Server) handleRequestCancellation(w http.ResponseWriter, r *http.Reques
 	s.publishServiceEvent(r, id, "service.cancellation_requested", map[string]any{
 		"service_id": id, "cancellation_id": out.ID, "type": out.Type, "status": out.Status,
 	})
+
+	// Tell the customer their request was received, and when it takes effect. A cancellation is
+	// the one action where silence is worst: a customer who asked to stop paying needs to know
+	// the request landed, and an end-of-period request that says nothing leaves them unsure
+	// whether the next invoice is coming. Best-effort — the request itself is already recorded,
+	// and failing the response because a mail could not be queued would be the wrong trade.
+	s.notifyCancellationReceived(r.Context(), id, out)
 
 	body := cancellationJSON(out)
 	if out.Status == service.StatusScheduled && out.EffectiveAt != nil {
@@ -421,4 +431,53 @@ func (s *Server) writeServiceError(w http.ResponseWriter, r *http.Request, err e
 		writeProblem(w, http.StatusInternalServerError, "internal_error",
 			"the request could not be completed")
 	}
+}
+
+// notifyCancellationReceived tells a customer their cancellation request was recorded.
+//
+// It is best-effort and runs on its own transaction: the request is already committed by the
+// time this is called, and a customer whose mail is misconfigured must still be able to cancel.
+// A failure is swallowed deliberately — the request is the durable fact, and the notification is
+// a courtesy that must not turn into a refusal.
+//
+// The dedupe key is the service id, so asking twice for the same service writes one message; a
+// second request on the same service is the same news, not new news.
+func (s *Server) notifyCancellationReceived(ctx context.Context, serviceID string, out service.Cancellation) {
+	if s.pool == nil || s.notify == nil {
+		return
+	}
+
+	var (
+		email string
+		name  string
+		user  *string
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT c.email, COALESCE(NULLIF(p.name, ''), s.product_id::text),
+		       (SELECT ca.user_id::text FROM customer_accounts ca WHERE ca.customer_id = c.id LIMIT 1)
+		  FROM services s
+		  JOIN customers c ON c.id = s.customer_id
+		  JOIN products p  ON p.id = s.product_id
+		 WHERE s.id = $1`, serviceID).Scan(&email, &name, &user)
+	if err != nil {
+		return
+	}
+
+	in := notify.CancellationReceivedInput{
+		Email:       email,
+		ServiceID:   serviceID,
+		ServiceName: name,
+		ServiceURL:  "/portal/services/" + serviceID,
+	}
+	if user != nil {
+		in.UserID = *user
+	}
+	if out.EffectiveAt != nil {
+		in.CancelsAt = *out.EffectiveAt
+	}
+
+	_ = s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := notify.CancellationReceived(ctx, tx, s.notify, in)
+		return err
+	})
 }

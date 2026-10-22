@@ -13568,6 +13568,925 @@ paths:
             x-permission: service:hold
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/imports:
+        get:
+            description: |-
+                Committed runs, newest first, each with its full report. Dry runs are absent by construction: they write nothing, so there is nothing to list — the report of a dry run is in the response of the request that ran it.
+
+                The permission is import:write rather than a reporting one: an import log says how many customers, invoices and payments came from another panel, and whoever may run an import is the person who should see what the last one did.
+            operationId: GetStaffImports
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                actor_id:
+                                                    format: uuid
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                created:
+                                                    type: integer
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                rejected:
+                                                    type: integer
+                                                report:
+                                                    properties:
+                                                        dry_run:
+                                                            description: True when nothing was written. The single most important field in the document.
+                                                            type: boolean
+                                                        duration_ms:
+                                                            type: integer
+                                                        files:
+                                                            items:
+                                                                properties:
+                                                                    error:
+                                                                        description: Set when the document could not be read at all — a missing required column, or a quoting error. The other documents are still processed.
+                                                                        type:
+                                                                            - string
+                                                                            - "null"
+                                                                    file:
+                                                                        enum:
+                                                                            - clients
+                                                                            - invoices
+                                                                            - invoice_items
+                                                                            - services
+                                                                            - transactions
+                                                                        type: string
+                                                                    rejected:
+                                                                        type: integer
+                                                                    rows_read:
+                                                                        type: integer
+                                                                required:
+                                                                    - file
+                                                                    - rows_read
+                                                                    - rejected
+                                                                type: object
+                                                            type: array
+                                                        rejections:
+                                                            items:
+                                                                properties:
+                                                                    code:
+                                                                        description: Stable machine code. A client branches on this, never on `detail`.
+                                                                        enum:
+                                                                            - invalid_id
+                                                                            - duplicate_id_in_dump
+                                                                            - missing_column
+                                                                            - invalid_csv
+                                                                            - field_count
+                                                                            - invalid_email
+                                                                            - invalid_amount
+                                                                            - negative_amount
+                                                                            - invalid_date
+                                                                            - missing_date
+                                                                            - missing_currency
+                                                                            - invalid_currency
+                                                                            - unknown_status
+                                                                            - unknown_client
+                                                                            - unknown_invoice
+                                                                            - parent_rejected
+                                                                            - missing_invoice_number
+                                                                            - duplicate_invoice_number
+                                                                            - number_taken
+                                                                            - invoice_immutable
+                                                                            - draft_invoice
+                                                                            - total_mismatch
+                                                                            - email_taken
+                                                                            - unknown_product
+                                                                            - non_positive_payment
+                                                                            - payment_immutable
+                                                                            - duplicate_payment
+                                                                            - overpayment
+                                                                            - invalid_value
+                                                                            - conflict
+                                                                        type: string
+                                                                    detail:
+                                                                        description: A sentence naming the value and the rule. Never parsed by a client.
+                                                                        type: string
+                                                                    entity:
+                                                                        type: string
+                                                                    file:
+                                                                        type: string
+                                                                    legacy_id:
+                                                                        type:
+                                                                            - string
+                                                                            - "null"
+                                                                    line:
+                                                                        description: The physical line the record starts on, for an editor.
+                                                                        type: integer
+                                                                    row:
+                                                                        description: The n-th data row in the file, counting from 1 below the header.
+                                                                        type: integer
+                                                                required:
+                                                                    - file
+                                                                    - row
+                                                                    - line
+                                                                    - entity
+                                                                    - code
+                                                                    - detail
+                                                                type: object
+                                                            type: array
+                                                        run_id:
+                                                            description: The recorded run. Null on a dry run, which is not recorded at all.
+                                                            format: uuid
+                                                            type:
+                                                                - string
+                                                                - "null"
+                                                        source:
+                                                            enum:
+                                                                - whmcs
+                                                                - paymenter
+                                                            type: string
+                                                        started_at:
+                                                            format: date-time
+                                                            type: string
+                                                        tables:
+                                                            items:
+                                                                properties:
+                                                                    created:
+                                                                        type: integer
+                                                                    entity:
+                                                                        enum:
+                                                                            - customer
+                                                                            - invoice
+                                                                            - invoice_line
+                                                                            - service
+                                                                            - payment
+                                                                        type: string
+                                                                    rejected:
+                                                                        type: integer
+                                                                    unchanged:
+                                                                        type: integer
+                                                                    updated:
+                                                                        type: integer
+                                                                required:
+                                                                    - entity
+                                                                    - created
+                                                                    - updated
+                                                                    - unchanged
+                                                                    - rejected
+                                                                type: object
+                                                            type: array
+                                                        totals:
+                                                            properties:
+                                                                created:
+                                                                    type: integer
+                                                                rejected:
+                                                                    type: integer
+                                                                rows_read:
+                                                                    description: Data rows read across all five files. The header is not a row.
+                                                                    type: integer
+                                                                unchanged:
+                                                                    description: 'Already imported and identical: the expected result of replaying a dump.'
+                                                                    type: integer
+                                                                updated:
+                                                                    type: integer
+                                                            required:
+                                                                - rows_read
+                                                                - created
+                                                                - updated
+                                                                - unchanged
+                                                                - rejected
+                                                            type: object
+                                                        warnings:
+                                                            items:
+                                                                properties:
+                                                                    code:
+                                                                        enum:
+                                                                            - paid_invoice_without_payments
+                                                                            - invoice_paid_disagrees_with_payments
+                                                                            - invoice_subtotal_disagrees_with_lines
+                                                                            - payment_without_invoice
+                                                                            - services_imported_without_subscription
+                                                                            - line_tax_not_reconstructed
+                                                                            - customer_matched_by_email
+                                                                            - service_cancelled_imported_as_terminated
+                                                                        type: string
+                                                                    detail:
+                                                                        type: string
+                                                                    file:
+                                                                        type:
+                                                                            - string
+                                                                            - "null"
+                                                                    legacy_id:
+                                                                        type:
+                                                                            - string
+                                                                            - "null"
+                                                                    row:
+                                                                        type:
+                                                                            - integer
+                                                                            - "null"
+                                                                required:
+                                                                    - code
+                                                                    - detail
+                                                                type: object
+                                                            type: array
+                                                    required:
+                                                        - source
+                                                        - dry_run
+                                                        - started_at
+                                                        - duration_ms
+                                                        - totals
+                                                        - files
+                                                        - tables
+                                                        - rejections
+                                                        - warnings
+                                                    type: object
+                                                source:
+                                                    type: string
+                                                unchanged:
+                                                    type: integer
+                                                updated:
+                                                    type: integer
+                                            required:
+                                                - id
+                                                - source
+                                                - created
+                                                - updated
+                                                - unchanged
+                                                - rejected
+                                                - created_at
+                                                - report
+                                            type: object
+                                        type: array
+                                    next_cursor:
+                                        type:
+                                            - string
+                                            - "null"
+                                type: object
+                    description: The runs
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: List recorded import runs
+            x-permission: import:write
+            x-rate-class: read
+            x-staff-only: true
+        post:
+            description: |-
+                Takes the five CSV documents a WHMCS-style dump carries — clients, invoices, invoice_items, services and transactions — and reports, row by row, what would be created, updated, left alone and refused, with the reason and the row number for each rejection.
+
+                **Nothing is written unless `commit` is true.** The dry run is the same code inside a transaction that is always rolled back, so its counts are the counts a commit produces; there is no second implementation to drift.
+
+                A commit is one transaction: either every valid row lands or none does, and a rejected row is reported rather than aborting the run, so a dump with three unimportable rows still migrates the rest. Imported rows are keyed on the legacy id from the old panel, so re-running the same dump creates nothing and reports `unchanged` — which is also how a dump larger than the request body limit is imported: send it in several runs, clients first.
+
+                An imported invoice always carries its historical number. A row with no number is refused (`missing_invoice_number`) and a number already printed on another invoice is a conflict (`number_taken`); the importer never renumbers. If the number belongs to this panel's own `INV-` series, the series is advanced past it so a later invoice cannot reuse it.
+
+                Nothing is posted to the ledger: an imported invoice records what the old system did and is not a revenue event of this one.
+            operationId: PostStaffImports
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                commit:
+                                    default: false
+                                    description: Write the import. Omitted or false is a dry run, which writes nothing.
+                                    type: boolean
+                                default_currency:
+                                    description: Currency for rows that carry none of their own. Without it such a row is refused with `missing_currency`.
+                                    type: string
+                                files:
+                                    description: Each document's CSV text, header row included. A header-only file is valid and means "the old installation had none of these".
+                                    properties:
+                                        clients:
+                                            type: string
+                                        invoice_items:
+                                            type: string
+                                        invoices:
+                                            type: string
+                                        services:
+                                            type: string
+                                        transactions:
+                                            type: string
+                                    required:
+                                        - clients
+                                        - invoices
+                                        - invoice_items
+                                        - services
+                                        - transactions
+                                    type: object
+                                source:
+                                    description: The dump dialect. It selects the column names each document may use.
+                                    enum:
+                                        - whmcs
+                                        - paymenter
+                                    type: string
+                            required:
+                                - source
+                                - files
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    dry_run:
+                                        description: True when nothing was written. The single most important field in the document.
+                                        type: boolean
+                                    duration_ms:
+                                        type: integer
+                                    files:
+                                        items:
+                                            properties:
+                                                error:
+                                                    description: Set when the document could not be read at all — a missing required column, or a quoting error. The other documents are still processed.
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                file:
+                                                    enum:
+                                                        - clients
+                                                        - invoices
+                                                        - invoice_items
+                                                        - services
+                                                        - transactions
+                                                    type: string
+                                                rejected:
+                                                    type: integer
+                                                rows_read:
+                                                    type: integer
+                                            required:
+                                                - file
+                                                - rows_read
+                                                - rejected
+                                            type: object
+                                        type: array
+                                    rejections:
+                                        items:
+                                            properties:
+                                                code:
+                                                    description: Stable machine code. A client branches on this, never on `detail`.
+                                                    enum:
+                                                        - invalid_id
+                                                        - duplicate_id_in_dump
+                                                        - missing_column
+                                                        - invalid_csv
+                                                        - field_count
+                                                        - invalid_email
+                                                        - invalid_amount
+                                                        - negative_amount
+                                                        - invalid_date
+                                                        - missing_date
+                                                        - missing_currency
+                                                        - invalid_currency
+                                                        - unknown_status
+                                                        - unknown_client
+                                                        - unknown_invoice
+                                                        - parent_rejected
+                                                        - missing_invoice_number
+                                                        - duplicate_invoice_number
+                                                        - number_taken
+                                                        - invoice_immutable
+                                                        - draft_invoice
+                                                        - total_mismatch
+                                                        - email_taken
+                                                        - unknown_product
+                                                        - non_positive_payment
+                                                        - payment_immutable
+                                                        - duplicate_payment
+                                                        - overpayment
+                                                        - invalid_value
+                                                        - conflict
+                                                    type: string
+                                                detail:
+                                                    description: A sentence naming the value and the rule. Never parsed by a client.
+                                                    type: string
+                                                entity:
+                                                    type: string
+                                                file:
+                                                    type: string
+                                                legacy_id:
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                line:
+                                                    description: The physical line the record starts on, for an editor.
+                                                    type: integer
+                                                row:
+                                                    description: The n-th data row in the file, counting from 1 below the header.
+                                                    type: integer
+                                            required:
+                                                - file
+                                                - row
+                                                - line
+                                                - entity
+                                                - code
+                                                - detail
+                                            type: object
+                                        type: array
+                                    run_id:
+                                        description: The recorded run. Null on a dry run, which is not recorded at all.
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    source:
+                                        enum:
+                                            - whmcs
+                                            - paymenter
+                                        type: string
+                                    started_at:
+                                        format: date-time
+                                        type: string
+                                    tables:
+                                        items:
+                                            properties:
+                                                created:
+                                                    type: integer
+                                                entity:
+                                                    enum:
+                                                        - customer
+                                                        - invoice
+                                                        - invoice_line
+                                                        - service
+                                                        - payment
+                                                    type: string
+                                                rejected:
+                                                    type: integer
+                                                unchanged:
+                                                    type: integer
+                                                updated:
+                                                    type: integer
+                                            required:
+                                                - entity
+                                                - created
+                                                - updated
+                                                - unchanged
+                                                - rejected
+                                            type: object
+                                        type: array
+                                    totals:
+                                        properties:
+                                            created:
+                                                type: integer
+                                            rejected:
+                                                type: integer
+                                            rows_read:
+                                                description: Data rows read across all five files. The header is not a row.
+                                                type: integer
+                                            unchanged:
+                                                description: 'Already imported and identical: the expected result of replaying a dump.'
+                                                type: integer
+                                            updated:
+                                                type: integer
+                                        required:
+                                            - rows_read
+                                            - created
+                                            - updated
+                                            - unchanged
+                                            - rejected
+                                        type: object
+                                    warnings:
+                                        items:
+                                            properties:
+                                                code:
+                                                    enum:
+                                                        - paid_invoice_without_payments
+                                                        - invoice_paid_disagrees_with_payments
+                                                        - invoice_subtotal_disagrees_with_lines
+                                                        - payment_without_invoice
+                                                        - services_imported_without_subscription
+                                                        - line_tax_not_reconstructed
+                                                        - customer_matched_by_email
+                                                        - service_cancelled_imported_as_terminated
+                                                    type: string
+                                                detail:
+                                                    type: string
+                                                file:
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                legacy_id:
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                row:
+                                                    type:
+                                                        - integer
+                                                        - "null"
+                                            required:
+                                                - code
+                                                - detail
+                                            type: object
+                                        type: array
+                                required:
+                                    - source
+                                    - dry_run
+                                    - started_at
+                                    - duration_ms
+                                    - totals
+                                    - files
+                                    - tables
+                                    - rejections
+                                    - warnings
+                                type: object
+                    description: The report — a dry run, or a committed run
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A concurrent import wrote the same record; nothing was changed
+                "413":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The dump exceeds the request body limit
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The source is unknown, a document is missing, or a document name is not one this importer reads
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Run an import from another billing panel (dry run by default)
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: import:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/imports/{id}:
+        get:
+            description: 'The run with the report it recorded: every rejection with its row number, every warning, and the per-file and per-entity counts. The report is stored verbatim, because "why is this customer here" must not depend on the dump still existing on someone''s laptop.'
+            operationId: GetStaffImportsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    actor_id:
+                                        format: uuid
+                                        type:
+                                            - string
+                                            - "null"
+                                    created:
+                                        type: integer
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    rejected:
+                                        type: integer
+                                    report:
+                                        properties:
+                                            dry_run:
+                                                description: True when nothing was written. The single most important field in the document.
+                                                type: boolean
+                                            duration_ms:
+                                                type: integer
+                                            files:
+                                                items:
+                                                    properties:
+                                                        error:
+                                                            description: Set when the document could not be read at all — a missing required column, or a quoting error. The other documents are still processed.
+                                                            type:
+                                                                - string
+                                                                - "null"
+                                                        file:
+                                                            enum:
+                                                                - clients
+                                                                - invoices
+                                                                - invoice_items
+                                                                - services
+                                                                - transactions
+                                                            type: string
+                                                        rejected:
+                                                            type: integer
+                                                        rows_read:
+                                                            type: integer
+                                                    required:
+                                                        - file
+                                                        - rows_read
+                                                        - rejected
+                                                    type: object
+                                                type: array
+                                            rejections:
+                                                items:
+                                                    properties:
+                                                        code:
+                                                            description: Stable machine code. A client branches on this, never on `detail`.
+                                                            enum:
+                                                                - invalid_id
+                                                                - duplicate_id_in_dump
+                                                                - missing_column
+                                                                - invalid_csv
+                                                                - field_count
+                                                                - invalid_email
+                                                                - invalid_amount
+                                                                - negative_amount
+                                                                - invalid_date
+                                                                - missing_date
+                                                                - missing_currency
+                                                                - invalid_currency
+                                                                - unknown_status
+                                                                - unknown_client
+                                                                - unknown_invoice
+                                                                - parent_rejected
+                                                                - missing_invoice_number
+                                                                - duplicate_invoice_number
+                                                                - number_taken
+                                                                - invoice_immutable
+                                                                - draft_invoice
+                                                                - total_mismatch
+                                                                - email_taken
+                                                                - unknown_product
+                                                                - non_positive_payment
+                                                                - payment_immutable
+                                                                - duplicate_payment
+                                                                - overpayment
+                                                                - invalid_value
+                                                                - conflict
+                                                            type: string
+                                                        detail:
+                                                            description: A sentence naming the value and the rule. Never parsed by a client.
+                                                            type: string
+                                                        entity:
+                                                            type: string
+                                                        file:
+                                                            type: string
+                                                        legacy_id:
+                                                            type:
+                                                                - string
+                                                                - "null"
+                                                        line:
+                                                            description: The physical line the record starts on, for an editor.
+                                                            type: integer
+                                                        row:
+                                                            description: The n-th data row in the file, counting from 1 below the header.
+                                                            type: integer
+                                                    required:
+                                                        - file
+                                                        - row
+                                                        - line
+                                                        - entity
+                                                        - code
+                                                        - detail
+                                                    type: object
+                                                type: array
+                                            run_id:
+                                                description: The recorded run. Null on a dry run, which is not recorded at all.
+                                                format: uuid
+                                                type:
+                                                    - string
+                                                    - "null"
+                                            source:
+                                                enum:
+                                                    - whmcs
+                                                    - paymenter
+                                                type: string
+                                            started_at:
+                                                format: date-time
+                                                type: string
+                                            tables:
+                                                items:
+                                                    properties:
+                                                        created:
+                                                            type: integer
+                                                        entity:
+                                                            enum:
+                                                                - customer
+                                                                - invoice
+                                                                - invoice_line
+                                                                - service
+                                                                - payment
+                                                            type: string
+                                                        rejected:
+                                                            type: integer
+                                                        unchanged:
+                                                            type: integer
+                                                        updated:
+                                                            type: integer
+                                                    required:
+                                                        - entity
+                                                        - created
+                                                        - updated
+                                                        - unchanged
+                                                        - rejected
+                                                    type: object
+                                                type: array
+                                            totals:
+                                                properties:
+                                                    created:
+                                                        type: integer
+                                                    rejected:
+                                                        type: integer
+                                                    rows_read:
+                                                        description: Data rows read across all five files. The header is not a row.
+                                                        type: integer
+                                                    unchanged:
+                                                        description: 'Already imported and identical: the expected result of replaying a dump.'
+                                                        type: integer
+                                                    updated:
+                                                        type: integer
+                                                required:
+                                                    - rows_read
+                                                    - created
+                                                    - updated
+                                                    - unchanged
+                                                    - rejected
+                                                type: object
+                                            warnings:
+                                                items:
+                                                    properties:
+                                                        code:
+                                                            enum:
+                                                                - paid_invoice_without_payments
+                                                                - invoice_paid_disagrees_with_payments
+                                                                - invoice_subtotal_disagrees_with_lines
+                                                                - payment_without_invoice
+                                                                - services_imported_without_subscription
+                                                                - line_tax_not_reconstructed
+                                                                - customer_matched_by_email
+                                                                - service_cancelled_imported_as_terminated
+                                                            type: string
+                                                        detail:
+                                                            type: string
+                                                        file:
+                                                            type:
+                                                                - string
+                                                                - "null"
+                                                        legacy_id:
+                                                            type:
+                                                                - string
+                                                                - "null"
+                                                        row:
+                                                            type:
+                                                                - integer
+                                                                - "null"
+                                                    required:
+                                                        - code
+                                                        - detail
+                                                    type: object
+                                                type: array
+                                        required:
+                                            - source
+                                            - dry_run
+                                            - started_at
+                                            - duration_ms
+                                            - totals
+                                            - files
+                                            - tables
+                                            - rejections
+                                            - warnings
+                                        type: object
+                                    source:
+                                        type: string
+                                    unchanged:
+                                        type: integer
+                                    updated:
+                                        type: integer
+                                required:
+                                    - id
+                                    - source
+                                    - created
+                                    - updated
+                                    - unchanged
+                                    - rejected
+                                    - created_at
+                                    - report
+                                type: object
+                    description: The run
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The id is not a uuid
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such run
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Read one import run
+            x-permission: import:write
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/invoices:
         get:
             description: Filter by status, customer, currency, issue date and overdue. `overdue` is derived, never stored.

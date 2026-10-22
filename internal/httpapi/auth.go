@@ -102,6 +102,17 @@ func (s *Server) loadSession(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
+			// An OAuth2 access token is the other bearer credential this server issues. It
+			// resolves to the same identity shape an API key does — the owner plus scopes that
+			// only narrow — so it rides the same guards instead of getting a second
+			// authorization path of its own (see internal/httpapi/oauth.go).
+			if ident, user, token, ok := s.oauthIdentity(r, presented); ok {
+				ctx := context.WithValue(r.Context(), ctxUser, user)
+				ctx = withAPIKey(ctx, ident)
+				ctx = withOAuthToken(ctx, token)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			// An invalid key is a hard 401, not an anonymous pass: a client that presented a
 			// credential must be told the credential is wrong, not treated as a browser with a
 			// stale cookie.

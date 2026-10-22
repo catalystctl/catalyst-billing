@@ -15,7 +15,36 @@ import { btn, field, input } from "../ui/kit";
 
 export const meta = { title: "Sign in" };
 
+/** A provider the server offers, from `GET /api/v1/auth/providers`. */
+interface Provider {
+  slug: string;
+  name: string;
+  /** Where the button goes. A full navigation, not an SPA route: the server has to set a state. */
+  start_url: string;
+}
+
+/** What the server says when a social callback refused. The server sends a code, not a
+ *  sentence, because the wording belongs to the screen — `account_exists` in particular has to
+ *  explain that accounts are never merged, which is a decision rather than an error. */
+const SOCIAL_ERRORS: Record<string, string> = {
+  account_exists:
+    "An account with that email address already exists. Sign in with your password below, then link the provider from your security page — accounts are never merged automatically.",
+  no_account:
+    "No account is linked to that identity. Sign in with your password first, then link the provider from your security page.",
+  email_mismatch: "The provider's email address is not this account's, so it was not linked.",
+  email_unverified: "The provider did not confirm that email address, so it was not linked.",
+  identity_taken: "That provider account is already linked to a different account.",
+  state_invalid: "That sign-in link expired or was already used. Start again.",
+  provider_denied: "The provider did not complete the sign-in.",
+  provider_failed: "The provider could not be reached. Try again, or sign in with your password.",
+  mfa_required:
+    "This account uses two-step verification. Sign in with your password so the code can be checked.",
+  account_disabled: "This account is disabled. Ask an administrator to re-enable it.",
+  account_missing: "The account this identity was linked to no longer exists.",
+};
+
 export default async function loginPage(ctx: AuthCtx): Promise<Node> {
+  const providers = await loadProviders(ctx);
   const formHost = h("div", { class: "auth-form" });
   const errorHost = h("div");
 
@@ -67,6 +96,20 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
           code ? h("span", { class: "mono", style: undefined }, code) : null,
         ),
       ),
+    );
+  };
+
+  /** Reports why a social callback came back to this screen.
+   *
+   *  The server sends a code, and this screen owns the sentence — including the one that
+   *  matters most: an existing account is never merged, so the person is told to sign in with
+   *  their password and link the provider themselves. */
+  const showSocialNotice = (): void => {
+    const code = ctx.query.get("social_error");
+    if (!code) return;
+    showError(
+      SOCIAL_ERRORS[code] ?? "The sign-in could not be completed. Try again, or use your password.",
+      code,
     );
   };
 
@@ -169,6 +212,7 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
         h("p", null, "Use the account your administrator created for you."),
       ),
       formHost,
+      providerBlock(providers),
       h("p", { class: "auth-switch" }, "Customer? Your invoices are in the same portal."),
     );
     window.requestAnimationFrame(() => email.focus());
@@ -314,7 +358,51 @@ export default async function loginPage(ctx: AuthCtx): Promise<Node> {
   };
 
   signIn();
+  showSocialNotice();
   return page;
+}
+
+/** Fetches the configured providers.
+ *
+ *  A failure is not an error the person can act on, and it must not stop them signing in with
+ *  a password, so it degrades to "no providers" — which is the same thing the screen shows on
+ *  an installation that has configured none. */
+async function loadProviders(ctx: AuthCtx): Promise<Provider[]> {
+  try {
+    const res = await ctx.api.get<{ data: Provider[] }>("/api/v1/auth/providers");
+    return Array.isArray(res.data) ? res.data : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Renders the provider buttons, or nothing at all when none is configured. */
+function providerBlock(providers: Provider[]): Node | null {
+  if (providers.length === 0) return null;
+  return h(
+    "div",
+    { class: "stack-sm", style: "margin-top: var(--s-3)" },
+    h(
+      "div",
+      {
+        class: "auth-links",
+        style: "justify-content: center; color: var(--text-faint)",
+      },
+      h("span", null, "or continue with"),
+    ),
+    h(
+      "div",
+      { class: "stack-sm" },
+      ...providers.map((provider) =>
+        btn(provider.name, {
+          href: provider.start_url,
+          icon: "external",
+          block: true,
+          title: `Sign in with ${provider.name}`,
+        }),
+      ),
+    ),
+  );
 }
 
 function point(text: string): HTMLElement {

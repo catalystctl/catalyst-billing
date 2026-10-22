@@ -12,6 +12,27 @@
 //   - an `.error-state` block on a screen that should have data;
 //   - a screen that renders its heading but not its content.
 //
+// # The new-screen loop, and why a 404 is tolerated
+//
+// The commerce, support and account screens were built by parallel packages and land in
+// stages, so at any moment some of them exist and some do not. A harness that treated a
+// missing screen as a failure would be red for reasons that are not defects, and the
+// obvious response to that — commenting the screen out of the list — hides the gap
+// instead of reporting it. So the loop distinguishes three outcomes per screen:
+//
+//   present   the screen rendered with content and no error state, and every assertion
+//             about it passed. A screen that exists and renders *wrong* is a failure: an
+//             error block, an uncaught exception, a console error, a `[object Object]`, a
+//             heading with nothing under it, or a table that overflows a phone.
+//   missing   the build does not contain the screen: the route is undeclared, its chunk is
+//             not in the bundle, or the screen itself reports that the API behind it is
+//             absent. This is reported by name and does not fail the run — the point is
+//             that the status is *visible*, not that it is green.
+//   failed    present, but one of the assertions failed. This fails the run.
+//
+// The final report lists all three, so "8 of 19 screens present" is printed rather than
+// inferred from the absence of a line.
+//
 // Usage: node scripts/e2e-ui.mjs --base=http://127.0.0.1:8791 \
 //          --staff=ops@example.test --staff-password=... \
 //          [--customer=... --customer-password=...] [--screenshots=dir]
@@ -96,7 +117,13 @@ await new Promise((resolve, reject) => {
 let nextId = 1;
 const pending = new Map();
 const consoleErrors = [];
+// Console errors are attributed to the screen that was on display when they happened, so the
+// report can say "coupons: <message>" rather than dumping one undifferentiated list at the
+// end. A console error is the least visible defect there is, and "it happened somewhere" is
+// not an actionable finding.
+const consoleScreenErrors = [];
 const exceptions = [];
+let currentScreen = "startup";
 
 ws.onmessage = (msg) => {
   const data = JSON.parse(msg.data);
@@ -114,7 +141,9 @@ ws.onmessage = (msg) => {
     exceptions.push(`${d.exception?.description ?? d.text} ${where}`);
   }
   if (data.method === "Runtime.consoleAPICalled" && data.params.type === "error") {
-    consoleErrors.push((data.params.args ?? []).map((a) => a.value ?? a.description ?? "").join(" "));
+    const line = (data.params.args ?? []).map((a) => a.value ?? a.description ?? "").join(" ");
+    consoleErrors.push(line);
+    consoleScreenErrors.push({ screen: currentScreen, message: line });
   }
 };
 
@@ -162,6 +191,7 @@ async function until(description, expression, timeoutMs = 8000) {
 }
 
 async function goto(path, timeoutMs = 10_000) {
+  currentScreen = path;
   await send("Page.navigate", { url: `${base}${path}` }, session);
   await until(
     `the app to render on ${path}`,
@@ -271,6 +301,159 @@ async function assertScreen(name, { path, expect = [], absent = [], allowEmptySt
   return text;
 }
 
+// ------------------------------------------------- the new-screen ledger --
+
+// The commerce, support and account screens are built by parallel packages and land in
+// stages, so the harness must be able to tell "this build does not have that screen" from
+// "that screen is broken". The distinction is made from what the page actually renders,
+// not from a list the harness keeps: a screen that is not in the build says so, and a
+// screen that is in the build and broken says something else.
+const MISSING_MARKERS = [
+  // The route table has no entry for the path (app.ts renderNotFound).
+  /that page does not exist/i,
+  // The route is declared but its chunk is not in the bundle (app.ts, unresolved import),
+  // or the view module is still the placeholder that says so.
+  /not available in this build/i,
+  // A real screen whose endpoint this build does not serve, e.g. config options or logs.
+  /not available on this installation/i,
+  /does not serve (?:GET|POST|PUT|DELETE) \/api\//i,
+  /has not shipped yet/i,
+];
+
+const screenLedger = [];
+
+/** Reads everything the assertions need in one round trip. */
+async function screenState() {
+  return evaluate(`(() => {
+    const q = (s) => document.querySelector(s);
+    const contentSelector = ".card, .table, .empty, .empty-state, .banner, .split, .grid, .meta-grid, .invoice-doc, .settings-nav, .auth-form, .store-card, .store-product";
+    const text = document.body.innerText || "";
+    const tr = q(".table tbody tr");
+    return {
+      path: location.pathname,
+      title: document.title,
+      h1: q("h1") ? q("h1").innerText : null,
+      hasCard: !!q(".card"),
+      hasTable: !!q(".table"),
+      hasEmpty: !!q(".empty"),
+      hasEmptyState: !!q(".empty-state"),
+      errorText: q(".error-state") ? q(".error-state").innerText : null,
+      emptyTitle: q(".empty .empty-title, .empty-state .empty-title") ? q(".empty .empty-title, .empty-state .empty-title").innerText : "",
+      contentNodes: document.querySelectorAll(contentSelector).length,
+      overflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+      rowDisplay: tr ? getComputedStyle(tr).display : null,
+      text,
+    };
+  })()`);
+}
+
+/**
+ * Visits a screen without demanding that it exist.
+ *
+ * `goto()` throws when nothing renders, which is right for a screen the suite depends on
+ * and wrong for one that may not be in this build. This waits for *any* of the terminal
+ * states — a page, an error, an empty state, or the not-found card — and returns whatever
+ * it found, including "nothing yet" after the timeout, so the caller can classify it.
+ */
+async function visit(path, timeoutMs = 12_000) {
+  currentScreen = path;
+  await send("Page.navigate", { url: `${base}${path}` }, session);
+  const appeared = await until(
+    `something to render on ${path}`,
+    "document.querySelector('.page, .auth-panel, .store-page, .empty-state, .error-state, .card') !== null",
+    timeoutMs,
+  ).catch(() => false);
+  if (appeared) {
+    await until(
+      `the screen on ${path} to settle`,
+      "!document.querySelector('.skeleton') && !document.querySelector('.table-loading')",
+      timeoutMs,
+    ).catch(() => false);
+  }
+  // A frame for the swap that replaced the skeleton to lay out.
+  await new Promise((r) => setTimeout(r, 150));
+  return screenState();
+}
+
+/** Which of the tolerated "not in this build" markers the page shows, if any. */
+function missingReason(state) {
+  for (const marker of MISSING_MARKERS) {
+    const hit = state.text.match(marker);
+    if (hit) return hit[0];
+  }
+  return "";
+}
+
+/**
+ * One screen in the tolerant loop.
+ *
+ * Returns `present`, `missing` or `broken`. `missing` is reported and does not fail the run;
+ * `broken` does. The difference is the whole point: a screen that has not landed yet is a
+ * status, and a screen that has landed and renders wrong is a defect.
+ */
+async function assertNewScreen(name, opts) {
+  const { path, expect = [], absent = [], requireTable = false } = opts;
+  const state = await visit(path);
+
+  // A redirect is not a missing screen. These are all routes the audience may reach, so
+  // landing somewhere else means the guard or the router disagrees with the route table.
+  const redirected = state.path !== path;
+  const reason = redirected ? "" : missingReason(state);
+
+  if (reason) {
+    screenLedger.push({ name, path, status: "missing", reason });
+    console.log(`skip ${name} (${path}) — not in this build: ${reason}`);
+    return { status: "missing", state };
+  }
+
+  const before = failures.length;
+  if (redirected) {
+    check(`${name}: stays on ${path}`, false, `redirected to ${state.path}`);
+  }
+  check(`${name}: no error state`, !state.errorText, state.errorText ? state.errorText.slice(0, 300) : "");
+  check(`${name}: has a heading`, Boolean(state.h1), "no <h1> in the rendered screen");
+  check(`${name}: no stringified objects`, !/\[object (Object|HTML\w*Element)\]/.test(state.text), state.text.match(/\[object [^\]]+\]/)?.[0] ?? "");
+  // "Renders its heading but no content" is the failure this catches: a page head with an
+  // empty body is indistinguishable from a working screen to a test that only looks for a
+  // heading, and it is what a half-finished view actually looks like.
+  check(`${name}: renders content`, state.contentNodes > 0, `no card, table, empty state or banner (${state.contentNodes})`);
+  if (requireTable) check(`${name}: renders a table`, state.hasTable, "no .table");
+
+  const haystack = state.text.toLowerCase();
+  for (const needle of expect) {
+    check(`${name}: shows ${JSON.stringify(needle)}`, haystack.includes(String(needle).toLowerCase()));
+  }
+  for (const needle of absent) {
+    check(`${name}: does not show ${JSON.stringify(needle)}`, !haystack.includes(String(needle).toLowerCase()));
+  }
+  if (state.hasEmpty) {
+    console.log(`     note: ${name} rendered its empty state (${state.emptyTitle})`);
+  }
+  await screenshot(name.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+
+  const status = failures.length > before ? "broken" : "present";
+  screenLedger.push({ name, path, status, reason: status === "broken" ? failures.slice(before).join("; ") : "" });
+  return { status, state };
+}
+
+/**
+ * The mobile pass for one screen: a table must become cards, and nothing may scroll
+ * sideways. A screen without a table is skipped rather than failed — the layout rule only
+ * applies where there is a table to lay out.
+ */
+async function assertNoOverflow(name, path) {
+  const state = await visit(path);
+  if (state.path !== path || missingReason(state)) return;
+  check(`mobile: ${name} does not scroll sideways`, !state.overflow);
+  if (state.hasTable && state.rowDisplay) {
+    check(
+      `mobile: ${name} turns its table into cards`,
+      state.rowDisplay === "block" || state.rowDisplay === "flex",
+      state.rowDisplay,
+    );
+  }
+}
+
 // ---------------------------------------------------------------- the run --
 
 try {
@@ -290,6 +473,59 @@ try {
     const productPage = await pageText();
     check("storefront: the product page is public", productPage.includes(arg("expect-product")));
     check("storefront: the product page shows a price", /per month|per year|\/ monthly|\/ annual/i.test(productPage));
+  }
+
+  // Self-registration, as a stranger, before any sign-in. This is the one screen that turns
+  // a visitor into a customer, and it is public — so it is driven here rather than after the
+  // staff sign-in, where a stale session would silently take over the form.
+  //
+  // The endpoint never says whether an address already existed (that would be an account
+  // discovery oracle), so there is no "signed-in landing" to assert. Success is one of two
+  // states: "check your email" when verification is required, or "check your email, then
+  // sign in" when it is not. Both are the accepted state and both are what this asserts.
+  {
+    const registerEmail = `e2e-register-${Date.now()}@example.test`;
+    const state = await visit("/register");
+    const reason = state.path === "/register" ? missingReason(state) : "";
+    if (reason || state.path !== "/register") {
+      screenLedger.push({
+        name: "register",
+        path: "/register",
+        status: "missing",
+        reason: reason || `redirected to ${state.path}`,
+      });
+      console.log(`skip register (/register) — not in this build: ${reason || `redirected to ${state.path}`}`);
+    } else {
+      const before = failures.length;
+      check("register: no error state", !state.errorText, state.errorText ? state.errorText.slice(0, 300) : "");
+      check("register: has a heading", Boolean(state.h1), "no <h1>");
+      check("register: renders its form", (await evaluate("document.querySelectorAll('.auth-form input').length")) > 0);
+      await typeInto("#name", "E2E Registration");
+      await typeInto("#email", registerEmail);
+      await typeInto("#password", "e2e-registration-password-1");
+      // The terms box is a real requirement on installations that configure terms, so it is
+      // ticked when it exists rather than assumed to be optional.
+      const tos = await evaluate("document.querySelector('#tos') !== null");
+      if (tos) await click("#tos");
+      await click('.auth-form .btn--primary');
+      const accepted = await until(
+        "the accepted state after registering",
+        "/check your email/i.test(document.body.innerText) || document.querySelector('.banner') !== null",
+        10_000,
+      ).catch(() => false);
+      const after = await pageText();
+      check("register: submitting shows the accepted state", Boolean(accepted), after.slice(0, 300));
+      check("register: says to check the email", /check your email/i.test(after), after.slice(0, 300));
+      // The endpoint is deliberately non-enumerating, so the page must not claim an account
+      // was created. This is the sentence that keeps the privacy promise visible.
+      check(
+        "register: does not claim the account exists",
+        !/your account has been created|account created successfully/i.test(after),
+      );
+      await screenshot("register-accepted");
+      const status = failures.length > before ? "broken" : "present";
+      screenLedger.push({ name: "register", path: "/register", status, reason: "" });
+    }
   }
 
   // Sign in through the form, which is what proves the login screen works rather than just
@@ -433,6 +669,92 @@ try {
     await assertScreen(name, { path, expect });
   }
 
+  // ---------------------------------------------------- the new staff screens --
+  //
+  // The screens the parallel packages built. Each is tolerated as absent, but a screen that
+  // is present and renders wrong fails the run — see `assertNewScreen`.
+  //
+  // The seed gives each of these data, so an empty state here is a finding rather than a
+  // fixture gap: a coupon, a tax rate, a currency, a config option on the seeded product, a
+  // ticket with a message and an announcement. `expect` names the seeded value, which is what
+  // proves the screen read the database rather than rendering an empty shell.
+  const seededCoupon = arg("expect-coupon");
+  const seededTaxRate = arg("expect-tax-rate");
+  const seededCurrency = arg("expect-currency");
+  const seededTicket = arg("expect-ticket");
+  const seededAnnouncement = arg("expect-announcement");
+  const seededConfigProduct = arg("expect-config-product");
+
+  await assertNewScreen("coupons", {
+    path: "/coupons",
+    expect: ["Coupons", ...(seededCoupon ? [seededCoupon] : [])],
+    requireTable: true,
+  });
+
+  await assertNewScreen("tax-rates", {
+    path: "/tax-rates",
+    expect: ["Tax rates", ...(seededTaxRate ? [seededTaxRate] : [])],
+    requireTable: true,
+  });
+
+  await assertNewScreen("currencies", {
+    path: "/currencies",
+    expect: ["Currencies", ...(seededCurrency ? [seededCurrency] : [])],
+    requireTable: true,
+  });
+
+  // Config options are per product, so the screen is opened for the seeded product. Without
+  // the query the screen correctly asks which product to configure, which proves nothing
+  // about the options themselves.
+  if (seededConfigProduct) {
+    await assertNewScreen("config-options", {
+      path: `/config-options?product_id=${encodeURIComponent(seededConfigProduct)}`,
+      expect: ["Config options"],
+    });
+  } else {
+    await assertNewScreen("config-options", { path: "/config-options", expect: ["Config options"] });
+  }
+
+  await assertNewScreen("system-settings", {
+    path: "/settings/system",
+    expect: ["System settings"],
+  });
+
+  // The staff ticket queue and the all-tickets list are different screens over the same
+  // table; both must render the seeded ticket.
+  await assertNewScreen("support-queue", {
+    path: "/support",
+    expect: ["Support", ...(seededTicket ? [seededTicket] : [])],
+  });
+  await assertNewScreen("tickets-staff", {
+    path: "/tickets",
+    expect: ["Tickets", ...(seededTicket ? [seededTicket] : [])],
+  });
+
+  await assertNewScreen("logs", { path: "/logs", expect: ["Logs"] });
+
+  await assertNewScreen("announcements", {
+    path: "/announcements",
+    expect: ["Announcements", ...(seededAnnouncement ? [seededAnnouncement] : [])],
+  });
+
+  await assertNewScreen("cancellations", {
+    path: "/cancellations",
+    expect: ["Cancellations"],
+  });
+
+  // The staff credit screen is the one that has not landed: it is a placeholder module. It is
+  // in the list deliberately so the report says so rather than omitting it.
+  await assertNewScreen("credits-staff", { path: "/credits", expect: ["Credit"] });
+
+  // A settings screen that offers to save must actually be able to: the form fields come
+  // from the settings API, so an empty form is a broken screen even though it has a heading.
+  await visit("/settings/system");
+  if (!missingReason(await screenState())) {
+    const fieldCount = await evaluate("document.querySelectorAll('.settings-nav button, .settings-nav a, input[id], select[id]').length");
+    check("system-settings: renders editable fields", fieldCount > 0, `controls=${fieldCount}`);
+  }
+
   // Buying a product: the screen the catalog was missing. It is a form over the catalog, so
   // assert it loaded real products rather than only that a heading rendered.
   await goto("/orders/new");
@@ -484,6 +806,24 @@ try {
     check("mobile: the page does not scroll sideways", !mobile.overflow);
   }
   await screenshot("mobile-customers");
+
+  // The new screens get the same phone treatment. Each of these is a table on a desktop and
+  // must be a card list at 390px; a table that keeps its columns makes the page scroll
+  // sideways, which on a phone means the last column is unreachable. A screen that is not in
+  // this build is skipped by name rather than counted as passing.
+  for (const [name, path] of [
+    ["coupons", "/coupons"],
+    ["tax-rates", "/tax-rates"],
+    ["currencies", "/currencies"],
+    ["support-queue", "/support"],
+    ["tickets", "/tickets"],
+    ["announcements", "/announcements"],
+    ["cancellations", "/cancellations"],
+    ["system-settings", "/settings/system"],
+    ["logs", "/logs"],
+  ]) {
+    await assertNoOverflow(name, path);
+  }
   await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false }, session);
 
   // The customer portal, as a customer. This is the surface with the least traffic in review
@@ -515,10 +855,85 @@ try {
     ]) {
       await assertScreen(name, { path, expect: [] });
     }
-    // A staff-only route must not be reachable by a customer.
-    await goto("/customers");
-    const redirected = await evaluate("location.pathname");
-    check("portal: a staff route redirects a customer", redirected.startsWith("/portal"), redirected);
+
+    // ------------------------------------------------ the customer's new screens --
+    //
+    // The cart and checkout are seeded with a line by the shell script, so "Your cart is
+    // empty" here is a finding, not a fixture gap. The ticket list must show the seeded
+    // ticket. The account screens are allowed to be empty — an empty session list or an
+    // empty inbox is a correct state — but they must render their structure.
+    const seededCartProduct = arg("expect-cart-product");
+    const seededTicketNumber = arg("expect-ticket");
+
+    await assertNewScreen("cart", {
+      path: "/cart",
+      expect: ["Your cart", ...(seededCartProduct ? [seededCartProduct] : [])],
+      absent: ["Your cart is empty"],
+    });
+
+    await assertNewScreen("checkout", {
+      path: "/checkout",
+      expect: ["Checkout"],
+      absent: ["There is nothing to check out"],
+    });
+
+    await assertNewScreen("tickets", {
+      path: "/tickets",
+      expect: ["Support tickets", ...(seededTicketNumber ? [seededTicketNumber] : [])],
+    });
+
+    await assertNewScreen("ticket-new", {
+      path: "/tickets/new",
+      expect: ["Open a ticket", "Subject"],
+    });
+
+    // The form must be submittable, which means the fields exist and are enabled. A ticket
+    // form that renders its labels with no inputs is the defect this catches.
+    await visit("/tickets/new");
+    if (!missingReason(await screenState())) {
+      const fields = await evaluate(
+        "document.querySelectorAll('input[id], textarea[id], select[id]').length",
+      );
+      check("ticket-new: renders its fields", fields > 0, `fields=${fields}`);
+    }
+
+    await assertNewScreen("portal-credits", { path: "/portal/credits", expect: ["Credit"] });
+
+    await assertNewScreen("portal-security", {
+      path: "/portal/security",
+      expect: ["Security"],
+    });
+
+    await assertNewScreen("portal-notifications", {
+      path: "/portal/notifications",
+      expect: ["Notifications"],
+    });
+
+    await assertNewScreen("portal-payment-methods", {
+      path: "/portal/payment-methods",
+      expect: ["Payment methods"],
+    });
+
+    // A customer must not reach any staff screen, old or new. The old list covered
+    // /customers; the new screens are the ones a mis-scoped route guard would expose, so
+    // each is tried explicitly and must land back inside the portal.
+    for (const staffPath of [
+      "/customers",
+      "/coupons",
+      "/tax-rates",
+      "/currencies",
+      "/config-options",
+      "/settings/system",
+      "/support",
+      "/logs",
+      "/announcements",
+      "/cancellations",
+      "/credits",
+    ]) {
+      await visit(staffPath);
+      const landed = await evaluate("location.pathname");
+      check(`portal: a customer cannot reach ${staffPath}`, landed.startsWith("/portal"), landed);
+    }
   }
 
   // Nothing threw anywhere in the run.
@@ -541,6 +956,34 @@ try {
 }
 
 console.log(`\n${passes.length} passed, ${failures.length} failed`);
+
+// The screen ledger, printed whether the run passed or failed. This is the part that makes
+// the harness usable while the work lands in stages: it says which screens were present,
+// which were not, and which were present and wrong — by name, with the reason. A run that
+// only printed its failures would leave "8 of 19" to be counted from the log.
+if (screenLedger.length > 0) {
+  const order = { present: 0, broken: 1, missing: 2 };
+  const sorted = [...screenLedger].sort((a, b) => order[a.status] - order[b.status]);
+  const count = (s) => screenLedger.filter((e) => e.status === s).length;
+  console.log(
+    `\nnew screens: ${count("present")} present, ${count("broken")} broken, ${count("missing")} not in this build`,
+  );
+  for (const entry of sorted) {
+    const mark = entry.status === "present" ? "ok   " : entry.status === "broken" ? "FAIL " : "skip ";
+    const detail = entry.reason ? ` — ${entry.reason}` : "";
+    console.log(`  ${mark}${entry.name.padEnd(22)} ${entry.path}${detail}`);
+  }
+}
+
+// Every console error, attributed to the screen that was showing. Reported even when the run
+// passes, because "no unexpected console errors" only says none was unexpected.
+if (consoleScreenErrors.length > 0) {
+  console.log("\nconsole errors:");
+  for (const { screen, message } of consoleScreenErrors) {
+    console.log(`  - [${screen}] ${message}`);
+  }
+}
+
 if (failures.length > 0) {
   console.log("\nfailures:");
   for (const f of failures) console.log(`  - ${f}`);

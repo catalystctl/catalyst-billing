@@ -21,6 +21,9 @@ BASE="${1:-}"
 SERVER_PID=""
 SHOTS="${E2E_SCREENSHOTS:-}"
 STAMP="$(date +%s)"
+# A currency code is `^[A-Z0-9]{2,12}$`, so the run stamp rides along in it: "ZZ" plus ten
+# digits is twelve characters, valid, and cannot collide with a real ISO code.
+CURRENCY_CODE="ZZ${STAMP}"
 STAFF_EMAIL="e2e-staff-${STAMP}@example.test"
 STAFF_PASSWORD="e2e-staff-password-1"
 CUSTOMER_EMAIL="e2e-customer-${STAMP}@example.test"
@@ -41,6 +44,23 @@ cleanup() {
     # pattern is what scopes the deletion, and it only matches this script's own accounts.
     ./bin/billing admin purge-test-data --pattern "e2e-%@example.test" --yes --force >/dev/null 2>&1 || true
     psql "$BILLING_DATABASE_URL" -q -v ON_ERROR_STOP=0 >/dev/null 2>&1 <<SQL || true
+-- The commerce/support fixtures this script seeds. They are matched on the run stamp in a
+-- column the row owns (a code, a name, a title), not on a customer, because a coupon and a
+-- currency are installation-wide configuration and have no customer to hang from.
+DELETE FROM ticket_messages WHERE ticket_id IN (
+  SELECT id FROM tickets WHERE subject LIKE 'e2e-ticket-${STAMP}%');
+DELETE FROM tickets WHERE subject LIKE 'e2e-ticket-${STAMP}%';
+DELETE FROM config_option_prices WHERE config_option_id IN (
+  SELECT id FROM config_options WHERE name LIKE 'e2e-option-${STAMP}%');
+DELETE FROM config_options WHERE name LIKE 'e2e-option-${STAMP}%';
+DELETE FROM coupon_products WHERE coupon_id IN (
+  SELECT id FROM coupons WHERE code LIKE 'E2E-${STAMP}%');
+DELETE FROM coupon_redemptions WHERE coupon_id IN (
+  SELECT id FROM coupons WHERE code LIKE 'E2E-${STAMP}%');
+DELETE FROM coupons WHERE code LIKE 'E2E-${STAMP}%';
+DELETE FROM tax_rates WHERE name LIKE 'e2e-tax-${STAMP}%';
+DELETE FROM announcements WHERE title LIKE 'e2e-announcement-${STAMP}%';
+DELETE FROM currencies WHERE code = '${CURRENCY_CODE}';
 DELETE FROM services WHERE external_id LIKE 'e2e-svc-%';
 DELETE FROM price_versions WHERE product_id IN (
   SELECT id FROM products WHERE slug LIKE 'e2e-hosting-%' OR slug LIKE 'e2e-product-%' OR slug LIKE 'e2e-hidden-%');
@@ -166,6 +186,136 @@ COMMIT;
 SQL
 ok "seeded a catalog product, a service and the portal login"
 
+# ------------------------------------------------ the commerce/support fixtures --
+#
+# The screens the parallel packages built need data of their own. Each insert is guarded with
+# ON CONFLICT DO NOTHING like the catalog seed above, so a re-run against a database that
+# already holds the row is a no-op rather than an error. The column names come from
+# 0020_commerce.sql, which is the schema these rows live in; a name guessed here would fail
+# loudly on the first run and be "fixed" by deleting the assertion.
+#
+# The fixtures and what each one proves:
+#
+#   coupon            /coupons lists a code, a kind and a value it read from the database
+#   tax rate          /tax-rates lists a jurisdiction and an exact rational rate
+#   currency          /currencies lists a configured currency with its render style
+#   config option     /config-options shows an option attached to the seeded product
+#   ticket + message  /support and /tickets show a ticket, and its thread has a body
+#   credit balance    /portal/credits has a positive balance (a ledger posting, not a column)
+#   announcement      /announcements lists a published announcement
+#   cart line         /cart and /checkout are not empty, so they render the priced cart
+#
+# The credit balance is a *balanced journal transaction*, because that is what the balance is
+# derived from: `GET /portal/credits` sums `journal_entries` on `customer_credit`. Inserting a
+# number into a column would prove nothing, and the deferred balance trigger would refuse an
+# unbalanced transaction anyway. Debit `refunds` (an expense) and credit `customer_credit`
+# (a liability) is the same pair a goodwill credit note posts.
+TICKET_SUBJECT="e2e-ticket-${STAMP} the host stopped answering"
+CONFIG_OPTION_NAME="e2e-option-${STAMP} memory"
+ANNOUNCEMENT_TITLE="e2e-announcement-${STAMP} maintenance window"
+COUPON_CODE="E2E-${STAMP}"
+TAX_RATE_NAME="e2e-tax-${STAMP} Germany VAT"
+
+psql "$BILLING_DATABASE_URL" -v ON_ERROR_STOP=1 -q >/dev/null <<SQL || fail "could not seed the commerce and support fixtures"
+BEGIN;
+
+-- A percentage coupon. `percentage` is a rational string, never a float, and the CHECK in
+-- 0020 refuses a row that carries both a percentage and an amount.
+INSERT INTO coupons (code, description, kind, percentage, applies_to, max_uses, enabled)
+VALUES ('${COUPON_CODE}', 'Seeded by the browser test', 'percentage', '10', 'all', 100, true)
+ON CONFLICT DO NOTHING;
+
+-- One dated rate. `rate` is text for the same reason: an exact rational, not a float.
+-- The unique index allows one open-ended rate per (country, region, class), so this is a
+-- plain insert guarded on that key.
+INSERT INTO tax_rates (name, country_code, region_code, tax_class, rate, inclusive, enabled)
+VALUES ('${TAX_RATE_NAME}', 'DE', '', 'standard', '0.19', false, true)
+ON CONFLICT DO NOTHING;
+
+-- A currency with a deliberately unusual presentation, so the screen has something to render
+-- that the seeded ISO rows do not: a suffix symbol, a space group separator and a comma
+-- decimal mark. It is disabled so it is never offered at checkout — this is a fixture for the
+-- configuration screen, not a change to what the shop sells in.
+INSERT INTO currencies (code, name, scale, symbol, symbol_position, group_separator,
+  decimal_mark, group_size, is_default, enabled, sort_order)
+VALUES ('${CURRENCY_CODE}', 'E2E Test Currency', 2, 'Z', 'suffix', ' ', ',', 3, false, false, 999)
+ON CONFLICT (code) DO NOTHING;
+
+-- A published announcement. `published_at` must be set for `live` to be true, so it is.
+INSERT INTO announcements (title, body, placement, published, published_at)
+VALUES ('${ANNOUNCEMENT_TITLE}', 'The panel will be read-only for ten minutes.', 'both', true, now())
+ON CONFLICT DO NOTHING;
+
+-- A dropdown option on the seeded product, with two choices. `choices` is jsonb.
+INSERT INTO config_options (product_id, name, description, option_type, choices, env_variable,
+  required, sort_order)
+SELECT p.id, '${CONFIG_OPTION_NAME}', 'Seeded by the browser test', 'dropdown',
+       '["1 GB", "2 GB"]'::jsonb, 'E2E_MEMORY', false, 1
+FROM products p WHERE p.slug = 'e2e-product-${STAMP}'
+ON CONFLICT DO NOTHING;
+
+-- A ticket with a first message, so both the list and the thread have something to render.
+-- The number comes from the shared invoice sequence under the "ticket" scope, which is what
+-- the product does; a ticket with no number would render "—" in the list and prove less.
+INSERT INTO invoice_number_sequences (scope, next_value)
+VALUES ('ticket', 1)
+ON CONFLICT (scope) DO NOTHING;
+
+WITH allocated AS (
+  UPDATE invoice_number_sequences SET next_value = next_value + 1
+  WHERE scope = 'ticket' RETURNING next_value - 1 AS n
+)
+INSERT INTO tickets (number, customer_id, user_id, subject, department, priority, status,
+  opened_by, last_reply_at)
+SELECT 'TKT-' || lpad(n::text, 6, '0'), '${CUSTOMER_ID}', u.id,
+       '${TICKET_SUBJECT}', 'technical', 'high', 'open', u.id, now()
+FROM allocated, users u WHERE u.email = '${CUSTOMER_EMAIL}';
+
+INSERT INTO ticket_messages (ticket_id, author_user_id, from_staff, body)
+SELECT t.id, u.id, false, 'The host stopped answering ping at 09:10 UTC and has not come back.'
+FROM tickets t, users u
+WHERE t.subject = '${TICKET_SUBJECT}' AND u.email = '${CUSTOMER_EMAIL}';
+
+-- A credit balance, as a balanced posting. The reference id is a fresh uuid, so a re-run adds
+-- a second posting rather than failing on the ledger's (kind, reference_type, reference_id)
+-- unique key — and the balance assertion is "greater than zero", which both satisfy.
+WITH tx AS (
+  INSERT INTO journal_transactions (kind, reference_type, reference_id, currency)
+  VALUES ('adjustment', 'e2e_seed', gen_random_uuid(), 'USD')
+  RETURNING id
+)
+INSERT INTO journal_entries (transaction_id, account_code, currency, debit_minor, credit_minor,
+  memo, customer_id)
+SELECT tx.id, v.account, 'USD', v.debit, v.credit, 'Seeded credit for the browser test',
+       '${CUSTOMER_ID}'
+FROM tx, (VALUES ('refunds', 2500, 0), ('customer_credit', 0, 2500)) AS v(account, debit, credit);
+
+-- A cart with one line, so /cart and /checkout render a priced selection rather than their
+-- empty state. A cart holds a selection and its currency, never a price: the price comes from
+-- the price version at read time.
+INSERT INTO carts (customer_id, currency)
+VALUES ('${CUSTOMER_ID}', 'USD')
+ON CONFLICT (customer_id) DO NOTHING;
+
+INSERT INTO cart_items (cart_id, price_version_id, quantity)
+SELECT c.id, pv.id, 1
+FROM carts c
+JOIN products p ON p.slug = 'e2e-product-${STAMP}'
+JOIN price_versions pv ON pv.product_id = p.id
+WHERE c.customer_id = '${CUSTOMER_ID}'
+ON CONFLICT DO NOTHING;
+
+COMMIT;
+SQL
+ok "seeded a coupon, a tax rate, a currency, a config option, a ticket, credit and a cart line"
+
+# The config-options screen is per product, so the harness needs the product's id and not its
+# slug. Reading it back from the database is the only honest source: the insert above selected
+# the id rather than generating one here.
+CONFIG_PRODUCT_ID="$(psql "$BILLING_DATABASE_URL" -tAq -v ON_ERROR_STOP=1 \
+  -c "SELECT id FROM products WHERE slug = 'e2e-product-${STAMP}'")" || fail "could not read the seeded product id"
+[[ -n "$CONFIG_PRODUCT_ID" ]] || fail "the seeded product has no id"
+
 # ---------------------------------------------------------------- the drive --
 
 ARGS=(
@@ -181,6 +331,15 @@ ARGS=(
   "--expect-product=E2E ${STAMP} Plan"
   "--expect-product-slug=e2e-product-${STAMP}"
   "--expect-hidden=E2E Hidden ${STAMP}"
+  # The commerce/support fixtures. Each is the value the screen must show, so an empty state
+  # on a screen that was seeded is a finding rather than a fixture gap.
+  "--expect-coupon=${COUPON_CODE}"
+  "--expect-tax-rate=${TAX_RATE_NAME}"
+  "--expect-currency=${CURRENCY_CODE}"
+  "--expect-announcement=${ANNOUNCEMENT_TITLE}"
+  "--expect-ticket=${TICKET_SUBJECT}"
+  "--expect-cart-product=E2E ${STAMP} Plan"
+  "--expect-config-product=${CONFIG_PRODUCT_ID}"
 )
 [[ -n "$SHOTS" ]] && ARGS+=("--screenshots=$SHOTS")
 

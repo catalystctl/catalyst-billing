@@ -83,6 +83,9 @@ export default async function portalNotificationsPage(ctx: Ctx): Promise<Node> {
       "div",
       { class: "stack" },
       inbox.el,
+      // The push card renders itself away when the installation has no VAPID key pair, which is
+      // the whole of "the portal hides the control rather than offering one that cannot work".
+      pushSection(ctx),
       card({
         title: "What you are told about",
         sub: "These choices apply to every channel. An event that is required cannot be switched off.",
@@ -251,6 +254,384 @@ function inboxRow(ctx: Ctx, row: InboxRow, reload: () => void): HTMLElement {
       href ? btn("Open", { href, size: "sm", variant: "ghost", iconAfter: "chevronRight" }) : null,
     ),
   );
+}
+
+// ------------------------------------------------------------------- push --
+
+// Web push, as the customer sees it: one switch per device, a list of the devices already
+// receiving notifications, and a button that sends a real notification so "it works" is
+// something they can check rather than something they are told.
+//
+// Three rules shape this section:
+//
+//   - **It is hidden, not disabled, when push is unavailable.** The server reports `enabled:
+//     false` when the operator has switched push off or when the VAPID key pair is missing or
+//     unusable, and the card then removes itself. A greyed-out button invites a click and then
+//     explains nothing.
+//   - **The service worker is registered only when the customer asks.** Registering on page load
+//     would install a worker (and keep it installed) for every visitor who ever opened this
+//     screen, including the ones who never enable notifications. The registration happens inside
+//     the click, which is also the only moment the browser will show its permission prompt.
+//   - **The endpoint is the device.** The list the server returns is matched against this
+//     browser's own subscription, so "this device" is a fact derived from the browser rather than
+//     a flag the server stores — two tabs on one laptop agree, and a laptop and a phone do not.
+
+interface PushConfig {
+  enabled: boolean;
+  vapid_public_key: string;
+  /** `disabled`, `keys_missing` or `keys_invalid` when `enabled` is false. */
+  reason?: string;
+  max_devices: number;
+}
+
+interface PushDevice {
+  id: string;
+  endpoint: string;
+  user_agent: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+interface PushState {
+  config: PushConfig;
+  devices: PushDevice[];
+  /** The endpoint this browser is subscribed with, empty when it is not. */
+  currentEndpoint: string;
+  /** `"unsupported"` when the browser has no Push API at all. */
+  permission: NotificationPermission | "unsupported";
+}
+
+/** pushSupported reports whether this browser can do web push at all. */
+function pushSupported(): boolean {
+  return (
+    typeof navigator !== "undefined" &&
+    "serviceWorker" in navigator &&
+    typeof window !== "undefined" &&
+    "PushManager" in window &&
+    "Notification" in window
+  );
+}
+
+/** currentPushSubscription asks the browser, not the server, whether this device is subscribed. */
+async function currentPushSubscription(): Promise<PushSubscription | null> {
+  if (!pushSupported()) return null;
+  try {
+    const registration = await navigator.serviceWorker.getRegistration("/");
+    if (!registration) return null;
+    return await registration.pushManager.getSubscription();
+  } catch {
+    // An insecure context, a browser with the API removed, or a blocked worker. None of them is
+    // worth failing the screen over: the device simply is not subscribed.
+    return null;
+  }
+}
+
+/** pushSection renders the card, or nothing when the installation cannot send push. */
+function pushSection(ctx: Ctx): HTMLElement {
+  const host = h("div");
+  const controller = new AbortController();
+  ctx.onDispose(() => controller.abort());
+  // A generation counter rather than a flag: two clicks in a row mean two loads in flight, and
+  // the older one must not overwrite the newer one's answer.
+  let generation = 0;
+
+  const load = async () => {
+    const mine = ++generation;
+    try {
+      const [config, list] = await Promise.all([
+        ctx.api.get<PushConfig>("/api/v1/push/config", { cache: false, signal: controller.signal }),
+        ctx.api.get<{ data?: unknown }>("/api/v1/push/subscriptions", {
+          cache: false,
+          signal: controller.signal,
+        }),
+      ]);
+      if (mine !== generation) return;
+      if (!config.enabled) {
+        // Remove the card entirely, gap included: the installation cannot send push, and a card
+        // explaining that would be a permanent apology in the middle of the screen.
+        host.remove();
+        return;
+      }
+      const sub = await currentPushSubscription();
+      if (mine !== generation) return;
+      swap(
+        host,
+        pushCard(
+          ctx,
+          {
+            config,
+            devices: Array.isArray(list?.data) ? (list.data as PushDevice[]) : [],
+            currentEndpoint: sub?.endpoint ?? "",
+            permission: pushSupported() ? Notification.permission : "unsupported",
+          },
+          () => void load(),
+        ),
+      );
+    } catch (err) {
+      if (mine !== generation) return;
+      if (controller.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
+      swap(host, errorState(err, () => void load()));
+    }
+  };
+
+  swap(host, skeletonTable(2, 2));
+  void load();
+  return host;
+}
+
+function pushCard(ctx: Ctx, state: PushState, reload: () => void): HTMLElement {
+  const subscribedHere = state.currentEndpoint !== "" && state.devices.some((d) => d.endpoint === state.currentEndpoint);
+
+  const actions = h("div", { class: "row" });
+  const notice = h("div");
+
+  if (state.permission === "unsupported") {
+    actions.append(
+      h(
+        "span",
+        { class: "field-hint" },
+        "This browser cannot receive push notifications. Every notice is still kept in the inbox above.",
+      ),
+    );
+  } else if (state.permission === "denied") {
+    // A denied permission cannot be requested again from script: only the customer, in the
+    // browser's site settings, can undo it. Saying so is more useful than a button that does
+    // nothing when pressed.
+    notice.append(
+      banner(
+        "info",
+        "Notifications are blocked for this site",
+        "Your browser is refusing notifications from this panel, and a page cannot ask again. Allow notifications for this site in the browser's settings, then reload this page.",
+      ),
+    );
+  } else if (subscribedHere) {
+    const test = btn("Send a test notification", { variant: "primary", size: "sm", icon: "send" }) as HTMLButtonElement;
+    test.addEventListener("click", () => void withBusy(ctx, test, () => sendTest(ctx)));
+    const off = btn("Turn off on this device", { variant: "ghost", size: "sm", icon: "wifiOff" }) as HTMLButtonElement;
+    off.addEventListener("click", () => void withBusy(ctx, off, () => removeDevice(ctx, state, state.currentEndpoint, reload)));
+    actions.append(test, off);
+  } else {
+    const enable = btn("Enable notifications on this device", { variant: "primary", size: "sm", icon: "bell" }) as HTMLButtonElement;
+    enable.addEventListener("click", () => void withBusy(ctx, enable, () => enablePush(ctx, state, reload)));
+    actions.append(enable);
+  }
+
+  return card({
+    title: "Notifications on this device",
+    sub: "Get a notice the moment an invoice is issued or a server changes, without keeping the panel open.",
+    body: h(
+      "div",
+      { class: "stack" },
+      notice,
+      state.devices.length > 0 ? deviceList(ctx, state, reload) : null,
+      actions,
+    ),
+    foot: h(
+      "span",
+      { class: "row" },
+      icon("info", 12),
+      `Up to ${state.config.max_devices} devices can receive notifications. Each device is listed here and can be removed on its own.`,
+    ),
+  });
+}
+
+/** deviceList names every device, so a customer can see a phone they no longer have. */
+function deviceList(ctx: Ctx, state: PushState, reload: () => void): HTMLElement {
+  const rows = state.devices.map((device) => {
+    const here = device.endpoint === state.currentEndpoint;
+    const remove = btn("Remove", { size: "sm", variant: "ghost", icon: "trash" }) as HTMLButtonElement;
+    remove.addEventListener("click", () =>
+      void withBusy(ctx, remove, () => removeDevice(ctx, state, device.endpoint, reload)),
+    );
+    return h(
+      "div",
+      { class: "pref-row" },
+      h(
+        "div",
+        { class: "pref-main" },
+        h(
+          "div",
+          { class: "pref-title" },
+          icon(here ? "bell" : "wifi", 12),
+          h("span", null, deviceLabel(device)),
+          here ? badge("This device", "accent") : null,
+        ),
+        h(
+          "p",
+          { class: "pref-hint" },
+          device.last_used_at
+            ? `Added ${relative(device.created_at)} · last received ${relative(device.last_used_at)}`
+            : `Added ${relative(device.created_at)} · nothing received yet`,
+        ),
+      ),
+      h("div", { class: "pref-side" }, remove),
+    );
+  });
+  return h("div", { class: "pref-list" }, ...rows);
+}
+
+/** deviceLabel turns a user agent into something a person recognises. */
+function deviceLabel(device: PushDevice): string {
+  const agent = device.user_agent || "";
+  // Enough of the string to tell two devices apart, without showing a whole UA to a customer.
+  const known = [
+    ["Firefox", "Firefox"],
+    ["Edg/", "Edge"],
+    ["Chrome", "Chrome"],
+    ["Safari", "Safari"],
+  ] as const;
+  for (const [needle, name] of known) {
+    if (agent.includes(needle)) {
+      const mobile = /Mobile|Android|iPhone|iPad/.test(agent);
+      return mobile ? `${name} on a phone or tablet` : name;
+    }
+  }
+  return agent === "" ? "Unknown device" : agent.slice(0, 60);
+}
+
+/** enablePush asks the browser for permission, subscribes, and registers the device. */
+async function enablePush(ctx: Ctx, state: PushState, reload: () => void): Promise<void> {
+  let registration: ServiceWorkerRegistration;
+  try {
+    // Registered here rather than on page load: see the note at the top of this section.
+    registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    await navigator.serviceWorker.ready;
+  } catch (err) {
+    ctx.toast("This browser could not start the notification worker", {
+      tone: "danger",
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    ctx.toast("Notifications were not allowed", {
+      tone: "info",
+      detail:
+        permission === "denied"
+          ? "Allow notifications for this site in the browser's settings, then try again."
+          : "Nothing has changed. You can turn them on later from this screen.",
+    });
+    reload();
+    return;
+  }
+
+  let subscription: PushSubscription;
+  try {
+    subscription = await registration.pushManager.subscribe({
+      // Required by Chrome: every push must be shown to the user. This panel only ever sends
+      // notifications it intends the customer to see, so there is nothing to hide.
+      userVisibleOnly: true,
+      applicationServerKey: decodeBase64URL(state.config.vapid_public_key),
+    });
+  } catch (err) {
+    ctx.toast("The browser refused to subscribe this device", {
+      tone: "danger",
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+
+  const json = subscription.toJSON();
+  const keys = json.keys ?? {};
+  try {
+    await ctx.api.post("/api/v1/push/subscriptions", {
+      endpoint: json.endpoint ?? subscription.endpoint,
+      keys: { p256dh: keys["p256dh"] ?? "", auth: keys["auth"] ?? "" },
+    });
+  } catch (err) {
+    // The subscription exists in the browser and not on the server, which is a half state that
+    // would make the next attempt fail differently. Undo it here so "try again" is a clean try.
+    await subscription.unsubscribe().catch(() => undefined);
+    ctx.toast("This device could not be registered", {
+      tone: "danger",
+      detail: err instanceof ApiError ? err.detail || err.code : undefined,
+    });
+    return;
+  }
+
+  ctx.toast("Notifications are on for this device", { tone: "success" });
+  reload();
+}
+
+/** removeDevice unsubscribes the browser (when it is this one) and deletes the server row. */
+async function removeDevice(ctx: Ctx, state: PushState, endpoint: string, reload: () => void): Promise<void> {
+  const device = state.devices.find((d) => d.endpoint === endpoint);
+  if (!device) {
+    reload();
+    return;
+  }
+  try {
+    if (endpoint === state.currentEndpoint) {
+      const sub = await currentPushSubscription();
+      await sub?.unsubscribe().catch(() => undefined);
+    }
+    await ctx.api.del(`/api/v1/push/subscriptions/${encodeURIComponent(device.id)}`);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) {
+      // Already gone: another tab removed it, or the push service expired it while this screen
+      // was open. The outcome the customer asked for is true, so reload rather than complain.
+      reload();
+      return;
+    }
+    ctx.toast("That device could not be removed", {
+      tone: "danger",
+      detail: err instanceof ApiError ? err.detail || err.code : undefined,
+    });
+    return;
+  }
+  ctx.toast("That device will not receive notifications", { tone: "success" });
+  reload();
+}
+
+/** sendTest asks the server to deliver a real notification to every device. */
+async function sendTest(ctx: Ctx): Promise<void> {
+  try {
+    const result = await ctx.api.post<{ sent?: number; removed?: number; failed?: number }>("/api/v1/push/test");
+    const sent = typeof result?.sent === "number" ? result.sent : 0;
+    const removed = typeof result?.removed === "number" ? result.removed : 0;
+    ctx.toast(sent === 1 ? "Test notification sent" : `Test notification sent to ${sent} devices`, {
+      tone: "success",
+      detail: removed > 0 ? `${removed} device(s) were no longer reachable and have been removed.` : undefined,
+    });
+  } catch (err) {
+    if (err instanceof ApiError) {
+      switch (err.code) {
+        case "no_push_device":
+          ctx.toast("There is no device to send to", {
+            tone: "info",
+            detail: "Enable notifications on this device first.",
+          });
+          return;
+        case "push_delivery_failed":
+          ctx.toast("The push service refused the notification", {
+            tone: "danger",
+            detail: "This is a problem with the server's push configuration, not with this device.",
+          });
+          return;
+        default:
+          ctx.toast(err.detail || "The test notification could not be sent", {
+            tone: "danger",
+            detail: err.code,
+          });
+          return;
+      }
+    }
+    ctx.toast("The test notification could not be sent", { tone: "danger" });
+  }
+}
+
+/** decodeBase64URL turns the server's VAPID key into the bytes PushManager wants. */
+function decodeBase64URL(value: string): Uint8Array<ArrayBuffer> {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4));
+  // Allocated over an explicit ArrayBuffer so the type is Uint8Array<ArrayBuffer> — the DOM's
+  // BufferSource excludes a view over a SharedArrayBuffer, and a plain `new Uint8Array(n)` is
+  // typed as possibly shared.
+  const bytes = new Uint8Array(new ArrayBuffer(raw.length));
+  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+  return bytes;
 }
 
 // ------------------------------------------------------------- preferences --

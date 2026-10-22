@@ -56,26 +56,31 @@ var ErrUnknownEvent = errors.New("notify: unknown event")
 
 // Decision is the answer to "which channels may this user be reached on for this event".
 //
-// Both channels share one preference, because that is the model: a user says "I do not want
+// All three channels share one preference, because that is the model: a user says "I do not want
 // new-invoice mail", not "I want it in the inbox but not by mail". The per-template toggles
 // are what express channel-level policy, and they are the operator's, not the user's.
 type Decision struct {
 	Mail  bool
 	InApp bool
+	// Push is the web-push channel. It is a channel beside the other two rather than a
+	// preference of its own: "I do not want to hear about failed payments" is one decision, and
+	// asking it once per transport would turn the preferences screen into a matrix.
+	Push bool
 	// Preference is the effective preference: "force", "choice_on", "choice_off" or
 	// "never". It is the stored value, or the default when no row exists, so a caller can
 	// report why without re-deriving it.
 	Preference string
 	// Force is true when the event is one the user cannot opt out of.
 	Force bool
-	// MailReason and InAppReason explain a false, using the stable strings the dispatcher
-	// copies into Result.Reason.
+	// MailReason, InAppReason and PushReason explain a false, using the stable strings the
+	// dispatcher copies into Result.Reason.
 	MailReason  string
 	InAppReason string
+	PushReason  string
 }
 
 // Allowed reports whether anything at all may be sent.
-func (d Decision) Allowed() bool { return d.Mail || d.InApp }
+func (d Decision) Allowed() bool { return d.Mail || d.InApp || d.Push }
 
 // ForceEvent reports whether an event cannot be turned off by the user.
 //
@@ -148,12 +153,15 @@ func Decide(ctx context.Context, q Querier, userID, eventKey string) (Decision, 
 	case PreferenceNever:
 		d.MailReason = "preference_never"
 		d.InAppReason = "preference_never"
+		d.PushReason = "preference_never"
 	case PreferenceChoiceOff:
 		d.MailReason = "preference_off"
 		d.InAppReason = "preference_off"
+		d.PushReason = "preference_off"
 	default: // force, choice_on
 		d.Mail = true
 		d.InApp = true
+		d.Push = true
 	}
 	return d, nil
 }
@@ -222,6 +230,9 @@ type PreferenceRow struct {
 	Stored string
 	Mail   bool
 	InApp  bool
+	// Push is resolved with the same precedence as the other two channels, so the screen shows
+	// what will actually happen rather than a second, independently computed answer.
+	Push bool
 }
 
 // Preferences returns the whole catalogue resolved for one user, in display order.
@@ -267,6 +278,7 @@ func Preferences(ctx context.Context, q Querier, userID string) ([]PreferenceRow
 		d.Preference = effective
 		d.Mail = effective == PreferenceForce || effective == PreferenceChoiceOn
 		d.InApp = d.Mail
+		d.Push = d.Mail
 		out = append(out, PreferenceRow{
 			EventKey:   e.Key,
 			Name:       e.Name,
@@ -275,6 +287,7 @@ func Preferences(ctx context.Context, q Querier, userID string) ([]PreferenceRow
 			Stored:     stored[e.Key],
 			Mail:       d.Mail,
 			InApp:      d.InApp,
+			Push:       d.Push,
 		})
 	}
 	return out, nil

@@ -40,6 +40,30 @@ const options = {
   logLevel: "silent",
 };
 
+// The push service worker.
+//
+// It is a second bundle rather than an entry point of the first because a service worker is not
+// a module the page imports: it is a separate script with its own global scope, and it must be a
+// classic script at a *stable* URL. `sw.js` is therefore written unhashed — a hashed name would
+// make every deploy a different registration URL, which means installing a second worker beside
+// the first instead of replacing it — and web.go serves a non-hashed file with `no-cache`, which
+// is the correct policy for a script the browser checks for updates on navigation.
+//
+// It is built here, and not fetched at runtime, for the same reason the rest of the frontend is:
+// the binary serves what it was compiled with, so `go build` works with no Node toolchain
+// installed (dist/ is committed).
+const workerOptions = {
+  entryPoints: [join(root, "src/sw.ts")],
+  bundle: true,
+  format: "iife",
+  target: ["es2022", "chrome100", "firefox100", "safari15"],
+  minify: !watch,
+  sourcemap: false,
+  legalComments: "none",
+  write: false,
+  logLevel: "silent",
+};
+
 async function run() {
   const started = Date.now();
   const result = await build(options);
@@ -63,6 +87,12 @@ async function run() {
   // hashed name would only make the link in the HTML harder to read.
   await writeFile(join(dist, "assets", "mark.svg"), await readFile(join(root, "src/mark.svg")));
 
+  // The service worker, at a stable URL (see workerOptions above).
+  const worker = await build(workerOptions);
+  const workerFile = worker.outputFiles.find((file) => file.path.endsWith(".js"));
+  if (!workerFile) throw new Error("build produced no service worker");
+  await writeFile(join(dist, "sw.js"), Buffer.from(workerFile.contents));
+
   const template = await readFile(join(root, "src/index.html"), "utf8");
   const html = template
     .replaceAll("{{STYLE}}", cssName ? `/assets/${cssName}` : "")
@@ -76,6 +106,7 @@ async function run() {
   console.log(
     `web: ${jsName} (${(size / 1024).toFixed(1)} KiB)` +
       (cssName ? `, ${cssName}` : "") +
+      `, sw.js (${(workerFile.contents.length / 1024).toFixed(1)} KiB)` +
       ` in ${Date.now() - started}ms`,
   );
 }

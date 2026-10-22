@@ -13,7 +13,10 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname;
-const NAME = /^(BILLING|POSTGRES)_[A-Z0-9_]+$|^APP_ROLE_PASSWORD$/;
+// Extensions are separate binaries with their own credentials (STRIPE_SECRET_KEY and friends).
+// They are operator-facing too — an undocumented gateway key is one an operator cannot find —
+// so they are included rather than treated as out of scope.
+const NAME = /^(BILLING|POSTGRES|STRIPE)_[A-Z0-9_]+$|^APP_ROLE_PASSWORD$/;
 
 // Derived inside the postgres image from POSTGRES_SUPERUSER; setting it in .env does nothing.
 const IGNORED = new Set(["POSTGRES_USER"]);
@@ -32,6 +35,7 @@ function walk(dir, out = []) {
 const files = [
   ...walk(join(ROOT, "internal")).filter((f) => extname(f) === ".go"),
   ...walk(join(ROOT, "cmd")).filter((f) => extname(f) === ".go"),
+  ...walk(join(ROOT, "extensions")).filter((f) => extname(f) === ".go"),
   ...readdirSync(join(ROOT, "scripts")).map((f) => join(ROOT, "scripts", f)),
   join(ROOT, "Makefile"),
   join(ROOT, "compose.yaml"),
@@ -47,7 +51,7 @@ for (const file of files) {
   }
   // Go string literals, plus shell/Make/compose ${VAR} and $VAR forms.
   for (const m of text.matchAll(/"([A-Z][A-Z0-9_]+)"/g)) if (NAME.test(m[1])) used.add(m[1]);
-  for (const m of text.matchAll(/\$\{?((?:BILLING|POSTGRES)_[A-Z0-9_]+|APP_ROLE_PASSWORD)/g)) used.add(m[1]);
+  for (const m of text.matchAll(/\$\{?((?:BILLING|POSTGRES|STRIPE)_[A-Z0-9_]+|APP_ROLE_PASSWORD)/g)) used.add(m[1]);
 }
 
 const documented = new Set(

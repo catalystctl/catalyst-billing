@@ -8434,10 +8434,19 @@ paths:
                                                 created_at:
                                                     format: date-time
                                                     type: string
+                                                deleted_at:
+                                                    description: 'When the affiliate was archived. Once set it is never cleared: a deletion is not a longer suspension.'
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                deleted_reason:
+                                                    type: string
                                                 email:
                                                     format: email
                                                     type: string
                                                 enabled:
+                                                    description: Whether the affiliate can earn. Kept for compatibility; `status` is the field to branch on.
                                                     type: boolean
                                                 id:
                                                     format: uuid
@@ -8451,6 +8460,21 @@ paths:
                                                     type: string
                                                 referred_count:
                                                     type: integer
+                                                status:
+                                                    description: Derived server-side from the state that actually gates earning, so a client cannot disagree with what the server will do. `suspended` means the code no longer attributes and no further commission accrues; `deleted` means the payee is archived and everything they earned is still owed.
+                                                    enum:
+                                                        - active
+                                                        - suspended
+                                                        - deleted
+                                                    type: string
+                                                suspended_at:
+                                                    description: When the suspension was recorded. Null on an affiliate that was never suspended, and on one disabled before suspensions were recorded.
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                suspended_reason:
+                                                    type: string
                                                 user_id:
                                                     format: uuid
                                                     type: string
@@ -8569,10 +8593,19 @@ paths:
                                     created_at:
                                         format: date-time
                                         type: string
+                                    deleted_at:
+                                        description: 'When the affiliate was archived. Once set it is never cleared: a deletion is not a longer suspension.'
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    deleted_reason:
+                                        type: string
                                     email:
                                         format: email
                                         type: string
                                     enabled:
+                                        description: Whether the affiliate can earn. Kept for compatibility; `status` is the field to branch on.
                                         type: boolean
                                     id:
                                         format: uuid
@@ -8586,6 +8619,21 @@ paths:
                                         type: string
                                     referred_count:
                                         type: integer
+                                    status:
+                                        description: Derived server-side from the state that actually gates earning, so a client cannot disagree with what the server will do. `suspended` means the code no longer attributes and no further commission accrues; `deleted` means the payee is archived and everything they earned is still owed.
+                                        enum:
+                                            - active
+                                            - suspended
+                                            - deleted
+                                        type: string
+                                    suspended_at:
+                                        description: When the suspension was recorded. Null on an affiliate that was never suspended, and on one disabled before suspensions were recorded.
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    suspended_reason:
+                                        type: string
                                     user_id:
                                         format: uuid
                                         type: string
@@ -8650,6 +8698,327 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Enrol a customer as an affiliate
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: credit:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/affiliates/{id}:
+        delete:
+            description: 'Takes the affiliate out of the programme and out of the default list, and keeps the ledger: every commission row they earned, every balance they are owed and every payout already made stay readable, and the payout report keeps naming them for as long as their balance is non-zero. A deleted affiliate with unpaid commission is a debt, so deletion is an archive rather than a removal — the commission rows reference the affiliate and are never cascaded away. A reason is required. Deleting twice is a no-op.'
+            operationId: DeleteStaffAffiliatesById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                reason:
+                                    maxLength: 500
+                                    type: string
+                            required:
+                                - reason
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    balances:
+                                        items:
+                                            properties:
+                                                currency:
+                                                    type: string
+                                                owed:
+                                                    $ref: '#/components/schemas/Amount'
+                                                paid:
+                                                    $ref: '#/components/schemas/Amount'
+                                            required:
+                                                - currency
+                                                - owed
+                                                - paid
+                                            type: object
+                                        type: array
+                                    code:
+                                        description: Upper-case referral code. It appears in the referral link as `?ref=<code>`.
+                                        type: string
+                                    commission_rate:
+                                        description: 'Exact rational: `0.1`, `10%` or `1/10`. Stored canonically as `1/10` so a later recomputation lands on the same minor units. Never a float.'
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    deleted_at:
+                                        description: 'When the affiliate was archived. Once set it is never cleared: a deletion is not a longer suspension.'
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    deleted_reason:
+                                        type: string
+                                    email:
+                                        format: email
+                                        type: string
+                                    enabled:
+                                        description: Whether the affiliate can earn. Kept for compatibility; `status` is the field to branch on.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    payout_method:
+                                        enum:
+                                            - credit
+                                            - paypal
+                                            - bank_transfer
+                                            - manual
+                                        type: string
+                                    referred_count:
+                                        type: integer
+                                    status:
+                                        description: Derived server-side from the state that actually gates earning, so a client cannot disagree with what the server will do. `suspended` means the code no longer attributes and no further commission accrues; `deleted` means the payee is archived and everything they earned is still owed.
+                                        enum:
+                                            - active
+                                            - suspended
+                                            - deleted
+                                        type: string
+                                    suspended_at:
+                                        description: When the suspension was recorded. Null on an affiliate that was never suspended, and on one disabled before suspensions were recorded.
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    suspended_reason:
+                                        type: string
+                                    user_id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - id
+                                    - user_id
+                                    - code
+                                    - commission_rate
+                                    - payout_method
+                                    - enabled
+                                type: object
+                    description: The archived affiliate
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such affiliate
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The reason is missing or too long
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete (archive) an affiliate
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: credit:write
+            x-rate-class: mutation
+            x-staff-only: true
+        patch:
+            description: 'Sets a custom per-affiliate rate. It is an exact rational (`10%`, `0.1`, `1/10`), stored canonically and bounded at 100% inclusive; anything above 1 is refused rather than clamped, because a commission larger than the order pays out money that was never taken. The change applies to future commissions only: every commission row captures the rate that produced it, so a rate change cannot restate what a past order earned.'
+            operationId: PatchStaffAffiliatesById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                commission_rate:
+                                    description: 'Exact rational in [0, 1]: `0.1`, `10%` or `1/10`. A float is not accepted, and neither is a rate above 100%.'
+                                    type: string
+                            required:
+                                - commission_rate
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    balances:
+                                        items:
+                                            properties:
+                                                currency:
+                                                    type: string
+                                                owed:
+                                                    $ref: '#/components/schemas/Amount'
+                                                paid:
+                                                    $ref: '#/components/schemas/Amount'
+                                            required:
+                                                - currency
+                                                - owed
+                                                - paid
+                                            type: object
+                                        type: array
+                                    code:
+                                        description: Upper-case referral code. It appears in the referral link as `?ref=<code>`.
+                                        type: string
+                                    commission_rate:
+                                        description: 'Exact rational: `0.1`, `10%` or `1/10`. Stored canonically as `1/10` so a later recomputation lands on the same minor units. Never a float.'
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    deleted_at:
+                                        description: 'When the affiliate was archived. Once set it is never cleared: a deletion is not a longer suspension.'
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    deleted_reason:
+                                        type: string
+                                    email:
+                                        format: email
+                                        type: string
+                                    enabled:
+                                        description: Whether the affiliate can earn. Kept for compatibility; `status` is the field to branch on.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    payout_method:
+                                        enum:
+                                            - credit
+                                            - paypal
+                                            - bank_transfer
+                                            - manual
+                                        type: string
+                                    referred_count:
+                                        type: integer
+                                    status:
+                                        description: Derived server-side from the state that actually gates earning, so a client cannot disagree with what the server will do. `suspended` means the code no longer attributes and no further commission accrues; `deleted` means the payee is archived and everything they earned is still owed.
+                                        enum:
+                                            - active
+                                            - suspended
+                                            - deleted
+                                        type: string
+                                    suspended_at:
+                                        description: When the suspension was recorded. Null on an affiliate that was never suspended, and on one disabled before suspensions were recorded.
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    suspended_reason:
+                                        type: string
+                                    user_id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - id
+                                    - user_id
+                                    - code
+                                    - commission_rate
+                                    - payout_method
+                                    - enabled
+                                type: object
+                    description: The affiliate with its new rate
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such affiliate
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The affiliate is deleted
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The rate is not a rational in [0, 1]
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Set an affiliate's commission rate
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -9124,6 +9493,317 @@ paths:
             x-permission: credit:read:all
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/affiliates/{id}/reinstate:
+        post:
+            description: 'Puts a suspended affiliate back into the programme with the rate they had. Idempotent: reinstating an affiliate who is already active succeeds and changes nothing. A deleted affiliate cannot be reinstated — deletion ends the record rather than lengthening the suspension.'
+            operationId: PostStaffAffiliatesByIdReinstate
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    balances:
+                                        items:
+                                            properties:
+                                                currency:
+                                                    type: string
+                                                owed:
+                                                    $ref: '#/components/schemas/Amount'
+                                                paid:
+                                                    $ref: '#/components/schemas/Amount'
+                                            required:
+                                                - currency
+                                                - owed
+                                                - paid
+                                            type: object
+                                        type: array
+                                    code:
+                                        description: Upper-case referral code. It appears in the referral link as `?ref=<code>`.
+                                        type: string
+                                    commission_rate:
+                                        description: 'Exact rational: `0.1`, `10%` or `1/10`. Stored canonically as `1/10` so a later recomputation lands on the same minor units. Never a float.'
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    deleted_at:
+                                        description: 'When the affiliate was archived. Once set it is never cleared: a deletion is not a longer suspension.'
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    deleted_reason:
+                                        type: string
+                                    email:
+                                        format: email
+                                        type: string
+                                    enabled:
+                                        description: Whether the affiliate can earn. Kept for compatibility; `status` is the field to branch on.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    payout_method:
+                                        enum:
+                                            - credit
+                                            - paypal
+                                            - bank_transfer
+                                            - manual
+                                        type: string
+                                    referred_count:
+                                        type: integer
+                                    status:
+                                        description: Derived server-side from the state that actually gates earning, so a client cannot disagree with what the server will do. `suspended` means the code no longer attributes and no further commission accrues; `deleted` means the payee is archived and everything they earned is still owed.
+                                        enum:
+                                            - active
+                                            - suspended
+                                            - deleted
+                                        type: string
+                                    suspended_at:
+                                        description: When the suspension was recorded. Null on an affiliate that was never suspended, and on one disabled before suspensions were recorded.
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    suspended_reason:
+                                        type: string
+                                    user_id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - id
+                                    - user_id
+                                    - code
+                                    - commission_rate
+                                    - payout_method
+                                    - enabled
+                                type: object
+                    description: The reinstated affiliate
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such affiliate
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The affiliate is deleted
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Reinstate a suspended affiliate
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: credit:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/affiliates/{id}/suspend:
+        post:
+            description: 'Stops the affiliate earning: their referral code no longer attributes a signup and no further commission is recorded for their referrals. What they have already earned is untouched and remains payable — a ban is not a confiscation — and a commission on an order paid while suspended is refused rather than recorded. A reason is required, and is stored with the operator and the instant. Suspending an already-suspended affiliate is a no-op that keeps the first record.'
+            operationId: PostStaffAffiliatesByIdSuspend
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                reason:
+                                    description: 'Why. Required: a ban the next operator cannot understand is one they cannot review.'
+                                    maxLength: 500
+                                    type: string
+                            required:
+                                - reason
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    balances:
+                                        items:
+                                            properties:
+                                                currency:
+                                                    type: string
+                                                owed:
+                                                    $ref: '#/components/schemas/Amount'
+                                                paid:
+                                                    $ref: '#/components/schemas/Amount'
+                                            required:
+                                                - currency
+                                                - owed
+                                                - paid
+                                            type: object
+                                        type: array
+                                    code:
+                                        description: Upper-case referral code. It appears in the referral link as `?ref=<code>`.
+                                        type: string
+                                    commission_rate:
+                                        description: 'Exact rational: `0.1`, `10%` or `1/10`. Stored canonically as `1/10` so a later recomputation lands on the same minor units. Never a float.'
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    deleted_at:
+                                        description: 'When the affiliate was archived. Once set it is never cleared: a deletion is not a longer suspension.'
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    deleted_reason:
+                                        type: string
+                                    email:
+                                        format: email
+                                        type: string
+                                    enabled:
+                                        description: Whether the affiliate can earn. Kept for compatibility; `status` is the field to branch on.
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    payout_method:
+                                        enum:
+                                            - credit
+                                            - paypal
+                                            - bank_transfer
+                                            - manual
+                                        type: string
+                                    referred_count:
+                                        type: integer
+                                    status:
+                                        description: Derived server-side from the state that actually gates earning, so a client cannot disagree with what the server will do. `suspended` means the code no longer attributes and no further commission accrues; `deleted` means the payee is archived and everything they earned is still owed.
+                                        enum:
+                                            - active
+                                            - suspended
+                                            - deleted
+                                        type: string
+                                    suspended_at:
+                                        description: When the suspension was recorded. Null on an affiliate that was never suspended, and on one disabled before suspensions were recorded.
+                                        format: date-time
+                                        type:
+                                            - string
+                                            - "null"
+                                    suspended_reason:
+                                        type: string
+                                    user_id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - id
+                                    - user_id
+                                    - code
+                                    - commission_rate
+                                    - payout_method
+                                    - enabled
+                                type: object
+                    description: The suspended affiliate
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such affiliate
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The affiliate is deleted
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The reason is missing or too long
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Suspend (ban) an affiliate
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: credit:write
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/affiliates/payouts:
         get:
             description: Every affiliate with an outstanding balance, per currency, plus the totals per currency. A balance is per currency because commission is earned in the order's currency and there is no conversion rate in this system, so summing across currencies would be meaningless.
@@ -9144,6 +9824,9 @@ paths:
                                                     type: string
                                                 currency:
                                                     type: string
+                                                deleted:
+                                                    description: 'The payee has been archived but is still owed money. The line is still payable: a debt does not expire because the payee left the programme.'
+                                                    type: boolean
                                                 email:
                                                     format: email
                                                     type: string

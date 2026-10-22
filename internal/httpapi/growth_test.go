@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/catalyst/billing/internal/growth"
+	"github.com/catalyst/billing/internal/httpapi"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -401,5 +403,25 @@ func TestDiscordClearWebhook(t *testing.T) {
 	}
 	if out.WebhookConfigured {
 		t.Fatal("clear_webhook did not remove the stored URL")
+	}
+}
+
+// --------------------------------------------------------------- storefront --
+
+// The ?ref= capture normalises a code and refuses anything that cannot be one, so the
+// storefront cannot be made to echo attacker-controlled text into a cached response.
+func TestReferralCodeFromRequest(t *testing.T) {
+	cases := map[string]string{
+		"/api/v1/catalog":                                "",
+		"/api/v1/catalog?ref=":                           "",
+		"/api/v1/catalog?ref=partner10":                  "PARTNER10",
+		"/api/v1/catalog?ref=%20partner-10%20":           "PARTNER-10",
+		"/api/v1/catalog?ref=" + strings.Repeat("a", 65): "",
+	}
+	for target, want := range cases {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		if got := httpapi.ReferralCodeFromRequest(req); got != want {
+			t.Fatalf("%s: code = %q, want %q", target, got, want)
+		}
 	}
 }

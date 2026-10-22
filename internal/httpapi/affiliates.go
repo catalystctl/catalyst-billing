@@ -15,7 +15,7 @@
 //
 //   - Attribution itself is not a route here. Registration is owned by the customer
 //     purchase package, so this file exports growth.AttributeSignup for that transaction
-//     to call, and the storefront captures the ?ref= code (see captureReferral below and
+//     to call, and the storefront captures the ?ref= code via ReferralCodeFromRequest (see
 //     the integrator note in the package report).
 package httpapi
 
@@ -92,10 +92,10 @@ func affiliateJSON(a growth.Affiliate) map[string]any {
 // referralJSON renders one attribution or commission row.
 func referralJSON(r growth.Referral) map[string]any {
 	out := map[string]any{
-		"id":           r.ID,
-		"affiliate_id": r.AffiliateID,
-		"customer_id":  r.CustomerID,
-		"status":       r.Status,
+		"id":            r.ID,
+		"affiliate_id":  r.AffiliateID,
+		"customer_id":   r.CustomerID,
+		"status":        r.Status,
 		"attributed_at": r.AttributedAt,
 	}
 	if r.OrderID != "" {
@@ -270,9 +270,9 @@ func (s *Server) handleAffiliatePayout(w http.ResponseWriter, r *http.Request) {
 	if err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
 		ev := s.auditEvent(r, "affiliate.payout", "affiliate", paid.AffiliateID, audit.OutcomeSuccess).
 			WithChanges(map[string]any{
-				"currency":    paid.Currency,
+				"currency":     paid.Currency,
 				"amount_minor": paid.Amount.Minor(),
-				"commissions": paid.Commissions,
+				"commissions":  paid.Commissions,
 			})
 		return audit.Record(ctx, tx, ev)
 	}); err != nil {
@@ -335,15 +335,24 @@ func (s *Server) handlePortalAffiliate(w http.ResponseWriter, r *http.Request) {
 
 // --------------------------------------------------------------- storefront --
 
-// captureReferral reads a ?ref= code from a public storefront request.
+// ReferralCodeFromRequest reads a ?ref= code from a public storefront request.
 //
 // The storefront is anonymous, so the code is not stored server-side here: it is echoed
-// back in the catalog response so the frontend can keep it (a cookie or a query parameter
+// back in the catalog response so the frontend can keep it (a cookie, or a query parameter
 // carried into registration) and present it to POST /api/v1/auth/register, which passes it
 // to growth.AttributeSignup. Echoing it rather than trusting it is deliberate — the code is
 // validated against the affiliates table only when attribution happens, inside the
 // registration transaction, where a forged code simply fails.
-func captureReferral(r *http.Request) string {
+//
+// This is exported so the catalog handler (owned by the commerce package) can add it in one
+// line without this package owning that file:
+//
+//	if code := ReferralCodeFromRequest(r); code != "" {
+//		body["referral_code"] = code
+//	}
+//
+// See the P12 report for the exact call site.
+func ReferralCodeFromRequest(r *http.Request) string {
 	raw := strings.TrimSpace(r.URL.Query().Get("ref"))
 	if raw == "" {
 		return ""

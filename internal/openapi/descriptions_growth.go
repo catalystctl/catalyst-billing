@@ -68,12 +68,12 @@ func payoutLineSchema() map[string]any {
 			"affiliate_id", "code", "currency", "owed", "lifetime_paid", "pending_commissions",
 		},
 		"properties": map[string]any{
-			"affiliate_id": map[string]any{"type": "string", "format": "uuid"},
-			"code":         map[string]any{"type": "string"},
-			"user_id":      map[string]any{"type": "string", "format": "uuid"},
-			"email":        map[string]any{"type": "string", "format": "email"},
-			"currency":     map[string]any{"type": "string"},
-			"owed":         AmountRef(),
+			"affiliate_id":  map[string]any{"type": "string", "format": "uuid"},
+			"code":          map[string]any{"type": "string"},
+			"user_id":       map[string]any{"type": "string", "format": "uuid"},
+			"email":         map[string]any{"type": "string", "format": "email"},
+			"currency":      map[string]any{"type": "string"},
+			"owed":          AmountRef(),
 			"lifetime_paid": AmountRef(),
 			"pending_commissions": map[string]any{
 				"type":        "integer",

@@ -52,6 +52,14 @@ const StaleBatch = 200
 // CloseStale closes every open or replied ticket whose last reply is older than
 // days, and returns the tickets it closed.
 //
+// It deliberately does **not** apply the close-time custom field requirement. That rule exists to
+// make a *person* record what a resolved ticket needed (the root cause, the customer's
+// confirmation); a stale ticket is one nobody is going to answer, and enforcing the rule here
+// would mean that adding a required-to-close field silently switches auto-close off for the whole
+// installation — a queue that never drains, which is the failure the rule was meant to prevent.
+// The auto-close is therefore an "abandoned" close, not a "resolved" one, and it is the only path
+// that closes a ticket without the answers.
+//
 // A ticket with no reply at all (last_reply_at IS NULL) falls back to its creation
 // time, so a ticket opened and abandoned also ages out. That is the case Paymenter's
 // own scan misses, and it is the one that fills a queue.

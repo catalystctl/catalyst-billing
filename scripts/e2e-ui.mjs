@@ -849,6 +849,23 @@ try {
     expect: ["Tickets", ...(seededTicket ? [seededTicket] : [])],
   });
 
+  // What the desk asks for, and what must be answered before a ticket can be closed. The
+  // placeholder that used to stand at this route is gone: the screen lists the configured fields
+  // (or an empty state that explains what a field is) and offers to add one.
+  await assertNewScreen("ticket-fields", {
+    path: "/ticket-fields",
+    expect: ["Ticket fields", "Required to close"],
+    absent: ["Not built yet"],
+  });
+
+  // Opening a ticket on a customer's behalf — the phone call the queue could not record before.
+  // The form is the customer's form plus the customer picker, and the picker is the thing that
+  // proves this screen is the staff one.
+  await assertNewScreen("support-new", {
+    path: "/support/new",
+    expect: ["Open a ticket", "Find the customer"],
+  });
+
   await assertNewScreen("logs", { path: "/logs", expect: ["Logs"] });
 
   await assertNewScreen("announcements", {

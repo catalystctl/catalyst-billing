@@ -508,6 +508,191 @@ paths:
                     description: An internal error occurred
             summary: Request a password reset
             x-rate-class: ""
+    /api/v1/auth/password/change:
+        post:
+            description: |-
+                For a signed-in user rotating a credential they still know. The current password is verified first, then the new one is hashed with the same Argon2id parameters the login path verifies with.
+
+                Success revokes **every other session** and keeps the caller's own: a password change is what someone does when they suspect the old one leaked, so every other device must be signed out, while the device that just proved the password must not be. The response reports how many sessions were revoked.
+
+                A wrong current password is `401 invalid_credentials` (safe to say: the caller already holds a session). A new password outside the length bounds is `422 weak_password`. An `auth_events` row records the change, attributed to the account itself.
+            operationId: PostAuthPasswordChange
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                current_password:
+                                    type: string
+                                new_password:
+                                    maxLength: 1024
+                                    minLength: 12
+                                    type: string
+                            required:
+                                - current_password
+                                - new_password
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    sessions_revoked:
+                                        minimum: 0
+                                        type: integer
+                                    status:
+                                        enum:
+                                            - password_changed
+                                        type: string
+                                required:
+                                    - status
+                                    - sessions_revoked
+                                type: object
+                    description: The password was changed and other sessions were revoked
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A password was not supplied
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The current password is wrong
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The new password is too weak
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Change your own password
+            x-csrf-required: true
+            x-rate-class: mutation
+    /api/v1/auth/register:
+        post:
+            description: |-
+                Self-registration: one transaction creates the login, the billing account and the link between them, then queues the email-verification message.
+
+                **The response never says whether the address was already registered.** It is always `202` with `{status: "accepted", verification_required}`. A duplicate still queues a verification message to the existing account (which is useful and indistinguishable from the fresh case), and the password is hashed before the insert is attempted so the timing matches too. A client must therefore never branch on this response to tell the two apart — and must not treat it as a sign-in: no session cookie is set. Send the visitor to sign in with the credentials they chose, or to their mail when `verification_required` is true.
+
+                Refusals are only for things the caller can fix: a malformed address (`400 invalid_email`), a missing name (`400 invalid_display_name`), a weak password (`422 weak_password`), terms not accepted when the installation has terms (`422 tos_required`), and a closed registration (`403 registration_disabled`).
+
+                Rate limited per source address and per submitted address with the credential budget, and same-origin enforced. CSRF does not apply: there is no session to bind a token to.
+            operationId: PostAuthRegister
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                accept_tos:
+                                    default: false
+                                    description: Required only when the installation has terms configured.
+                                    type: boolean
+                                display_name:
+                                    maxLength: 200
+                                    minLength: 1
+                                    type: string
+                                email:
+                                    format: email
+                                    maxLength: 254
+                                    type: string
+                                password:
+                                    maxLength: 1024
+                                    minLength: 12
+                                    type: string
+                            required:
+                                - email
+                                - password
+                                - display_name
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    status:
+                                        enum:
+                                            - accepted
+                                        type: string
+                                    verification_required:
+                                        description: The installation requires a confirmed address before signing in. This is policy, not a fact about the submitted address.
+                                        type: boolean
+                                required:
+                                    - status
+                                    - verification_required
+                                type: object
+                    description: Accepted (whether the account was created or the address already existed)
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The address or the display name is unusable
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Registration is closed, or the request was cross-origin
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The password is too weak, or terms were not accepted
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: Create a customer account
+            x-rate-class: ""
     /api/v1/auth/verify:
         get:
             operationId: GetAuthVerify
@@ -1072,6 +1257,222 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Start or reuse a payment session
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: invoice:pay:self
+            x-rate-class: mutation
+    /api/v1/portal/orders:
+        post:
+            description: |-
+                The customer checkout. One transaction re-prices every line from the catalog, locks the products, enforces stock and per-user limits, applies an optional coupon and writes the order, one subscription per line, and one issued invoice.
+
+                **There is no customer id and no amount in the request.** The billing account comes from the session, and each line names a `price_version_id` whose price is read from the catalog under a lock — so a client cannot choose whose order it is or what it costs. Sending `customer_id` is refused as an unknown field, not ignored.
+
+                **A coupon is a line on the invoice, not a lower unit price.** The charge lines keep the catalog price so the document explains itself, and the discount appears as its own negative line naming the code. The invoice snapshot records the discount amount and the coupon id as evidence.
+
+                **A zero total skips the invoice (CT-08).** When the order costs nothing, the subscriptions are activated and the services are created and queued for provisioning immediately, exactly as a settled payment would do. That is why `invoice_id` and `invoice_number` are empty exactly when `activated` is true: a free order has nothing to pay, so there is no document to pay.
+
+                A non-zero order is `201` with an issued invoice; pay it with `POST /api/v1/portal/invoices/{id}/checkout`. Stock that ran out is `409 out_of_stock` (the request was valid when it was made; the shop changed), and a per-user limit is `409 user_limit_reached`. Every coupon refusal has its own code so the cart can say something true. Requires CSRF and an `Idempotency-Key` is accepted.
+            operationId: PostPortalOrders
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            description: Send the cart as `items` (canonical) or `lines` (alias), not both. Terms acceptance is `tos_accepted` (canonical) or `accept_tos` (alias).
+                            oneOf:
+                                - required:
+                                    - items
+                                - required:
+                                    - lines
+                            properties:
+                                accept_tos:
+                                    default: false
+                                    description: Alias for `tos_accepted`.
+                                    type: boolean
+                                coupon_code:
+                                    description: Matched case-insensitively.
+                                    type: string
+                                items:
+                                    items:
+                                        properties:
+                                            config:
+                                                additionalProperties:
+                                                    type: string
+                                                description: 'Chosen config options as {config_option_id: value}. Validated against the product''s options and priced from the catalog.'
+                                                type: object
+                                            price_version_id:
+                                                format: uuid
+                                                type: string
+                                            quantity:
+                                                default: 1
+                                                description: Refused with quantity_not_allowed when the product sells one at a time.
+                                                maximum: 1000
+                                                minimum: 1
+                                                type: integer
+                                        required:
+                                            - price_version_id
+                                        type: object
+                                    maxItems: 50
+                                    minItems: 1
+                                    type: array
+                                lines:
+                                    items:
+                                        properties:
+                                            config:
+                                                additionalProperties:
+                                                    type: string
+                                                description: 'Chosen config options as {config_option_id: value}. Validated against the product''s options and priced from the catalog.'
+                                                type: object
+                                            price_version_id:
+                                                format: uuid
+                                                type: string
+                                            quantity:
+                                                default: 1
+                                                description: Refused with quantity_not_allowed when the product sells one at a time.
+                                                maximum: 1000
+                                                minimum: 1
+                                                type: integer
+                                        required:
+                                            - price_version_id
+                                        type: object
+                                    maxItems: 50
+                                    minItems: 1
+                                    type: array
+                                tos_accepted:
+                                    default: false
+                                    description: Required only when the installation has terms configured. `accept_tos` is an alias.
+                                    type: boolean
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    activated:
+                                        description: True when the total was zero and the service was delivered without an invoice.
+                                        type: boolean
+                                    coupon_code:
+                                        type: string
+                                    currency:
+                                        type: string
+                                    discount:
+                                        $ref: '#/components/schemas/Amount'
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    invoice_id:
+                                        description: Empty when the order was free; there is no document to pay.
+                                        format: uuid
+                                        type: string
+                                    invoice_number:
+                                        type: string
+                                    lines:
+                                        description: The issued document's lines, the discount line included, so the cart total reconciles with what is owed.
+                                        items:
+                                            properties:
+                                                description:
+                                                    type: string
+                                                net:
+                                                    $ref: '#/components/schemas/Amount'
+                                                quantity:
+                                                    type: integer
+                                                tax:
+                                                    $ref: '#/components/schemas/Amount'
+                                                total:
+                                                    $ref: '#/components/schemas/Amount'
+                                                unit:
+                                                    $ref: '#/components/schemas/Amount'
+                                            type: object
+                                        type: array
+                                    service_ids:
+                                        description: Populated only when the order was free and activated immediately.
+                                        items:
+                                            format: uuid
+                                            type: string
+                                        type: array
+                                    status:
+                                        enum:
+                                            - pending_payment
+                                            - paid
+                                        type: string
+                                    subscription_ids:
+                                        items:
+                                            format: uuid
+                                            type: string
+                                        type: array
+                                    subtotal:
+                                        $ref: '#/components/schemas/Amount'
+                                    tax:
+                                        $ref: '#/components/schemas/Amount'
+                                    total:
+                                        $ref: '#/components/schemas/Amount'
+                                required:
+                                    - id
+                                    - status
+                                    - currency
+                                    - subtotal
+                                    - discount
+                                    - tax
+                                    - total
+                                    - lines
+                                type: object
+                    description: The order, its invoice (unless the total was zero) and its subscriptions
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No lines, too many lines, both `items` and `lines`, a bad quantity or a mixed-currency cart
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No billing account, or an unverified address where verification is required
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such price
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Out of stock, or the per-user limit is reached
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A coupon, a config selection or the terms were refused
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Buy products as the signed-in customer
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key

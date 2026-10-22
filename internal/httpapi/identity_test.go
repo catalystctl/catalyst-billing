@@ -59,7 +59,7 @@ func (e *authEnv) doIdentity(t *testing.T, method, path string, cookie *http.Coo
 }
 
 // decodeProblem asserts the problem+json envelope and returns its code.
-func decodeProblem(t *testing.T, rec *httptest.ResponseRecorder) string {
+func decodeProblemCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
 	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
 		t.Fatalf("Content-Type = %q, want application/problem+json; body %s", ct, rec.Body)
@@ -140,7 +140,7 @@ func TestUserCannotRevokeAnotherUsersSession(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-user revoke: status %d, want 404; body %s", rec.Code, rec.Body)
 	}
-	code := decodeProblem(t, rec)
+	code := decodeProblemCode(t, rec)
 	if code != "not_found" {
 		t.Fatalf("code = %q, want not_found", code)
 	}
@@ -285,7 +285,7 @@ func TestLoginHistoryIsOwnAndProblemJSONOnBadCursor(t *testing.T) {
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("bad cursor: status %d, want 400", bad.Code)
 	}
-	if code := decodeProblem(t, bad); code != "invalid_cursor" {
+	if code := decodeProblemCode(t, bad); code != "invalid_cursor" {
 		t.Fatalf("code = %q, want invalid_cursor", code)
 	}
 }
@@ -306,7 +306,7 @@ func TestImpersonationRequiresStaffManage(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("customer impersonation: status %d, want 403; body %s", rec.Code, rec.Body)
 	}
-	decodeProblem(t, rec)
+	decodeProblemCode(t, rec)
 
 	// Support is staff but lacks staff:manage.
 	env.createUser(t, "support@example.test", "support password 1", "support")
@@ -316,7 +316,7 @@ func TestImpersonationRequiresStaffManage(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("support impersonation: status %d, want 403; body %s", rec.Code, rec.Body)
 	}
-	decodeProblem(t, rec)
+	decodeProblemCode(t, rec)
 
 	// Nothing was created: a refused request must leave no session behind.
 	var impersonated int
@@ -461,7 +461,7 @@ func TestStopImpersonationRefusesNormalSession(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("stop on a normal session: status %d, want 400; body %s", rec.Code, rec.Body)
 	}
-	if code := decodeProblem(t, rec); code != "not_impersonating" {
+	if code := decodeProblemCode(t, rec); code != "not_impersonating" {
 		t.Fatalf("code = %q, want not_impersonating", code)
 	}
 	// The caller is still signed in.
@@ -573,7 +573,7 @@ func TestSystemRoleCannotBeDeletedOrEditedOverHTTP(t *testing.T) {
 	if del.Code != http.StatusConflict {
 		t.Fatalf("delete a system role: status %d, want 409; body %s", del.Code, del.Body)
 	}
-	if code := decodeProblem(t, del); code != "system_role" {
+	if code := decodeProblemCode(t, del); code != "system_role" {
 		t.Fatalf("code = %q, want system_role", code)
 	}
 
@@ -584,7 +584,7 @@ func TestSystemRoleCannotBeDeletedOrEditedOverHTTP(t *testing.T) {
 	if edit.Code != http.StatusConflict {
 		t.Fatalf("edit a system role: status %d, want 409; body %s", edit.Code, edit.Body)
 	}
-	if code := decodeProblem(t, edit); code != "system_role" {
+	if code := decodeProblemCode(t, edit); code != "system_role" {
 		t.Fatalf("code = %q, want system_role", code)
 	}
 
@@ -620,7 +620,7 @@ func TestRoleRejectsUndeclaredPermissionOverHTTP(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("undeclared permission: status %d, want 400; body %s", rec.Code, rec.Body)
 	}
-	if code := decodeProblem(t, rec); code != "unknown_permission" {
+	if code := decodeProblemCode(t, rec); code != "unknown_permission" {
 		t.Fatalf("code = %q, want unknown_permission", code)
 	}
 }
@@ -646,7 +646,7 @@ func TestRoleRoutesRequireStaffManage(t *testing.T) {
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("%s %s as support: status %d, want 403", tc.method, tc.path, rec.Code)
 		}
-		decodeProblem(t, rec)
+		decodeProblemCode(t, rec)
 	}
 }
 
@@ -708,7 +708,7 @@ func TestAPIKeyAllowlistRoundTrip(t *testing.T) {
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("invalid cidr: status %d, want 400; body %s", bad.Code, bad.Body)
 	}
-	if code := decodeProblem(t, bad); code != "invalid_allowlist" {
+	if code := decodeProblemCode(t, bad); code != "invalid_allowlist" {
 		t.Fatalf("code = %q, want invalid_allowlist", code)
 	}
 }
@@ -737,7 +737,7 @@ func TestAPIKeyAllowlistIsScopedToTheOwner(t *testing.T) {
 	if put.Code != http.StatusNotFound {
 		t.Fatalf("another user's key: status %d, want 404; body %s", put.Code, put.Body)
 	}
-	decodeProblem(t, put)
+	decodeProblemCode(t, put)
 }
 
 // The address decision itself: an empty list allows, a match allows, a miss does not, and an
@@ -778,7 +778,7 @@ func TestAllowlistDecision(t *testing.T) {
 	// distinguishable 403 would confirm the key is valid and merely misplaced.
 	switch rec.Code {
 	case http.StatusUnauthorized:
-		if code := decodeProblem(t, rec); code != "invalid_api_key" {
+		if code := decodeProblemCode(t, rec); code != "invalid_api_key" {
 			t.Fatalf("code = %q, want invalid_api_key", code)
 		}
 	case http.StatusOK:
@@ -855,7 +855,7 @@ func TestImpersonatingCannotEnrolMFA(t *testing.T) {
 			"(needs `if !s.impersonationGuard(w, r) { return }` as the first statement of "+
 			"handleMFAEnrol and handleMFADisable in internal/httpapi/auth_lifecycle.go)", rec.Code, rec.Body)
 	}
-	if code := decodeProblem(t, rec); code != "impersonating" {
+	if code := decodeProblemCode(t, rec); code != "impersonating" {
 		t.Fatalf("code = %q, want impersonating", code)
 	}
 

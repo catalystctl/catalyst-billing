@@ -227,12 +227,26 @@ func cmdServe(args []string) error {
 			"hint", "set BILLING_TRUSTED_PROXIES to your proxy's CIDR, e.g. 10.0.0.0/8")
 	}
 
+	// The authorizer resolves the four system roles from the compiled-in map and any
+	// operator-defined role from the database. Loading the custom roles is best-effort: a broken
+	// read must not stop the panel booting, because the system roles are what the code's separation
+	// of duties depends on, and a custom role being inert until the next boot is a far smaller
+	// failure than every guarded request erroring. A role edit refreshes the table at the point of
+	// the edit (internal/httpapi/roles_ext.go), so this is the boot-time snapshot only.
+	authz := authn.NewAuthorizer()
+	if table, err := authSvc.AllRolePermissions(ctx); err != nil {
+		logger.Warn("custom role permissions could not be loaded; only the four system roles are active",
+			"error", err)
+	} else {
+		authz.SetTableRoles(table)
+	}
+
 	srv := httpapi.New(httpapi.Config{
 		Version: version,
 		Logger:  logger,
 	}, pool, inbox, cfg.gatewayProvider, cfg.gatewayAccount, verifier).WithAuth(&httpapi.Auth{
 		Service:        authSvc,
-		Authz:          authn.NewAuthorizer(),
+		Authz:          authz,
 		Cookies:        httpapi.CookieConfig{Secure: cfg.secureCookies},
 		SessionTTL:     authCfg.SessionLifetime,
 		TrustedProxies: nets,

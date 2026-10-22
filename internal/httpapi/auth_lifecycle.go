@@ -248,6 +248,14 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 // handleMFAEnrol starts enrolment.
 func (s *Server) handleMFAEnrol(w http.ResponseWriter, r *http.Request) {
+	// An operator acting as a customer must not be able to change that customer's second factor.
+	// Enrolling an authenticator is a permanent takeover: the customer is locked out of their own
+	// recovery path and the operator holds the credential. Disabling one is the mirror image — it
+	// removes the factor the customer relies on. Neither is support work; both need the customer's
+	// own session.
+	if !s.impersonationGuard(w, r) {
+		return
+	}
 	if s.auth == nil || s.auth.Service == nil {
 		writeProblem(w, http.StatusServiceUnavailable, "auth_not_configured", "authentication is not configured")
 		return
@@ -331,6 +339,14 @@ func (s *Server) handleMFAConfirm(w http.ResponseWriter, r *http.Request) {
 
 // handleMFADisable removes the second factor.
 func (s *Server) handleMFADisable(w http.ResponseWriter, r *http.Request) {
+	// An operator acting as a customer must not be able to change that customer's second factor.
+	// Enrolling an authenticator is a permanent takeover: the customer is locked out of their own
+	// recovery path and the operator holds the credential. Disabling one is the mirror image — it
+	// removes the factor the customer relies on. Neither is support work; both need the customer's
+	// own session.
+	if !s.impersonationGuard(w, r) {
+		return
+	}
 	if s.auth == nil || s.auth.Service == nil {
 		writeProblem(w, http.StatusServiceUnavailable, "auth_not_configured", "authentication is not configured")
 		return

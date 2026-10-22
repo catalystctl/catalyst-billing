@@ -1141,6 +1141,16 @@ func (c *Client) GetStaffAudit(ctx context.Context, query url.Values, body any) 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffAutomation calls GET /api/v1/staff/automation.
+//
+// # Every periodic job the worker runs, with its kill switch
+//
+// Permission: settings:write. Staff only.
+func (c *Client) GetStaffAutomation(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/automation"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffCancellations calls GET /api/v1/staff/cancellations.
 //
 // # The cancellation queue
@@ -1595,6 +1605,16 @@ func (c *Client) GetStaffNotificationtemplatesByEventkey(ctx context.Context, ev
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffNotificationtemplatevariables calls GET /api/v1/staff/notification-template-variables.
+//
+// # The placeholders each notification event supplies
+//
+// Permission: notification:write. Staff only.
+func (c *Client) GetStaffNotificationtemplatevariables(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/notification-template-variables"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffOauthclients calls GET /api/v1/staff/oauth-clients.
 //
 // # List registered OAuth2 clients
@@ -1764,6 +1784,16 @@ func (c *Client) GetStaffServersTest(ctx context.Context, query url.Values, body
 // Permission: service:read:all. Staff only.
 func (c *Client) GetStaffServiceproperties(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/service-properties"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffServicepropertiesUsage calls GET /api/v1/staff/service-properties/usage.
+//
+// # How many services carry each property definition
+//
+// Permission: service:read:all. Staff only.
+func (c *Client) GetStaffServicepropertiesUsage(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/service-properties/usage"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -2745,6 +2775,19 @@ func (c *Client) PostStaffMarketplaceRefresh(ctx context.Context, query url.Valu
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffNotificationtemplatesByEventkeyPreview calls POST /api/v1/staff/notification-templates/{event_key}/preview.
+//
+// # Render a draft template with sample data
+//
+// Permission: notification:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// eventKey is the event_key path parameter.
+func (c *Client) PostStaffNotificationtemplatesByEventkeyPreview(ctx context.Context, eventKey string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/notification-templates/{event_key}/preview"
+	path = strings.ReplaceAll(path, "{event_key}", url.PathEscape(eventKey))
+	return c.do(ctx, "POST", path, query, body, true, false)
+}
+
 // PostStaffNotificationtemplatesByEventkeyReset calls POST /api/v1/staff/notification-templates/{event_key}/reset.
 //
 // # Restore a template's shipped wording
@@ -2844,6 +2887,18 @@ func (c *Client) PostStaffPaymentsByIdRefunds(ctx context.Context, id string, qu
 // An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
 func (c *Client) PostStaffRoles(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/roles"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffServicepropertiesReorder calls POST /api/v1/staff/service-properties/reorder.
+//
+// # Reorder the property definitions
+//
+// Permission: service:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffServicepropertiesReorder(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/service-properties/reorder"
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 

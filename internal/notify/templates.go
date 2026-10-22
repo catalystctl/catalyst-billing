@@ -206,6 +206,12 @@ func SaveTemplate(ctx context.Context, q Querier, t Template) (Template, error) 
 	if strings.TrimSpace(t.EventKey) == "" {
 		return Template{}, errors.New("notify: template has no event key")
 	}
+	// A placeholder the event does not supply is refused here, at the one place wording is
+	// stored, rather than at send time where the customer would read "{{invoice_number}}"
+	// as literal text. See template_vars.go for the vocabulary and why it is per event.
+	if err := ValidateTemplate(t); err != nil {
+		return Template{}, err
+	}
 	if t.Name == "" {
 		t.Name = t.EventKey
 	}

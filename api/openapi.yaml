@@ -11430,6 +11430,700 @@ paths:
             x-permission: settings:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/gateways:
+        get:
+            description: 'Which provider is configured, whether it is switched on, which binary the runtime will launch, and the state of each credential. A credential is never returned: `is_set` says whether one exists and `source` says where the effective value came from. `source: environment` means the deployment''s environment variable wins over the saved row — the runtime will ignore a value saved from the panel, so a client must render that field read-only. `webhook_url` is derived from `BILLING_PUBLIC_URL`, not from the request''s Host header, because the address a provider must deliver to is the deployment''s public origin. Reading requires `gateway:write`, because a credential''s shape and the public webhook URL are reconnaissance rather than support information.'
+            operationId: GetStaffGateways
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    enabled:
+                                        description: Whether the runtime should use this integration. A provisioner is enabled whenever a provider is stored; the gateway has a switch because taking money on first boot is a surprise.
+                                        type: boolean
+                                    enabled_editable:
+                                        type: boolean
+                                    enabled_source:
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    extension_path:
+                                        description: The binary the worker and the server launch, and the binary the test launches.
+                                        type: string
+                                    extension_source:
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    kind:
+                                        enum:
+                                            - gateway
+                                            - server
+                                        type: string
+                                    notes:
+                                        description: 'Non-fatal remarks: a missing secret, a binary the runtime could not find. They are what makes the screen explain itself.'
+                                        items:
+                                            type: string
+                                        type: array
+                                    off_session_enabled:
+                                        description: 'May a renewal charge a saved payment method with no customer present. Off by default: it is the one setting that moves money with no human in the loop.'
+                                        type: boolean
+                                    provider:
+                                        description: The stored provider id, empty when nothing is configured.
+                                        type: string
+                                    provider_editable:
+                                        type: boolean
+                                    provider_name:
+                                        description: The provider's human name; the raw id when this build cannot launch it.
+                                        type: string
+                                    provider_source:
+                                        description: '`environment` means `BILLING_GATEWAY_PROVIDER` named it, which also enables the gateway.'
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    providers:
+                                        items:
+                                            properties:
+                                                env_only:
+                                                    description: Settings the adapter accepts that the panel has no field for. They come from the environment only, and are listed so an operator can find them.
+                                                    items:
+                                                        properties:
+                                                            env:
+                                                                type: string
+                                                            hint:
+                                                                type: string
+                                                        required:
+                                                            - env
+                                                        type: object
+                                                    type: array
+                                                extension:
+                                                    description: The binary under `bin/` when no explicit path is configured.
+                                                    type: string
+                                                fields:
+                                                    items:
+                                                        properties:
+                                                            env:
+                                                                type: string
+                                                            hint:
+                                                                type: string
+                                                            is_secret:
+                                                                type: boolean
+                                                            key:
+                                                                type: string
+                                                            label:
+                                                                type: string
+                                                        required:
+                                                            - key
+                                                            - label
+                                                            - env
+                                                            - is_secret
+                                                        type: object
+                                                    type: array
+                                                id:
+                                                    description: The value stored as the provider.
+                                                    type: string
+                                                name:
+                                                    description: The provider's human name.
+                                                    type: string
+                                                note:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - name
+                                                - extension
+                                                - fields
+                                            type: object
+                                        type: array
+                                    values:
+                                        items:
+                                            properties:
+                                                editable:
+                                                    description: False when the environment supplies the value. Render the field read-only rather than accepting a save that does nothing.
+                                                    type: boolean
+                                                env:
+                                                    description: The environment variable the extension process reads this value from.
+                                                    type: string
+                                                hint:
+                                                    description: What the value is and where to get it.
+                                                    type: string
+                                                is_secret:
+                                                    description: 'The value is write-only: it is never returned, and `is_set` is the only fact about it.'
+                                                    type: boolean
+                                                is_set:
+                                                    description: A value exists, from either source. For a secret this is all the read reveals.
+                                                    type: boolean
+                                                key:
+                                                    description: The settings key, e.g. `secret_key`.
+                                                    type: string
+                                                label:
+                                                    description: What the operator sees.
+                                                    type: string
+                                                source:
+                                                    description: 'Where the effective value came from. `environment` wins over `panel`, so a field whose source is `environment` is read-only: the runtime will ignore a saved value.'
+                                                    enum:
+                                                        - environment
+                                                        - panel
+                                                        - default
+                                                        - unset
+                                                    type: string
+                                            required:
+                                                - key
+                                                - label
+                                                - env
+                                                - is_secret
+                                                - is_set
+                                                - source
+                                                - editable
+                                            type: object
+                                        type: array
+                                    webhook_url:
+                                        description: Where the provider must deliver events, derived from `BILLING_PUBLIC_URL` (`<public-url>/webhooks/<provider>`). Empty when the public URL or the provider is unknown.
+                                        type: string
+                                required:
+                                    - kind
+                                    - provider
+                                    - provider_source
+                                    - provider_editable
+                                    - enabled
+                                    - enabled_source
+                                    - enabled_editable
+                                    - extension_path
+                                    - extension_source
+                                    - values
+                                    - providers
+                                type: object
+                    description: The gateway configuration
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The settings table could not be read
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Read the payment gateway configuration
+            x-permission: gateway:write
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: Writes the provider, the switch and the credentials in one transaction, with one audit row per changed key (action `gateway.config.update`) written inside that transaction. A credential submitted as `[redacted]` is skipped, so saving a loaded form cannot overwrite a secret with the marker; an empty string clears it. A field whose effective value comes from the environment is refused with `env_override` (409) instead of being stored and ignored. An unknown provider is `unknown_provider` (422), and enabling with no provider is `provider_required` (422) — both are configurations that would otherwise fail at the first payment. The response is the committed state, not an echo of the request.
+            operationId: PutStaffGateways
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                enabled:
+                                    description: The gateway switch. Enabling with no provider is refused; sending it to the provisioner is `unknown_setting`.
+                                    type: boolean
+                                off_session_enabled:
+                                    type: boolean
+                                provider:
+                                    description: The provider to launch. Absent leaves the stored provider unchanged; an id this build cannot launch is `unknown_provider`.
+                                    type: string
+                                values:
+                                    additionalProperties:
+                                        type: string
+                                    description: Credential key -> text, matching the provider's declared `fields`. A secret sent as `[redacted]` is skipped, so saving a loaded form cannot overwrite a credential with the marker. An empty string clears it.
+                                    type: object
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    enabled:
+                                        description: Whether the runtime should use this integration. A provisioner is enabled whenever a provider is stored; the gateway has a switch because taking money on first boot is a surprise.
+                                        type: boolean
+                                    enabled_editable:
+                                        type: boolean
+                                    enabled_source:
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    extension_path:
+                                        description: The binary the worker and the server launch, and the binary the test launches.
+                                        type: string
+                                    extension_source:
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    kind:
+                                        enum:
+                                            - gateway
+                                            - server
+                                        type: string
+                                    notes:
+                                        description: 'Non-fatal remarks: a missing secret, a binary the runtime could not find. They are what makes the screen explain itself.'
+                                        items:
+                                            type: string
+                                        type: array
+                                    off_session_enabled:
+                                        description: 'May a renewal charge a saved payment method with no customer present. Off by default: it is the one setting that moves money with no human in the loop.'
+                                        type: boolean
+                                    provider:
+                                        description: The stored provider id, empty when nothing is configured.
+                                        type: string
+                                    provider_editable:
+                                        type: boolean
+                                    provider_name:
+                                        description: The provider's human name; the raw id when this build cannot launch it.
+                                        type: string
+                                    provider_source:
+                                        description: '`environment` means `BILLING_GATEWAY_PROVIDER` named it, which also enables the gateway.'
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    providers:
+                                        items:
+                                            properties:
+                                                env_only:
+                                                    description: Settings the adapter accepts that the panel has no field for. They come from the environment only, and are listed so an operator can find them.
+                                                    items:
+                                                        properties:
+                                                            env:
+                                                                type: string
+                                                            hint:
+                                                                type: string
+                                                        required:
+                                                            - env
+                                                        type: object
+                                                    type: array
+                                                extension:
+                                                    description: The binary under `bin/` when no explicit path is configured.
+                                                    type: string
+                                                fields:
+                                                    items:
+                                                        properties:
+                                                            env:
+                                                                type: string
+                                                            hint:
+                                                                type: string
+                                                            is_secret:
+                                                                type: boolean
+                                                            key:
+                                                                type: string
+                                                            label:
+                                                                type: string
+                                                        required:
+                                                            - key
+                                                            - label
+                                                            - env
+                                                            - is_secret
+                                                        type: object
+                                                    type: array
+                                                id:
+                                                    description: The value stored as the provider.
+                                                    type: string
+                                                name:
+                                                    description: The provider's human name.
+                                                    type: string
+                                                note:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - name
+                                                - extension
+                                                - fields
+                                            type: object
+                                        type: array
+                                    values:
+                                        items:
+                                            properties:
+                                                editable:
+                                                    description: False when the environment supplies the value. Render the field read-only rather than accepting a save that does nothing.
+                                                    type: boolean
+                                                env:
+                                                    description: The environment variable the extension process reads this value from.
+                                                    type: string
+                                                hint:
+                                                    description: What the value is and where to get it.
+                                                    type: string
+                                                is_secret:
+                                                    description: 'The value is write-only: it is never returned, and `is_set` is the only fact about it.'
+                                                    type: boolean
+                                                is_set:
+                                                    description: A value exists, from either source. For a secret this is all the read reveals.
+                                                    type: boolean
+                                                key:
+                                                    description: The settings key, e.g. `secret_key`.
+                                                    type: string
+                                                label:
+                                                    description: What the operator sees.
+                                                    type: string
+                                                source:
+                                                    description: 'Where the effective value came from. `environment` wins over `panel`, so a field whose source is `environment` is read-only: the runtime will ignore a saved value.'
+                                                    enum:
+                                                        - environment
+                                                        - panel
+                                                        - default
+                                                        - unset
+                                                    type: string
+                                            required:
+                                                - key
+                                                - label
+                                                - env
+                                                - is_secret
+                                                - is_set
+                                                - source
+                                                - editable
+                                            type: object
+                                        type: array
+                                    webhook_url:
+                                        description: Where the provider must deliver events, derived from `BILLING_PUBLIC_URL` (`<public-url>/webhooks/<provider>`). Empty when the public URL or the provider is unknown.
+                                        type: string
+                                required:
+                                    - kind
+                                    - provider
+                                    - provider_source
+                                    - provider_editable
+                                    - enabled
+                                    - enabled_source
+                                    - enabled_editable
+                                    - extension_path
+                                    - extension_source
+                                    - values
+                                    - providers
+                                type: object
+                    description: The configuration as it now reads
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The body is not valid JSON, or a key is not declared for this group
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The environment supplies that value
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The provider is unknown, the switch has no provider, or a value does not parse
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Save the payment gateway configuration
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: gateway:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/gateways/test:
+        get:
+            description: 'Launches the saved configuration''s extension — the same binary and the same environment the worker uses — performs the protocol handshake and calls `gateway.describe`, then reports the provider''s name, its currencies and its methods. It is a `GET` because it changes nothing: no settings row, no audit row and no idempotency record, so pressing it twice is two tests and not two writes. It works while the gateway is switched off, because testing before enabling is the point. It tests the *saved* configuration, never credentials in the query string: a secret in a URL is a secret in the access log. A failed test is a successful request whose answer is "no": the status is 200 and `ok` is false with a stable `code`.'
+            operationId: GetStaffGatewaysTest
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    code:
+                                        description: A stable identifier for the failure, so a client can branch on it and a copy edit cannot break behaviour.
+                                        enum:
+                                            - not_configured
+                                            - extension_missing
+                                            - extension_crashed
+                                            - protocol_version_mismatch
+                                            - protocol_error
+                                            - timeout
+                                            - provider_refused
+                                            - test_failed
+                                        type: string
+                                    detail:
+                                        type: string
+                                    gateway:
+                                        properties:
+                                            capabilities:
+                                                items:
+                                                    type: string
+                                                type: array
+                                            currencies:
+                                                description: The ISO 4217 codes the gateway will settle in. Check these against the catalog's currencies.
+                                                items:
+                                                    type: string
+                                                type: array
+                                            duration_ms:
+                                                format: int64
+                                                type: integer
+                                            extension:
+                                                description: The name the extension gave in the protocol handshake — not what the panel calls it.
+                                                type: string
+                                            max_amount:
+                                                properties:
+                                                    currency:
+                                                        type: string
+                                                    display:
+                                                        description: The value formatted for the currency; empty when the code is not ISO 4217.
+                                                        type: string
+                                                    minor:
+                                                        format: int64
+                                                        type: integer
+                                                required:
+                                                    - minor
+                                                    - currency
+                                                type: object
+                                            methods:
+                                                items:
+                                                    properties:
+                                                        id:
+                                                            type: string
+                                                        name:
+                                                            type: string
+                                                    required:
+                                                        - id
+                                                        - name
+                                                    type: object
+                                                type: array
+                                            min_amount:
+                                                properties:
+                                                    currency:
+                                                        type: string
+                                                    display:
+                                                        description: The value formatted for the currency; empty when the code is not ISO 4217.
+                                                        type: string
+                                                    minor:
+                                                        format: int64
+                                                        type: integer
+                                                required:
+                                                    - minor
+                                                    - currency
+                                                type: object
+                                            protocol_version:
+                                                type: integer
+                                            provider:
+                                                type: string
+                                            provider_name:
+                                                type: string
+                                            publisher:
+                                                type: string
+                                            supports_refunds:
+                                                type: boolean
+                                            supports_webhooks:
+                                                type: boolean
+                                            tested_at:
+                                                format: date-time
+                                                type: string
+                                            webhook_url:
+                                                type: string
+                                        required:
+                                            - provider
+                                            - extension
+                                            - protocol_version
+                                            - currencies
+                                            - methods
+                                            - tested_at
+                                        type: object
+                                    notes:
+                                        items:
+                                            type: string
+                                        type: array
+                                    ok:
+                                        description: Whether the extension launched, handshook and described itself. `false` is a normal answer, not a failed request.
+                                        type: boolean
+                                    server:
+                                        properties:
+                                            capabilities:
+                                                items:
+                                                    type: string
+                                                type: array
+                                            duration_ms:
+                                                description: Launch plus handshake plus describe. A slow adapter will time out under load.
+                                                format: int64
+                                                type: integer
+                                            extension:
+                                                type: string
+                                            plans:
+                                                items:
+                                                    properties:
+                                                        amount:
+                                                            properties:
+                                                                currency:
+                                                                    type: string
+                                                                display:
+                                                                    description: The value formatted for the currency; empty when the code is not ISO 4217.
+                                                                    type: string
+                                                                minor:
+                                                                    format: int64
+                                                                    type: integer
+                                                            required:
+                                                                - minor
+                                                                - currency
+                                                            type: object
+                                                        id:
+                                                            type: string
+                                                        name:
+                                                            type: string
+                                                        period:
+                                                            type: string
+                                                    required:
+                                                        - id
+                                                        - name
+                                                    type: object
+                                                type: array
+                                            protocol_version:
+                                                type: integer
+                                            provider:
+                                                type: string
+                                            provider_name:
+                                                type: string
+                                            publisher:
+                                                type: string
+                                            regions:
+                                                items:
+                                                    type: string
+                                                type: array
+                                            tested_at:
+                                                format: date-time
+                                                type: string
+                                        required:
+                                            - provider
+                                            - extension
+                                            - protocol_version
+                                            - plans
+                                            - regions
+                                            - tested_at
+                                        type: object
+                                    tested_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - ok
+                                    - tested_at
+                                type: object
+                    description: The test result, success or failure
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Too many tests in the window; each press starts a process
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Test the payment gateway connection
+            x-permission: gateway:write
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/holds/{hold_id}:
         delete:
             operationId: DeleteStaffHoldsByHoldid
@@ -13887,6 +14581,700 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: staff:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/servers:
+        get:
+            description: 'The same shape as the gateway read: provider, whether it is on, the binary the runtime will launch, and the state of each credential with its source. A provisioner has no environment variable for its provider name — a deployment names its provisioner by the binary `BILLING_PROVISIONER_EXTENSION` points at — so `servers.provider` is that field''s only source. Requires `server:write`.'
+            operationId: GetStaffServers
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    enabled:
+                                        description: Whether the runtime should use this integration. A provisioner is enabled whenever a provider is stored; the gateway has a switch because taking money on first boot is a surprise.
+                                        type: boolean
+                                    enabled_editable:
+                                        type: boolean
+                                    enabled_source:
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    extension_path:
+                                        description: The binary the worker and the server launch, and the binary the test launches.
+                                        type: string
+                                    extension_source:
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    kind:
+                                        enum:
+                                            - gateway
+                                            - server
+                                        type: string
+                                    notes:
+                                        description: 'Non-fatal remarks: a missing secret, a binary the runtime could not find. They are what makes the screen explain itself.'
+                                        items:
+                                            type: string
+                                        type: array
+                                    off_session_enabled:
+                                        description: 'May a renewal charge a saved payment method with no customer present. Off by default: it is the one setting that moves money with no human in the loop.'
+                                        type: boolean
+                                    provider:
+                                        description: The stored provider id, empty when nothing is configured.
+                                        type: string
+                                    provider_editable:
+                                        type: boolean
+                                    provider_name:
+                                        description: The provider's human name; the raw id when this build cannot launch it.
+                                        type: string
+                                    provider_source:
+                                        description: '`environment` means `BILLING_GATEWAY_PROVIDER` named it, which also enables the gateway.'
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    providers:
+                                        items:
+                                            properties:
+                                                env_only:
+                                                    description: Settings the adapter accepts that the panel has no field for. They come from the environment only, and are listed so an operator can find them.
+                                                    items:
+                                                        properties:
+                                                            env:
+                                                                type: string
+                                                            hint:
+                                                                type: string
+                                                        required:
+                                                            - env
+                                                        type: object
+                                                    type: array
+                                                extension:
+                                                    description: The binary under `bin/` when no explicit path is configured.
+                                                    type: string
+                                                fields:
+                                                    items:
+                                                        properties:
+                                                            env:
+                                                                type: string
+                                                            hint:
+                                                                type: string
+                                                            is_secret:
+                                                                type: boolean
+                                                            key:
+                                                                type: string
+                                                            label:
+                                                                type: string
+                                                        required:
+                                                            - key
+                                                            - label
+                                                            - env
+                                                            - is_secret
+                                                        type: object
+                                                    type: array
+                                                id:
+                                                    description: The value stored as the provider.
+                                                    type: string
+                                                name:
+                                                    description: The provider's human name.
+                                                    type: string
+                                                note:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - name
+                                                - extension
+                                                - fields
+                                            type: object
+                                        type: array
+                                    values:
+                                        items:
+                                            properties:
+                                                editable:
+                                                    description: False when the environment supplies the value. Render the field read-only rather than accepting a save that does nothing.
+                                                    type: boolean
+                                                env:
+                                                    description: The environment variable the extension process reads this value from.
+                                                    type: string
+                                                hint:
+                                                    description: What the value is and where to get it.
+                                                    type: string
+                                                is_secret:
+                                                    description: 'The value is write-only: it is never returned, and `is_set` is the only fact about it.'
+                                                    type: boolean
+                                                is_set:
+                                                    description: A value exists, from either source. For a secret this is all the read reveals.
+                                                    type: boolean
+                                                key:
+                                                    description: The settings key, e.g. `secret_key`.
+                                                    type: string
+                                                label:
+                                                    description: What the operator sees.
+                                                    type: string
+                                                source:
+                                                    description: 'Where the effective value came from. `environment` wins over `panel`, so a field whose source is `environment` is read-only: the runtime will ignore a saved value.'
+                                                    enum:
+                                                        - environment
+                                                        - panel
+                                                        - default
+                                                        - unset
+                                                    type: string
+                                            required:
+                                                - key
+                                                - label
+                                                - env
+                                                - is_secret
+                                                - is_set
+                                                - source
+                                                - editable
+                                            type: object
+                                        type: array
+                                    webhook_url:
+                                        description: Where the provider must deliver events, derived from `BILLING_PUBLIC_URL` (`<public-url>/webhooks/<provider>`). Empty when the public URL or the provider is unknown.
+                                        type: string
+                                required:
+                                    - kind
+                                    - provider
+                                    - provider_source
+                                    - provider_editable
+                                    - enabled
+                                    - enabled_source
+                                    - enabled_editable
+                                    - extension_path
+                                    - extension_source
+                                    - values
+                                    - providers
+                                type: object
+                    description: The provisioner configuration
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The settings table could not be read
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Read the provisioning server configuration
+            x-permission: server:write
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: 'Writes the provider and the panel URL and API key in one transaction, audited as `server.config.update`. A provisioner has no enabled switch: it is on whenever a provider is stored, so sending `enabled` here is `unknown_setting`. The environment wins over a saved value per field, and an environment-supplied field is refused with `env_override` (409).'
+            operationId: PutStaffServers
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                enabled:
+                                    description: The gateway switch. Enabling with no provider is refused; sending it to the provisioner is `unknown_setting`.
+                                    type: boolean
+                                off_session_enabled:
+                                    type: boolean
+                                provider:
+                                    description: The provider to launch. Absent leaves the stored provider unchanged; an id this build cannot launch is `unknown_provider`.
+                                    type: string
+                                values:
+                                    additionalProperties:
+                                        type: string
+                                    description: Credential key -> text, matching the provider's declared `fields`. A secret sent as `[redacted]` is skipped, so saving a loaded form cannot overwrite a credential with the marker. An empty string clears it.
+                                    type: object
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    enabled:
+                                        description: Whether the runtime should use this integration. A provisioner is enabled whenever a provider is stored; the gateway has a switch because taking money on first boot is a surprise.
+                                        type: boolean
+                                    enabled_editable:
+                                        type: boolean
+                                    enabled_source:
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    extension_path:
+                                        description: The binary the worker and the server launch, and the binary the test launches.
+                                        type: string
+                                    extension_source:
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    kind:
+                                        enum:
+                                            - gateway
+                                            - server
+                                        type: string
+                                    notes:
+                                        description: 'Non-fatal remarks: a missing secret, a binary the runtime could not find. They are what makes the screen explain itself.'
+                                        items:
+                                            type: string
+                                        type: array
+                                    off_session_enabled:
+                                        description: 'May a renewal charge a saved payment method with no customer present. Off by default: it is the one setting that moves money with no human in the loop.'
+                                        type: boolean
+                                    provider:
+                                        description: The stored provider id, empty when nothing is configured.
+                                        type: string
+                                    provider_editable:
+                                        type: boolean
+                                    provider_name:
+                                        description: The provider's human name; the raw id when this build cannot launch it.
+                                        type: string
+                                    provider_source:
+                                        description: '`environment` means `BILLING_GATEWAY_PROVIDER` named it, which also enables the gateway.'
+                                        enum:
+                                            - environment
+                                            - panel
+                                            - default
+                                            - unset
+                                        type: string
+                                    providers:
+                                        items:
+                                            properties:
+                                                env_only:
+                                                    description: Settings the adapter accepts that the panel has no field for. They come from the environment only, and are listed so an operator can find them.
+                                                    items:
+                                                        properties:
+                                                            env:
+                                                                type: string
+                                                            hint:
+                                                                type: string
+                                                        required:
+                                                            - env
+                                                        type: object
+                                                    type: array
+                                                extension:
+                                                    description: The binary under `bin/` when no explicit path is configured.
+                                                    type: string
+                                                fields:
+                                                    items:
+                                                        properties:
+                                                            env:
+                                                                type: string
+                                                            hint:
+                                                                type: string
+                                                            is_secret:
+                                                                type: boolean
+                                                            key:
+                                                                type: string
+                                                            label:
+                                                                type: string
+                                                        required:
+                                                            - key
+                                                            - label
+                                                            - env
+                                                            - is_secret
+                                                        type: object
+                                                    type: array
+                                                id:
+                                                    description: The value stored as the provider.
+                                                    type: string
+                                                name:
+                                                    description: The provider's human name.
+                                                    type: string
+                                                note:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - name
+                                                - extension
+                                                - fields
+                                            type: object
+                                        type: array
+                                    values:
+                                        items:
+                                            properties:
+                                                editable:
+                                                    description: False when the environment supplies the value. Render the field read-only rather than accepting a save that does nothing.
+                                                    type: boolean
+                                                env:
+                                                    description: The environment variable the extension process reads this value from.
+                                                    type: string
+                                                hint:
+                                                    description: What the value is and where to get it.
+                                                    type: string
+                                                is_secret:
+                                                    description: 'The value is write-only: it is never returned, and `is_set` is the only fact about it.'
+                                                    type: boolean
+                                                is_set:
+                                                    description: A value exists, from either source. For a secret this is all the read reveals.
+                                                    type: boolean
+                                                key:
+                                                    description: The settings key, e.g. `secret_key`.
+                                                    type: string
+                                                label:
+                                                    description: What the operator sees.
+                                                    type: string
+                                                source:
+                                                    description: 'Where the effective value came from. `environment` wins over `panel`, so a field whose source is `environment` is read-only: the runtime will ignore a saved value.'
+                                                    enum:
+                                                        - environment
+                                                        - panel
+                                                        - default
+                                                        - unset
+                                                    type: string
+                                            required:
+                                                - key
+                                                - label
+                                                - env
+                                                - is_secret
+                                                - is_set
+                                                - source
+                                                - editable
+                                            type: object
+                                        type: array
+                                    webhook_url:
+                                        description: Where the provider must deliver events, derived from `BILLING_PUBLIC_URL` (`<public-url>/webhooks/<provider>`). Empty when the public URL or the provider is unknown.
+                                        type: string
+                                required:
+                                    - kind
+                                    - provider
+                                    - provider_source
+                                    - provider_editable
+                                    - enabled
+                                    - enabled_source
+                                    - enabled_editable
+                                    - extension_path
+                                    - extension_source
+                                    - values
+                                    - providers
+                                type: object
+                    description: The configuration as it now reads
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The body is not valid JSON, or a key is not declared for this group
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The environment supplies that value
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The provider is unknown, or a value does not parse
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Save the provisioning server configuration
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: server:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/servers/test:
+        get:
+            description: 'Launches the saved configuration''s provisioner and calls `provisioner.describe`, reporting its plans, regions and capabilities. The same rules as the gateway test: a read, safe to press twice, saved configuration only, and a failure is a 200 with `ok: false` and a stable code.'
+            operationId: GetStaffServersTest
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    code:
+                                        description: A stable identifier for the failure, so a client can branch on it and a copy edit cannot break behaviour.
+                                        enum:
+                                            - not_configured
+                                            - extension_missing
+                                            - extension_crashed
+                                            - protocol_version_mismatch
+                                            - protocol_error
+                                            - timeout
+                                            - provider_refused
+                                            - test_failed
+                                        type: string
+                                    detail:
+                                        type: string
+                                    gateway:
+                                        properties:
+                                            capabilities:
+                                                items:
+                                                    type: string
+                                                type: array
+                                            currencies:
+                                                description: The ISO 4217 codes the gateway will settle in. Check these against the catalog's currencies.
+                                                items:
+                                                    type: string
+                                                type: array
+                                            duration_ms:
+                                                format: int64
+                                                type: integer
+                                            extension:
+                                                description: The name the extension gave in the protocol handshake — not what the panel calls it.
+                                                type: string
+                                            max_amount:
+                                                properties:
+                                                    currency:
+                                                        type: string
+                                                    display:
+                                                        description: The value formatted for the currency; empty when the code is not ISO 4217.
+                                                        type: string
+                                                    minor:
+                                                        format: int64
+                                                        type: integer
+                                                required:
+                                                    - minor
+                                                    - currency
+                                                type: object
+                                            methods:
+                                                items:
+                                                    properties:
+                                                        id:
+                                                            type: string
+                                                        name:
+                                                            type: string
+                                                    required:
+                                                        - id
+                                                        - name
+                                                    type: object
+                                                type: array
+                                            min_amount:
+                                                properties:
+                                                    currency:
+                                                        type: string
+                                                    display:
+                                                        description: The value formatted for the currency; empty when the code is not ISO 4217.
+                                                        type: string
+                                                    minor:
+                                                        format: int64
+                                                        type: integer
+                                                required:
+                                                    - minor
+                                                    - currency
+                                                type: object
+                                            protocol_version:
+                                                type: integer
+                                            provider:
+                                                type: string
+                                            provider_name:
+                                                type: string
+                                            publisher:
+                                                type: string
+                                            supports_refunds:
+                                                type: boolean
+                                            supports_webhooks:
+                                                type: boolean
+                                            tested_at:
+                                                format: date-time
+                                                type: string
+                                            webhook_url:
+                                                type: string
+                                        required:
+                                            - provider
+                                            - extension
+                                            - protocol_version
+                                            - currencies
+                                            - methods
+                                            - tested_at
+                                        type: object
+                                    notes:
+                                        items:
+                                            type: string
+                                        type: array
+                                    ok:
+                                        description: Whether the extension launched, handshook and described itself. `false` is a normal answer, not a failed request.
+                                        type: boolean
+                                    server:
+                                        properties:
+                                            capabilities:
+                                                items:
+                                                    type: string
+                                                type: array
+                                            duration_ms:
+                                                description: Launch plus handshake plus describe. A slow adapter will time out under load.
+                                                format: int64
+                                                type: integer
+                                            extension:
+                                                type: string
+                                            plans:
+                                                items:
+                                                    properties:
+                                                        amount:
+                                                            properties:
+                                                                currency:
+                                                                    type: string
+                                                                display:
+                                                                    description: The value formatted for the currency; empty when the code is not ISO 4217.
+                                                                    type: string
+                                                                minor:
+                                                                    format: int64
+                                                                    type: integer
+                                                            required:
+                                                                - minor
+                                                                - currency
+                                                            type: object
+                                                        id:
+                                                            type: string
+                                                        name:
+                                                            type: string
+                                                        period:
+                                                            type: string
+                                                    required:
+                                                        - id
+                                                        - name
+                                                    type: object
+                                                type: array
+                                            protocol_version:
+                                                type: integer
+                                            provider:
+                                                type: string
+                                            provider_name:
+                                                type: string
+                                            publisher:
+                                                type: string
+                                            regions:
+                                                items:
+                                                    type: string
+                                                type: array
+                                            tested_at:
+                                                format: date-time
+                                                type: string
+                                        required:
+                                            - provider
+                                            - extension
+                                            - protocol_version
+                                            - plans
+                                            - regions
+                                            - tested_at
+                                        type: object
+                                    tested_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - ok
+                                    - tested_at
+                                type: object
+                    description: The test result, success or failure
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Too many tests in the window; each press starts a process
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Test the provisioning server connection
+            x-permission: server:write
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/services:

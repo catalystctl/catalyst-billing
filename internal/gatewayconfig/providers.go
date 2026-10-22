@@ -71,7 +71,7 @@ var gatewayProviders = []Provider{
 		Fields: []Field{
 			{
 				Key: "publishable_key", Label: "Publishable key",
-				Env: "STRIPE_PUBLISHABLE_KEY",
+				Env:  "STRIPE_PUBLISHABLE_KEY",
 				Hint: "pk_live_… or pk_test_…. It is public by design: it identifies the account to the browser.",
 			},
 			{

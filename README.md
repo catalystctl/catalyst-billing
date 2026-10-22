@@ -18,9 +18,36 @@ Prerequisites: Go 1.24+, `podman` + `podman-compose`, `psql`.
 
 ```bash
 cp .env.example .env          # development credentials for a loopback cluster
-make db-up                    # dedicated PostgreSQL 17 on 127.0.0.1:5442
+make dev                      # database, schema, binaries, fixtures, then serve
+```
+
+That is the whole thing: it starts the dedicated PostgreSQL cluster, applies the
+schema, builds the binary and the extensions, points the gateway and provisioner at
+the conformance fixtures, creates a staff account, and serves the panel in the
+foreground — the log is the terminal and Ctrl-C stops it. It prints the address and
+the sign-in credentials once it is up, and it is safe to run again: every step is
+idempotent, and a server left over from a previous run is stopped first.
+
+```bash
+make dev-reset                # destroy the dev database and start over
+make dev-stop                 # stop a dev server that outlived its terminal
+```
+
+Two things make a hand-rolled `serve` look broken, and `make dev` handles both: the
+session cookie is `Secure` by default, so over plain http the browser discards it and
+every request after sign-in looks unauthenticated (`BILLING_INSECURE_COOKIES=1` is
+set, which is the one legitimate use of that switch, on loopback only); and the
+provisioner's provider is stored in the settings table, not in the environment, so a
+worker with every variable set still fails with "missing required configuration"
+until `servers.provider` exists.
+
+The individual steps, if you want them:
+
+```bash
+make db-ensure                # start the cluster unless it is already answering
 make migrate                  # apply the embedded schema
-make build                    # ./bin/billing
+make build extensions         # ./bin/billing and one binary per extension
+make dev-config               # fixture gateway + provisioner, and a staff account
 
 ./bin/billing doctor          # connectivity, schema, role privileges, ledger, backlog
 make test                     # the whole suite against a real database
@@ -32,32 +59,43 @@ databases freely.
 
 ### Run it
 
+`make dev` runs the server with the jobs embedded in it (`--embedded-worker`), which
+is what makes the fixture gateway usable: it keeps payments in memory, so the process
+that creates a checkout must be the process that settles it. `DEV_SEPARATE_WORKER=1
+make dev` runs them as two processes, the way production does.
+
+By hand, that is:
+
 ```bash
 # terminal 1
 set -a && . ./.env && set +a
-BILLING_GATEWAY_PROVIDER=fakegateway \
-BILLING_GATEWAY_ACCOUNT=acct_test \
-BILLING_WEBHOOK_SECRET=whsec_dev \
-./bin/billing serve
+export BILLING_GATEWAY_PROVIDER=fake \
+       BILLING_GATEWAY_ACCOUNT=acct_test \
+       BILLING_WEBHOOK_SECRET=whsec_dev \
+       BILLING_INSECURE_COOKIES=1        # loopback only
+./bin/billing serve --embedded-worker
 
-# terminal 2
-BILLING_GATEWAY_EXTENSION=$PWD/bin/fakegateway \
-BILLING_PROVISIONER_EXTENSION=$PWD/bin/fakeprov \
-BILLING_GATEWAY_ACCOUNT=acct_test \
+# terminal 2, only with DEV_SEPARATE_WORKER-style separate processes
+export BILLING_GATEWAY_EXTENSION=$PWD/bin/fakegateway \
+       BILLING_PROVISIONER_EXTENSION=$PWD/bin/fakeprov
 ./bin/billing worker
 ```
 
+The provider id is `fake`, not `fakegateway`: the binary is `bin/fakegateway` and the
+provider is `fake`, and naming the binary here is the mistake that produces "is not a
+provider this build can launch" on the integrations screen.
+
 ```bash
-curl -s localhost:8080/healthz          # liveness, no database access
-curl -s localhost:8080/readyz           # database reachable and schema current
+curl -s localhost:8791/healthz          # liveness, no database access
+curl -s localhost:8791/readyz           # database reachable and schema current
 
 # Staff-only: the operator exception list.
-curl -b cookies.txt localhost:8080/api/v1/ops/overview | jq
+curl -b cookies.txt localhost:8791/api/v1/ops/overview | jq
 
 # Customer-facing: what do I owe, what is renewing, is my service ready.
-curl -b cookies.txt localhost:8080/api/v1/portal/overview | jq
-curl -b cookies.txt localhost:8080/api/v1/portal/invoices | jq
-curl -b cookies.txt localhost:8080/api/v1/portal/services | jq
+curl -b cookies.txt localhost:8791/api/v1/portal/overview | jq
+curl -b cookies.txt localhost:8791/api/v1/portal/invoices | jq
+curl -b cookies.txt localhost:8791/api/v1/portal/services | jq
 ```
 
 ### Operator commands
@@ -89,12 +127,12 @@ unset BILLING_ADMIN_PASSWORD
 
 ```bash
 # Sign in; the session cookie is HttpOnly and the CSRF token is returned here.
-curl -c cookies.txt -X POST localhost:8080/api/v1/auth/login \
+curl -c cookies.txt -X POST localhost:8791/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"you@example.test","password":"a long passphrase"}'
 
-curl -b cookies.txt localhost:8080/api/v1/auth/me
-curl -b cookies.txt localhost:8080/api/v1/ops/overview
+curl -b cookies.txt localhost:8791/api/v1/auth/me
+curl -b cookies.txt localhost:8791/api/v1/ops/overview
 ```
 
 The metrics endpoint and the operator overview require staff authentication; the

@@ -88,9 +88,16 @@ async function run() {
   await writeFile(join(dist, "assets", "mark.svg"), await readFile(join(root, "src/mark.svg")));
 
   // The service worker, at a stable URL (see workerOptions above).
+  //
+  // `write: false` makes esbuild report every output as `<stdout>`, so selecting it by a `.js`
+  // extension finds nothing and the build fails with "produced no service worker". The bundle is
+  // the single output of a one-entry-point build, so it is taken by position; the length check is
+  // what catches a genuinely empty build.
   const worker = await build(workerOptions);
-  const workerFile = worker.outputFiles.find((file) => file.path.endsWith(".js"));
-  if (!workerFile) throw new Error("build produced no service worker");
+  const workerFile = worker.outputFiles[0];
+  if (!workerFile || workerFile.contents.length === 0) {
+    throw new Error("build produced no service worker");
+  }
   await writeFile(join(dist, "sw.js"), Buffer.from(workerFile.contents));
 
   const template = await readFile(join(root, "src/index.html"), "utf8");

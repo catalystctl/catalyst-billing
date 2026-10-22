@@ -257,6 +257,18 @@ func (c *Client) DeletePortalSociallinksById(ctx context.Context, id string, que
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeletePushSubscriptionsById calls DELETE /api/v1/push/subscriptions/{id}.
+//
+// Unregister one of the caller's push devices
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeletePushSubscriptionsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/push/subscriptions/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffAnnouncementsById calls DELETE /api/v1/staff/announcements/{id}.
 //
 // # Delete an announcement
@@ -948,6 +960,22 @@ func (c *Client) GetPortalTicketsById(ctx context.Context, id string, query url.
 // Permission: ticket:read:self.
 func (c *Client) GetPortalTicketsMeta(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/tickets/meta"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPushConfig calls GET /api/v1/push/config.
+//
+// Whether web push is available, and the key to subscribe with
+func (c *Client) GetPushConfig(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/push/config"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPushSubscriptions calls GET /api/v1/push/subscriptions.
+//
+// List the caller's push devices
+func (c *Client) GetPushSubscriptions(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/push/subscriptions"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -2138,6 +2166,26 @@ func (c *Client) PostPortalTicketsByIdClose(ctx context.Context, id string, quer
 func (c *Client) PostPortalTicketsByIdReplies(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/tickets/{id}/replies"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPushSubscriptions calls POST /api/v1/push/subscriptions.
+//
+// Register a browser for push notifications
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostPushSubscriptions(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/push/subscriptions"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPushTest calls POST /api/v1/push/test.
+//
+// Send a test notification to every device on the account
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostPushTest(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/push/test"
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 

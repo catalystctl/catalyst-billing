@@ -174,6 +174,31 @@ func TestNoChallengeKeepsTheStrictestPolicy(t *testing.T) {
 	}
 }
 
+// The service worker is served from a stable URL with no-cache.
+//
+// Both halves are load-bearing. A hashed URL would make every deploy a different registration
+// URL, so the browser would install a second worker beside the first rather than replacing it;
+// and a long-cached worker is one the browser never checks for an update, so a fix to the push
+// handler would never reach an installed device. This test exists because the build silently
+// stopped producing the file — esbuild reports `write: false` output as `<stdout>`, so the
+// selection by extension found nothing and the build failed only when someone ran it.
+func TestServiceWorkerIsServedAtAStableUncachedURL(t *testing.T) {
+	h := newHandler(t, false)
+	rec := get(t, h, "/sw.js")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /sw.js = %d, want 200 (the build must emit dist/sw.js)", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache: a cached worker never updates", got)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Fatalf("Content-Type = %q, want javascript: a browser refuses a worker served as text", ct)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "addEventListener") {
+		t.Fatalf("the worker body does not look like a service worker: %s", body[:min(len(body), 120)])
+	}
+}
+
 // The documented CSP must be present, and must not contain an exemption that would let
 // an injected script run.
 func TestSecurityHeaders(t *testing.T) {

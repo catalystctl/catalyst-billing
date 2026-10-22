@@ -58,6 +58,14 @@ var (
 	// ErrNotApplicable is returned when a coupon exists and is live but does not apply to
 	// this product, this part of the price, or this currency.
 	ErrNotApplicable = errors.New("commerce: coupon does not apply")
+	// ErrAlreadyInCart is returned when a product that is sold one at a time is added a
+	// second time. It has a code of its own rather than reusing ErrNotApplicable because
+	// the two refusals need different words and different next steps: "your cart is in
+	// another currency" is fixed by emptying the cart, and "it is already in your cart" is
+	// fixed by going to the cart. Merging instead would be worse than either: the cart
+	// would hold a line the checkout refuses (`quantity_not_allowed`), which is how a
+	// double-clicked "Order this plan" became an unpayable cart.
+	ErrAlreadyInCart = errors.New("commerce: already in the cart")
 )
 
 // querier is the subset of pgx that both a pool and a transaction satisfy.

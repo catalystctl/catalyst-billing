@@ -326,6 +326,9 @@ func (s *Store) AddItemTx(ctx context.Context, q querier, customerID, currency s
 	if quantity < 0 {
 		return Cart{}, invalid("quantity must be positive")
 	}
+	// ceiling is how many of this line the cart may hold. A product that is sold one at a time
+	// has a ceiling of one, which is what turns a second add into a refusal instead of a merge.
+	ceiling := MaxCartQuantity
 	switch price.AllowQuantity {
 	case QuantityDisabled:
 		// A product that does not allow a quantity is one per line. A request for three is
@@ -334,6 +337,7 @@ func (s *Store) AddItemTx(ctx context.Context, q querier, customerID, currency s
 			return Cart{}, fmt.Errorf("%w: this product does not allow a quantity", ErrNotApplicable)
 		}
 		quantity = 1
+		ceiling = 1
 	case QuantitySeparated, QuantityCombined:
 		if quantity > MaxCartQuantity {
 			return Cart{}, invalid("quantity must not exceed %d", MaxCartQuantity)
@@ -350,9 +354,11 @@ func (s *Store) AddItemTx(ctx context.Context, q querier, customerID, currency s
 	// An identical line merges; a different one is a new line. The upsert is on the same key
 	// the table's unique constraint uses, so the two cannot disagree.
 	//
-	// The merge adds the quantities and lets the table's CHECK reject a total above
-	// MaxCartQuantity. Silently capping at the limit would accept a request the shop cannot
-	// fulfil and then show a different number, which is worse than refusing it.
+	// The merge adds the quantities and refuses a total above `ceiling`. Silently capping at the
+	// limit would accept a request the shop cannot fulfil and then show a different number, which
+	// is worse than refusing it. The `WHERE` on the update is what makes the refusal atomic: a
+	// check-then-write would let two concurrent adds both pass it, and the row the customer would
+	// then hold is one the checkout refuses (`quantity_not_allowed`).
 	var itemID string
 	err = q.QueryRow(ctx, `
 		INSERT INTO cart_items (cart_id, price_version_id, quantity, config, label)
@@ -360,9 +366,20 @@ func (s *Store) AddItemTx(ctx context.Context, q querier, customerID, currency s
 		ON CONFLICT (cart_id, price_version_id, config) DO UPDATE
 			SET quantity = cart_items.quantity + EXCLUDED.quantity,
 			    label = CASE WHEN EXCLUDED.label <> '' THEN EXCLUDED.label ELSE cart_items.label END
+			WHERE cart_items.quantity + EXCLUDED.quantity <= $6
 		RETURNING id`,
-		cart.ID, price.ID, quantity, config, strings.TrimSpace(req.Label)).Scan(&itemID)
+		cart.ID, price.ID, quantity, config, strings.TrimSpace(req.Label), ceiling).Scan(&itemID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The line is already there and cannot grow. Which refusal that is depends on why:
+			// a one-at-a-time product is "already in your cart", and a quantity product is
+			// "that is more than one line may hold".
+			if ceiling == 1 {
+				return Cart{}, fmt.Errorf("%w: this product is sold one at a time and is already in your cart",
+					ErrAlreadyInCart)
+			}
+			return Cart{}, invalid("quantity must be between 1 and %d", MaxCartQuantity)
+		}
 		if isForeignKeyViolation(err) {
 			return Cart{}, fmt.Errorf("%w: no such price", ErrNotFound)
 		}

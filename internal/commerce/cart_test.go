@@ -187,6 +187,48 @@ func TestCartEnforcesAllowQuantityPolicy(t *testing.T) {
 	}
 }
 
+// A product that is sold one at a time cannot be added twice.
+//
+// The merge below (see the 'combined' half of TestCartEnforcesAllowQuantityPolicy) is right for a
+// product that allows a quantity and wrong for one that does not: merging produced a line of
+// quantity 2 that the checkout refuses with `quantity_not_allowed`, so two clicks on the same
+// button left the customer with a cart that could not be paid for. The refusal has its own error
+// so the storefront can say "it is already in your cart" and offer the cart.
+func TestCartRefusesSecondAddOfAOneAtATimeProduct(t *testing.T) {
+	s, ctx := newStore(t)
+	at(t, s, t0)
+	pool := s.Pool()
+	customerID := mustCustomer(t, pool, "cart-one-at-a-time@example.test")
+	// The default policy is 'disabled': one per line.
+	_, priceID := mustProduct(t, pool, "vps-single-add", 1000, 0, "USD")
+
+	cart, err := s.AddItem(ctx, customerID, "USD", commerce.AddItemRequest{
+		PriceVersionID: priceID, Quantity: 1,
+	})
+	if err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if len(cart.Items) != 1 || cart.Items[0].Quantity != 1 {
+		t.Fatalf("cart = %d line(s); want 1 line of 1", len(cart.Items))
+	}
+
+	if _, err := s.AddItem(ctx, customerID, "USD", commerce.AddItemRequest{
+		PriceVersionID: priceID, Quantity: 1,
+	}); !errors.Is(err, commerce.ErrAlreadyInCart) {
+		t.Fatalf("second add: err = %v, want ErrAlreadyInCart", err)
+	}
+
+	// The line the customer holds is the one the checkout accepts.
+	cart, err = s.CartForCustomer(ctx, customerID)
+	if err != nil {
+		t.Fatalf("cart: %v", err)
+	}
+	if len(cart.Items) != 1 || cart.Items[0].Quantity != 1 {
+		t.Fatalf("cart after the refusal = %d line(s) of %d; want 1 line of 1",
+			len(cart.Items), cart.Items[0].Quantity)
+	}
+}
+
 // A line that is not the caller's is a 404, not a 403: the difference would confirm that the
 // id exists.
 func TestCartIsScopedToTheCustomer(t *testing.T) {

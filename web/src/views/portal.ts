@@ -261,6 +261,11 @@ function renderOverview(ctx: Ctx, data: PortalOverview): Node {
         oldest ? payButton(ctx, oldest, { size: "md" }) : null,
         btn(tx("portal.hero.all_invoices", "All invoices"), { href: "/portal/invoices", icon: "invoice", size: "md" }),
         btn(tx("portal.hero.your_services", "Your services"), { href: "/portal/services", icon: "server", size: "md" }),
+        // The two doors into the purchase funnel. Without them the storefront and the cart were
+        // reachable only by typing a URL: a customer who signed in to buy something had nowhere
+        // to click. Both are ordinary customer routes, so the shell guard already allows them.
+        btn(tx("portal.hero.browse", "Browse products"), { href: "/products", icon: "box", size: "md" }),
+        btn(tx("portal.hero.cart", "Your cart"), { href: "/cart", icon: "bag", size: "md" }),
       ),
     ),
     h(

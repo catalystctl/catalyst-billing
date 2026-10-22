@@ -3,7 +3,10 @@
 A living record of what is actually built, kept honest by checking the code rather than the
 reports. `docs/paymenter-parity.md` is the backlog; this file is where it stands.
 
-**Last verified:** `go test ./...` against a real PostgreSQL at schema version 0024, green.
+**Last verified:** `go test ./...` against a real PostgreSQL at schema version 0026, green;
+107 browser assertions green.
+
+**Scale now:** 76 tables (from 47), 190 documented API operations, 25 migrations.
 
 ## Where the work happens
 
@@ -17,7 +20,7 @@ records the ownership rules that make that safe. The registry refactor that made
 
 ## Schema
 
-47 tables before this work; **74 now**. The commerce gap named in the backlog (§5) is closed:
+47 tables before this work; **76 now**. The commerce gap named in the backlog (§5) is closed:
 
 `currencies`, `tax_rates`, `coupons`, `coupon_products`, `coupon_redemptions`, `carts`,
 `cart_items`, `config_options`, `config_option_prices`, `service_configs`, `product_upgrades`,
@@ -35,6 +38,7 @@ Migrations 0020–0024, each with the decision that shaped it recorded at the to
 | `0022_discount_lines.sql` | A discount is a line on the invoice, so the document explains itself. A charge is non-negative, a discount non-positive, and the discount line carries no tax of its own. |
 | `0023_notification_events.sql` | The event set lives in Go; the database keeps a shape check. A closed set would be a migration per event. |
 | `0024_notification_dedupe.sql` | The inbox is idempotent on the event instance, not the content — two genuine logins must stay two notifications. |
+| `0026_identity.sql` | A role is a row, so an operator can define one without a deploy; the four shipped roles stay system rows with database-level immutability, because their permission sets encode a separation of duties the approval flow depends on. |
 
 ## Packages
 
@@ -45,13 +49,13 @@ Migrations 0020–0024, each with the decision that shaped it recorded at the to
 | Invoice documents | **merged** | A dependency-free PDF writer; proforma conversion; configurable numbering; client-visible notes; void reasons. |
 | Support tickets | **merged** | Tickets, threaded messages, attachments with a 10 MB cap, a mail log, and auto-close. Another customer's ticket is a 404, not a 403. |
 | Notifications | **merged** | An editable template per event, an in-app inbox, per-user channel preferences with force/choice precedence, and dedupe on the event instance. Templates seed at migrate time. |
-| Service lifecycle | running | Cancellation requests, upgrades with exact proration, config options, stock helpers. |
+| Service lifecycle | **merged** | Cancellation as a request row with a queue; upgrades with exact rational proration and a `service_upgrades` row so a half-applied change is visible; config options priced per price version; stock decremented under a lock. |
+| Operator surface | **merged** | System settings with secrets redacted, log viewers, cron history and heartbeat, a revenue dashboard reading the ledger rather than invoice totals, announcements. |
+| Identity depth | **merged** | Session list and revoke, audited impersonation (the audit row names both the account and the operator), editable roles with the four system roles immutable in the database, API-key CIDR allowlists enforced. |
+| Frontend commerce | **merged** | Twelve screens: cart, checkout, register, coupons, tax rates, currencies, config options, system settings, announcements, logs, cancellations, credit. |
 | Credits and pay flow | running | Credit deposits, auto-use, partial application, pay-with-credit, payment polling, manual payments. |
-| Operator surface | running | System settings with secrets redacted, log viewers, cron history and heartbeat, a revenue dashboard, announcements. |
-| Identity depth | running | Session list and revoke, audited impersonation, editable roles, API-key IP allowlists. |
 | Growth and platform | running | Affiliates with exact commission, Discord notifications. |
-| Frontend commerce | running | Cart, checkout, register, coupons, tax rates, currencies, config options, system settings, announcements, logs, cancellations, credits. |
-| Frontend support/account | running | Tickets (both sides), the staff queue, and the customer security, notifications and payment-method screens. |
+| Frontend support/account | in review | Tickets (both sides), the staff queue, and the customer security, notifications and payment-method screens. |
 | Verification | running | The browser harness extended to the new screens, and this document. |
 
 ## Integration work done by hand

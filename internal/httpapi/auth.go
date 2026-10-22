@@ -468,6 +468,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.setSessionCookies(w, res.Token, res.Session)
+	// A sign-in that lands on an account owing a second factor says so. An operator's MFA reset
+	// removes the factor and leaves `mfa_enrolment_required` behind; the session is issued (the
+	// customer has to be able to reach the enrolment screen) but the response carries the demand,
+	// and the shell sends them straight to it. Without this the reset would silently downgrade the
+	// account to password-only and nobody would be asked to fix it.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user": map[string]any{
 			"id":             res.User.ID,
@@ -477,8 +482,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"roles":          res.User.Roles,
 			"is_staff":       res.User.IsStaff(),
 		},
-		"csrf_token": res.Session.CSRFToken,
-		"expires_at": res.Session.ExpiresAt,
+		"enrolment_required": s.enrolmentRequired(r, res.User.ID),
+		"csrf_token":         res.Session.CSRFToken,
+		"expires_at":         res.Session.ExpiresAt,
 	})
 }
 
@@ -534,9 +540,28 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"impersonating":   sess.ImpersonatedBy != "",
 		"impersonated_by": sess.ImpersonatedBy,
 		"permissions":     perms,
-		"csrf_token":      sess.CSRFToken,
-		"expires_at":      sess.ExpiresAt,
+		// The same demand the sign-in response carries, so a page load, a second tab or a
+		// bookmarked URL is told about it too. Cleared by a confirmed enrolment.
+		"mfa_enrolment_required": s.enrolmentRequired(r, user.ID),
+		"csrf_token":             sess.CSRFToken,
+		"expires_at":             sess.ExpiresAt,
 	})
+}
+
+// enrolmentRequired reports whether the account owes the panel a second factor.
+//
+// It is a best-effort read: a failure here must not fail a sign-in or an identity request, because
+// the answer is a prompt rather than an authority — the enrolment screen re-reads it, and a wrong
+// `false` costs a customer one extra click while a 500 costs them their session.
+func (s *Server) enrolmentRequired(r *http.Request, userID string) bool {
+	if s.auth == nil || s.auth.Service == nil || userID == "" {
+		return false
+	}
+	status, err := s.auth.Service.MFAStatusFor(r.Context(), userID)
+	if err != nil {
+		return false
+	}
+	return status.EnrolmentRequired
 }
 
 // nonNilRoles makes "no staff role" encode as [] rather than null.

@@ -47,6 +47,11 @@ func creditOperations() map[string]Operation {
 				{Status: 404, Description: "The caller has no billing account", Schema: ProblemRef()},
 			},
 		},
+		"GET /api/v1/portal/credits/transactions": {
+			Summary:     "Your credit statement",
+			Description: "Newest first. Read from the ledger, because that is where the balance comes from: a statement assembled from anywhere else could disagree with the number it is meant to explain. A movement is signed — positive when credit was added, negative when it was spent — and scoped to the caller in SQL, so there is no id to substitute.",
+			Responses:   []Response{{Status: 200, Description: "A page of credit movements"}, {Status: 401, Description: "Not signed in", Schema: ProblemRef()}},
+		},
 		"POST /api/v1/portal/credits/deposit": {
 			Summary: "Start a credit top-up through the gateway",
 			Description: "Creates a deposit invoice and opens a gateway session, then returns the redirect URL. The amount is validated " +

@@ -262,6 +262,60 @@ func (s *Service) Balance(ctx context.Context, customerID string) ([]money.Amoun
 	return BalanceFor(ctx, s.pool, customerID)
 }
 
+// Entry is one movement on a customer's credit balance.
+//
+// It is read from the ledger rather than from a credit-specific table, because the ledger is what
+// the balance is derived from: a transaction list assembled from anywhere else could disagree with
+// the number above it, and the customer would be right to trust neither.
+type Entry struct {
+	ID       string
+	Currency string
+	// Amount is signed: positive when credit was added, negative when it was spent.
+	Amount    money.Amount
+	Memo      string
+	CreatedAt time.Time
+}
+
+// TransactionsFor reads a customer's credit movements, newest first.
+//
+// `customer_credit` is a liability account, so credit is the positive side: a deposit or a grant
+// credits it, spending it debits it. The sign is normalised here so a caller never has to know
+// which side of the ledger it is reading — a spent credit appears as a negative movement, which is
+// what a customer expects from a statement.
+func TransactionsFor(ctx context.Context, q Querier, customerID string, limit int) ([]Entry, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := q.Query(ctx, `
+		SELECT id::text, currency, credit_minor - debit_minor, memo, created_at
+		FROM journal_entries
+		WHERE customer_id = $1 AND account_code = $2
+		ORDER BY created_at DESC, id DESC
+		LIMIT $3`, customerID, ledger.AccountCredit, limit)
+	if err != nil {
+		return nil, fmt.Errorf("credit: read transactions: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Entry{}
+	for rows.Next() {
+		var (
+			e     Entry
+			minor int64
+		)
+		if err := rows.Scan(&e.ID, &e.Currency, &minor, &e.Memo, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("credit: scan transaction: %w", err)
+		}
+		cur, ok := money.LookupCurrency(e.Currency)
+		if !ok {
+			cur, _ = money.NewCurrency(e.Currency, 2)
+		}
+		e.Amount = money.New(minor, cur)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // BalanceFor reads a customer's credit per currency from any querier.
 func BalanceFor(ctx context.Context, q Querier, customerID string) ([]money.Amount, error) {
 	rows, err := q.Query(ctx, `

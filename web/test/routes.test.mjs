@@ -44,12 +44,31 @@ const SERVER_PATHS = new Set(["/healthz", "/readyz", "/metrics", "/api/v1/catalo
  * component has to be added here, which is a moment to ask whether it is really shared or
  * whether a route was forgotten.
  */
-const SHARED_VIEW_MODULES = new Set(["billing-profile", "refund"]);
+// Views that are reached without being named by a route entry.
+//
+// `not-found` is imported by the router itself as the fallback for a path no route matches, so it
+// has no `route(...)` line and never will. `billing-profile` and `refund` are rendered inside
+// other screens. Anything else in this set is suspicious: a view nobody routes to is either dead
+// code or a route somebody forgot to add, which is why the test exists.
+const SHARED_VIEW_MODULES = new Set(["billing-profile", "refund", "not-found"]);
 
-/** Route patterns from app.ts: route("/customers/:id", ...) */
+/**
+ * The module that declares the route table.
+ *
+ * It is `routes.ts`, not `app.ts`. The table moved there when it outgrew the bootstrap file, and
+ * these tests kept reading `app.ts` — where the `route(...)` calls no longer are, so they found
+ * zero patterns and asserted on nothing. That is the worst state for a guard to be in: green
+ * because it stopped looking.
+ */
+function routesModule() {
+  const mod = files.find((f) => f.path.endsWith("/routes.ts"));
+  assert.ok(mod, "routes.ts not found: the route table moved again, so these tests need updating");
+  return mod;
+}
+
+/** Route patterns from routes.ts: route("/customers/:id", ...) */
 function routePatterns() {
-  const app = files.find((f) => f.path.endsWith("/app.ts"));
-  assert.ok(app, "app.ts not found");
+  const app = routesModule();
   const patterns = [];
   for (const match of app.body.matchAll(/route\("([^"]+)"/g)) {
     patterns.push(match[1]);
@@ -114,7 +133,7 @@ test("every internal href resolves to a declared route", () => {
 });
 
 test("every route module exists", () => {
-  const app = files.find((f) => f.path.endsWith("/app.ts"));
+  const app = routesModule();
   const missing = [];
   for (const match of app.body.matchAll(/import\("\.\/views\/([^"]+)"\)/g)) {
     const name = match[1];
@@ -128,7 +147,7 @@ test("every route module exists", () => {
 test("no view file is orphaned", () => {
   // A view nobody routes to is either dead code or a route somebody forgot to add. Both are
   // worth failing on: the catalog's old screens sat unrouted-but-linked for exactly this reason.
-  const app = files.find((f) => f.path.endsWith("/app.ts"));
+  const app = routesModule();
   const imported = new Set([...app.body.matchAll(/import\("\.\/views\/([^"]+)"\)/g)].map((m) => m[1]));
   const views = files
     .filter((f) => f.path.includes("/views/"))

@@ -571,6 +571,44 @@ try {
   });
   check("dashboard: renders the exception list or says it is clear", /Needs attention|Nothing is on fire/.test(staffHome));
 
+  // The management writes. These are the ones an operator actually needs and the panel spent a
+  // long time without: a button that opens a form, and a form with real fields in it. A list
+  // screen with no create action is the defect this asserts against.
+  //
+  // Each dialog is dismissed with Escape rather than by hunting for its Cancel button: the dialog
+  // traps focus and closes on Escape by design, so that is the one dismissal that works for every
+  // dialog on the panel. Leaving one open would hide the next screen's content behind the overlay
+  // and fail an assertion three steps later, which is exactly what happened the first time.
+  for (const surface of [
+    { name: "customers", path: "/customers", action: /new customer/i },
+    { name: "services", path: "/services", action: /new service/i },
+  ]) {
+    const state = await visit(surface.path);
+    if (missingReason(state)) {
+      console.log(`gap  ${surface.name} create — ${missingReason(state)}`);
+      continue;
+    }
+    const opened = await evaluate(`(() => {
+      const b = Array.from(document.querySelectorAll('button')).find((x) => ${surface.action}.test(x.textContent || ''));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    check(`${surface.name}: offers a create action`, opened, "no create button found");
+    if (opened) {
+      await until(`${surface.name}'s create form`, "document.querySelector('[role=dialog] input') !== null", 5_000).catch(() => {});
+      const fields = await evaluate("document.querySelectorAll('[role=dialog] input, [role=dialog] select, [role=dialog] textarea').length");
+      check(`${surface.name}: the create form has fields`, fields > 0, `fields=${fields}`);
+      // Close without submitting: this run must not create records the later assertions do not
+      // expect, and a half-submitted create would corrupt the seed.
+      await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+      await until(`${surface.name}'s dialog to close`, "document.querySelector('[role=dialog]') === null", 3_000).catch(() => {});
+      const stillOpen = await evaluate("document.querySelector('[role=dialog]') !== null");
+      check(`${surface.name}: the create dialog closes on Escape`, !stillOpen, "a dialog stayed open over the page");
+    }
+  }
+
+
   // Navigation by clicking the rail, not by URL: the rail is what a user uses.
   await click('.nav-item[data-href="/customers"]');
   await until("the customer list", "location.pathname === '/customers' && document.querySelector('table, .empty') !== null");

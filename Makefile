@@ -3,7 +3,7 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help dev dev-stop dev-config dev-reset seed seed-reset db-up db-ensure db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test
+.PHONY: help dev dev-stop dev-config dev-reset seed seed-reset db-up db-ensure db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test brand brand-render brand-verify
 
 help:
 	@echo "dev        database + schema + fixtures + demo data + a staff account, then serve (Ctrl-C stops)"
@@ -27,6 +27,9 @@ help:
 	@echo "client     regenerate the typed client from api/openapi.yaml"
 	@echo "smoke      drive the served UI in a real headless browser"
 	@echo "e2e-ui     sign in through the UI and assert live data renders"
+	@echo "brand      regenerate the logo, banners and social cards (needs Python + fontTools)"
+	@echo "brand-render  rasterise the brand SVGs to PNG with Chromium"
+	@echo "brand-verify  prove the served brand assets load and render in a real browser"
 	@echo "web-build  rebuild the embedded frontend (needs Node; dist/ is committed)"
 	@echo "web-typecheck  typecheck the frontend without emitting"
 	@echo "web-test   run the frontend unit tests (money, routing)"
@@ -207,6 +210,26 @@ e2e-ui: build
 
 clean:
 	rm -rf bin
+
+# --------------------------------------------------------------- brand --
+#
+# The logo, banners and social cards in assets/brand are generated, not hand-drawn: they
+# reuse the parent Catalyst mark, palette and typefaces, and every text run is outlined so
+# no asset depends on an installed font. See assets/brand/README.md.
+#
+# Deliberately not part of `verify`: this needs Python with fontTools plus three woff2
+# files, and it only runs when the brand changes. `brand-verify` is the part CI could run —
+# it needs nothing but a served panel and Chromium, and it proves what reading the SVG
+# cannot: that a browser accepts and renders it.
+PYTHON ?= python3
+brand:
+	$(PYTHON) scripts/brand/build.py
+
+brand-render:
+	bash scripts/brand/render.sh
+
+brand-verify:
+	@node scripts/brand/verify.mjs
 
 # Full verification: the same sequence CI runs, minus the network-dependent
 # scanners. Run this before calling anything done.

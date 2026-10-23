@@ -164,6 +164,16 @@ var workerJobs = []automationJob{
 		Settings:   []string{"cronjob.terminate_days"},
 		Source:     "internal/lifecycle/lifecycle.go",
 	},
+	// The abandoned-cart rule (CT-13). It has no setting: the threshold is a constant because
+	// "a day" is the smallest window in which "they walked away" beats "they are asleep", and a
+	// configurable number would invite a value that announces every cart twice an hour.
+	{
+		Name:       lifecycle.AbandonCartJob,
+		Interval:   lifecycle.AbandonCartInterval,
+		Summary:    "Announces carts with lines that nobody has touched for a day, once per cart, so a recovery extension can act on them.",
+		KillSwitch: lifecycle.AbandonCartKillSwitch,
+		Source:     "internal/lifecycle/carts.go",
+	},
 	// The price-change queue (UPG-05, UPG-06, CRD-06). It is the only job an operator can use to
 	// answer "why did my upgrade not apply" without reading the database: a paid upgrade that never
 	// moved, an invoice nobody paid that kept a row pending, or a downgrade whose credit was never

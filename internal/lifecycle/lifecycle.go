@@ -278,6 +278,23 @@ func Jobs(pool *store.Pool, logger *slog.Logger) []Job {
 		})
 	}
 
+	// Abandoned carts (CT-13): a cart with lines that nobody has touched for a day is the
+	// lead a recovery extension exists for. It is registered here rather than in the worker so
+	// the rule lives with the other lifecycle rules it shares a clock and a batch size with.
+	if disabled(AbandonCartKillSwitch) {
+		logger.Warn("cart abandonment is disabled by kill switch")
+	} else {
+		jobs = append(jobs, Job{
+			Name:     AbandonCartJob,
+			Interval: AbandonCartInterval,
+			Run: func(ctx context.Context) error {
+				run, err := runner.AbandonStaleCarts(ctx)
+				logCartAbandon(logger, run, err)
+				return err
+			},
+		})
+	}
+
 	// The price-change queue: it finishes a change the customer already asked for, and it is
 	// guarded by its own switch because it is the job that voids documents.
 	jobs = append(jobs, ServiceJobs(pool, logger)...)

@@ -104,8 +104,34 @@ type Broker struct {
 }
 
 // NewBroker constructs a Broker.
+//
+// The most recently constructed broker also becomes the process default (see Default). That is
+// not a second mechanism: it is the same broker, and it exists so a library that has no HTTP
+// server to hand — a settlement applier, a lifecycle job — can announce a committed change
+// through the fan-out the server already owns instead of growing a parallel eventing path. A
+// process has one broker in production; a test that builds several is sequential, so the last
+// one is the one under test.
 func NewBroker() *Broker {
-	return &Broker{subs: make(map[uint64]*Subscription), buffer: 64}
+	b := &Broker{subs: make(map[uint64]*Subscription), buffer: 64}
+	defaultMu.Lock()
+	defaultBroker = b
+	defaultMu.Unlock()
+	return b
+}
+
+var (
+	defaultMu     sync.Mutex
+	defaultBroker *Broker
+)
+
+// Default returns the process broker, or nil when none has been constructed.
+//
+// nil is a supported answer everywhere it is used: a deployment with no event fan-out (a test,
+// a CLI command) simply announces nothing.
+func Default() *Broker {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	return defaultBroker
 }
 
 // Publish assigns an id and delivers to every subscriber.

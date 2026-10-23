@@ -328,11 +328,12 @@ func (s *Server) handleAddCartItem(w http.ResponseWriter, r *http.Request) {
 		s.cartError(w, r, err)
 		return
 	}
-	// The first line is a cart being created; a later one is a cart being changed. An
-	// extension that runs an abandoned-cart campaign cares about the difference, and only this
-	// path can tell them apart.
+	// The store reports whether this call brought the cart into existence; every other change
+	// is an update. An extension that runs an abandoned-cart campaign cares about the
+	// difference, and counting lines cannot answer it — a second unit of the same product is
+	// an update on a one-line cart.
 	kind := extproto.EventCartUpdated
-	if len(cart.Items) == 1 {
+	if cart.Created {
 		kind = extproto.EventCartCreated
 	}
 	s.publishCartEvent(kind, customerID, cart, map[string]any{

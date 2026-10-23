@@ -387,6 +387,19 @@ func (r *Report) fileIndex(name string) int {
 	return -1
 }
 
+// ensureFile returns the position of a document's counters, appending one for a document that is
+// not in the required set.
+//
+// The optional documents (currencies, admins, products, tickets) are only present in a report when
+// the dump carried them, so the report grows rather than showing four empty rows on every import.
+func (r *Report) ensureFile(name string) int {
+	if i := r.fileIndex(name); i >= 0 {
+		return i
+	}
+	r.Files = append(r.Files, FileReport{File: name})
+	return len(r.Files) - 1
+}
+
 // tableIndex returns the position of an entity's counters, appending one if the entity is
 // not in the fixed list (which would be a bug, but a missing counter is worse than an
 // unexpected one).

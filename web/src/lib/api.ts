@@ -64,6 +64,10 @@ export interface RequestOptions {
   raw?: BodyInit;
   /** The Content-Type of a raw body. */
   contentType?: string;
+  /** Extra request headers. Used for the metadata of a raw upload (an extension's name and
+   *  version), which cannot travel in a JSON body and should not travel in a query string that
+   *  every access log keeps. */
+  headers?: Record<string, string>;
 }
 
 const CSRF_HEADER = "X-CSRF-Token";
@@ -192,6 +196,10 @@ export class Api {
       if (!options.noIdempotency) {
         headers[IDEMPOTENCY_HEADER] = options.idempotencyKey ?? crypto.randomUUID();
       }
+    }
+
+    for (const [name, value] of Object.entries(options.headers ?? {})) {
+      headers[name] = value;
     }
 
     let response: Response;

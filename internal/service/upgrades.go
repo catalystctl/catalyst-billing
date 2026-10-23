@@ -857,9 +857,10 @@ const StaleUpgradeAfter = 14 * 24 * time.Hour
 // A paid invoice is never touched: `ApplyPendingUpgrades` owns that case, and voiding a paid
 // document is forbidden by the immutability trigger anyway.
 //
-// Wire it into cmd/billing/jobs.go as a jobSpec:
-//
-//	svc.CancelStaleUpgrades(ctx)
+// It is scheduled: internal/lifecycle's `service-upgrades` job calls it on every tick (see
+// lifecycle.ServiceJobs), which is what made the two settings it obeys — StaleUpgradeAfter's window
+// and the job's kill switch — real. A direct caller (a test, a one-off run) can call it too; the
+// job is the scheduled one and there is no second entry point to drift from it.
 func (s *Store) CancelStaleUpgrades(ctx context.Context) ([]string, error) {
 	cutoff := s.clock().Add(-StaleUpgradeAfter)
 

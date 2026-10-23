@@ -75,6 +75,11 @@ type Engine struct {
 	policy Policy
 	// Now is injectable for tests.
 	Now func() time.Time
+	// settings is the stored ladder (OPS-09). It is optional: an engine built without a pool
+	// (a unit test with a policy and no database) keeps the policy it was given. With a pool it
+	// is always present, because the numbers in a stored row are the operator's decision and
+	// outrank the ones this build compiled in.
+	settings *settings.Store
 	// auditor, when set, writes an audit row inside the same transaction that enqueues the
 	// operation.
 	//
@@ -120,7 +125,49 @@ func NewEngine(pool *store.Pool, policy Policy) *Engine {
 	if policy.MaxSteps <= 0 {
 		policy = DefaultPolicy()
 	}
-	return &Engine{pool: pool, policy: policy, Now: func() time.Time { return time.Now().UTC() }}
+	e := &Engine{pool: pool, policy: policy, Now: func() time.Time { return time.Now().UTC() }}
+	// The stored ladder governs the *production* engine, which is the one built with the code
+	// defaults (that is what cmd/billing/jobs.go does). A caller that passes numbers of its own
+	// is overriding the ladder deliberately — a test, or a one-off run with a tighter policy —
+	// and a row in the settings table must not silently change what it asked for. Precedence is
+	// therefore: explicit caller > stored setting > compiled default, which is the order that
+	// makes every one of those three a decision rather than a surprise.
+	if pool != nil && policy == DefaultPolicy() {
+		e.settings = settings.New(pool)
+	}
+	return e
+}
+
+// ladder resolves the escalation policy for one tick, applying the stored thresholds over the
+// code-side defaults (OPS-09).
+//
+// The order matters and it is the same order internal/lifecycle uses: the stored value wins, a
+// missing or unreadable value falls back to the default, and the *switch* is a boolean rather
+// than a zero. Without that last rule a settings row of `0` would be read as "suspend
+// immediately" by this reader and "never suspend" by the next one, and there is no way to tell
+// which reading an operator meant.
+//
+// It returns the policy and whether the ladder is enabled at all. A disabled ladder still
+// records newly overdue invoices (see sync) — the state is a fact about the invoice, not an
+// action taken on it — but it escalates nothing and permits no suspension.
+func (e *Engine) ladder(ctx context.Context) (Policy, bool) {
+	p := e.policy
+	if e.settings == nil {
+		return p, true
+	}
+	if on, err := e.settings.Bool(ctx, settings.GroupCronjob, settings.KeyDunningEnabled); err == nil && !on {
+		return p, false
+	}
+	if days, err := e.settings.Int(ctx, settings.GroupCronjob, settings.KeyReminderDays); err == nil && days > 0 {
+		p.ReminderInterval = time.Duration(days) * 24 * time.Hour
+	}
+	if steps, err := e.settings.Int(ctx, settings.GroupCronjob, settings.KeyMaxReminders); err == nil && steps > 0 {
+		p.MaxSteps = int(steps)
+	}
+	if days, err := e.settings.Int(ctx, settings.GroupCronjob, settings.KeySuspendDays); err == nil && days > 0 {
+		p.SuspendAfter = time.Duration(days) * 24 * time.Hour
+	}
+	return p, true
 }
 
 // AdvanceResult reports what one advance did.
@@ -145,9 +192,21 @@ func (e *Engine) Advance(ctx context.Context, limit int) ([]AdvanceResult, error
 	sch := e.schedule(ctx)
 	policy := e.policyFor(ctx)
 
-	// Bring newly overdue invoices into dunning, and resolve settled ones.
+	// Bring newly overdue invoices into dunning, and resolve settled ones. This runs even when
+	// the ladder is switched off: an invoice that is overdue is overdue whether or not anything
+	// is reminding the customer, and the state is what the overdue widget counts.
 	if err := e.sync(ctx, now); err != nil {
 		return nil, err
+	}
+
+	// The settings-driven ladder is read first, because "dunning is off" is a decision that
+	// applies to the pre-due reminder too: an operator who switched reminders off does not want
+	// the polite one either.
+	policy, enabled := e.ladder(ctx)
+	if !enabled {
+		// Nothing is escalated and nothing is suspended. The run is not an error: it is the
+		// operator's decision, and the job's own history shows it ran.
+		return nil, nil
 	}
 
 	// The pre-due reminder is queued whether or not anything is overdue: an installation with
@@ -352,6 +411,10 @@ var ErrNotEligible = errors.New("dunning: service is not eligible for suspension
 func (e *Engine) Evaluate(ctx context.Context, serviceID string) (Eligibility, error) {
 	now := e.Now()
 	out := Eligibility{ServiceID: serviceID}
+	// The suspension period is a stored threshold (OPS-09). Reading it here rather than at
+	// construction means a changed setting takes effect on the next decision, which is what an
+	// operator who just lowered it expects.
+	policy, enabled := e.ladder(ctx)
 
 	err := e.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var (
@@ -439,9 +502,12 @@ func (e *Engine) Evaluate(ctx context.Context, serviceID string) (Eligibility, e
 		if dueAt == nil {
 			return hold("the linked invoice has no due date")
 		}
-		if now.Before(dueAt.Add(e.policy.SuspendAfter)) {
+		if !enabled {
+			return hold("the dunning ladder is switched off")
+		}
+		if now.Before(dueAt.Add(policy.SuspendAfter)) {
 			return hold(fmt.Sprintf("suspension is permitted from %s",
-				dueAt.Add(e.policy.SuspendAfter).Format(time.RFC3339)))
+				dueAt.Add(policy.SuspendAfter).Format(time.RFC3339)))
 		}
 
 		// The subledger is the authority on what is owed. A cached column that

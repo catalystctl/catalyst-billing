@@ -27,6 +27,7 @@ import (
 	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/store"
+	"github.com/catalyst/billing/internal/updates"
 )
 
 // version is stamped at build time: -ldflags "-X main.version=1.2.3".
@@ -43,6 +44,10 @@ func main() {
 }
 
 func run(args []string) error {
+	// One process, one version. A worker has no HTTP server to take it from, and the daily
+	// telemetry job reports it, so it is stamped here before any subcommand runs.
+	updates.SetBuildVersion(version)
+
 	if len(args) == 0 {
 		usage(os.Stderr)
 		return errors.New("no subcommand")

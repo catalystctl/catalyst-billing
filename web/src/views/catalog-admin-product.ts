@@ -158,16 +158,22 @@ export const INTERVAL_OPTIONS: IntervalOption[] = [
   { value: "every_days", label: "Every N days" },
 ];
 
-/** dayIntervalValue composes the stored interval for a day count, clamping to the range the
- *  server accepts so the dialog cannot submit a period that would be refused with a 400. */
-export function dayIntervalValue(days: number): string {
-  const clamped = Math.min(366, Math.max(1, Math.trunc(Number.isFinite(days) ? days : 1)));
-  return `every_${clamped}_days`;
+/** dayIntervalValue composes the stored interval for a day count.
+ *
+ *  It returns null rather than a string when the count is not a whole number in 1..366, so a
+ *  caller cannot accidentally turn a typo into a billing period. That is not defensive
+ *  padding: an earlier version of this helper truncated and fell back, which meant a cleared
+ *  field or `abc` became "every_45_days" — a 45-day schedule nobody chose — and `45.9` became
+ *  45. Refusing is the only behaviour that cannot invent a period. */
+export function dayIntervalValue(days: number): string | null {
+  if (!Number.isInteger(days) || days < 1 || days > 366) return null;
+  return `every_${days}_days`;
 }
 
 /** intervalValueFor turns a picker selection into the value to POST: the day-count sentinel is
- *  composed from the number field, and every other choice is sent as itself. */
-export function intervalValueFor(selection: string, days: number): string {
+ *  composed from the number field, and every other choice is sent as itself. It returns null
+ *  when the sentinel is selected with an unusable count, which the caller must refuse. */
+export function intervalValueFor(selection: string, days: number): string | null {
   return selection === "every_days" ? dayIntervalValue(days) : selection;
 }
 
@@ -292,11 +298,12 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
         if (minor === null || setupMinor === null) {
           return "Amounts must be numbers, e.g. 12.00.";
         }
-        if (interval.value === "every_days") {
-          const n = Math.trunc(Number(days.value));
-          if (!Number.isFinite(n) || n < 1 || n > 366) {
-            return "Days between renewals must be a whole number from 1 to 366.";
-          }
+        // The wire value is composed once, and a null means the sentinel was selected with a
+        // count the helper refused. Validation lives in the helper and nowhere else: a second
+        // copy here would be two rules that drift, and the looser one would win.
+        const wireInterval = intervalValueFor(interval.value, Number(days.value));
+        if (wireInterval === null) {
+          return "Days between renewals must be a whole number from 1 to 366.";
         }
         try {
           await ctx.api.post(`/api/v1/staff/catalog/products/${p.id}/prices`, {
@@ -304,7 +311,7 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
             currency: currency.value.trim().toUpperCase(),
             amount_minor: minor,
             setup_minor: setupMinor,
-            interval: intervalValueFor(interval.value, Number(days.value)),
+            interval: wireInterval,
             anchor_day: Number(anchorDay.value) || 1,
             anchor_timezone: timezone.value.trim() || "UTC",
           });

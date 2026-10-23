@@ -49,7 +49,7 @@
 
 import { ApiError } from "../lib/api";
 import { h, swap, type Child } from "../lib/dom";
-import { humanStatus, relative, shortId, type Amount } from "../lib/format";
+import { formatCurrency, humanStatus, idempotencyKey, relative, shortId, type Amount } from "../lib/format";
 import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import {
@@ -145,6 +145,9 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
   // Two independent reads, two permissions. A role that holds one gets the half it can use.
   const canQueue = ctx.can("service:read:all");
   const canGraph = ctx.can("catalog:write");
+  // Posting a downgrade's credit moves money (a numbered note and a ledger entry), so the action
+  // needs credit:write — separately from reading the queue, which is what support holds.
+  const canPostCredit = ctx.can("credit:write");
 
   if (!canQueue && !canGraph) {
     return h(
@@ -170,6 +173,53 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
   // `paid=1` lists only the rows whose invoice has settled — the ones the worker will apply.
   // The default lists every pending row, which is what an operator chasing a stuck upgrade wants.
   let paidOnly = ctx.route.query.get("paid") === "1";
+  // The currencies the last queue render used, so an action can format an amount it gets back
+  // without re-reading the catalogue.
+  let currenciesForQueue: PublicCurrency[] = [];
+
+  /** Posts the credit a pending downgrade owes, and reports the note it produced.
+   *
+   *  The worker posts these on its own schedule; this button is for the case the queue shows:
+   *  a downgrade that has been sitting here because nobody noticed. It is one request to the same
+   *  domain method the job calls, so it cannot post a second note for a row that is already
+   *  credited. */
+  const postCredit = async (row: PendingUpgrade, button: HTMLButtonElement): Promise<void> => {
+    const confirmed = await ctx.confirm({
+      title: "Post the credit this downgrade owes?",
+      body:
+        "This issues a credit note for the prorated difference and applies the change: the service " +
+        "moves to the cheaper price once the credit is posted. It cannot be undone from this screen.",
+      confirmLabel: "Post the credit",
+      cancelLabel: "Leave it to the worker",
+    });
+    if (!confirmed) return;
+    await withBusy(ctx, button, async () => {
+      try {
+        const res = await ctx.api.post<{ number: string; amount_minor: number; applied: boolean; already_posted: boolean }>(
+          `/api/v1/staff/upgrades/${encodeURIComponent(row.id)}/credit`,
+          {},
+          { idempotencyKey: idempotencyKey() },
+        );
+        const amount = amountOf(currenciesForQueue, res.amount_minor, row.currency);
+        ctx.toast(res.already_posted ? "Already credited" : "Downgrade credited", {
+          tone: "success",
+          detail:
+            `${res.number} · ${formatCurrency(amount, undefined, true)}` +
+            (res.applied ? " · the service has moved to the cheaper plan" : " · the worker will apply it"),
+        });
+        await loadQueue();
+      } catch (err) {
+        if (err instanceof ApiError) {
+          ctx.toast("The credit could not be posted", { tone: "danger", detail: err.detail || err.code });
+          return;
+        }
+        ctx.toast("The credit could not be posted", {
+          tone: "danger",
+          detail: "The server could not be reached. Nothing has changed.",
+        });
+      }
+    });
+  };
 
   const loadQueue = async (): Promise<void> => {
     try {
@@ -181,6 +231,7 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
         query: { paid: paidOnly ? "true" : undefined, limit: "100" },
         cache: false,
       });
+      currenciesForQueue = currencies;
       swap(queueHost, renderQueue(data, currencies));
     } catch (err) {
       swap(queueHost, errorState(err, () => void loadQueue()));
@@ -198,6 +249,16 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
       byCurrency.set(row.currency, (byCurrency.get(row.currency) ?? 0) + row.prorated_minor);
     }
     const awaitingPayment = rows.filter((row) => (row.invoice_status ?? "") !== "paid").length;
+    const creditButton = (row: PendingUpgrade): HTMLElement => {
+      const button = btn("Post credit", {
+        size: "sm",
+        variant: "ghost",
+        icon: "wallet",
+        title: "Issue the credit note this downgrade owes and apply the change",
+      }) as HTMLButtonElement;
+      button.addEventListener("click", () => void postCredit(row, button));
+      return button;
+    };
 
     return h(
       "div",
@@ -275,6 +336,7 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
                         h("th", { scope: "col" }, "Status"),
                         h("th", { scope: "col" }, "Invoice"),
                         h("th", { scope: "col", class: "hide-sm" }, "Requested"),
+                        canPostCredit ? h("th", { scope: "col", class: "num" }, "") : null,
                       ),
                     ),
                     h(
@@ -338,6 +400,18 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
                             { class: "hide-sm", "data-label": "Requested" },
                             h("span", { class: "dim nowrap", title: row.created_at }, relative(row.created_at)),
                           ),
+                          canPostCredit
+                            ? h(
+                                "td",
+                                { class: "num", "data-label": "Actions" },
+                                // Only a downgrade with no invoice owes a credit. An upgrade waits
+                                // for its invoice instead, and posting a "credit" for it would be a
+                                // refund for a charge that has not happened.
+                                row.prorated_minor < 0 && !row.invoice_id
+                                  ? creditButton(row)
+                                  : h("span", { class: "faint" }, "—"),
+                              )
+                            : null,
                         ),
                       ),
                     ),

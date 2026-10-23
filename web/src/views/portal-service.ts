@@ -69,10 +69,20 @@ interface ChangeableOptions {
 
 // ---------------------------------------------------------------- payloads --
 
-interface Cancellation {
+/** The 201 from `POST .../cancellation`, i.e. `cancellationJSON`.
+ *
+ *  `status` is `scheduled` for an end-of-period request and `pending` for an immediate one, and
+ *  `effective_at` is the paid-through date for the first. The page states which, because "your
+ *  service is cancelled" and "your request is waiting for support" are different promises. */
+interface CancellationRequestResult {
+  id: string;
+  service_id: string;
+  type: string;
   status: string;
-  ends_at: string;
-  message: string;
+  reason: string;
+  created_at: string;
+  effective_at?: string;
+  executed_at?: string;
 }
 
 /** One price a service can move to, from `upgradePriceJSON`.
@@ -105,6 +115,30 @@ interface ConfigChoice {
   choice: string;
   amount_minor: number;
   setup_minor: number;
+}
+
+/** One option of a plan the customer may move to, from `handlePortalPlanOptions`.
+ *
+ *  The amounts are the rows `handlePortalChangePlan` charges from, priced on that plan's own
+ *  price version — so the price on screen and the price on the invoice are the same rows. */
+interface PlanOption {
+  config_option_id: string;
+  name: string;
+  description: string;
+  type: string;
+  env_variable: string;
+  required: boolean;
+  upgradable: boolean;
+  value: string;
+  choices: ConfigChoice[];
+}
+
+/** `GET .../plan-options` — the target plan's options, priced on that plan. */
+interface PlanOptions {
+  service_id: string;
+  product_id: string;
+  price_version_id: string;
+  options: PlanOption[];
 }
 
 /** One config option a customer may change, with its current value. */
@@ -344,33 +378,47 @@ export default async function portalServicePage(ctx: Ctx): Promise<Node> {
     }
   };
 
-  /** Asks the server for an upgrade to the chosen price. */
-  const requestUpgrade = async (target: UpgradePrice & { productName: string }): Promise<void> => {
+  /** Asks the server for a plan change: the target plan and the options chosen on it, priced as
+   *  one prorated change.
+   *
+   *  `selection` is `undefined` when the target plan's options could not be read. That is a
+   *  deliberate difference from an empty list: absent means "leave my options alone" and empty
+   *  means "this plan has none, take mine away", and the server prices them differently. Sending
+   *  an empty list because a read failed would silently drop options the customer pays for. */
+  const requestPlanChange = async (
+    target: UpgradePrice & { productName: string },
+    selection: Array<{ config_option_id: string; value: string }> | undefined,
+  ): Promise<void> => {
     const prorated = target.prorated.minor;
+    const chosen = selection?.length
+      ? ` With ${selection.length} option${selection.length === 1 ? "" : "s"} on the new plan, `
+      : " ";
     const confirmed = await ctx.confirm({
       title: `Move to ${target.productName}?`,
       body:
         `${target.productName} — ${target.name || `version ${target.version}`} costs ` +
-        `${moneyWithCode(target.amount)} per ${target.interval}` +
+        `${moneyWithCode(target.amount)} per ${target.interval}.` +
+        chosen +
         (prorated > 0
-          ? `, and you will be charged ${moneyWithCode(target.prorated)} now for the rest of the period you are in.`
+          ? `the prorated difference for the rest of the period you are in is charged now (the plan difference alone is ${moneyWithCode(target.prorated)}; the options are added to it).`
           : prorated < 0
-            ? `, and ${moneyWithCode({ ...target.prorated, minor: -prorated })} will be credited to you for the rest of the period you are in.`
-            : ", and no prorated charge is due for the rest of this period."),
-      confirmLabel: "Request upgrade",
+            ? `you are credited the prorated difference for the rest of the period you are in (the plan difference alone is ${moneyWithCode({ ...target.prorated, minor: -prorated })}; the options are added to it).`
+            : "no plan difference is due for the rest of this period; any option you add is prorated separately."),
+      confirmLabel: "Request the change",
       cancelLabel: "Keep the current plan",
       note: "The change is applied once its invoice is paid. Nothing is charged before you confirm.",
     });
     if (!confirmed) return;
     try {
-      const result = await ctx.api.post<ChangeResult>(`/api/v1/portal/services/${encodeURIComponent(id)}/upgrade`, {
+      const result = await ctx.api.post<ChangeResult>(`/api/v1/portal/services/${encodeURIComponent(id)}/change-plan`, {
         price_version_id: target.price_version_id,
+        config_options: selection,
         reason: "requested from the portal",
       });
-      reportChange(result, "Upgrade requested");
+      reportChange(result, "Plan change requested");
       await load();
     } catch (err) {
-      reportChangeError(err, "The upgrade could not be requested");
+      reportChangeError(err, "The plan change could not be requested");
     }
   };
 
@@ -498,6 +546,97 @@ export default async function portalServicePage(ctx: Ctx): Promise<Node> {
     });
   };
 
+  /** Files a cancellation request: when it should take effect, and why.
+   *
+   *  Two statements reach the server and both are recorded. The type decides what happens — an
+   *  end-of-period request stops the schedule at the date the customer has paid to, and an
+   *  immediate one is a *request for a decision*, which support executes — and the reason is what
+   *  the operator reads in the queue. The page used to post an end-of-period cancellation with no
+   *  reason at all, which meant a customer could not ask for the one thing a cancellation is
+   *  usually about and no operator ever saw the request (CAN-01…CAN-03). */
+  const requestCancellation = async (): Promise<void> => {
+    const type = select(
+      [
+        { value: "end_of_period", label: "At the end of the period I have paid for" },
+        { value: "immediate", label: "Immediately — support reviews it first" },
+      ],
+      { id: "cancel-type", value: "end_of_period" },
+    );
+    const reason = textarea({
+      id: "cancel-reason",
+      placeholder: "Why are you cancelling? Support reads this, and it is kept with the request.",
+      maxlength: 255,
+    });
+    const consequence = h("p", { class: "field-hint" });
+    const explain = (): void => {
+      consequence.replaceChildren(
+        type.value === "immediate"
+          ? "The service keeps running until support has acted on the request. Cancelling immediately " +
+              "ends time you have already paid for, so it is a decision an operator makes, not a button."
+          : "The service runs until the end of the period you have paid for" +
+              (current && current.next_bill_at ? ` (next bill ${dateOnly(current.next_bill_at)})` : "") +
+              ", and then stops. Nothing further is billed.",
+      );
+    };
+    type.addEventListener("change", explain);
+    explain();
+
+    await ctx.formDialog({
+      title: "Cancel this service?",
+      subtitle: current?.name || "This service",
+      submitLabel: "Send the request",
+      body: h(
+        "div",
+        { class: "stack" },
+        field({ label: "When should it stop?", control: type, id: "cancel-type" }),
+        consequence,
+        field({
+          label: "Reason",
+          control: reason,
+          id: "cancel-reason",
+          hint: "Optional, but a reason lets support help if there is a problem worth solving.",
+        }),
+      ),
+      onSubmit: async () => {
+        try {
+          const res = await ctx.api.post<CancellationRequestResult>(
+            `/api/v1/portal/services/${encodeURIComponent(id)}/cancellation`,
+            { type: type.value, reason: reason.value.trim() },
+          );
+          notice = banner(
+            "success",
+            res.type === "immediate" ? "Cancellation requested" : "Cancellation scheduled",
+            h(
+              "span",
+              null,
+              res.type === "immediate"
+                ? "Your request has been recorded and support will act on it. The service keeps running until they do."
+                : res.effective_at
+                  ? `Your service ends on ${dateTime(res.effective_at)}, at the end of the period you have paid for.`
+                  : "Your service ends at the end of the period you have paid for.",
+            ),
+          );
+          ctx.toast(
+            res.type === "immediate" ? "Cancellation requested" : "Cancellation scheduled",
+            {
+              tone: "success",
+              detail:
+                res.type === "immediate"
+                  ? "Support will review it."
+                  : res.effective_at
+                    ? `Your service ends on ${dateOnly(res.effective_at)}.`
+                    : "At the end of the paid period.",
+            },
+          );
+          await load();
+          return;
+        } catch (err) {
+          return cancellationProblem(err);
+        }
+      },
+    });
+  };
+
   // ---------------------------------------------------------------- render --
 
   const render = (): void => {
@@ -524,37 +663,7 @@ export default async function portalServicePage(ctx: Ctx): Promise<Node> {
           serviceCard(svc, md),
           planCard(),
           options,
-          actionCard(svc, async (button) => {
-            const confirmed = await ctx.confirm({
-              title: "Cancel this service?",
-              body:
-                `${svc.name || "This service"} keeps running until the end of the period you have already paid for` +
-                (svc.next_bill_at ? `, and its next bill is due ${dateOnly(svc.next_bill_at)}` : "") +
-                ". After that it stops, and nothing further is billed.",
-              confirmLabel: "Schedule cancellation",
-              cancelLabel: "Keep the service",
-              danger: true,
-              note: "You cannot undo this from the portal. Contact support if you change your mind.",
-            });
-            if (!confirmed) return;
-            await withBusy(ctx, button, async () => {
-              try {
-                const res = await ctx.api.post<Cancellation>(`/api/v1/portal/services/${encodeURIComponent(id)}/cancel`, {});
-                notice = banner(
-                  "success",
-                  "Cancellation scheduled",
-                  h("span", null, `${res.message} Your service ends on ${dateTime(res.ends_at)}.`),
-                );
-                ctx.toast("Cancellation scheduled", {
-                  tone: "success",
-                  detail: `Your service ends on ${dateOnly(res.ends_at)}.`,
-                });
-                await load();
-              } catch (err) {
-                reportCancelError(ctx, err);
-              }
-            });
-          }),
+          actionCard(svc, requestCancellation),
         ),
         h(
           "div",
@@ -642,43 +751,143 @@ export default async function portalServicePage(ctx: Ctx): Promise<Node> {
       })),
       { id: "upgrade-target" },
     );
+
+    // The target plan's own options, and the values chosen on them. Both are keyed by target
+    // because the options of one plan are not the options of another: the amounts come from that
+    // plan's price version, so carrying a selection across would price one plan with another's
+    // prices.
+    const optionsHost = h("div", { class: "stack-sm" });
+    let loadedFor: string | null = null;
+    let controls: Array<{ option: PlanOption; read: () => string; control?: HTMLElement }> = [];
+    let optionsError: string | null = null;
+
     const describe = (): void => {
       const target = targets.find((t) => t.price_version_id === control.value);
       if (!target) {
         hint.replaceChildren("");
         return;
       }
-      hint.replaceChildren(
+      const base =
         target.prorated.minor > 0
-          ? `Moving now costs ${moneyWithCode(target.prorated)} for the rest of the period you have paid for.`
+          ? `The plan difference is ${moneyWithCode(target.prorated)} for the rest of the period you have paid for`
           : target.prorated.minor < 0
-            ? `Moving now credits ${moneyWithCode({ ...target.prorated, minor: -target.prorated.minor })} for the rest of the period you have paid for.`
-            : "Moving now costs nothing extra for the rest of the period you have paid for.",
+            ? `The plan difference credits you ${moneyWithCode({ ...target.prorated, minor: -target.prorated.minor })} for the rest of the period you have paid for`
+            : "The plan itself costs nothing extra for the rest of the period you have paid for";
+      hint.replaceChildren(
+        `${base}. ` +
+          (loadedFor && controls.length > 0
+            ? "Your options are priced with it — the exact difference is on the invoice."
+            : "Options are priced with it when the plan has any."),
       );
     };
-    control.addEventListener("change", describe);
-    describe();
 
-    const button = btn("Request upgrade", { variant: "primary", icon: "arrowUpRight" }) as HTMLButtonElement;
+    /** Loads the chosen plan's options, if they are not loaded already. */
+    const loadOptions = async (): Promise<void> => {
+      const target = targets.find((t) => t.price_version_id === control.value);
+      if (!target || loadedFor === target.price_version_id) return;
+      loadedFor = target.price_version_id;
+      controls = [];
+      optionsError = null;
+      optionsHost.replaceChildren(h("p", { class: "field-hint" }, "Loading the options of this plan…"));
+      let payload: PlanOptions;
+      try {
+        payload = await ctx.api.get<PlanOptions>(
+          `/api/v1/portal/services/${encodeURIComponent(id)}/plan-options`,
+          { query: { price_version_id: target.price_version_id }, cache: false },
+        );
+      } catch (err) {
+        optionsError = err instanceof ApiError ? err.detail || err.code : String(err);
+        optionsHost.replaceChildren(
+          banner(
+            "warning",
+            "The options of this plan could not be read",
+            `${optionsError}. You can still request the plan itself; your current options are left as they are.`,
+          ),
+        );
+        describe();
+        return;
+      }
+      const options = payload.options ?? [];
+      if (options.length === 0) {
+        optionsHost.replaceChildren(
+          h("p", { class: "field-hint" }, "This plan has no configurable options."),
+        );
+        describe();
+        return;
+      }
+      controls = options.map((option) => {
+        if (!option.upgradable) {
+          // Fixed by the plan we are moving to. It is still part of the selection, so it is sent
+          // as its only offered value rather than omitted — omitting it would leave the service
+          // without a value the plan requires.
+          const fixed = option.value || option.choices[0]?.choice || "";
+          return {
+            option,
+            read: () => fixed,
+          };
+        }
+        const picker = select(
+          option.choices.map((choice) => ({
+            value: choice.choice,
+            label: `${choice.choice}${choice.amount_minor ? ` · +${moneyWithCode({ minor: choice.amount_minor, currency: details?.plan.currency ?? "USD", scale: details?.plan.amount?.scale ?? 2 })}` : " · included"}`,
+          })),
+          { id: `plan-option-${option.config_option_id}`, value: option.value || undefined },
+        );
+        return { option, read: () => picker.value, control: picker };
+      });
+      optionsHost.replaceChildren(
+        h(
+          "div",
+          { class: "stack-sm" },
+          h("p", { class: "field-hint" }, "Options on this plan"),
+          ...controls.map((entry) =>
+            field({
+              label: entry.option.name,
+              hint:
+                entry.option.description ||
+                (entry.option.upgradable ? undefined : "Fixed by this plan."),
+              control: entry.control ?? h("p", { class: "kv-value" }, entry.read() || "—"),
+            }),
+          ),
+        ),
+      );
+      describe();
+    };
+
+    control.addEventListener("change", () => {
+      void loadOptions();
+    });
+    describe();
+    void loadOptions();
+
+    const button = btn("Request change", { variant: "primary", icon: "arrowUpRight" }) as HTMLButtonElement;
     button.addEventListener("click", () => {
       const target = targets.find((t) => t.price_version_id === control.value);
-      if (target) void withBusy(ctx, button, () => requestUpgrade(target));
+      if (!target) return;
+      // `undefined` when the options could not be read: absent means "leave mine alone", which is
+      // the only safe answer when the page does not know what the target plan offers.
+      const selection = loadedFor === target.price_version_id && !optionsError
+        ? controls.map((entry) => ({ config_option_id: entry.option.config_option_id, value: entry.read() }))
+        : undefined;
+      void withBusy(ctx, button, () => requestPlanChange(target, selection));
     });
 
     return card({
       title: "Change plan",
-      sub: "The difference is prorated for the rest of the period",
+      sub: "Pick a plan and its options; the difference is prorated for the rest of the period",
       body: h(
         "div",
         { class: "stack" },
         field({ label: "New plan", control }),
+        optionsHost,
         hint,
         h("div", { class: "row-wrap" }, button),
         h(
           "p",
           { class: "field-hint" },
-          "An upgrade issues an invoice for the prorated difference and takes effect when it is paid. " +
-            "A downgrade credits you for the rest of the period; support applies it.",
+          "The plan and the options you choose are one change, priced together. An increase issues an " +
+            "invoice for the prorated difference and takes effect when it is paid. A decrease credits you " +
+            "for the rest of the period and is applied once the credit is posted.",
         ),
       ),
     });
@@ -825,8 +1034,9 @@ export default async function portalServicePage(ctx: Ctx): Promise<Node> {
         h(
           "p",
           { class: "page-sub" },
-          "Cancelling stops the service at the end of the period you have paid for, never before. " +
-            "Suspending or terminating it immediately is handled by support.",
+          "Cancelling normally stops the service at the end of the period you have paid for. An immediate " +
+            "cancellation ends time you have paid for, so it is a request support decides on — either way " +
+            "you can say why, and the request reaches the support queue.",
         ),
         h(
           "div",
@@ -850,20 +1060,21 @@ function actionCard(
   onCancel: (button: HTMLButtonElement) => Promise<void>,
 ): HTMLElement {
   if (svc.actions.includes("cancel")) {
-    const button = btn("Cancel at period end", { variant: "danger", icon: "x" }) as HTMLButtonElement;
+    const button = btn("Request cancellation", { variant: "danger", icon: "x" }) as HTMLButtonElement;
     button.addEventListener("click", () => void onCancel(button));
     return card({
       title: "Cancel this service",
-      sub: "Runs to the end of the paid period",
+      sub: "At the end of the paid period, or ask support to do it now",
       body: h(
         "div",
         { class: "stack" },
         h(
           "p",
           { class: "page-sub" },
-          "Cancelling does not switch the service off now. It runs until the end of the period you have already paid for" +
+          "By default the service runs until the end of the period you have already paid for" +
             (svc.next_bill_at ? ` (next bill ${dateOnly(svc.next_bill_at)})` : "") +
-            ", and then stops. Nothing further is billed.",
+            ", and then stops, and nothing further is billed. You can also ask for it to stop now — " +
+            "that ends time you have paid for, so support reviews it before acting.",
         ),
         h("div", { class: "row-wrap" }, button),
       ),
@@ -911,30 +1122,26 @@ function actionCard(
   });
 }
 
-function reportCancelError(ctx: Ctx, err: unknown): void {
+/** Plain copy for the documented refusals of a cancellation request, shown in the dialog so the
+ *  customer can act on it without reopening the form. */
+function cancellationProblem(err: unknown): string {
   if (!(err instanceof ApiError)) {
-    ctx.toast("The cancellation could not be scheduled", {
-      tone: "danger",
-      detail: "The server could not be reached. Nothing has changed.",
-    });
-    return;
+    return "The server could not be reached, so nothing has changed. Try again in a moment.";
   }
   switch (err.code) {
+    case "already_requested":
+      return "A cancellation request is already open for this service. Reload the page to see it.";
+    case "not_cancellable":
+      return err.detail || "This service cannot be cancelled in its current state. Contact support.";
+    case "invalid_input":
+      return err.detail || "Check the request and try again.";
     case "not_found":
     case "forbidden":
-      ctx.toast("This service is not available", {
-        tone: "danger",
-        detail: "It may belong to another account, or it may no longer exist.",
-      });
-      return;
+      return "This service is not available. It may belong to another account, or it may no longer exist.";
     case "rate_limited":
-      ctx.toast("Too many attempts", { tone: "danger", detail: "Wait a minute and try again." });
-      return;
+      return "Too many attempts. Wait a minute and try again.";
     default:
-      ctx.toast("The cancellation could not be scheduled", {
-        tone: "danger",
-        detail: err.detail || err.code,
-      });
+      return err.detail || `The request could not be sent (${err.code}).`;
   }
 }
 

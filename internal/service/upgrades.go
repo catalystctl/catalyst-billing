@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/credit"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/jackc/pgx/v5"
 )
@@ -234,6 +235,12 @@ type UpgradeRequest struct {
 	// PriceVersionID is the target. The product it belongs to must be reachable from the
 	// service's product through product_upgrades.
 	PriceVersionID string
+	// Selection is the config-option selection on the *target* plan, keyed by option id. A nil
+	// map means "this change does not touch the options": the stored selection is left alone and
+	// the prorated difference covers the base prices only, which is the behaviour every existing
+	// caller has. A non-nil map is the whole target selection, priced on the target version and
+	// applied with the plan — the two halves of one price cannot move a period apart.
+	Selection map[string]string
 	// UserID is the actor. On the customer path it is also the scope.
 	UserID string
 	Reason string
@@ -367,9 +374,33 @@ func (s *Store) upgrade(ctx context.Context, req UpgradeRequest) (UpgradeResult,
 		if err != nil {
 			return err
 		}
-		prorated, err := ProratedDifference(
-			money.New(current.AmountMinor, cur), money.New(target.AmountMinor, cur),
-			proration, money.RoundHalfUp)
+
+		// A plan change can carry the target plan's config options (UPG-02). They are part of the
+		// same prorated difference because they are part of the same price: the renewal engine
+		// bills the base price *plus* one line per chosen option, so a change that moved the plan
+		// and left the options to a second request would charge the wrong number for the rest of
+		// this period and for every period after it. The arithmetic is unchanged — one exact
+		// ratio, one RoundHalfUp — it is only fed the whole price on each side.
+		fromAmount := money.New(current.AmountMinor, cur)
+		toAmount := money.New(target.AmountMinor, cur)
+		var resolved ResolvedSelection
+		if req.Selection != nil {
+			stored, err := s.storedSelectionTotal(ctx, tx, req.ServiceID, current, cur)
+			if err != nil {
+				return err
+			}
+			if fromAmount, err = fromAmount.Add(stored); err != nil {
+				return err
+			}
+			resolved, err = s.ResolveSelectionTx(ctx, tx, target.ProductID, target.ID, req.Selection)
+			if err != nil {
+				return err
+			}
+			if toAmount, err = toAmount.Add(resolved.Total); err != nil {
+				return err
+			}
+		}
+		prorated, err := ProratedDifference(fromAmount, toAmount, proration, money.RoundHalfUp)
 		if err != nil {
 			return err
 		}
@@ -411,6 +442,14 @@ func (s *Store) upgrade(ctx context.Context, req UpgradeRequest) (UpgradeResult,
 			}
 			invoiceID, number = id, num
 			out.InvoiceID, out.InvoiceNumber = id, num
+			// `credits.auto_use` promises that a balance covering an invoice settles it without the
+			// customer asking (CRD-03). The setting used to be honoured only on the checkout path,
+			// so a customer with credit on account who upgraded was invoiced in full and the
+			// balance sat untouched. It runs on the invoice's own id, so a replayed upgrade
+			// applies once, and in this transaction, so a rolled-back upgrade spends nothing.
+			if _, err := credit.ApplyCreditToInvoice(ctx, tx, id); err != nil {
+				return err
+			}
 		} else if prorated.IsNegative() {
 			// The credit is posted by the credits work package from this row. The obligation
 			// is recorded here so it cannot be lost between the two packages.
@@ -431,6 +470,29 @@ func (s *Store) upgrade(ctx context.Context, req UpgradeRequest) (UpgradeResult,
 		}
 		out.UpgradeID = upgradeID
 
+		// The chosen options wait here until the change is applied. They cannot go straight into
+		// `service_configs`: that table is what the *current* subscription renews from, and this
+		// change is still pending payment, so writing them now would price the target plan's
+		// options against the old price version on the next renewal.
+		optionIDs := make([]string, 0, len(resolved.Options))
+		if req.Selection != nil {
+			for _, contribution := range resolved.Options {
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO service_upgrade_configs
+						(upgrade_id, config_option_id, value, amount_minor, setup_minor)
+					VALUES ($1, $2, $3, $4, $5)
+					ON CONFLICT (upgrade_id, config_option_id) DO UPDATE
+					SET value = EXCLUDED.value,
+					    amount_minor = EXCLUDED.amount_minor,
+					    setup_minor = EXCLUDED.setup_minor`,
+					upgradeID, contribution.ConfigOptionID, contribution.Value,
+					contribution.Amount.Minor(), contribution.Setup.Minor()); err != nil {
+					return fmt.Errorf("service: record chosen option: %w", err)
+				}
+				optionIDs = append(optionIDs, contribution.ConfigOptionID)
+			}
+		}
+
 		return s.audit(ctx, tx, "service.upgrade", "service", req.ServiceID, req.UserID,
 			map[string]any{
 				"upgrade_id":         upgradeID,
@@ -442,6 +504,9 @@ func (s *Store) upgrade(ctx context.Context, req UpgradeRequest) (UpgradeResult,
 				"direction":          out.Direction,
 				"reason":             req.Reason,
 				"number":             number,
+				"from_minor":         fromAmount.Minor(),
+				"to_minor":           toAmount.Minor(),
+				"config_options":     optionIDs,
 			})
 	})
 	if err != nil {
@@ -732,6 +797,14 @@ func (s *Store) apply(ctx context.Context, upgradeID string, allowCredit bool) e
 			return ErrNotFound
 		}
 
+		// The options move with the price, in the same commit. `service_configs` is what the next
+		// renewal prices from, so a plan that changed here and a selection that changed a request
+		// later would bill one period at the new base price with the old options — the same class
+		// of defect as a paid option that never recurs.
+		if err := s.applyPendingSelection(ctx, tx, upgradeID, serviceID, toPrice); err != nil {
+			return err
+		}
+
 		// The provisioner is told, but only when there is something to tell it about. A
 		// service that was never provisioned has no remote resource to resize.
 		if externalID != "" {
@@ -849,6 +922,13 @@ func (s *Store) cancelUpgrade(ctx context.Context, upgradeID, invoiceID string) 
 		if _, err := tx.Exec(ctx, `
 			UPDATE service_upgrades SET status = 'cancelled' WHERE id = $1`, upgradeID); err != nil {
 			return fmt.Errorf("service: cancel upgrade: %w", err)
+		}
+
+		// The options the customer chose for a plan they are not going to get must not be
+		// applied later by anything that walks this row.
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM service_upgrade_configs WHERE upgrade_id = $1`, upgradeID); err != nil {
+			return fmt.Errorf("service: drop the cancelled change's options: %w", err)
 		}
 
 		return s.audit(ctx, tx, "service.upgrade_cancelled", "service", serviceID, "",

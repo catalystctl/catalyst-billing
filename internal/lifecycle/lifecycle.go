@@ -1,13 +1,19 @@
-// Package lifecycle owns the two rules that end something on a timer.
+// Package lifecycle owns the three rules that run on a timer and change something on their own.
 //
-// Two settings have been sitting in the table since the settings screen was written and
-// nothing has ever read them: `cronjob.order_cancel_days` and `cronjob.terminate_days`. They
-// are promises to an operator — "an abandoned order is cleaned up", "a service suspended for
-// too long is taken away" — and this package is what makes them true.
+// Two settings had been sitting in the table since the settings screen was written and nothing
+// had ever read them: `cronjob.order_cancel_days` and `cronjob.terminate_days`. They are
+// promises to an operator — "an abandoned order is cleaned up", "a service suspended for too
+// long is taken away" — and this package is what makes them true.
+//
+// The third rule is the pending-price-change queue (`service-upgrades`). It is here for the same
+// reason the other two are: `service.Store` implements it and nothing ever called it, so a paid
+// upgrade never moved, an unpaid one stayed pending for ever, and a downgrade was owed a credit
+// nobody posted. All three are one shape — read persisted state, derive the work, act through the
+// package that owns the invariant — and a rule that runs on a timer belongs where the timers are.
 //
 // # The shape of a job here
 //
-// Both jobs are the same three steps, and the order matters:
+// Every job is the same three steps, and the order matters:
 //
 //  1. Read the threshold through internal/settings. A threshold that is missing falls back to
 //     the code default; a threshold that is *zero or negative* means "this rule is off", not
@@ -48,8 +54,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/catalyst/billing/internal/credit"
 	"github.com/catalyst/billing/internal/dunning"
 	"github.com/catalyst/billing/internal/notify"
+	"github.com/catalyst/billing/internal/service"
 	"github.com/catalyst/billing/internal/settings"
 	"github.com/catalyst/billing/internal/store"
 )
@@ -264,6 +272,10 @@ func Jobs(pool *store.Pool, logger *slog.Logger) []Job {
 			},
 		})
 	}
+
+	// The price-change queue: it finishes a change the customer already asked for, and it is
+	// guarded by its own switch because it is the job that voids documents.
+	jobs = append(jobs, ServiceJobs(pool, logger)...)
 	return jobs
 }
 
@@ -303,5 +315,99 @@ func logTermination(logger *slog.Logger, run TerminationRun, err error) {
 	}
 	for _, failure := range run.Failures {
 		logger.Error("termination failed for one service", "detail", failure)
+	}
+}
+
+const (
+	// ServiceUpgradesJob applies paid upgrades, credits and applies downgrades, and voids stale
+	// upgrade invoices.
+	ServiceUpgradesJob = "service-upgrades"
+	// ServiceUpgradesInterval is deliberately much shorter than the stale-upgrade window: a
+	// customer who pays an upgrade invoice expects the plan to change while they are still looking
+	// at the screen.
+	ServiceUpgradesInterval = 2 * time.Minute
+	// ServiceUpgradesKillSwitch stops the whole job without a deploy.
+	ServiceUpgradesKillSwitch = "BILLING_DISABLE_SERVICE_UPGRADES"
+)
+
+// ServiceJobs returns the service-price-change jobs, for the worker to schedule.
+//
+// It is called from Jobs(), which is the list cmd/billing/jobs.go and the automation screen both
+// read, so a job added here is scheduled and visible in one step rather than two.
+func ServiceJobs(pool *store.Pool, logger *slog.Logger) []Job {
+	if pool == nil {
+		return nil
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if disabled(ServiceUpgradesKillSwitch) {
+		logger.Warn("service upgrade automation is disabled by kill switch")
+		return nil
+	}
+
+	svc := service.New(pool)
+	credits := credit.New(pool)
+
+	return []Job{{
+		Name:     ServiceUpgradesJob,
+		Interval: ServiceUpgradesInterval,
+		Run: func(ctx context.Context) error {
+			runServiceUpgrades(ctx, pool, svc, credits, logger)
+			return nil
+		},
+	}}
+}
+
+// runServiceUpgrades performs one tick.
+//
+// It returns no error on purpose. Each step is bounded and each failure is per-row, so a single
+// unprocessable row must not be reported as a failed job: the worker would record a red tick every
+// two minutes while the rest of the queue drained, and the operator would stop reading them.
+func runServiceUpgrades(ctx context.Context, pool *store.Pool, svc *service.Store,
+	credits *credit.Service, logger *slog.Logger) {
+	// 1. The credit a downgrade owes.
+	posted, failed, err := credits.PostPendingDowngradeCredits(ctx, 100)
+	if err != nil {
+		logger.Error("downgrade credit run failed", "error", err)
+	}
+	for _, id := range posted {
+		logger.Info("downgrade credited", "upgrade_id", id)
+	}
+	for _, id := range failed {
+		logger.Error("a downgrade could not be credited", "upgrade_id", id)
+	}
+
+	// 2. Apply what the money allows. Downgrades are applied from their own list because
+	// `ApplyPendingUpgrades` handles only the paid-invoice case by design.
+	credited, err := credit.PendingDowngrades(ctx, pool, true, 100)
+	if err != nil {
+		logger.Error("downgrade apply scan failed", "error", err)
+	}
+	for _, id := range credited {
+		if err := svc.ApplyDowngrade(ctx, id); err != nil {
+			// A row another worker already applied is the normal race, not an incident worth an
+			// error line.
+			logger.Debug("downgrade not applied", "upgrade_id", id, "error", err)
+			continue
+		}
+		logger.Info("downgrade applied", "upgrade_id", id)
+	}
+
+	applied, err := svc.ApplyPendingUpgrades(ctx)
+	if err != nil {
+		logger.Error("paid upgrade run failed", "error", err)
+	}
+	for _, id := range applied {
+		logger.Info("upgrade applied", "upgrade_id", id)
+	}
+
+	// 3. The upgrades nobody paid for.
+	cancelled, err := svc.CancelStaleUpgrades(ctx)
+	if err != nil {
+		logger.Error("stale upgrade run failed", "error", err)
+	}
+	for _, id := range cancelled {
+		logger.Info("stale upgrade cancelled", "upgrade_id", id)
 	}
 }

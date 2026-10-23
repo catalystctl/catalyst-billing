@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/catalyst/billing/internal/credit"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/jackc/pgx/v5"
 )
@@ -841,6 +842,12 @@ func (s *Store) ChangeServiceConfig(ctx context.Context, req ConfigChangeRequest
 			}
 			invoiceID = id
 			out.InvoiceID, out.InvoiceNumber = id, num
+			// An option change that costs money is an invoice like any other, so `credits.auto_use`
+			// applies to it too (CRD-03). Leaving this path out would mean the one change a customer
+			// makes from their own service page was the one their balance never paid for.
+			if _, err := credit.ApplyCreditToInvoice(ctx, tx, id); err != nil {
+				return err
+			}
 		} else if prorated.IsNegative() {
 			out.CreditMinor = -prorated.Minor()
 			out.CreditPending = true
@@ -892,6 +899,190 @@ func (s *Store) ChangeServiceConfig(ctx context.Context, req ConfigChangeRequest
 		return UpgradeResult{}, err
 	}
 	return out, nil
+}
+
+// A plan change and its config options as one priced change (UPG-02).
+//
+// The parity inventory's complaint about the customer upgrade flow is precise: the plan was
+// changed through one request and the options through another, so "move me to the 8 GB plan" was
+// two economic events with two confirmations and two prorated charges. That is not only clumsy, it
+// is wrong: the base price and the option prices are one rental, the renewal engine bills them as
+// one (base plus one line per chosen option), so splitting the change across two requests prices
+// each half against a period the other half has already moved.
+//
+// `ChangePlan` is therefore the whole change. It reuses `upgrade` — the same lock order, the same
+// reachability and currency and interval rules, the same `ComputeProration`/`ProratedDifference`
+// with one RoundHalfUp, the same `issueProratedInvoice` — and only tells it to price the
+// selection as well. There is no second arithmetic here; adding one would be how the same change
+// came to cost two different amounts on two screens.
+//
+// What a downgrade owes is unchanged: the negative prorated difference is recorded on the
+// `service_upgrades` row and posted by internal/credit, which then applies the change.
+
+// PlanChangeRequest asks to move a service to another price version, choosing that plan's config
+// options in the same request.
+type PlanChangeRequest struct {
+	ServiceID string
+	// PriceVersionID is the target. It must be reachable from the service's product and bill in
+	// the same currency on the same interval.
+	PriceVersionID string
+	// Selection is the target plan's options, keyed by option id. A nil map means "do not touch
+	// the options" and is what the bare upgrade route sends; an empty map means "this plan has no
+	// options", which is a different statement and prices as one.
+	Selection map[string]string
+	UserID    string
+	Reason    string
+	// Staff bypasses the customer scoping, like every other staff path on a service.
+	Staff bool
+}
+
+// ChangePlan moves a service to a target price version with the target plan's options.
+func (s *Store) ChangePlan(ctx context.Context, req PlanChangeRequest) (UpgradeResult, error) {
+	if strings.TrimSpace(req.ServiceID) == "" || strings.TrimSpace(req.PriceVersionID) == "" {
+		return UpgradeResult{}, fmt.Errorf("%w: a service and a target plan are required", ErrInvalidInput)
+	}
+	selection := req.Selection
+	if selection == nil {
+		// An absent selection is "do not touch the options". A caller that meant "this plan has no
+		// options" has to say so, because the two price differently: the first leaves the stored
+		// options on the invoice, the second takes them away.
+		selection = map[string]string{}
+	}
+	return s.upgrade(ctx, UpgradeRequest{
+		ServiceID:      req.ServiceID,
+		PriceVersionID: req.PriceVersionID,
+		Selection:      selection,
+		UserID:         req.UserID,
+		Reason:         req.Reason,
+		Staff:          req.Staff,
+	})
+}
+
+// storedSelectionTotal prices a service's stored selection on one price version.
+//
+// The rule is the renewal engine's, deliberately, and it is the only rule that keeps a quoted
+// change and the next invoice in step: an option is priced from `config_option_prices` at the
+// version being billed, a choice with no row there is free, and a selection that recorded a
+// non-zero amount but no longer has a price row is refused rather than valued at zero. Billing
+// zero for something the customer is paying for is the revenue leak that made the renewal engine
+// read this table in the first place.
+func (s *Store) storedSelectionTotal(ctx context.Context, q Querier, serviceID string,
+	current priceVersion, cur money.Currency) (money.Amount, error) {
+	total := money.Zero(cur)
+	rows, err := q.Query(ctx, `
+		SELECT sc.value, sc.amount_minor, cop.amount_minor, co.name
+		FROM service_configs sc
+		JOIN config_options co ON co.id = sc.config_option_id
+		LEFT JOIN config_option_prices cop
+		       ON cop.config_option_id = sc.config_option_id
+		      AND cop.price_version_id = $2
+		      AND cop.choice = sc.value
+		WHERE sc.service_id = $1
+		ORDER BY co.sort_order, co.name, co.id`, serviceID, current.ID)
+	if err != nil {
+		return money.Amount{}, fmt.Errorf("service: read stored selection: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			value    string
+			recorded int64
+			priced   *int64
+			name     string
+		)
+		if err := rows.Scan(&value, &recorded, &priced, &name); err != nil {
+			return money.Amount{}, fmt.Errorf("service: scan stored selection: %w", err)
+		}
+		var contribution int64
+		switch {
+		case priced != nil:
+			contribution = *priced
+		case recorded == 0:
+			// Free at selection time (a checkbox, a text or number option) and free now.
+			contribution = 0
+		default:
+			return money.Amount{}, fmt.Errorf(
+				"%w: %s (%s) is paid but the catalogue no longer prices it at this plan",
+				ErrOptionNotAvailable, name, value)
+		}
+		if total, err = total.Add(money.New(contribution, cur)); err != nil {
+			return money.Amount{}, err
+		}
+	}
+	return total, rows.Err()
+}
+
+// applyPendingSelection moves a change's chosen options into the service, inside the transaction
+// that repriced it.
+//
+// It replaces the *previous plan's* options and upserts the chosen ones. Deleting by product rather
+// than emptying the table is deliberate: an option the operator attached to the same product but
+// did not show the customer (a hidden option) must survive the change, and it would be silently
+// dropped — and its recurring amount with it — by a blanket delete.
+func (s *Store) applyPendingSelection(ctx context.Context, tx pgx.Tx, upgradeID, serviceID, toPriceVersionID string) error {
+	rows, err := tx.Query(ctx, `
+		SELECT config_option_id, value, amount_minor, setup_minor
+		FROM service_upgrade_configs
+		WHERE upgrade_id = $1
+		ORDER BY config_option_id`, upgradeID)
+	if err != nil {
+		return fmt.Errorf("service: read chosen options: %w", err)
+	}
+	type chosen struct {
+		optionID    string
+		value       string
+		amountMinor int64
+		setupMinor  int64
+	}
+	var selection []chosen
+	for rows.Next() {
+		var c chosen
+		if err := rows.Scan(&c.optionID, &c.value, &c.amountMinor, &c.setupMinor); err != nil {
+			rows.Close()
+			return fmt.Errorf("service: scan chosen option: %w", err)
+		}
+		selection = append(selection, c)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("service: read chosen options: %w", err)
+	}
+	rows.Close()
+
+	if len(selection) == 0 {
+		return nil
+	}
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM service_configs sc
+		USING config_options co, price_versions pv
+		WHERE sc.service_id = $1
+		  AND co.id = sc.config_option_id
+		  AND pv.id = $2
+		  AND co.product_id <> pv.product_id`, serviceID, toPriceVersionID); err != nil {
+		return fmt.Errorf("service: clear the previous plan's options: %w", err)
+	}
+
+	for _, c := range selection {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO service_configs
+				(service_id, config_option_id, value, amount_minor, setup_minor)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (service_id, config_option_id)
+			DO UPDATE SET value = EXCLUDED.value,
+			              amount_minor = EXCLUDED.amount_minor,
+			              setup_minor = EXCLUDED.setup_minor`,
+			serviceID, c.optionID, c.value, c.amountMinor, c.setupMinor); err != nil {
+			return fmt.Errorf("service: store chosen option: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM service_upgrade_configs WHERE upgrade_id = $1`, upgradeID); err != nil {
+		return fmt.Errorf("service: clear chosen options: %w", err)
+	}
+	return nil
 }
 
 // nonNilChoices renders a nil slice as an empty JSON array rather than null, so a client can

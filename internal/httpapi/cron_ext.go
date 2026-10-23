@@ -11,7 +11,7 @@
 //
 // There are two registration sites, and they are not equally readable:
 //
-//   - internal/lifecycle registers its two jobs through lifecycle.Jobs(). That function is
+//   - internal/lifecycle registers its jobs through lifecycle.Jobs(). That function is
 //     called here, with the live pool, so the names and intervals on this screen are the ones
 //     the worker actually schedules — not a copy. A job that appears there and not here would
 //     be invisible to the operator, so the test in admin_screens_test.go asserts the two sets
@@ -163,6 +163,17 @@ var workerJobs = []automationJob{
 		Settings:   []string{"cronjob.terminate_days"},
 		Source:     "internal/lifecycle/lifecycle.go",
 	},
+	// The price-change queue (UPG-05, UPG-06, CRD-06). It is the only job an operator can use to
+	// answer "why did my upgrade not apply" without reading the database: a paid upgrade that never
+	// moved, an invoice nobody paid that kept a row pending, or a downgrade whose credit was never
+	// posted are all the same queue with three different next steps.
+	{
+		Name:       lifecycle.ServiceUpgradesJob,
+		Interval:   lifecycle.ServiceUpgradesInterval,
+		Summary:    "Finishes pending price changes: credits and applies downgrades, applies paid upgrades, and voids upgrade invoices nobody paid.",
+		KillSwitch: lifecycle.ServiceUpgradesKillSwitch,
+		Source:     "internal/lifecycle/lifecycle.go",
+	},
 	// The tax-rate refresh. Its interval is the worker's *tick*, not the refresh cadence: the
 	// source's own `refresh_interval_hours` (configured on the tax-rates screen) decides whether a
 	// tick fetches anything, so an installation that wants a daily refresh is not polled hourly.
@@ -196,7 +207,7 @@ func (s *Server) handleAutomationJobs(w http.ResponseWriter, r *http.Request) {
 	for _, job := range workerJobs {
 		interval := job.Interval
 		var disabled bool
-		if job.Source == "internal/lifecycle/lifecycle.go" {
+		if strings.HasPrefix(job.Source, "internal/lifecycle/") {
 			live, ok := registered[job.Name]
 			disabled = !ok
 			if ok && live.Interval > 0 {

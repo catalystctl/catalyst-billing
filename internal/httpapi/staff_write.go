@@ -11,6 +11,7 @@ import (
 	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/credit"
 	"github.com/catalyst/billing/internal/dunning"
 	"github.com/catalyst/billing/internal/events"
 	"github.com/catalyst/billing/internal/money"
@@ -706,6 +707,19 @@ func (s *Server) handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			number, status = issued.Number, "open"
+			// A manual invoice is still an invoice the customer can settle from credit, and
+			// `credits.auto_use` says they should not have to ask (CRD-03). Without this, the one
+			// issuance path an operator drives by hand was the one where a balance was ignored.
+			applied, err := credit.ApplyCreditToInvoice(ctx, tx, id)
+			if err != nil {
+				return err
+			}
+			// The response states the status the money left the invoice in, not the status it had
+			// a moment ago: telling the operator "open" for an invoice the balance just settled
+			// would send them to chase a payment that has already happened.
+			if applied.InvoicePaid {
+				status = "paid"
+			}
 			// Queue the notification in the same transaction: a crash between issuing and
 			// mailing must not lose the mail, and a retry must not send it twice.
 			if err := s.queueInvoiceNotification(ctx, tx, id, issued.Number,
@@ -792,9 +806,10 @@ func (s *Server) handleIssueInvoice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		number string
-		total  money.Amount
-		dueAt  time.Time
+		number    string
+		invoiceSS string
+		total     money.Amount
+		dueAt     time.Time
 	)
 	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
 		var status string
@@ -814,6 +829,17 @@ func (s *Server) handleIssueInvoice(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		number, total = issued.Number, issued.Totals.Total
+		// Issuing a draft by hand settles it from credit when the balance covers it, for the
+		// same reason a renewal does: the setting is about the customer not having to pay twice,
+		// not about which code path produced the document (CRD-03).
+		applied, err := credit.ApplyCreditToInvoice(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		invoiceSS = "open"
+		if applied.InvoicePaid {
+			invoiceSS = "paid"
+		}
 		var due time.Time
 		if err := tx.QueryRow(ctx, `SELECT due_at FROM invoices WHERE id = $1`, id).Scan(&due); err != nil {
 			return fmt.Errorf("staff: read invoice due date: %w", err)
@@ -845,7 +871,7 @@ func (s *Server) handleIssueInvoice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":     id,
 		"number": number,
-		"status": "open",
+		"status": invoiceSS,
 		"total":  amountJSON(total),
 		"due_at": dueAt.UTC(),
 	})

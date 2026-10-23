@@ -864,7 +864,7 @@ func TestTerminationWithNoThresholdActsOnNothing(t *testing.T) {
 
 // --------------------------------------------------------------------- jobs --
 
-// Jobs returns both rules with their names and intervals, which is what the worker needs.
+// Jobs returns every rule with its name and interval, which is what the worker needs.
 func TestJobsAreExposed(t *testing.T) {
 	f := newFixture(t)
 
@@ -875,7 +875,8 @@ func TestJobsAreExposed(t *testing.T) {
 		}
 		names[job.Name] = job.Interval
 	}
-	for _, want := range []string{lifecycle.OrderCancelJob, lifecycle.TerminationJob} {
+	for _, want := range []string{lifecycle.OrderCancelJob, lifecycle.TerminationJob,
+		lifecycle.ServiceUpgradesJob} {
 		if _, ok := names[want]; !ok {
 			t.Fatalf("job %s is missing from Jobs()", want)
 		}
@@ -885,14 +886,30 @@ func TestJobsAreExposed(t *testing.T) {
 	}
 }
 
-// A kill switch removes both jobs from the list, which is what the worker schedules from.
+// A kill switch removes the job it names from the list, which is what the worker schedules from.
+//
+// The assertion is per job rather than "the list is empty": the package also schedules the
+// price-change queue (UPG-05/UPG-06/CRD-06), which has its own switch, and a test that required an
+// empty list would either hide that job or force its switch to be set here — and a test that sets
+// every switch only proves the switches parse.
 func TestJobsRespectBothKillSwitches(t *testing.T) {
 	f := newFixture(t)
 	t.Setenv(lifecycle.OrderCancelKillSwitch, "true")
 	t.Setenv(lifecycle.TerminationKillSwitch, "yes")
 
-	if jobs := lifecycle.Jobs(f.pool, nil); len(jobs) != 0 {
-		t.Fatalf("jobs = %+v, want none with both switches set", jobs)
+	for _, job := range lifecycle.Jobs(f.pool, nil) {
+		if job.Name == lifecycle.OrderCancelJob || job.Name == lifecycle.TerminationJob {
+			t.Fatalf("job %s is scheduled although its kill switch is set", job.Name)
+		}
+	}
+
+	// And the price-change queue's own switch stops it, so an operator can stop the queue that
+	// voids invoices without stopping the rules that cancel orders.
+	t.Setenv(lifecycle.ServiceUpgradesKillSwitch, "true")
+	for _, job := range lifecycle.Jobs(f.pool, nil) {
+		if job.Name == lifecycle.ServiceUpgradesJob {
+			t.Fatal("the service-upgrades job is scheduled although its kill switch is set")
+		}
 	}
 }
 

@@ -40,7 +40,6 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/audit"
-	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/settings"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
@@ -127,15 +126,20 @@ type InboundMessage struct {
 	// message id.
 	InReplyTo  string
 	References []string
-	// Body is the plain-text body. HTML is reduced to text by the parser; attachments are
-	// refused and counted in AttachmentsDropped.
+	// Body is the plain-text body. HTML is reduced to text by the parser.
 	Body string
+	// Attachments are the files the message carried, already validated by the parser (and,
+	// for the webhook transport, by normaliseInbound) against the portal's own size cap and
+	// type allowlist. They are stored with the message they arrived on.
+	Attachments []AttachmentInput
 	// AutoSubmitted is the Auto-Submitted header value, verbatim.
 	AutoSubmitted string
 	// Headers holds the headers the loop check reads, keyed case-insensitively by the
 	// lookup helper.
 	Headers map[string]string
-	// AttachmentsDropped is how many parts were refused because they were attachments.
+	// AttachmentsDropped is how many parts were refused rather than stored: a type a browser
+	// could execute, an oversized file, an empty part. It is recorded on the mail log, because
+	// "the attachment did not arrive" is a support question with a row for an answer.
 	AttachmentsDropped int
 	// ReceivedAt is when the message was received; zero uses the store clock.
 	ReceivedAt time.Time
@@ -328,7 +332,8 @@ func (s *Store) ingestTx(ctx context.Context, tx pgx.Tx, msg InboundMessage, cfg
 	switch {
 	case attr.TicketID != "":
 		appended, duplicate, err := s.ReplyAsCustomerTx(ctx, tx, attr.CustomerID, attr.TicketID,
-			ReplyInput{Body: msg.Body, MessageID: msg.MessageID, Now: now})
+			ReplyInput{Body: msg.Body, MessageID: msg.MessageID, AuthorName: msg.FromName,
+				Attachments: msg.Attachments, Now: now})
 		switch {
 		case errors.Is(err, ErrNotFound):
 			// The ticket disappeared between attribution and the locked read. Refusing is the
@@ -351,9 +356,6 @@ func (s *Store) ingestTx(ctx context.Context, tx pgx.Tx, msg InboundMessage, cfg
 		if err := s.auditIngest(ctx, tx, msg, res, now); err != nil {
 			return IngestResult{}, err
 		}
-		if err := s.notifyAssignee(ctx, tx, msg, res); err != nil {
-			return IngestResult{}, err
-		}
 		logID, err := s.logInbound(ctx, tx, msg, inboundLog{
 			Status: "received", TicketID: res.TicketID, CustomerID: res.CustomerID,
 			AttributedBy: res.AttributedBy, Source: msg.Source, At: now,
@@ -373,7 +375,7 @@ func (s *Store) ingestTx(ctx context.Context, tx pgx.Tx, msg InboundMessage, cfg
 			Subject:     subjectOrFallback(msg.Subject),
 			Body:        msg.Body,
 			MessageID:   msg.MessageID,
-			Attachments: nil,
+			Attachments: msg.Attachments,
 			Now:         now,
 		})
 		switch {
@@ -775,7 +777,40 @@ func normaliseInbound(in InboundMessage, now time.Time) InboundMessage {
 	if in.AttachmentsDropped < 0 {
 		in.AttachmentsDropped = 0
 	}
+	in.Attachments = validatedAttachments(in.Attachments, &in.AttachmentsDropped)
 	return in
+}
+
+// validatedAttachments runs every inbound file through the portal upload's own checks and
+// counts the ones that fail.
+//
+// The MIME parser already did this for a message it parsed itself; doing it again here is not
+// redundant, because the webhook transport hands this package files the provider parsed, and
+// this is the one place both transports pass through. A file refused here is counted rather
+// than dropped silently, so the mail log can say why the reply has no screenshot on it.
+func validatedAttachments(files []AttachmentInput, refused *int) []AttachmentInput {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]AttachmentInput, 0, len(files))
+	seen := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		valid, err := ValidateAttachment(file)
+		if err != nil {
+			*refused++
+			continue
+		}
+		// One file sent twice in the same message is one attachment. insertAttachment dedupes
+		// on (message, digest) as well; collapsing by digest here keeps the two paths agreeing
+		// without hashing the same bytes twice per file.
+		key := DigestOf(valid.Bytes)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, valid)
+	}
+	return out
 }
 
 // normaliseAddress reduces a From value to a bare address.
@@ -903,6 +938,7 @@ func (s *Store) auditIngest(ctx context.Context, tx pgx.Tx, msg InboundMessage, 
 			"message_id":          msg.MessageID,
 			"from":                msg.From,
 			"attributed_by":       res.AttributedBy,
+			"attachments":         len(msg.Attachments),
 			"attachments_dropped": msg.AttachmentsDropped,
 			"source":              msg.Source,
 		},
@@ -940,46 +976,6 @@ func (s *Store) auditRefusal(ctx context.Context, tx pgx.Tx, msg InboundMessage,
 			"attributed_by": attr.AttributedBy,
 		},
 	})
-}
-
-// notifyAssignee tells the ticket's owner that a customer replied.
-//
-// The notification goes to the assignee, because the customer's reply is work for whoever
-// owns the ticket. An unassigned ticket notifies nobody: it is in the queue, which is where
-// an unowned ticket is supposed to be visible. The Message-ID is the dedupe key, so a
-// redelivered message cannot notify twice.
-func (s *Store) notifyAssignee(ctx context.Context, tx pgx.Tx, msg InboundMessage, res IngestResult) error {
-	var (
-		assigneeID, email, name, number, subject string
-	)
-	err := tx.QueryRow(ctx, `
-		SELECT COALESCE(t.assigned_to::text, ''), COALESCE(u.email, ''),
-		       COALESCE(NULLIF(u.display_name, ''), ''), COALESCE(t.number, ''), t.subject
-		FROM tickets t
-		LEFT JOIN users u ON u.id = t.assigned_to
-		WHERE t.id = $1`, res.TicketID).Scan(&assigneeID, &email, &name, &number, &subject)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("tickets: resolve assignee: %w", err)
-	}
-	if assigneeID == "" || email == "" {
-		return nil
-	}
-	if _, err := notify.TicketMessage(ctx, tx, notify.NewQueue(s.pool), notify.TicketMessageInput{
-		UserID:    assigneeID,
-		Email:     email,
-		TicketID:  res.TicketID,
-		Reference: number,
-		Subject:   subject,
-		Author:    msg.FromName,
-		Excerpt:   msg.Body,
-		MessageID: msg.MessageID,
-	}); err != nil {
-		return fmt.Errorf("tickets: notify assignee: %w", err)
-	}
-	return nil
 }
 
 // --------------------------------------------------------------- the mail log --

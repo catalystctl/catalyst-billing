@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/catalyst/billing/internal/paginate"
+	"github.com/catalyst/billing/internal/settings"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -225,4 +228,180 @@ func (s *Service) SessionByID(ctx context.Context, userID, sessionID string) (Se
 		return SessionInfo{}, fmt.Errorf("authn: load session: %w", err)
 	}
 	return info, nil
+}
+
+// ---------------------------------------------------------- session binding --
+//
+// Session binding (IDN-16): a session may be locked to the address and the user agent it
+// was signed in from, and a request from outside that lock is refused.
+//
+// Three decisions carry this feature, and each one is a trade rather than a truth:
+//
+//  1. **It is a policy, recorded per session, not a fixed rule.** The mode in force when a
+//     session is issued is written onto the row (`bound_mode`) and the request path enforces
+//     *that*. Reading the current setting on every request instead would re-judge sessions
+//     that are already open: an operator narrowing the policy at 10:00 would sign out every
+//     staff member who signed in from the office at 09:00, and neither of them could tell
+//     which change did it. A session therefore keeps the rule it was born under, and a
+//     policy change applies to the next sign-in. The cost is that tightening the setting is
+//     not immediate for existing sessions; the alternative cost is an unexplained mass
+//     sign-out, which is worse and is why the setting exists at all.
+//
+//  2. **A mismatch refuses the request, it does not end the session.** Signing the session
+//     out on a mismatch would turn "your mobile network changed address" into "enter your
+//     password again", which is the exact experience that makes an operator switch the
+//     control off. Refusing is reversible — the next request from the bound context works —
+//     and it is still enough to make a stolen cookie useless from the thief's network,
+//     because every request from there is refused for as long as the session lives. The
+//     operator keeps the other lever for the stolen-cookie case: revoking the session from
+//     the device list.
+//
+//  3. **Nothing is silently downgraded.** An unknown recorded mode, or a mode whose recorded
+//     value is missing, refuses rather than allows: a binding that cannot be checked must not
+//     behave like no binding. The one thing that *is* allowed is the empty mode, which is
+//     the explicit "this session was issued while binding was off" state.
+
+// The binding modes a session row can record, re-exported from the settings package so a
+// caller that already holds a session can name its mode without importing the settings table.
+const (
+	BindUserAgent      = settings.BindUserAgent
+	BindIPAndUserAgent = settings.BindIPAndUserAgent
+)
+
+// ErrSessionBinding is returned when a request is made from outside what the session was
+// bound to. Callers map it to a refusal with its own problem code, distinct from
+// "authentication required": the session is real, it is just not being used from where it
+// was signed in.
+var ErrSessionBinding = errors.New("authn: session used outside its binding")
+
+// BindingMismatch is the detail of a refused binding: which recorded value no longer
+// matches. It deliberately does not carry the recorded values themselves — the refusal is
+// shown to whoever holds the cookie, and a stolen cookie should not learn the owner's
+// address from it.
+type BindingMismatch struct {
+	// Field is "ip" or "user_agent".
+	Field string
+}
+
+func (m *BindingMismatch) Error() string {
+	return "authn: session binding mismatch on " + m.Field
+}
+
+// Unwrap makes errors.Is(err, ErrSessionBinding) work through the detail type.
+func (m *BindingMismatch) Unwrap() error { return ErrSessionBinding }
+
+// bindingForSession decides what a session for an account of this class is bound to.
+//
+// scope narrows the mode to staff or customer sessions, which is the shape the parity row
+// describes as "admin/client/both". A settings read failure means `off`: binding is a
+// hardening measure, and an installation whose settings table cannot be read has a larger
+// problem than an unbound session — failing closed would lock every user out of the panel
+// over a configuration read.
+func (s *Service) bindingForSession(ctx context.Context, isStaff bool) string {
+	if s == nil || s.pool == nil {
+		return ""
+	}
+	mode, scope := settings.SessionBinding(ctx, s.pool)
+	switch scope {
+	case settings.BindScopeStaff:
+		if !isStaff {
+			return ""
+		}
+	case settings.BindScopeCustomers:
+		if isStaff {
+			return ""
+		}
+	}
+	switch mode {
+	case settings.BindUserAgent, settings.BindIPAndUserAgent:
+		return mode
+	}
+	return ""
+}
+
+// bindingValues returns the values to record for a mode.
+//
+// Only what the mode actually checks is recorded. Storing an address under user-agent mode
+// would make the row look stricter than the rule applied to it, and the next person to read
+// the table — including whoever investigates an incident — would draw the wrong conclusion
+// about what was enforced.
+func bindingValues(binding, ip, userAgent string) (boundIP, boundUserAgent string) {
+	switch binding {
+	case settings.BindUserAgent:
+		return "", truncate(userAgent, 512)
+	case settings.BindIPAndUserAgent:
+		return normaliseIP(ip), truncate(userAgent, 512)
+	}
+	return "", ""
+}
+
+// EnforceSessionBinding refuses a request made from outside what the session was bound to.
+//
+// It is called on every authenticated request, so it does no I/O of its own beyond the audit
+// row written when a refusal happens: everything it needs is on the session row that
+// Authenticate already read.
+func (s *Service) EnforceSessionBinding(ctx context.Context, sess Session, ip, userAgent string) error {
+	if sess.BoundMode == "" {
+		// Issued while binding was off. There is nothing to compare, and pretending
+		// otherwise would sign out every session that predates the setting.
+		return nil
+	}
+	switch sess.BoundMode {
+	case settings.BindUserAgent:
+		if truncate(userAgent, 512) == sess.BoundUserAgent {
+			return nil
+		}
+		return s.refuseBinding(ctx, sess, "user_agent")
+	case settings.BindIPAndUserAgent:
+		if normaliseIP(ip) != sess.BoundIP {
+			return s.refuseBinding(ctx, sess, "ip")
+		}
+		if truncate(userAgent, 512) != sess.BoundUserAgent {
+			return s.refuseBinding(ctx, sess, "user_agent")
+		}
+		return nil
+	}
+	// A mode this code does not understand. Fail closed: a binding that cannot be checked
+	// must not behave like no binding.
+	return s.refuseBinding(ctx, sess, "unknown")
+}
+
+// refuseBinding records the refusal and returns it.
+//
+// The audit row is best-effort and deliberately not rate limited here: a refusal means
+// somebody is using a session from somewhere it was not issued, which is exactly the event
+// an investigation needs in order, and an attacker who can generate refusals already holds a
+// valid session cookie.
+func (s *Service) refuseBinding(ctx context.Context, sess Session, field string) error {
+	s.audit(ctx, sess.UserID, "session_binding_refused",
+		"session "+sess.ID+" does not match its bound "+field, "")
+	return &BindingMismatch{Field: field}
+}
+
+// BindingDescription renders what a session is bound to, for the device list and for the
+// refusal detail. It says the mode in words an operator reads, never the recorded values.
+func BindingDescription(mode string) string {
+	switch mode {
+	case settings.BindUserAgent:
+		return "this session is bound to the browser it was signed in from"
+	case settings.BindIPAndUserAgent:
+		return "this session is bound to the address and browser it was signed in from"
+	}
+	return ""
+}
+
+// normaliseIP renders an address in one canonical form so the comparison is textual and
+// exact.
+//
+// Exact, not subnet-based: a /24 or /64 rule would be friendlier on a mobile network and
+// would also let anyone in the same carrier range reuse a stolen cookie, which is most of the
+// threat this control exists for. An installation that finds exact matching too strict
+// switches the mode off or scopes it to staff; that is the knob, and it is declared in
+// internal/settings/group_session.go.
+func normaliseIP(ip string) string {
+	parsed := net.ParseIP(strings.TrimSpace(ip))
+	if parsed == nil {
+		return ""
+	}
+	return parsed.String()
 }

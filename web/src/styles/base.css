@@ -321,6 +321,18 @@ hr {
   flex-wrap: wrap;
 }
 
+/* A row whose two ends are pushed apart: a label on the left and its reading on the right.
+ *
+ * Space-between rather than a spacer element, because the space must collapse to zero when the
+ * row is narrow enough for the two ends to meet — a margin or filler would overflow instead. */
+.row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
 .spacer {
   flex: 1 1 auto;
 }

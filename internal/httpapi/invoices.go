@@ -863,6 +863,11 @@ func (s *Server) issueMailsCustomer(ctx context.Context, tx pgx.Tx, requested *b
 // A suppression row rather than silence, using the same dedupe key as the send would: "we did
 // not send it because the toggle was off" is an answer a support agent can give, and if the
 // mail had already gone out the row is a no-op rather than a contradiction.
+//
+// The row carries the EVENT KEY as its kind, not the retired `invoice_issued` kind of the
+// hardcoded message: issuing an invoice goes through the editable template now, so a suppressed
+// row spelled differently from a sent one would be invisible to every query that asks "what
+// happened to the invoice mail" — which is the exact question the row exists to answer.
 func (s *Server) suppressInvoiceNotification(ctx context.Context, tx pgx.Tx, invoiceID, number string) error {
 	if s.notify == nil {
 		return nil
@@ -873,6 +878,9 @@ func (s *Server) suppressInvoiceNotification(ctx context.Context, tx pgx.Tx, inv
 		WHERE i.id = $1`, invoiceID).Scan(&email); err != nil {
 		return fmt.Errorf("staff: read invoice customer: %w", err)
 	}
-	return s.notify.Suppress(ctx, tx,
-		notify.InvoiceIssuedMessage(email, number, "", "", invoiceID), "send_email was off")
+	// The dedupe key is built from the event key and the invoice id — the same shape
+	// notify.InvoiceIssued derives — so a suppression after a successful send is a no-op and the
+	// two rows can never both exist.
+	return s.notify.SuppressKind(ctx, tx, notify.EventNewInvoiceCreated, email,
+		"Invoice "+number, notify.EventNewInvoiceCreated+":"+invoiceID, "send_email was off")
 }

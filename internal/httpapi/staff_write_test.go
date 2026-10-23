@@ -12,6 +12,7 @@ import (
 
 	"github.com/catalyst/billing/internal/ledger"
 	"github.com/catalyst/billing/internal/money"
+	"github.com/catalyst/billing/internal/notify"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -466,14 +467,18 @@ func TestCreateAndIssueInvoice(t *testing.T) {
 
 	// The notification was queued in the same transaction, or suppressed because the customer
 	// has no verified address. Either way there is a delivery record, which is the point.
+	//
+	// Filtered on the event key rather than the literal 'invoice_issued': issuing an invoice
+	// renders the editable `new_invoice_created` template now, so the literal was asserting a
+	// kind nothing writes any more. Still exactly one row, and still the right one.
 	var deliveries int
 	if err := env.pool.QueryRow(context.Background(), `
-		SELECT count(*) FROM notification_deliveries WHERE kind = 'invoice_issued'`).
-		Scan(&deliveries); err != nil {
+		SELECT count(*) FROM notification_deliveries WHERE kind = $1`,
+		notify.EventNewInvoiceCreated).Scan(&deliveries); err != nil {
 		t.Fatal(err)
 	}
 	if deliveries != 1 {
-		t.Fatalf("invoice_issued deliveries = %d, want 1", deliveries)
+		t.Fatalf("%s deliveries = %d, want 1", notify.EventNewInvoiceCreated, deliveries)
 	}
 }
 

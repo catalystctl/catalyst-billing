@@ -39,6 +39,18 @@ type Session struct {
 	// and only the latter may be attributed to an operator. Every audit row written during the
 	// session names both, which is what makes "who did this" answerable after the fact.
 	ImpersonatedBy string
+	// BoundMode is the binding policy in force when this session was issued (IDN-16): empty
+	// means unbound, otherwise one of authn.BindUserAgent or authn.BindIPAndUserAgent.
+	//
+	// It is recorded per row rather than re-read from the settings table on every request.
+	// See internal/authn/sessions.go for why that is the only shape that does not sign an
+	// installation out when somebody edits a setting.
+	BoundMode string
+	// BoundIP and BoundUserAgent are the values recorded at sign-in, as they were then.
+	// They are deliberately not the same fields as the device list's ip/user_agent, which
+	// follow the session: a binding that followed the session would enforce nothing.
+	BoundIP        string
+	BoundUserAgent string
 }
 
 // User is the authenticated identity.
@@ -307,7 +319,8 @@ func (s *Service) Login(ctx context.Context, req LoginRequest) (LoginResult, err
 		return LoginResult{}, err
 	}
 
-	token, sess, err := s.createSession(ctx, userID, credVer, req.IP, req.UserAgent)
+	token, sess, err := s.createSession(ctx, userID, credVer, req.IP, req.UserAgent,
+		s.bindingForSession(ctx, len(roles) > 0))
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -354,7 +367,12 @@ func (s *Service) acquireHashSlot(ctx context.Context) (func(), error) {
 }
 
 // createSession issues a new session and returns its token.
-func (s *Service) createSession(ctx context.Context, userID string, credVersion int, ip, userAgent string) (string, Session, error) {
+//
+// binding is what the new session is locked to (IDN-16). It is decided here rather than at
+// the request boundary because it is recorded on the row: the value has to be the one in
+// force at this instant, written in the same insert as the token.
+func (s *Service) createSession(ctx context.Context, userID string, credVersion int,
+	ip, userAgent, binding string) (string, Session, error) {
 	token, err := newToken(32)
 	if err != nil {
 		return "", Session{}, err
@@ -375,24 +393,35 @@ func (s *Service) createSession(ctx context.Context, userID string, credVersion 
 		createdAt time.Time
 		expiresAt time.Time
 	)
+	// Only the parts the mode actually checks are recorded. Writing the address under
+	// user_agent mode would leave a row that looks stricter than the rule applied to it,
+	// and the next reader of the table would draw the wrong conclusion.
+	boundIP, boundAgent := bindingValues(binding, ip, userAgent)
+
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO sessions (user_id, token_hash, csrf_secret, credential_version,
-			created_at, last_seen_at, expires_at, user_agent, ip)
-		VALUES ($1, $2, $3, $4, $5, $5, $6, $7, NULLIF($8, '')::inet)
+			created_at, last_seen_at, expires_at, user_agent, ip,
+			bound_mode, bound_ip, bound_user_agent)
+		VALUES ($1, $2, $3, $4, $5, $5, $6, $7, NULLIF($8, '')::inet,
+			$9, NULLIF($10, '')::inet, $11)
 		RETURNING id, created_at, expires_at`,
 		userID, HashToken(token), []byte(csrfToken), credVersion,
-		now, expires, truncate(userAgent, 512), ip).
+		now, expires, truncate(userAgent, 512), ip,
+		binding, boundIP, boundAgent).
 		Scan(&id, &createdAt, &expiresAt)
 	if err != nil {
 		return "", Session{}, fmt.Errorf("authn: create session: %w", err)
 	}
 
 	return token, Session{
-		ID:        id,
-		UserID:    userID,
-		CreatedAt: createdAt,
-		ExpiresAt: expiresAt,
-		CSRFToken: csrfToken,
+		ID:             id,
+		UserID:         userID,
+		CreatedAt:      createdAt,
+		BoundMode:      binding,
+		BoundIP:        boundIP,
+		BoundUserAgent: boundAgent,
+		ExpiresAt:      expiresAt,
+		CSRFToken:      csrfToken,
 	}, nil
 }
 
@@ -419,12 +448,14 @@ func (s *Service) Authenticate(ctx context.Context, token string) (Session, User
 	err := s.pool.QueryRow(ctx, `
 		SELECT s.id, s.user_id, s.created_at, s.expires_at, s.credential_version,
 		       s.revoked_at, s.csrf_secret, COALESCE(s.impersonated_by::text, ''),
+		       s.bound_mode, COALESCE(host(s.bound_ip), ''), s.bound_user_agent,
 		       u.email, u.display_name, u.status, u.credential_version, u.email_verified_at
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1`, HashToken(token)).
 		Scan(&sess.ID, &sess.UserID, &sess.CreatedAt, &sess.ExpiresAt, &credVer,
 			&revokedAt, &csrfSecret, &sess.ImpersonatedBy,
+			&sess.BoundMode, &sess.BoundIP, &sess.BoundUserAgent,
 			&user.Email, &user.DisplayName, &user.Status, &user.CredentialVersion, &verified)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, User{}, ErrNoSession
@@ -508,7 +539,8 @@ func (s *Service) LoginWithID(ctx context.Context, userID, ip, userAgent string)
 		return LoginResult{}, fmt.Errorf("authn: read credential version: %w", err)
 	}
 
-	token, sess, err := s.createSession(ctx, userID, credVersion, ip, userAgent)
+	token, sess, err := s.createSession(ctx, userID, credVersion, ip, userAgent,
+		s.bindingForSession(ctx, user.IsStaff()))
 	if err != nil {
 		return LoginResult{}, err
 	}

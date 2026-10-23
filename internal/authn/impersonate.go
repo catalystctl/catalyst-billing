@@ -128,6 +128,13 @@ func (s *Service) createImpersonatedSession(ctx context.Context, userID, operato
 		expires = absolute
 	}
 
+	// An impersonated session is bound by the class of the account it acts as, which is
+	// always a customer: staff accounts cannot be impersonated. A staff-only binding is
+	// therefore not bypassed here — the operator's own session, which is what authorised
+	// the impersonation, carries that binding and had to pass it to get this far.
+	binding := s.bindingForSession(ctx, false)
+	boundIP, boundAgent := bindingValues(binding, ip, userAgent)
+
 	var (
 		id        string
 		createdAt time.Time
@@ -136,22 +143,28 @@ func (s *Service) createImpersonatedSession(ctx context.Context, userID, operato
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO sessions (user_id, token_hash, csrf_secret, credential_version,
 			created_at, last_seen_at, expires_at, user_agent, ip,
-			impersonated_by, impersonated_from_session)
-		VALUES ($1, $2, $3, $4, $5, $5, $6, $7, NULLIF($8, '')::inet, $9, NULLIF($10, '')::uuid)
+			impersonated_by, impersonated_from_session,
+			bound_mode, bound_ip, bound_user_agent)
+		VALUES ($1, $2, $3, $4, $5, $5, $6, $7, NULLIF($8, '')::inet, $9, NULLIF($10, '')::uuid,
+			$11, NULLIF($12, '')::inet, $13)
 		RETURNING id, created_at, expires_at`,
 		userID, HashToken(token), []byte(csrfToken), credVersion,
-		now, expires, truncate(userAgent, 512), ip, operatorID, operatorSessionID).
+		now, expires, truncate(userAgent, 512), ip, operatorID, operatorSessionID,
+		binding, boundIP, boundAgent).
 		Scan(&id, &createdAt, &expiresAt)
 	if err != nil {
 		return "", Session{}, fmt.Errorf("authn: create impersonated session: %w", err)
 	}
 
 	return token, Session{
-		ID:        id,
-		UserID:    userID,
-		CreatedAt: createdAt,
-		ExpiresAt: expiresAt,
-		CSRFToken: csrfToken,
+		ID:             id,
+		UserID:         userID,
+		CreatedAt:      createdAt,
+		BoundMode:      binding,
+		BoundIP:        boundIP,
+		BoundUserAgent: boundAgent,
+		ExpiresAt:      expiresAt,
+		CSRFToken:      csrfToken,
 	}, nil
 }
 

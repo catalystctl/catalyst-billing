@@ -20,10 +20,12 @@
 //     the Message-ID instead of a message that was marked read and never imported.
 //  5. Mark the message seen.
 //
-// Attachments are refused, not stored: an inbound file is untrusted input from an
-// unauthenticated sender and would bypass the portal's size check, its content-type
-// normalisation and its CSP-protected download route. The reply text is kept and the number
-// of dropped parts is recorded.
+// Attachments are imported (TKT-11): a screenshot pasted into a reply is most of a support
+// ticket, and refusing it means the agent has to ask for it in a second message. The file is
+// run through exactly the same checks the portal upload applies — the size cap, the
+// content-type allowlist, the base-name normalisation, the digest — so the pipe is not a way
+// around them. A part that fails a check is refused and counted, never stored, and the count
+// reaches the mail log so "my attachment did not arrive" is answerable.
 //
 // Known gaps, stated rather than hidden: STARTTLS (port 143) is not implemented, so the
 // poller requires implicit TLS; only the INBOX is polled; and a body that is neither UTF-8
@@ -693,9 +695,10 @@ func ParseInbound(raw []byte) (InboundMessage, error) {
 		// at the moment the poller happened to run.
 		msg.ReceivedAt = when.UTC()
 	}
-	text, _, dropped := extractBody(hdr, body, 0)
+	text, _, attachments, refused := extractParts(hdr, body, 0)
 	msg.Body = text
-	msg.AttachmentsDropped = dropped
+	msg.Attachments = attachments
+	msg.AttachmentsDropped = refused
 	return msg, nil
 }
 
@@ -781,15 +784,16 @@ func splitAddressList(value string) []string {
 	return out
 }
 
-// extractBody pulls the reply text out of a message, refusing attachments.
+// extractParts pulls the reply text and the attached files out of a message.
 //
-// The return is (text, isHTML, droppedParts). A multipart message contributes its first
-// text/plain part, falling back to its first text/html part reduced to text; every part that
-// is an attachment or is not text counts as dropped, so the agent can see that a file was
-// sent and ask for it through the portal.
-func extractBody(hdr textproto.MIMEHeader, body []byte, depth int) (string, bool, int) {
+// The return is (text, isHTML, attachments, refused). A multipart message contributes its
+// first text/plain part, falling back to its first text/html part reduced to text; any other
+// part is a file. A file that passes ValidateAttachment is returned for storage; one that
+// fails it — a type a browser could execute, an oversized body, an empty file — is counted as
+// refused so the agent can see that something was sent and ask for it another way.
+func extractParts(hdr textproto.MIMEHeader, body []byte, depth int) (string, bool, []AttachmentInput, int) {
 	if depth > maxMIMEDepth {
-		return "", false, 1
+		return "", false, nil, 1
 	}
 	mediaType, params, err := mime.ParseMediaType(hdr.Get("Content-Type"))
 	if err != nil || mediaType == "" {
@@ -798,16 +802,18 @@ func extractBody(hdr textproto.MIMEHeader, body []byte, depth int) (string, bool
 	if strings.HasPrefix(mediaType, "multipart/") {
 		boundary := params["boundary"]
 		if boundary == "" {
-			return decodeTransfer(hdr, body), false, 0
+			return decodeTransfer(hdr, body), false, nil, 0
 		}
 		var (
 			plain, rich string
-			dropped     int
+			files       []AttachmentInput
+			refused     int
 		)
 		for _, part := range splitMultipart(body, boundary) {
 			partHeader, partBody := splitHeaderBody(part)
-			text, isHTML, lost := extractBody(partHeader, partBody, depth+1)
-			dropped += lost
+			text, isHTML, partFiles, lost := extractParts(partHeader, partBody, depth+1)
+			files = append(files, partFiles...)
+			refused += lost
 			if text == "" {
 				continue
 			}
@@ -822,26 +828,74 @@ func extractBody(hdr textproto.MIMEHeader, body []byte, depth int) (string, bool
 			}
 		}
 		if plain != "" {
-			return plain, false, dropped
+			return plain, false, files, refused
 		}
-		return rich, true, dropped
+		return rich, true, files, refused
 	}
 
-	disposition := strings.ToLower(strings.TrimSpace(hdr.Get("Content-Disposition")))
-	if strings.HasPrefix(disposition, "attachment") {
-		return "", false, 1
+	// A part is a file when the sender labelled it as one, named it, or sent something that is
+	// not text. A `text/plain` part with no filename stays body text: that is the reply.
+	disposition, dispParams, _ := mime.ParseMediaType(hdr.Get("Content-Disposition"))
+	filename := dispParams["filename"]
+	if filename == "" {
+		filename = params["name"]
 	}
+	isFile := filename != "" || disposition == "attachment" || !strings.HasPrefix(mediaType, "text/")
+	if isFile {
+		file, ok := inboundAttachment(filename, mediaType, hdr, body)
+		if !ok {
+			return "", false, nil, 1
+		}
+		return "", false, []AttachmentInput{file}, 0
+	}
+
 	switch {
 	case mediaType == "text/plain":
-		return decodeTransfer(hdr, body), false, 0
+		return decodeTransfer(hdr, body), false, nil, 0
 	case mediaType == "text/html":
-		return htmlToText(decodeTransfer(hdr, body)), true, 0
+		return htmlToText(decodeTransfer(hdr, body)), true, nil, 0
 	case strings.HasPrefix(mediaType, "text/"):
-		return decodeTransfer(hdr, body), false, 0
+		return decodeTransfer(hdr, body), false, nil, 0
 	default:
-		// An image, a calendar invitation, a zip: refused, and counted.
-		return "", false, 1
+		return "", false, nil, 1
 	}
+}
+
+// inboundAttachment turns one MIME part into an upload candidate and runs it through the same
+// validation the portal upload uses.
+//
+// The second return is false when the part must be refused rather than stored. The checks are
+// not re-implemented here: ValidateAttachment owns the size cap, the allowlist and the
+// filename normalisation, and this path going around it is exactly the hole that would make
+// email a way to put an executable in a support thread.
+func inboundAttachment(filename, mediaType string, hdr textproto.MIMEHeader, body []byte) (AttachmentInput, bool) {
+	bytes := decodeTransferBytes(hdr, body)
+	file := AttachmentInput{
+		Filename:    filename,
+		ContentType: mediaType,
+		Bytes:       bytes,
+	}
+	if strings.TrimSpace(file.Filename) == "" {
+		file.Filename = unnamedAttachment(mediaType)
+	}
+	validated, err := ValidateAttachment(file)
+	if err != nil {
+		return AttachmentInput{}, false
+	}
+	return validated, true
+}
+
+// unnamedAttachment names a file the sender did not name.
+//
+// An attachment with no filename cannot be offered as a download with a sensible label, and
+// ValidateAttachment refuses the empty name outright, so a name is derived from the type. It
+// is generic on purpose: the name is the sender's claim about the file, and inventing a
+// specific one ("invoice.pdf") would be a claim the panel cannot support.
+func unnamedAttachment(mediaType string) string {
+	if exts, err := mime.ExtensionsByType(mediaType); err == nil && len(exts) > 0 {
+		return "attachment" + exts[0]
+	}
+	return "attachment.bin"
 }
 
 // splitMultipart cuts a multipart body into its parts on the boundary.
@@ -873,6 +927,29 @@ func splitMultipart(body []byte, boundary string) [][]byte {
 		rest = rest[next:]
 	}
 	return parts
+}
+
+// decodeTransferBytes is decodeTransfer without the string round-trip, for a part whose bytes
+// are stored rather than rendered.
+func decodeTransferBytes(hdr textproto.MIMEHeader, body []byte) []byte {
+	switch strings.ToLower(strings.TrimSpace(hdr.Get("Content-Transfer-Encoding"))) {
+	case "base64":
+		clean := bytes.Map(func(r rune) rune {
+			switch r {
+			case '\r', '\n', ' ', '\t':
+				return -1
+			}
+			return r
+		}, body)
+		if decoded, err := base64.StdEncoding.DecodeString(string(clean)); err == nil {
+			return decoded
+		}
+	case "quoted-printable":
+		if decoded, err := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(body))); err == nil {
+			return decoded
+		}
+	}
+	return body
 }
 
 // decodeTransfer undoes the part's content transfer encoding.

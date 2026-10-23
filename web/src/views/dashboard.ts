@@ -780,9 +780,16 @@ function trendBadge(trend: Trend): HTMLElement | null {
   const label = trend.percent === null
     ? `${up ? "+" : ""}${trend.delta}`
     : `${up ? "+" : ""}${Math.round(trend.percent)}%`;
+  // `.stat-hint` and its is-up/is-down modifiers are the panel's existing vocabulary for a
+  // change against a baseline, so this reuses them rather than introducing a second name for
+  // the same thing. The colour is the health reading, which is why it is applied here and not
+  // on the revenue chart's label.
   return h(
     "span",
-    { class: "stat-trend", title: `Previous period: ${trend.previous.toLocaleString("en-US")}` },
+    {
+      class: `stat-hint ${up ? "is-up" : "is-down"}`,
+      title: `Previous period: ${trend.previous.toLocaleString("en-US")}`,
+    },
     icon(up ? "chevronUp" : "chevronDown", 11),
     label,
   );
@@ -819,18 +826,16 @@ function revenueChartCard(widgets: DashboardWidgets): HTMLElement | null {
             h("span", { class: "field-hint" }, line.currency),
             h(
               "span",
-              { class: "row gap-xs" },
+              { class: "row" },
               trend ? trendBadge(trend) : null,
               h("span", { class: "field-hint faint" }, `previous ${money(before)}`),
             ),
           ),
           // The sparkline is scaled to its own min and max, so an all-zero series draws nothing
           // rather than a flat line at the bottom, which would read as "revenue collapsed".
-          h(
-            "div",
-            { class: "spark-wrap" },
-            sparkline(line.points.map((point) => point.minor), { width: 320, height: 44 }),
-          ),
+          // No wrapper: sparkline() already puts `.stat-spark` on the SVG itself, and a second
+          // element around it only gave the chart two places to be sized from.
+          sparkline(line.points.map((point) => point.minor), { width: 320, height: 44 }),
         );
       }),
       h(

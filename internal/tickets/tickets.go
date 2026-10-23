@@ -340,8 +340,12 @@ type CreateInput struct {
 // ReplyInput is a message appended to an existing ticket.
 type ReplyInput struct {
 	// UserID is the login that wrote the reply. It is empty for an imported message.
-	UserID      string
-	Body        string
+	UserID string
+	Body   string
+	// AuthorName is the display name shown in the notification's sentence. A piped reply
+	// carries the sender's display name; a reply typed in the panel leaves it empty and the
+	// author is resolved from UserID.
+	AuthorName  string
 	MessageID   string
 	Attachments []AttachmentInput
 	// Now is the reply instant; zero uses the store clock.
@@ -696,6 +700,12 @@ func (s *Store) ReplyAsCustomerTx(ctx context.Context, tx pgx.Tx, customerID, ti
 	if err := touchTicket(ctx, tx, ticketID, "open", now); err != nil {
 		return Message{}, false, err
 	}
+	// TKT-13: the reply and the notification that announces it commit together. A customer's
+	// answer is work for whoever owns the ticket, and an unassigned ticket notifies nobody —
+	// it is in the queue, which is where an unowned ticket belongs.
+	if err := s.NotifyCustomerReply(ctx, tx, ticketID, msg, in.AuthorName); err != nil {
+		return Message{}, false, err
+	}
 	return msg, false, nil
 }
 
@@ -749,6 +759,12 @@ func (s *Store) ReplyAsStaffTx(ctx context.Context, tx pgx.Tx, authorUserID, tic
 		}
 	}
 	if err := touchTicket(ctx, tx, ticketID, "replied", now); err != nil {
+		return Message{}, false, err
+	}
+	// TKT-13: a staff answer tells the customer, by mail and in their portal inbox. This used
+	// to notify nobody, so a thread answered from the panel went silent from the customer's
+	// side.
+	if err := s.NotifyStaffReply(ctx, tx, ticketID, msg, in.AuthorName); err != nil {
 		return Message{}, false, err
 	}
 	return msg, false, nil

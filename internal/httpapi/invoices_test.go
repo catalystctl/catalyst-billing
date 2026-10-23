@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/catalyst/billing/internal/notify"
 )
 
 // The invoice parity surface as an operator meets it: the configured number format, the
@@ -125,11 +127,18 @@ func TestIssueWithSendEmailOffDoesNotQueueMail(t *testing.T) {
 		t.Fatalf("issue: %d %s", rec.Code, rec.Body)
 	}
 
+	// The delivery kind is the EVENT KEY, not a second name for it.
+	//
+	// These assertions used to filter on 'invoice_issued', which was the kind the hardcoded
+	// message wrote. When issuing an invoice moved onto the editable template the kind became the
+	// event key `new_invoice_created`, and both tests failed while the behaviour was correct —
+	// a stale fixture, not a defect. Filtering on the constant means the next rename is a compile
+	// error rather than a mysterious zero.
 	var queued, suppressed int
 	if err := env.pool.QueryRow(context.Background(), `
 		SELECT COUNT(*) FILTER (WHERE status = 'queued'),
 		       COUNT(*) FILTER (WHERE status = 'suppressed')
-		FROM notification_deliveries WHERE kind = 'invoice_issued'`).
+		FROM notification_deliveries WHERE kind = $1`, notify.EventNewInvoiceCreated).
 		Scan(&queued, &suppressed); err != nil {
 		t.Fatalf("count deliveries: %v", err)
 	}
@@ -149,7 +158,7 @@ func TestIssueWithSendEmailOffDoesNotQueueMail(t *testing.T) {
 	}
 	if err := env.pool.QueryRow(context.Background(), `
 		SELECT COUNT(*) FROM notification_deliveries
-		WHERE kind = 'invoice_issued' AND status = 'queued'`).Scan(&queued); err != nil {
+		WHERE kind = $1 AND status = 'queued'`, notify.EventNewInvoiceCreated).Scan(&queued); err != nil {
 		t.Fatalf("count queued: %v", err)
 	}
 	if queued != 1 {

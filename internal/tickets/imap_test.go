@@ -207,7 +207,7 @@ func (s *fakeIMAP) handle(conn net.Conn) {
 }
 
 // TestParseInboundMultipart checks the parser the poller relies on: headers, threading,
-// quoted-printable text, and an attachment that is counted and refused rather than stored.
+// quoted-printable text, and an attachment that is imported rather than counted and refused.
 func TestParseInboundMultipart(t *testing.T) {
 	raw := strings.Join([]string{
 		`From: "Alice" <alice@example.test>`,
@@ -247,8 +247,18 @@ func TestParseInboundMultipart(t *testing.T) {
 	if !strings.Contains(msg.Body, "now it is worse\nand the printer is on fire") {
 		t.Fatalf("body = %q, want the quoted-printable text decoded", msg.Body)
 	}
-	if msg.AttachmentsDropped != 1 {
-		t.Fatalf("attachments dropped = %d, want 1", msg.AttachmentsDropped)
+	if len(msg.Attachments) != 1 {
+		t.Fatalf("attachments = %d, want the PDF imported", len(msg.Attachments))
+	}
+	file := msg.Attachments[0]
+	if file.Filename != "invoice.pdf" || file.ContentType != "application/pdf" {
+		t.Fatalf("attachment = %q / %q, want invoice.pdf as application/pdf", file.Filename, file.ContentType)
+	}
+	if string(file.Bytes) != "%PDF-1.4\n" {
+		t.Fatalf("attachment bytes = %q, want the base64 part decoded", file.Bytes)
+	}
+	if msg.AttachmentsDropped != 0 {
+		t.Fatalf("attachments dropped = %d, want 0: a PDF is on the allowlist", msg.AttachmentsDropped)
 	}
 	if len(msg.References) != 2 || msg.InReplyTo != "<staff-1@panel.test>" {
 		t.Fatalf("threading = %q / %v", msg.InReplyTo, msg.References)

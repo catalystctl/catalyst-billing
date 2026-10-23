@@ -131,6 +131,32 @@ func (q *Queue) Enqueue(ctx context.Context, tx pgx.Tx, m Message) (id string, c
 	return id, true, nil
 }
 
+// SuppressKind records a deliberate non-send against an event key.
+//
+// It exists because the templated path names its deliveries by EVENT KEY. Building a Message to
+// suppress from the hardcoded constructor would write the retired `invoice_issued` kind while the
+// send writes `new_invoice_created`, and the two rows would be invisible to each other: a support
+// agent asking "did we mail them?" would see nothing at all for the suppressed case.
+//
+// The dedupe key matches the one a real send writes for the same event and record, so the row is
+// still a no-op if the mail already went out.
+func (q *Queue) SuppressKind(ctx context.Context, tx pgx.Tx, kind, to, subject, dedupeKey, reason string) error {
+	var key any
+	if dedupeKey != "" {
+		key = dedupeKey
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO notification_deliveries
+			(kind, to_address, subject, body, body_html, status, dedupe_key, last_error)
+		VALUES ($1, $2, $3, '', '', 'suppressed', $4, $5)
+		ON CONFLICT (dedupe_key) DO NOTHING`,
+		kind, to, subject, key, reason)
+	if err != nil {
+		return fmt.Errorf("notify: record suppression: %w", err)
+	}
+	return nil
+}
+
 // Suppress records that a message was deliberately not sent.
 //
 // "We did not send it" and "we failed to send it" are different answers to a support

@@ -5455,8 +5455,11 @@ paths:
             x-rate-class: read
     /api/v1/portal/payment-methods/agreements:
         post:
+            description: Records the mandate that lets the installation charge this customer off-session. Off-session charging is the one path that moves money with nobody present, so it is opt-in per customer, revocable, and the record of the acceptance is kept rather than overwritten. Requires an `Idempotency-Key`.
             operationId: PostPortalPaymentmethodsAgreements
             responses:
+                2XX:
+                    description: The agreement is active.
                 "400":
                     content:
                         application/json:
@@ -5481,6 +5484,8 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Problem'
                     description: No such record
+                "409":
+                    description: An active agreement for this provider already exists.
                 "429":
                     content:
                         application/json:
@@ -5496,7 +5501,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: Accept a billing agreement
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -5505,6 +5510,7 @@ paths:
             x-rate-class: mutation
     /api/v1/portal/payment-methods/agreements/{id}:
         delete:
+            description: 'Stops future off-session charges and detaches the provider-side mandate. Invoices already issued are untouched: revocation is forward-looking, and retroactively unwinding a charge the customer agreed to at the time is a refund, which is a separate decision with its own record.'
             operationId: DeletePortalPaymentmethodsAgreementsById
             parameters:
                 - in: path
@@ -5513,6 +5519,8 @@ paths:
                   schema:
                     type: string
             responses:
+                2XX:
+                    description: Revoked.
                 "400":
                     content:
                         application/json:
@@ -5532,11 +5540,7 @@ paths:
                                 $ref: '#/components/schemas/Problem'
                     description: The caller lacks the permission, or the CSRF token is missing
                 "404":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Problem'
-                    description: No such record
+                    description: No such agreement for this caller.
                 "429":
                     content:
                         application/json:
@@ -5552,7 +5556,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: Revoke a billing agreement
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -5560,6 +5564,7 @@ paths:
             x-permission: paymentmethod:write:self
             x-rate-class: mutation
         get:
+            description: 'The mandate record: what the customer authorised, for which provider, and whether it is still active. Scoped to the caller.'
             operationId: GetPortalPaymentmethodsAgreementsById
             parameters:
                 - in: path
@@ -5568,6 +5573,8 @@ paths:
                   schema:
                     type: string
             responses:
+                2XX:
+                    description: The agreement.
                 "400":
                     content:
                         application/json:
@@ -5587,11 +5594,7 @@ paths:
                                 $ref: '#/components/schemas/Problem'
                     description: The caller lacks the permission, or the CSRF token is missing
                 "404":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Problem'
-                    description: No such record
+                    description: No such agreement for this caller.
                 "429":
                     content:
                         application/json:
@@ -5607,13 +5610,16 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: One billing agreement
             x-permission: paymentmethod:read:self
             x-rate-class: read
     /api/v1/portal/payment-methods/saved:
         get:
+            description: 'Only the caller''s own instruments. The list is scoped in SQL rather than filtered after the read: an id belonging to another customer is a 404, not an empty list, so the endpoint cannot be used to probe for the existence of somebody else''s card.'
             operationId: GetPortalPaymentmethodsSaved
             responses:
+                2XX:
+                    description: The caller's instruments, default first.
                 "400":
                     content:
                         application/json:
@@ -5653,12 +5659,15 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: The customer's saved payment methods
             x-permission: paymentmethod:read:self
             x-rate-class: read
         post:
+            description: 'The request carries a provider token, never a card number: the panel is not in the card-data path, so there is nothing here to be compliant with. The token is stored write-only — no read path returns it, redacted or otherwise. Requires an `Idempotency-Key`; a replay returns the original instrument instead of saving a second copy.'
             operationId: PostPortalPaymentmethodsSaved
             responses:
+                2XX:
+                    description: Saved. The response returns the public shape, not the token.
                 "400":
                     content:
                         application/json:
@@ -5683,6 +5692,8 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Problem'
                     description: No such record
+                "409":
+                    description: The provider refused the token, or it is already attached to another customer.
                 "429":
                     content:
                         application/json:
@@ -5698,7 +5709,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: Save a payment method
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -5707,6 +5718,7 @@ paths:
             x-rate-class: mutation
     /api/v1/portal/payment-methods/saved/{id}:
         delete:
+            description: Removes the stored token locally. The provider-side mandate is detached separately by deleting the agreement, because a token the panel has forgotten can still be chargeable at the provider — and a customer who deleted their card expects both to be gone.
             operationId: DeletePortalPaymentmethodsSavedById
             parameters:
                 - in: path
@@ -5715,6 +5727,8 @@ paths:
                   schema:
                     type: string
             responses:
+                2XX:
+                    description: Gone.
                 "400":
                     content:
                         application/json:
@@ -5734,11 +5748,7 @@ paths:
                                 $ref: '#/components/schemas/Problem'
                     description: The caller lacks the permission, or the CSRF token is missing
                 "404":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Problem'
-                    description: No such record
+                    description: No such instrument for this caller.
                 "429":
                     content:
                         application/json:
@@ -5754,7 +5764,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: Forget a saved payment method
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -5762,6 +5772,7 @@ paths:
             x-permission: paymentmethod:write:self
             x-rate-class: mutation
         get:
+            description: 'Scoped to the caller in SQL: another customer''s id is a 404 with the same body as a nonexistent one.'
             operationId: GetPortalPaymentmethodsSavedById
             parameters:
                 - in: path
@@ -5770,6 +5781,8 @@ paths:
                   schema:
                     type: string
             responses:
+                2XX:
+                    description: The instrument.
                 "400":
                     content:
                         application/json:
@@ -5789,11 +5802,7 @@ paths:
                                 $ref: '#/components/schemas/Problem'
                     description: The caller lacks the permission, or the CSRF token is missing
                 "404":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Problem'
-                    description: No such record
+                    description: No such instrument for this caller.
                 "429":
                     content:
                         application/json:
@@ -5809,11 +5818,12 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: One saved payment method
             x-permission: paymentmethod:read:self
             x-rate-class: read
     /api/v1/portal/payment-methods/saved/{id}/default:
         post:
+            description: 'Exactly one method per customer is the default, enforced by the write rather than by the reader: a second default would make the off-session charger''s choice depend on row order.'
             operationId: PostPortalPaymentmethodsSavedByIdDefault
             parameters:
                 - in: path
@@ -5822,6 +5832,8 @@ paths:
                   schema:
                     type: string
             responses:
+                2XX:
+                    description: The instrument, now the default.
                 "400":
                     content:
                         application/json:
@@ -5841,11 +5853,7 @@ paths:
                                 $ref: '#/components/schemas/Problem'
                     description: The caller lacks the permission, or the CSRF token is missing
                 "404":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Problem'
-                    description: No such record
+                    description: No such instrument for this caller.
                 "429":
                     content:
                         application/json:
@@ -5861,7 +5869,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: Make a saved method the default
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -6228,6 +6236,7 @@ paths:
             x-rate-class: mutation
     /api/v1/portal/services/{id}/change-plan:
         post:
+            description: 'Prorates against the current period and queues the change rather than applying it in place: the provisioner is a queue, and a plan change that mutated the service directly would produce a billing record for a server that was never rebuilt. Requires an `Idempotency-Key`; a replay is refused rather than double-queued. The response states the queue entry, not the new plan — the change is not done until the worker has done it.'
             operationId: PostPortalServicesByIdChangeplan
             parameters:
                 - in: path
@@ -6236,6 +6245,8 @@ paths:
                   schema:
                     type: string
             responses:
+                2XX:
+                    description: Queued.
                 "400":
                     content:
                         application/json:
@@ -6260,6 +6271,10 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Problem'
                     description: No such record
+                "409":
+                    description: A plan change for this service is already queued.
+                "422":
+                    description: The target plan is not a legal move from the current one.
                 "429":
                     content:
                         application/json:
@@ -6275,7 +6290,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: Move a service to another plan
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -7099,6 +7114,7 @@ paths:
             x-rate-class: mutation
     /api/v1/portal/services/{id}/plan-options:
         get:
+            description: Every plan that is a legal target from the current one, with the prorated amount the move would charge or credit today. Prices are quoted as minor units plus an exact decimal string; no float ever reaches the client. A plan the service cannot move to is absent rather than present with a reason code, so the client cannot render an option that will be refused.
             operationId: GetPortalServicesByIdPlanoptions
             parameters:
                 - in: path
@@ -7107,6 +7123,8 @@ paths:
                   schema:
                     type: string
             responses:
+                2XX:
+                    description: The available targets and their proration.
                 "400":
                     content:
                         application/json:
@@ -7126,11 +7144,7 @@ paths:
                                 $ref: '#/components/schemas/Problem'
                     description: The caller lacks the permission, or the CSRF token is missing
                 "404":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Problem'
-                    description: No such record
+                    description: No such service for this caller.
                 "429":
                     content:
                         application/json:
@@ -7146,7 +7160,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: The plans this service could move to
             x-permission: service:upgrade:self
             x-rate-class: read
     /api/v1/portal/services/{id}/upgrade:
@@ -16469,6 +16483,111 @@ paths:
             x-permission: coupon:read:all
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/coupons/{id}/subscriptions:
+        get:
+            description: 'A coupon has two lives: it discounts the invoice that used it, and then it discounts renewals for as many cycles as it was configured for. The redemption list shows the first; this shows the second. `remaining` is null for a lifetime coupon and zero once the window is used up, which are different facts that a client must not collapse into one number.'
+            operationId: GetStaffCouponsByIdSubscriptions
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                customer_email:
+                                                    type: string
+                                                customer_id:
+                                                    format: uuid
+                                                    type: string
+                                                cycles_applied:
+                                                    description: How many invoices this coupon has already discounted.
+                                                    type: integer
+                                                cycles_total:
+                                                    description: The coupon's `recurring_cycles`; null means every cycle.
+                                                    type:
+                                                        - integer
+                                                        - "null"
+                                                product_name:
+                                                    type: string
+                                                remaining:
+                                                    description: '`cycles_total - cycles_applied`, floored at zero, or null for a lifetime coupon. Computed by the server so a screen cannot derive a different answer from the same two columns.'
+                                                    type:
+                                                        - integer
+                                                        - "null"
+                                                service_id:
+                                                    description: Present once the service exists.
+                                                    format: uuid
+                                                    type: string
+                                                status:
+                                                    type: string
+                                                subscription_id:
+                                                    format: uuid
+                                                    type: string
+                                            required:
+                                                - subscription_id
+                                                - customer_id
+                                                - status
+                                                - cycles_applied
+                                            type: object
+                                        type: array
+                                required:
+                                    - data
+                                type: object
+                    description: Every subscription carrying the coupon, newest first
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold coupon:read:all
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The id is not a coupon id
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The subscriptions a coupon discounts on renewal
+            x-permission: coupon:read:all
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/credit-notes/{id}/pdf:
         get:
             description: 'The operator''s copy of a credit note. A goodwill credit that corrects no invoice is still printable: its letterhead comes from the installation settings rather than from an invoice snapshot.'
@@ -16524,6 +16643,121 @@ paths:
             summary: Download any credit note as a PDF
             x-permission: invoice:read:all
             x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/credit-notes/{id}/void:
+        post:
+            description: |-
+                The note is kept: it gains a status of `void`, a reason and a timestamp, and its ledger posting is contra-posted in the same transaction. That is what an append-only subledger means — "cancelled" and "never issued" stay two distinguishable facts, which is what an auditor needs and what a customer reprint must show.
+
+                Only an `issued` note can be voided. Credit that has already been applied cannot be un-issued: the invoice it paid would become unpaid without anybody deciding that, so the server answers 409 and the correction is the other kind of note. A second void is also a conflict, and the 0065 trigger refuses any change to a voided note afterwards.
+            operationId: PostStaffCreditnotesByIdVoid
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            additionalProperties: false
+                            properties:
+                                reason:
+                                    description: Why the note is being cancelled. Printed on a reprint and recorded in the audit log.
+                                    maxLength: 255
+                                    minLength: 1
+                                    type: string
+                            required:
+                                - reason
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    kind:
+                                        enum:
+                                            - credit
+                                            - debit
+                                        type: string
+                                    number:
+                                        type: string
+                                    status:
+                                        enum:
+                                            - void
+                                        type: string
+                                    void_reason:
+                                        type: string
+                                    voided_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - number
+                                    - kind
+                                    - status
+                                    - void_reason
+                                    - voided_at
+                                type: object
+                    description: The cancelled note
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A reason is required
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such note
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Already void, or its credit has been spent
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Cancel an adjustment note and reverse its posting
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: invoice:void
+            x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/credit/customers:
         get:
@@ -17077,6 +17311,114 @@ paths:
             x-permission: log:read
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/cron/{job}/retry:
+        post:
+            description: Queues an immediate run of a named job, through the same path the scheduler uses rather than a direct call — a retry that bypassed the queue would produce a run the run history does not mention. Refused while a run of the same job is already in flight. Requires an `Idempotency-Key`.
+            operationId: PostStaffCronByJobRetry
+            parameters:
+                - in: path
+                  name: job
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Queued.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    description: No such job.
+                "409":
+                    description: That job is already running.
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Run a scheduled job now
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: settings:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/cron/failures:
+        get:
+            description: The failures behind the heartbeat and run history, newest first. A job that has never run does not appear here at all — that is a different fault with a different fix, and it is what `/staff/cron/statistics` reports. Keyset-paged on the run id so the view does not load a year of failures to show twenty.
+            operationId: GetStaffCronFailures
+            responses:
+                2XX:
+                    description: Failed runs with their error and attempt count.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Recent failed job runs
+            x-permission: log:read
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/cron/heartbeat:
         get:
             description: 'The heartbeat row plus whether it is stale. `stale` is derived from the age, because a heartbeat row that exists is not the same as a worker that is alive: a process killed nine hours ago leaves a row behind forever. A worker that has never run answers 200 with `present: false` rather than a 404, because that is the sentence the operator needs.'
@@ -17165,6 +17507,56 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Worker heartbeat
+            x-permission: log:read
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/cron/statistics:
+        get:
+            description: 'Per job: last run, last success, last failure, consecutive failures and run duration. The fields a scheduler''s health is actually judged by, including the *never ran* case that a failure list cannot express.'
+            operationId: GetStaffCronStatistics
+            responses:
+                2XX:
+                    description: One row per registered job.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Per-job run statistics
             x-permission: log:read
             x-rate-class: read
             x-staff-only: true
@@ -18647,6 +19039,7 @@ paths:
             x-staff-only: true
     /api/v1/staff/customers/{id}/payment-methods:
         get:
+            description: 'The same public shape the customer sees, plus whether an active billing agreement covers it. There is no route that reveals a token, for staff or anyone else: the token is what charges the card, and a support screen does not need it to answer a support question.'
             operationId: GetStaffCustomersByIdPaymentmethods
             parameters:
                 - in: path
@@ -18655,6 +19048,8 @@ paths:
                   schema:
                     type: string
             responses:
+                2XX:
+                    description: Instruments and agreement state.
                 "400":
                     content:
                         application/json:
@@ -18674,11 +19069,7 @@ paths:
                                 $ref: '#/components/schemas/Problem'
                     description: The caller lacks the permission, or the CSRF token is missing
                 "404":
-                    content:
-                        application/json:
-                            schema:
-                                $ref: '#/components/schemas/Problem'
-                    description: No such record
+                    description: No such customer.
                 "429":
                     content:
                         application/json:
@@ -18694,7 +19085,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: A customer's payment methods, staff view
             x-permission: customer:read:all
             x-rate-class: read
             x-staff-only: true
@@ -21674,9 +22065,10 @@ paths:
             x-permission: invoice:read:all
             x-rate-class: read
             x-staff-only: true
-    /api/v1/staff/invoices/{id}/charge-saved-method:
-        post:
-            operationId: PostStaffInvoicesByIdChargesavedmethod
+    /api/v1/staff/invoices/{id}/adjustment-notes:
+        get:
+            description: 'A note is a document, not a payment: it has its own number, its own series and its own PDF, so it is listed separately from the transactions even though it moves money. Cancelled notes stay in the list with their reason — cancelling a document is not a reason to forget it.'
+            operationId: GetStaffInvoicesByIdAdjustmentnotes
             parameters:
                 - in: path
                   name: id
@@ -21684,6 +22076,71 @@ paths:
                   schema:
                     type: string
             responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    invoice_id:
+                                        format: uuid
+                                        type: string
+                                    notes:
+                                        items:
+                                            properties:
+                                                amount:
+                                                    $ref: '#/components/schemas/Amount'
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                issued_at:
+                                                    format: date-time
+                                                    nullable: true
+                                                    type: string
+                                                kind:
+                                                    description: Which direction the adjustment goes. Frozen once the note has a number.
+                                                    enum:
+                                                        - credit
+                                                        - debit
+                                                    type: string
+                                                number:
+                                                    type: string
+                                                pdf_url:
+                                                    type: string
+                                                reason:
+                                                    type: string
+                                                status:
+                                                    enum:
+                                                        - issued
+                                                        - applied
+                                                        - void
+                                                    type: string
+                                                tax:
+                                                    $ref: '#/components/schemas/Amount'
+                                                void_reason:
+                                                    description: Why the note was cancelled. Empty unless it was.
+                                                    type: string
+                                                voidable:
+                                                    description: 'Whether the cancel route would currently accept this note. The server re-checks under a lock: a note whose credit has been spent answers 409.'
+                                                    type: boolean
+                                                voided_at:
+                                                    format: date-time
+                                                    nullable: true
+                                                    type: string
+                                            required:
+                                                - id
+                                                - number
+                                                - kind
+                                                - status
+                                                - amount
+                                                - tax
+                                                - voidable
+                                            type: object
+                                        type: array
+                                required:
+                                    - invoice_id
+                                    - notes
+                                type: object
+                    description: The invoice's adjustment notes
                 "400":
                     content:
                         application/json:
@@ -21707,7 +22164,73 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Problem'
+                    description: No such invoice
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No database is configured
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The credit and debit notes against one invoice
+            x-permission: invoice:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/invoices/{id}/charge-saved-method:
+        post:
+            description: 'An operator-initiated charge of an invoice against the customer''s stored instrument. Idempotent on the invoice: a second call for an invoice that is already paid or already has a payment in flight returns that payment rather than taking the money twice. Requires an `Idempotency-Key`, because this is a money mutation.'
+            operationId: PostStaffInvoicesByIdChargesavedmethod
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The payment, created or already existing.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "402":
+                    description: The provider declined; the invoice is unchanged.
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
                     description: No such record
+                "409":
+                    description: The invoice is paid, void, or has no chargeable instrument.
                 "429":
                     content:
                         application/json:
@@ -21723,7 +22246,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: Charge a saved method for one invoice
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -21876,6 +22399,257 @@ paths:
             x-permission: invoice:write:all
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/invoices/{id}/debit-notes:
+        post:
+            description: |-
+                A debit note is the mirror of a credit note: it posts a receivable up and revenue up, is numbered in its own series (`invoices.debit_note_prefix` / `debit_note_padding`, with the same date tokens as the invoice format) and leaves the invoice itself untouched. Under-charging is corrected by adding a document, never by editing the one the customer holds.
+
+                The tax share is derived from the corrected invoice's own snapshot — the rate that document recorded — not from today's tax table. A request may state `tax_minor` explicitly to correct a specific taxed line; it may never exceed the amount. Unlike a credit, a debit note is not capped by what is left on the invoice: it charges more, which is why it exists.
+            operationId: PostStaffInvoicesByIdDebitnotes
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            additionalProperties: false
+                            properties:
+                                amount_minor:
+                                    description: The total charge, in the invoice's currency, in minor units.
+                                    format: int64
+                                    minimum: 1
+                                    type: integer
+                                reason:
+                                    description: Printed on the note and recorded in the audit log.
+                                    maxLength: 255
+                                    minLength: 1
+                                    type: string
+                                tax_minor:
+                                    description: The tax share. Omitted or zero means "derive it from the invoice's snapshot rate".
+                                    format: int64
+                                    minimum: 0
+                                    type: integer
+                            required:
+                                - amount_minor
+                                - reason
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    amount:
+                                        $ref: '#/components/schemas/Amount'
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    issued_at:
+                                        format: date-time
+                                        nullable: true
+                                        type: string
+                                    kind:
+                                        description: Which direction the adjustment goes. Frozen once the note has a number.
+                                        enum:
+                                            - credit
+                                            - debit
+                                        type: string
+                                    number:
+                                        type: string
+                                    pdf_url:
+                                        type: string
+                                    reason:
+                                        type: string
+                                    status:
+                                        enum:
+                                            - issued
+                                            - applied
+                                            - void
+                                        type: string
+                                    tax:
+                                        $ref: '#/components/schemas/Amount'
+                                    void_reason:
+                                        description: Why the note was cancelled. Empty unless it was.
+                                        type: string
+                                    voidable:
+                                        description: 'Whether the cancel route would currently accept this note. The server re-checks under a lock: a note whose credit has been spent answers 409.'
+                                        type: boolean
+                                    voided_at:
+                                        format: date-time
+                                        nullable: true
+                                        type: string
+                                required:
+                                    - id
+                                    - number
+                                    - kind
+                                    - status
+                                    - amount
+                                    - tax
+                                    - voidable
+                                type: object
+                    description: The issued debit note
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Malformed amount, tax share or reason
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such invoice
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The invoice is a draft or void, so there is nothing to charge
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Charge more against an invoice with a debit note
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: invoice:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/invoices/{id}/due-date:
+        put:
+            description: |-
+                The database leaves `due_at` writable after issue because dunning depends on it and an operator negotiating terms needs to move it. Two limits keep that from becoming a way to make a document disagree with itself: the date may only move **later** (moving it earlier would make an invoice retroactively overdue and restart reminders against a document the customer already holds), and when `invoices.immutable` is on — the optional immutability of INV-05 — an issued document may not move at all.
+
+                A paid, refunded or void invoice never moves, regardless of the setting: its due date is history. Send either `due_at` or `due_in_days`.
+            operationId: PutStaffInvoicesByIdDuedate
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            additionalProperties: false
+                            properties:
+                                due_at:
+                                    format: date-time
+                                    type: string
+                                due_in_days:
+                                    maximum: 3650
+                                    minimum: 1
+                                    type: integer
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    due_at:
+                                        format: date-time
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                required:
+                                    - id
+                                    - due_at
+                                type: object
+                    description: The new due date
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Neither `due_at` nor `due_in_days` was sent
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such invoice
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The document is immutable, or the date would move earlier
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No database is configured
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Move an invoice's due date later
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: invoice:write:all
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/invoices/{id}/issue:
         post:
             description: Allocates the next number and posts the receivable in one transaction. Issuing twice is 409.
@@ -21935,6 +22709,154 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Issue a draft invoice
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: invoice:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/invoices/{id}/lines:
+        put:
+            description: |-
+                A draft is a worksheet: a price typed wrong or an address that changed can be fixed until the document has a number. This route replaces the complete line set (not a patch — a draft line has no identity a client can safely address) and re-prices it through the same issuer path creation uses, so a preview and the stored total cannot disagree.
+
+                The billed party is re-read from the invoice's own customer, not taken from the body: a request cannot move a document to another customer. The reply is a 409 `not_draft` for anything already issued; the database trigger from `0021_proforma.sql` refuses the write anyway, so this is the code answering before the constraint has to.
+            operationId: PutStaffInvoicesByIdLines
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                due_in_days:
+                                    description: Optional. Omitted keeps the draft's current due date; a value replaces it, defaulting to `invoices.due_days`.
+                                    type: integer
+                                lines:
+                                    items:
+                                        properties:
+                                            currency:
+                                                pattern: ^[A-Z0-9]{2,12}$
+                                                type: string
+                                            description:
+                                                minLength: 1
+                                                type: string
+                                            price_version_id:
+                                                format: uuid
+                                                type: string
+                                            product_id:
+                                                format: uuid
+                                                type: string
+                                            quantity:
+                                                minimum: 1
+                                                type: integer
+                                            unit_amount_minor:
+                                                format: int64
+                                                type: integer
+                                        required:
+                                            - description
+                                            - quantity
+                                            - unit_amount_minor
+                                            - currency
+                                        type: object
+                                    minItems: 1
+                                    type: array
+                            required:
+                                - lines
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    currency:
+                                        type: string
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    status:
+                                        enum:
+                                            - draft
+                                        type: string
+                                    totals:
+                                        properties:
+                                            subtotal:
+                                                $ref: '#/components/schemas/Amount'
+                                            tax:
+                                                $ref: '#/components/schemas/Amount'
+                                            total:
+                                                $ref: '#/components/schemas/Amount'
+                                        required:
+                                            - subtotal
+                                            - tax
+                                            - total
+                                        type: object
+                                required:
+                                    - id
+                                    - status
+                                    - totals
+                                    - currency
+                                type: object
+                    description: The re-priced draft
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No lines, a mixed currency, or an invalid line
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such invoice, product or price version
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The invoice has been issued; correct it with a note
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Invoice issuance is not configured
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Replace a draft invoice's lines
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -22246,6 +23168,137 @@ paths:
                 required: true
             x-permission: invoice:write:all
             x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/invoices/{id}/transactions:
+        get:
+            description: |-
+                Payments (with what has already been refunded), applied credit and adjustment notes in one list, newest first. They are one list because "why is the balance what it is" is one question: a screen that showed payments alone would leave an applied credit or a debit note unexplained.
+
+                **Nothing in this list is editable.** A payment is a fact the gateway or the bank confirmed; the correction is a refund, which `refund_url` points at and which is its own record with its own status. An adjustment note is cancelled through its void route, which reverses its posting rather than deleting the document. There is deliberately no edit and no delete route here — the subledger is append-only and the documents are evidence.
+            operationId: GetStaffInvoicesByIdTransactions
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    invoice_id:
+                                        format: uuid
+                                        type: string
+                                    transactions:
+                                        items:
+                                            properties:
+                                                adjustment:
+                                                    enum:
+                                                        - credit
+                                                        - debit
+                                                    type: string
+                                                amount:
+                                                    $ref: '#/components/schemas/Amount'
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                kind:
+                                                    enum:
+                                                        - payment
+                                                        - credit_application
+                                                        - adjustment_note
+                                                    type: string
+                                                method:
+                                                    description: 'Set on a payment recorded outside a gateway: bank_transfer, cash, cheque, other.'
+                                                    type: string
+                                                note:
+                                                    type: string
+                                                number:
+                                                    description: 'Adjustment notes only: the note''s own number, which is what a customer quotes.'
+                                                    type: string
+                                                occurred_at:
+                                                    format: date-time
+                                                    nullable: true
+                                                    type: string
+                                                provider:
+                                                    description: Payments only.
+                                                    type: string
+                                                reference:
+                                                    description: The gateway's payment identity. Two payments with one reference are one payment.
+                                                    type: string
+                                                refund_url:
+                                                    description: 'Payments only: the endpoint that starts a refund for this payment.'
+                                                    type: string
+                                                refundable:
+                                                    description: 'Payments only: whether anything is left to refund. A payment is corrected by a refund, never by an edit or a delete.'
+                                                    type: boolean
+                                                refunded:
+                                                    description: 'Payments only: how much has already gone back, as an Amount.'
+                                                    type: object
+                                                status:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - kind
+                                                - amount
+                                                - status
+                                            type: object
+                                        type: array
+                                required:
+                                    - invoice_id
+                                    - transactions
+                                type: object
+                    description: The invoice's movements
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such invoice
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "503":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No database is configured
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Every money movement on one invoice
+            x-permission: invoice:read:all
+            x-rate-class: read
             x-staff-only: true
     /api/v1/staff/invoices/{id}/void:
         post:
@@ -22678,6 +23731,62 @@ paths:
             x-permission: i18n:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/locales/{code}/install:
+        post:
+            description: 'Copies a catalogue locale into the installation so it can be selected and edited. Idempotent: installing an installed locale re-syncs it from the catalogue and reports how many messages changed, so an operator who has edited a translation is told what would be overwritten before it happens. Requires an `Idempotency-Key`.'
+            operationId: PostStaffLocalesByCodeInstall
+            parameters:
+                - in: path
+                  name: code
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Installed or re-synced, with a count of changed messages.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    description: No such locale in the catalogue.
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Install a locale
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: i18n:write
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/locales/{code}/keys/{key}:
         delete:
             description: |-
@@ -22808,6 +23917,56 @@ paths:
                 required: true
             x-permission: i18n:write
             x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/locales/available:
+        get:
+            description: 'The catalogue the installation could add, each marked installed or not. Read from the bundled catalogue rather than the network: a settings screen that cannot render because an upstream is down is a support call about the wrong problem.'
+            operationId: GetStaffLocalesAvailable
+            responses:
+                2XX:
+                    description: Available locales with installed state.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Locales that can be installed
+            x-permission: i18n:write
+            x-rate-class: read
             x-staff-only: true
     /api/v1/staff/locales/keys:
         get:
@@ -23476,6 +24635,67 @@ paths:
             x-permission: extension:manage
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/marketplace/installed/{name}/{version}:
+        patch:
+            description: 'Enable, disable or pin an installed package version. Disabling stops the extension from being launched but keeps its data: an operator turning a feature off must not lose what it stored. Pinning prevents an update from replacing a version that is being kept deliberately.'
+            operationId: PatchStaffMarketplaceInstalledByNameByVersion
+            parameters:
+                - in: path
+                  name: name
+                  required: true
+                  schema:
+                    type: string
+                - in: path
+                  name: version
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The package's new state.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    description: No such package version installed.
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Change an installed package's state
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: extension:manage
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/marketplace/installed/{name}/{version}/artifact:
         get:
             description: Returns exactly the bytes whose digest was checked, with the digest in `X-Content-SHA256`, so the operator deploys the artifact that was verified rather than a fresh download from an index that may have changed since.
@@ -23732,6 +24952,56 @@ paths:
             x-permission: extension:manage
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/marketplace/scaffold:
+        get:
+            description: The manifest skeleton an extension author starts from, with every required field present and commented. Returned by the server so the shape a package must have and the shape the installer enforces cannot drift apart.
+            operationId: GetStaffMarketplaceScaffold
+            responses:
+                2XX:
+                    description: A manifest template.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Scaffold for a marketplace entry
+            x-permission: extension:manage
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/marketplace/settings:
         put:
             description: 'Where the listing is fetched from and where a verified artifact is staged. `install_dir` empty means the verified bytes live in the panel only, which is still a real install: the artifact can be downloaded back byte for byte. A URL that is not http(s) is refused when it is saved rather than discovered when the fetch runs.'
@@ -23925,6 +25195,62 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Configure the marketplace index and staging directory
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: extension:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/marketplace/upload:
+        post:
+            description: Stages a package for installation and checks its manifest. The uploaded artefact is inert until it is explicitly enabled — an upload that ran code on arrival would let a mistaken file execute before anybody read it. The digest is recorded so the installed bytes can be proved to be the uploaded bytes. Requires an `Idempotency-Key`.
+            operationId: PostStaffMarketplaceUpload
+            responses:
+                2XX:
+                    description: Staged, with the manifest it declares and the recorded digest.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    description: The manifest is invalid; the reasons name each missing or malformed field.
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Upload a package
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -24652,6 +25978,62 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Restore a template's shipped wording
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: notification:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/notifications/test-email:
+        post:
+            description: 'Sends one message through the configured transport to the address given, so an operator can prove mail works before customers depend on it. It deliberately does NOT report success when the transport accepted the message and the recipient never sees it: the response states the transport''s answer, and the prose says so, because "the panel said it sent" is the answer that wastes an afternoon.'
+            operationId: PostStaffNotificationsTestemail
+            responses:
+                2XX:
+                    description: The transport accepted the message.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    description: The transport refused it; the error is the transport's own.
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Send a test email
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -26490,8 +27872,11 @@ paths:
             x-staff-only: true
     /api/v1/staff/payments/charge-due:
         post:
+            description: The batch form of the single charge, and the entry point a scheduled job uses. It reports a per-invoice outcome instead of failing as a whole, because one declined card must not prevent the other invoices from being collected. Every invoice it charges is charged through the same idempotent path as the single call.
             operationId: PostStaffPaymentsChargedue
             responses:
+                2XX:
+                    description: 'Per-invoice results: charged, declined, skipped and why.'
                 "400":
                     content:
                         application/json:
@@ -26531,7 +27916,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: Charge every overdue invoice with a saved method
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -32410,6 +33795,688 @@ paths:
             x-permission: tax:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/tax-jurisdiction:
+        get:
+            description: 'The five rules settings, every nexus declaration, the EU membership list the reverse-charge rule applies to, and the configuration contradictions the engine cannot resolve on its own. `nexus_gaps` names the jurisdictions that have an open rate but no declaration, which is the most expensive kind of quiet misconfiguration: a number is configured and tax is not collected.'
+            operationId: GetStaffTaxjurisdiction
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    config:
+                                        properties:
+                                            nexus_enforced:
+                                                description: Enables the subnational sales-tax rule.
+                                                type: boolean
+                                            reverse_charge:
+                                                description: Enables the EU B2B rule.
+                                                type: boolean
+                                            seller_country:
+                                                description: 'Where the installation is established. Required before reverse charge can be decided: whether a supply is cross-border is the first question the rule asks.'
+                                                type: string
+                                            vat_validation_ttl_hours:
+                                                description: How long a check is trusted. A cart is re-priced on every view.
+                                                maximum: 8760
+                                                minimum: 1
+                                                type: integer
+                                            vat_validation_url:
+                                                description: The service a VAT ID is checked against. Empty means no service, which refuses reverse charge rather than guessing.
+                                                type: string
+                                        type: object
+                                    eu_member_states:
+                                        items:
+                                            type: string
+                                        type: array
+                                    nexus:
+                                        items:
+                                            properties:
+                                                country_code:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                enabled:
+                                                    type: boolean
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                jurisdiction:
+                                                    description: '`US-CA`, or `US` for a national registration.'
+                                                    type: string
+                                                note:
+                                                    description: The basis for the declaration. An auditor will ask.
+                                                    type: string
+                                                region_code:
+                                                    description: Empty means the whole country.
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - id
+                                                - country_code
+                                                - jurisdiction
+                                                - enabled
+                                            type: object
+                                        type: array
+                                    nexus_gaps:
+                                        items:
+                                            type: string
+                                        type: array
+                                    warnings:
+                                        items:
+                                            type: string
+                                        type: array
+                                required:
+                                    - config
+                                    - nexus
+                                    - eu_member_states
+                                type: object
+                    description: The rules configuration
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller does not hold tax:write
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The jurisdiction rules and their consequences
+            x-permission: tax:write
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/tax-jurisdiction/decide:
+        post:
+            description: 'A dry run: it decides about a hypothetical supply and records the decision in the audit log, charging nothing and creating no invoice. It is a POST because deciding a VAT-ID supply asks the validation service and appends the answer to the history. A refusal is an answer and arrives with 200 and `outcome: "refused"`; the same refusal read through the cart is a 422 carrying the same code.'
+            operationId: PostStaffTaxjurisdictionDecide
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                country:
+                                    type: string
+                                customer_id:
+                                    description: When set, the destination and VAT ID come from the billing profile.
+                                    format: uuid
+                                    type: string
+                                region:
+                                    type: string
+                                tax_class:
+                                    type: string
+                                vat_id:
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    decision:
+                                        properties:
+                                            charges:
+                                                type: boolean
+                                            inclusive:
+                                                type: boolean
+                                            jurisdiction:
+                                                description: '`DE/standard`, `US-CA/standard`.'
+                                                type: string
+                                            kind:
+                                                description: '`reverse_charge` and `no_nexus` are decisions to charge nothing, not zero rates: the reason is recorded and the jurisdiction is named.'
+                                                enum:
+                                                    - rate
+                                                    - reverse_charge
+                                                    - no_nexus
+                                                    - staff_exempt
+                                                    - no_rate
+                                                    - no_tax
+                                                type: string
+                                            policy:
+                                                description: The rule that decided, recorded in the invoice's tax evidence.
+                                                type: string
+                                            rate:
+                                                description: An exact rational (`0.19`, `1/5`); empty when nothing is charged.
+                                                type: string
+                                            reason:
+                                                type: string
+                                            validation:
+                                                properties:
+                                                    cached:
+                                                        type: boolean
+                                                    checked_at:
+                                                        format: date-time
+                                                        type: string
+                                                    country_code:
+                                                        type: string
+                                                    detail:
+                                                        type: string
+                                                    service_url:
+                                                        type: string
+                                                    status:
+                                                        description: '`invalid` is the service saying no; `unavailable` is nobody answering. Only `valid` grants reverse charge.'
+                                                        enum:
+                                                            - valid
+                                                            - invalid
+                                                            - unavailable
+                                                        type: string
+                                                    trader_name:
+                                                        type: string
+                                                    vat_id:
+                                                        description: 'Normalised: upper case, separators removed, country prefix stripped.'
+                                                        type: string
+                                                required:
+                                                    - country_code
+                                                    - vat_id
+                                                    - status
+                                                    - checked_at
+                                                type: object
+                                        required:
+                                            - kind
+                                            - policy
+                                            - charges
+                                        type: object
+                                    outcome:
+                                        enum:
+                                            - decided
+                                            - refused
+                                        type: string
+                                    refusal:
+                                        properties:
+                                            code:
+                                                enum:
+                                                    - seller_country_missing
+                                                    - vat_id_unverified
+                                                    - vat_id_validation_failed
+                                                type: string
+                                            detail:
+                                                type: string
+                                            missing:
+                                                items:
+                                                    type: string
+                                                type: array
+                                        required:
+                                            - code
+                                            - detail
+                                        type: object
+                                    supply:
+                                        type: object
+                                required:
+                                    - outcome
+                                type: object
+                    description: The decision, or the refusal
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Explain what the rules would do with a sale
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: tax:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tax-jurisdiction/nexus:
+        post:
+            description: 'Declaring any jurisdiction in a country makes that country''s tax nexus-governed: once it is enforced, tax is collected only where a declaration matches. That is deliberately an explicit act, per country, because declaring one state must not silently stop collection in the other forty-nine. Recorded in the audit log with the note, in the same transaction.'
+            operationId: PostStaffTaxjurisdictionNexus
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                country_code:
+                                    description: ISO 3166-1 alpha-2, upper case.
+                                    type: string
+                                enabled:
+                                    type: boolean
+                                note:
+                                    description: The basis for the declaration.
+                                    type: string
+                                region_code:
+                                    description: A compact subdivision code; empty for a national registration.
+                                    type: string
+                            required:
+                                - country_code
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    country_code:
+                                        type: string
+                                    created_at:
+                                        format: date-time
+                                        type: string
+                                    enabled:
+                                        type: boolean
+                                    id:
+                                        format: uuid
+                                        type: string
+                                    jurisdiction:
+                                        description: '`US-CA`, or `US` for a national registration.'
+                                        type: string
+                                    note:
+                                        description: The basis for the declaration. An auditor will ask.
+                                        type: string
+                                    region_code:
+                                        description: Empty means the whole country.
+                                        type: string
+                                    updated_at:
+                                        format: date-time
+                                        type: string
+                                required:
+                                    - id
+                                    - country_code
+                                    - jurisdiction
+                                    - enabled
+                                type: object
+                    description: The declaration
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: That jurisdiction is already declared
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The country or region code is not acceptable
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Declare sales-tax nexus
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: tax:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tax-jurisdiction/nexus/{id}:
+        delete:
+            description: 'Nothing points at the declaration: an invoice records the decision the rules made, not the row, so removing a declaration that was wrong does not rewrite a document. The audit row keeps the fact that it existed.'
+            operationId: DeleteStaffTaxjurisdictionNexusById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Removed
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such declaration
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Remove a nexus declaration
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: tax:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tax-jurisdiction/validate-vat:
+        post:
+            description: 'Asks the configured service and records the answer, whichever it is: `valid`, `invalid` (the service said no) or `unavailable` (nobody answered). The record is append-only, because a reverse-charge treatment on an issued invoice must be explainable by the check that justified it. A malformed identifier is refused before the service is called.'
+            operationId: PostStaffTaxjurisdictionValidatevat
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                country:
+                                    type: string
+                                customer_id:
+                                    description: Records the check against the customer.
+                                    format: uuid
+                                    type: string
+                                vat_id:
+                                    type: string
+                            required:
+                                - country
+                                - vat_id
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    cached:
+                                        type: boolean
+                                    checked_at:
+                                        format: date-time
+                                        type: string
+                                    country_code:
+                                        type: string
+                                    detail:
+                                        type: string
+                                    service_url:
+                                        type: string
+                                    status:
+                                        description: '`invalid` is the service saying no; `unavailable` is nobody answering. Only `valid` grants reverse charge.'
+                                        enum:
+                                            - valid
+                                            - invalid
+                                            - unavailable
+                                        type: string
+                                    trader_name:
+                                        type: string
+                                    vat_id:
+                                        description: 'Normalised: upper case, separators removed, country prefix stripped.'
+                                        type: string
+                                required:
+                                    - country_code
+                                    - vat_id
+                                    - status
+                                    - checked_at
+                                type: object
+                    description: The answer, recorded
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The identifier does not match the country's published format
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The validation service did not answer; the answer is recorded as unavailable
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Check a VAT ID against the configured service
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: tax:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/tax-jurisdiction/validations:
+        get:
+            description: Newest first, at most twenty. The history is what explains why a sale was or was not reverse-charged on a given day.
+            operationId: GetStaffTaxjurisdictionValidations
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                cached:
+                                                    type: boolean
+                                                checked_at:
+                                                    format: date-time
+                                                    type: string
+                                                country_code:
+                                                    type: string
+                                                detail:
+                                                    type: string
+                                                service_url:
+                                                    type: string
+                                                status:
+                                                    description: '`invalid` is the service saying no; `unavailable` is nobody answering. Only `valid` grants reverse charge.'
+                                                    enum:
+                                                        - valid
+                                                        - invalid
+                                                        - unavailable
+                                                    type: string
+                                                trader_name:
+                                                    type: string
+                                                vat_id:
+                                                    description: 'Normalised: upper case, separators removed, country prefix stripped.'
+                                                    type: string
+                                            required:
+                                                - country_code
+                                                - vat_id
+                                                - status
+                                                - checked_at
+                                            type: object
+                                        type: array
+                                required:
+                                    - data
+                                type: object
+                    description: The recorded checks
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The identifier does not match the country's published format
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The check history for a VAT ID
+            x-permission: tax:write
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/tax-rates:
         get:
             description: 'Every rate, current and historic, newest effective date first. Rates are dated rows: a rate change appends a new row instead of rewriting a filed period. `all` as a country code is the wildcard fallback.'
@@ -36966,6 +39033,7 @@ paths:
             x-staff-only: true
     /api/v1/staff/upgrades/{id}/credit:
         post:
+            description: When a downgrade or a cancelled upgrade leaves value on the table, this posts it as credit rather than adjusting the already-issued invoice. An issued invoice is immutable — the correction is a new ledger entry with a customer-visible reason, which is why `reason` is required and is shown to the customer. Requires an `Idempotency-Key`; a replay is refused rather than crediting twice.
             operationId: PostStaffUpgradesByIdCredit
             parameters:
                 - in: path
@@ -36974,6 +39042,8 @@ paths:
                   schema:
                     type: string
             responses:
+                2XX:
+                    description: Credit posted, with the ledger entry id.
                 "400":
                     content:
                         application/json:
@@ -36998,6 +39068,8 @@ paths:
                             schema:
                                 $ref: '#/components/schemas/Problem'
                     description: No such record
+                "409":
+                    description: Already credited, or nothing left to credit.
                 "429":
                     content:
                         application/json:
@@ -37013,7 +39085,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: Turn an unapplied upgrade into account credit
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -37885,6 +39957,146 @@ paths:
             x-permission: payment:reconcile
             x-rate-class: read
             x-staff-only: true
+    /api/v1/tax/disclosure:
+        get:
+            description: Public, because it explains a price that is already public, and it names no customer. The `country` is the destination the visitor has told the shop; when it is absent the installation's own country is used, which is the only market whose price can be shown before anybody has said where they are. `label` is the sentence a page may print (`incl. 19% VAT`, `plus 7.25% sales tax`, `VAT reverse charge`), computed from the exact rational so a renderer never derives a percentage itself.
+            operationId: GetTaxDisclosure
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    configured:
+                                        type: boolean
+                                    country:
+                                        type: string
+                                    decision:
+                                        properties:
+                                            charges:
+                                                type: boolean
+                                            inclusive:
+                                                type: boolean
+                                            jurisdiction:
+                                                description: '`DE/standard`, `US-CA/standard`.'
+                                                type: string
+                                            kind:
+                                                description: '`reverse_charge` and `no_nexus` are decisions to charge nothing, not zero rates: the reason is recorded and the jurisdiction is named.'
+                                                enum:
+                                                    - rate
+                                                    - reverse_charge
+                                                    - no_nexus
+                                                    - staff_exempt
+                                                    - no_rate
+                                                    - no_tax
+                                                type: string
+                                            policy:
+                                                description: The rule that decided, recorded in the invoice's tax evidence.
+                                                type: string
+                                            rate:
+                                                description: An exact rational (`0.19`, `1/5`); empty when nothing is charged.
+                                                type: string
+                                            reason:
+                                                type: string
+                                            validation:
+                                                properties:
+                                                    cached:
+                                                        type: boolean
+                                                    checked_at:
+                                                        format: date-time
+                                                        type: string
+                                                    country_code:
+                                                        type: string
+                                                    detail:
+                                                        type: string
+                                                    service_url:
+                                                        type: string
+                                                    status:
+                                                        description: '`invalid` is the service saying no; `unavailable` is nobody answering. Only `valid` grants reverse charge.'
+                                                        enum:
+                                                            - valid
+                                                            - invalid
+                                                            - unavailable
+                                                        type: string
+                                                    trader_name:
+                                                        type: string
+                                                    vat_id:
+                                                        description: 'Normalised: upper case, separators removed, country prefix stripped.'
+                                                        type: string
+                                                required:
+                                                    - country_code
+                                                    - vat_id
+                                                    - status
+                                                    - checked_at
+                                                type: object
+                                        required:
+                                            - kind
+                                            - policy
+                                            - charges
+                                        type: object
+                                    label:
+                                        type: string
+                                    outcome:
+                                        enum:
+                                            - decided
+                                            - refused
+                                        type: string
+                                    refusal:
+                                        properties:
+                                            code:
+                                                enum:
+                                                    - seller_country_missing
+                                                    - vat_id_unverified
+                                                    - vat_id_validation_failed
+                                                type: string
+                                            detail:
+                                                type: string
+                                            missing:
+                                                items:
+                                                    type: string
+                                                type: array
+                                        required:
+                                            - code
+                                            - detail
+                                        type: object
+                                    region:
+                                        type: string
+                                    tax_class:
+                                        type: string
+                                    tax_enabled:
+                                        type: boolean
+                                required:
+                                    - tax_enabled
+                                    - configured
+                                    - label
+                                type: object
+                    description: The disclosure
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            summary: How a price is displayed with tax, for a destination
+            x-rate-class: ""
     /api/v1/webhooks/mail/piping:
         post:
             description: 'The provider-facing ingest path. Authenticated by `mail.piping_secret`, presented as `X-Piping-Secret` or `Authorization: Bearer …` and compared in constant time; an installation with no secret configured refuses every request with 503 piping_not_configured, because an ingest endpoint that accepts the empty secret is an open door. The message is attributed by threading headers first, then a ticket id in the reply address, then the sender''s verified address against exactly one customer — and whichever method matches, the sender must be that ticket''s customer or the message is refused as sender_mismatch rather than appended to a stranger''s thread. The panel''s own address, its own outgoing header, an empty From and the RFC 3834 auto-reply markers are dropped before attribution, so a mail loop is impossible. Idempotent on the email Message-ID: a redelivery answers 200 with outcome=duplicate and writes nothing. A refused message is stored with its reason and answers 202 — the provider must not retry it.'

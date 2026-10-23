@@ -46,6 +46,12 @@ type contextKey int
 const (
 	ctxSession contextKey = iota
 	ctxUser
+	// ctxBindingMismatch marks a session that authenticated but was used from outside
+	// what it was bound to (IDN-16). The identity is deliberately not attached in that
+	// case: every guard in this server answers for the caller, and a caller whose session
+	// is being refused must not be able to reach a handler through a guard that forgot to
+	// ask.
+	ctxBindingMismatch
 )
 
 // sessionFrom returns the authenticated session, if any.
@@ -58,6 +64,39 @@ func sessionFrom(ctx context.Context) (authn.Session, bool) {
 func userFrom(ctx context.Context) (authn.User, bool) {
 	u, ok := ctx.Value(ctxUser).(authn.User)
 	return u, ok
+}
+
+// bindingMismatchFrom returns the refusal detail when the request carried a session that was
+// used from outside its binding, if any.
+func bindingMismatchFrom(ctx context.Context) (error, bool) {
+	err, ok := ctx.Value(ctxBindingMismatch).(error)
+	return err, ok
+}
+
+// refuseSessionBinding answers a request whose session was used from outside its binding.
+//
+// It writes the refusal itself and reports whether it did, so every guard calls it in one
+// line and the problem code is written once. The code is its own — not
+// authentication_required and not forbidden — because the session *is* valid and the caller
+// needs to know that signing in again, rather than retrying, is the fix.
+func (s *Server) refuseSessionBinding(w http.ResponseWriter, r *http.Request) bool {
+	err, mismatch := bindingMismatchFrom(r.Context())
+	if !mismatch {
+		return false
+	}
+	var detail *authn.BindingMismatch
+	what := "this session was signed in from a different address or browser"
+	if errors.As(err, &detail) {
+		switch detail.Field {
+		case "ip":
+			what = "this session was signed in from a different network address"
+		case "user_agent":
+			what = "this session was signed in from a different browser"
+		}
+	}
+	writeProblem(w, http.StatusForbidden, "session_binding_mismatch",
+		what+"; sign in again to continue from here")
+	return true
 }
 
 // Auth bundles the authentication dependencies the HTTP layer needs.
@@ -133,6 +172,17 @@ func (s *Server) loadSession(next http.Handler) http.Handler {
 			// the browser stops sending a dead token, then continue as anonymous.
 			s.clearSessionCookies(w)
 			next.ServeHTTP(w, r)
+			return
+		}
+		// The session authenticated; now ask whether it is being used from where it was
+		// signed in (IDN-16). A mismatch does not clear the cookie and does not continue as
+		// anonymous: clearing would sign the user out on a mobile network change, and
+		// continuing as anonymous would turn the refusal into a silent 401. The marker is
+		// carried instead, and the guards below refuse with a code that names the reason.
+		// Public pages keep rendering, because they never ask for an identity.
+		if berr := s.auth.Service.EnforceSessionBinding(r.Context(), sess, s.clientIP(r), r.UserAgent()); berr != nil {
+			ctx := context.WithValue(r.Context(), ctxBindingMismatch, berr)
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 		// An impersonated session is a real session for the customer whose identity is worn, so
@@ -327,6 +377,9 @@ func (s *Server) apiKeyIdentity(r *http.Request, presented string) (APIKeyIdenti
 // requireUser rejects an anonymous request.
 func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.refuseSessionBinding(w, r) {
+			return
+		}
 		if _, ok := userFrom(r.Context()); !ok {
 			writeProblem(w, http.StatusUnauthorized, "authentication_required", "sign in to continue")
 			return
@@ -384,6 +437,12 @@ func (s *Server) requirePermission(p authn.Permission, next http.HandlerFunc) ht
 // send it as a header from script.
 func (s *Server) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Before the token check, because a refused session attaches no session and would
+		// otherwise be reported as a missing CSRF token — a true statement that names the
+		// wrong problem.
+		if s.refuseSessionBinding(w, r) {
+			return
+		}
 		// A request authenticated by an API key is exempt. CSRF exists because a browser attaches
 		// cookies automatically; a bearer header is not attached by any browser, so there is
 		// nothing for a cross-site form to forge.

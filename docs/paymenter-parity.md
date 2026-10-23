@@ -108,13 +108,17 @@ locales where it ships twenty-four.
 
 | Mark | Count | Meaning |
 |---|---|---|
-| ✅ | **179** | equivalent or stronger |
-| 🟡 | **90** | partial, with the gap named in the row |
+| ✅ | **183** | equivalent or stronger |
+| 🟡 | **86** | partial, with the gap named in the row |
 | ❌ | **13** | absent |
 | ⛔ | **3** | deliberate divergence |
 
-The audit that produced this corrected **141 items the document had marked absent that are in fact
-built** — the most expensive kind of staleness, because it tells people to build what already
+Four of those moved from 🟡 to ✅ after the audit, when the fixes it prompted landed: the worker now
+records its runs and beats its heartbeat, the log writers are called from the request chain, signups
+are attributed to referrals, and a customer's language choice reaches the server. Those four had
+passing tests and no caller — defined, tested, and unreachable in production.
+
+The audit corrected **141 items the document had marked absent that are in fact built** — the most expensive kind of staleness, because it tells people to build what already
 exists. Per-section detail is in §3; the row-by-row evidence is the text of each row.
 
 ### 1.1 The five revenue blockers — all closed
@@ -671,15 +675,15 @@ Source: `routes/console.php`, `app/Console/Commands/*`, `app/Admin/Pages/*`,
 | OPS-05 | Cron: terminate after N days suspended | internal/lifecycle/terminate.go TerminateSuspended reads cronjob.terminate_days, refuses a service under an active hold or with nothing owed, and enqueues a terminate operation through the provisioning queue instead of writing services.status. | ✅ | P2 |
 | OPS-06 | Cron: close stale tickets | tickets.CloseStale is the ticket-autoclose job in cmd/billing/jobs.go, running every six hours against the tickets.autoclose_days setting. | ✅ | P3 |
 | OPS-07 | Cron: delete old email logs | internal/retention sweeps a closed allow-list of tables including notification_deliveries against per-table policies as the six-hour retention job. | ✅ | — |
-| OPS-08 | Cron statistics (`cron_stats`) + last run + next run + heartbeat | cron_runs and its readers at GET /api/v1/staff/cron and GET /api/v1/staff/cron/heartbeat exist in internal/httpapi/cron.go, but cmd/billing/worker.go calls neither httpapi.RecordRun nor httpapi.Beat, so the history and heartbeat are written only by tests. | 🟡 | P5 |
+| OPS-08 | Cron statistics (`cron_stats`) + last run + next run + heartbeat | cron_runs is written by the worker itself now: cmd/billing/worker.go opens a run via httpapi.StartRun before each job and closes it with the real outcome via httpapi.FinishRun, and a panicking job is recovered and its row closed as failed. GET /api/v1/staff/cron and /cron/heartbeat read it, and /automation shows it. | ✅ | P5 |
 | OPS-09 | Settings-driven cron thresholds (invoice days, reminder days, cancel/suspend/terminate days) | cronjob.order_cancel_days, cronjob.terminate_days and tickets.autoclose_days are declared in internal/settings/settings.go and rendered by web/src/views/system-settings.ts, but the dunning ladder still runs the hard-coded dunning.DefaultPolicy() constants from cmd/billing/jobs.go. | 🟡 | P5 |
 | OPS-10 | WHMCS importer (CLI, batch, currencies/users/admins/categories/config options/products/tickets/orders/services/cancellations/invoices/items/payments) | internal/importer/profile.go whmcsProfile reads only clients, invoices, invoice_items, services and transactions, so tickets, products, orders, cancellations, admins and currencies from a WHMCS dump are not imported. | 🟡 | P6 |
 | OPS-11 | Paymenter importer | source=paymenter selects paymenterProfile in internal/importer/profile.go behind POST /api/v1/staff/imports, with a dry run by default, idempotency on the legacy id and per-row rejection codes. | ✅ | P6 |
 | OPS-12 | Update checker + self-update + extension updates | internal/updates/check.go performs the cached check and POST /api/v1/staff/updates/approval records the approved target version, while applying it stays a deploy step named in the response's apply.steps - a deliberate deployment-shape divergence rather than a missing button. | ✅ | P6 |
 | OPS-13 | Telemetry (opt-in, daily, anonymous) | internal/updates/telemetry.go builds an opt-in payload of fixed integer counts with a preview and a telemetry_sends history, but delivery only happens when an operator calls POST /api/v1/staff/updates/telemetry/send, as no daily job exists. | 🟡 | P6 |
 | OPS-14 | Extension marketplace client (list, install, upload, update) | internal/marketplace installs an indexed extension only after a SHA-256 match and serves the verified artifact, but there is no upload of a local extension and no in-place update - a same-version reinstall with different bytes is refused as marketplace_already_installed. | 🟡 | P6 |
-| OPS-15 | Debug mode + HTTP/error/debug log tables | error_logs and http_logs have keyset viewers in internal/httpapi/logs.go and 'billing admin logs tail', but nothing in the middleware or worker calls WriteError/WriteHTTP, so both tables stay empty, and internal/settings/settings.go declares no debug-mode setting. | 🟡 | P5 |
-| OPS-16 | Scheduled task heartbeat (`ScheduleHeartbeatCommand`) | worker_heartbeat, Beat and the stale-derivation reader live in internal/httpapi/cron.go, but cmd/billing/worker.go never calls httpapi.Beat, so the row that would prove the scheduler is alive is only written by operator_test.go. | 🟡 | P5 |
+| OPS-15 | Debug mode + HTTP/error/debug log tables | error_logs and http_logs are written by withRequestLog in internal/httpapi, with actor and correlation ids, and a logging failure cannot fail the request. Keyset viewers in logs.go and 'billing admin logs tail' read them. | ✅ | P5 |
+| OPS-16 | Scheduled task heartbeat (`ScheduleHeartbeatCommand`) | worker_heartbeat is beaten from the worker loop on its own goroutine, not from inside jobs — a heartbeat that only updates when work happens cannot distinguish idle from dead. Beat and the stale-derivation reader are in internal/httpapi/cron.go. | ✅ | P5 |
 | OPS-17 | `app:init`, `app:user:create`, `app:user:password-reset`, `app:settings:change`, `app:logs` CLI | cmd/billing/main.go exposes serve, worker, migrate, doctor, admin and version and cmd/billing/admin.go adds create-user, create-customer, issue-invoice, purge-test-data, setting set and logs tail, but there is no password-reset subcommand. | 🟡 | P5 |
 | OPS-18 | Health/readiness | /healthz is liveness with no database touch and /readyz pings the pool and counts pending migrations (internal/httpapi/server.go), backed by 'billing doctor' in cmd/billing/main.go which also starts each configured extension. | ✅ | — |
 | OPS-19 | Metrics | /metrics is registered in internal/httpapi/routes_core.go as a staff-only route and exposes Prometheus counters and uptime. | ✅ | — |
@@ -692,7 +696,7 @@ Source: `extensions/Others/*`.
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
 | GRW-01 | Announcements: model, admin CRUD, home + dashboard display, nav entry, policy | internal/httpapi/announcements.go gives staff CRUD and a public feed with server-derived state gated on announcements.enabled, with a nav entry in web/src/ui/layout.ts and display on the storefront and dashboard through web/src/ui/announcement-feed.ts. | ✅ | P6 |
-| GRW-02 | Affiliates: affiliate model, signup tracking, referral middleware, order association, commission, payout view, policy, nav, API permission | internal/growth/affiliates.go has the model, exact-rational rate, suspend/reinstate/delete, payouts and web/src/views/affiliates.ts, but growth.AttributeSignup has no call site - handleRegister in internal/httpapi/register.go accepts no referral code and ReferralCodeFromRequest is never used - so no referral row is ever created. | 🟡 | P6 |
+| GRW-02 | Affiliates: affiliate model, signup tracking, referral middleware, order association, commission, payout view, policy, nav, API permission | Attribution is wired end to end: a ?ref=CODE on the storefront sets an HttpOnly SameSite=Lax billing_ref cookie from the document response (so intent survives browsing), handleRegister passes it into internal/register, and growth.AttributeSignup runs inside the customer-creation transaction under a savepoint so a bad code refuses the attribution and never the signup. The cookie is cleared once consumed and expires. | ✅ | P6 |
 | GRW-03 | Affiliate commission on order paid, recurring or one-time | growth.RecordSettledInvoiceCommission is called inside the settlement transaction in internal/fulfilment/applier.go and covers the first-order commission plus the recurring one from internal/growth/recurring.go, bounded by affiliates.recurring_cycles. | ✅ | P6 |
 | GRW-04 | Discord notifications: webhook, selectable events, rich embeds | internal/growth/discord.go posts rich embeds to the settings-held webhook URL for a closed set of selectable events (KnownEvents), best-effort after commit and never inside the transaction. | ✅ | P6 |
 | GRW-05 | Extension hook surface: events, navigation, permissions, admin resources/pages, API permissions, checkout config, service actions | internal/extproto/hooks.go and internal/httpapi/extension_hooks.go deliver nav items, permission-checked service actions and broker events to a v2 extension, but no web/src view consumes /api/v1/extensions/hooks and there are no admin-resource, page or checkout-config hooks. | 🟡 | P4 |
@@ -710,7 +714,7 @@ Source: `lang/*` (24 locales), `themes/*`, `app/Livewire/Components/LanguageSwit
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| I18N-01 | 24 locales, per-user locale, allowed-locale setting | locales and message_catalog are rows with coverage, a default enforced by partial unique index and an enabled set (internal/i18n, migration 0037_i18n.sql), but i18n.Store.SetUserLocale has no HTTP route and web/src/lib/i18n.ts persists the choice in localStorage only, so a per-user preference is never written. | 🟡 | P6 |
+| I18N-01 | 24 locales, per-user locale, allowed-locale setting | Per-user locale is now stored server-side (GET/PUT /api/v1/me/locale through i18n.Store.SetUserLocale, refused with 422 locale_not_enabled for a locale the catalogue cannot render), and the resolution chain prefers it over Accept-Language. Still 2 seeded locales against Paymenter's 24 — breadth only. | 🟡 | P6 |
 | I18N-02 | Language switcher in the client UI | languageSwitcher in web/src/lib/i18n.ts renders in web/src/ui/layout.ts and web/src/views/storefront.ts and is absent when one locale is enabled, and sign-in, register, forgot-password, storefront and portal all render through tx(). | ✅ | P6 |
 | I18N-03 | Translated validation/error messages | client-side field validation goes through catalogue keys such as register.error.name_required in web/src/views/register.ts, but the problem details written by writeProblem in internal/httpapi are English strings with no catalogue keys. | 🟡 | P6 |
 | I18N-04 | Theme packages (`themes/*`, theme settings, color tokens) | web/src/styles/tokens.css is one token vocabulary with light and dark themes, extended by the per-mode accent overlay in web/src/lib/brand.ts, but there are no theme packages, presets or per-scope overrides (docs/branding.md section 5). | 🟡 | P6 |

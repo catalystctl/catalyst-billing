@@ -220,10 +220,31 @@ func templateFields(t Template) []templateField {
 	}
 }
 
-// unknownPlaceholderFinding is one unknown placeholder and the field it was written in.
-type unknownPlaceholderFinding struct {
+// TemplateFieldProblem is one unknown placeholder and the field it was written in.
+//
+// It is exported so the staff API can answer with a *field list* rather than only a sentence: a
+// client that knows which field and which word is wrong can point at the textarea and translate
+// the refusal into the reader's language, where the server's English sentence cannot be. The
+// message is still built from the same findings, so the two representations cannot disagree.
+type TemplateFieldProblem struct {
+	// Field is the editor's label for the input: subject, body, inbox title, inbox body, inbox
+	// link. It is the label the operator sees, not the struct field name.
 	Field string
-	Name  string
+	// Name is the placeholder without its braces.
+	Name string
+}
+
+// unknownPlaceholderFinding is the internal alias, kept so the call sites below read the same as
+// they did before the type was exported.
+type unknownPlaceholderFinding = TemplateFieldProblem
+
+// TemplateFieldProblems lists every unknown placeholder with the field it was written in.
+//
+// An event that is not in the catalogue yields nil rather than "every placeholder is unknown":
+// the handler refuses an unknown event key before this is reached, and inventing findings for a
+// template that cannot be stored would be a misleading field list.
+func TemplateFieldProblems(t Template) []TemplateFieldProblem {
+	return unknownPlaceholderFindings(t)
 }
 
 // unknownPlaceholderFindings returns every unknown placeholder, with its field, in the order
@@ -275,12 +296,29 @@ func UnknownPlaceholders(t Template) []string {
 // sentence instead of a Go error chain ("notify: a template uses … : invoice_paid does not
 // supply …"). errors.Is still finds ErrUnknownPlaceholder, so the handlers match on the same
 // sentinel and the mapping does not change.
-type unknownPlaceholderError struct{ detail string }
+type unknownPlaceholderError struct {
+	detail   string
+	findings []TemplateFieldProblem
+}
 
 func (e unknownPlaceholderError) Error() string { return e.detail }
 
 // Is reports this error as ErrUnknownPlaceholder.
 func (e unknownPlaceholderError) Is(target error) bool { return target == ErrUnknownPlaceholder }
+
+// UnknownPlaceholderFields returns the field-level findings behind an unknown-placeholder
+// refusal, or nil for any other error.
+//
+// The API uses it to answer with a machine-readable field list next to the sentence. The list is
+// what lets a client translate the refusal and point at the right textarea; the sentence stays for
+// the operator reading English, and neither is derived from the other at request time.
+func UnknownPlaceholderFields(err error) []TemplateFieldProblem {
+	var target unknownPlaceholderError
+	if errors.As(err, &target) {
+		return target.findings
+	}
+	return nil
+}
 
 // ValidateTemplate refuses a template whose placeholders the renderer does not know.
 //
@@ -312,7 +350,7 @@ func ValidateTemplate(t Template) error {
 		}
 		msg += ". It supplies: " + strings.Join(available, ", ")
 	}
-	return unknownPlaceholderError{detail: msg}
+	return unknownPlaceholderError{detail: msg, findings: findings}
 }
 
 // Preview is a draft template rendered for the operator.
@@ -325,6 +363,27 @@ func ValidateTemplate(t Template) error {
 type Preview struct {
 	Mail  Rendered
 	InApp Rendered
+	// HTML is the branded multipart alternative the mail would carry, or "" when branding is off.
+	// It is returned so the editor can show what the recipient's client will render, and so an
+	// operator can confirm the header and footer without sending themselves a mail.
+	HTML string
+	// Brand is the branding the HTML was rendered with. The editor draws its preview frame from
+	// these values rather than parsing the HTML.
+	Brand PreviewBrand
+}
+
+// PreviewBrand is the branding facts a preview needs to draw its frame.
+type PreviewBrand struct {
+	// HTML reports whether a branded part would be sent at all.
+	HTML bool `json:"html"`
+	// Header is the line above the body; it defaults to the company name.
+	Header string `json:"header"`
+	// Footer is the small print below the body, empty when the operator set none.
+	Footer string `json:"footer"`
+	// Accent is the colour the preview's rule and links use.
+	Accent string `json:"accent"`
+	// LogoURL is the absolute logo URL, empty when none is configured.
+	LogoURL string `json:"logo_url"`
 }
 
 // PreviewTemplate renders a draft template with the sample data for its event.
@@ -350,8 +409,20 @@ func PreviewTemplate(ctx context.Context, q Querier, t Template) (Preview, error
 	if q != nil {
 		vars["company_name"] = companyName(ctx, q)
 	}
+	mail := Render(t, absoluteLinks(vars))
+	// The preview renders the branded part with the same function the send path uses, so an
+	// operator cannot be shown a shell that the customer will not receive.
+	brand := MailBrandFor(ctx, q)
 	return Preview{
-		Mail:  Render(t, absoluteLinks(vars)),
+		Mail:  mail,
 		InApp: Render(t, vars),
+		HTML:  brand.HTMLPart(mail, publicURL()),
+		Brand: PreviewBrand{
+			HTML:    brand.HTML,
+			Header:  brand.Header,
+			Footer:  brand.Footer,
+			Accent:  brand.Accent,
+			LogoURL: brand.LogoURL,
+		},
 	}, nil
 }

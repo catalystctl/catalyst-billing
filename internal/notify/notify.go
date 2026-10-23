@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/catalyst/billing/internal/growth"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
 )
@@ -36,8 +37,23 @@ const (
 //
 // It is an interface so the tests can assert what would have been sent, and so an
 // installation without SMTP can use the log sender and still have a delivery record.
+//
+// The contract deliberately stays "one plain-text body". A sender that can also carry a branded
+// HTML alternative opts in by implementing HTMLSender, and one that does not keeps working
+// unchanged: the queue falls back to the text body rather than handing a sender markup it would
+// have to interpret. That is what makes branding additive instead of a new requirement on every
+// implementation and every test double.
 type Sender interface {
 	Send(ctx context.Context, to, subject, body string) error
+}
+
+// HTMLSender is a Sender that can deliver a multipart/alternative message.
+//
+// SMTPSender and LogSender implement it. The plain-text argument is always the message's real
+// body, so an implementation is free to ignore the html argument — it must never be the only part
+// delivered.
+type HTMLSender interface {
+	SendHTML(ctx context.Context, to, subject, text, htmlPart string) error
 }
 
 // Message is one queued delivery.
@@ -46,6 +62,10 @@ type Message struct {
 	To      string
 	Subject string
 	Body    string
+	// HTML is the branded multipart alternative, or "" for a plain-text message. It is stored
+	// with the row because the drain happens later, in another process: the message that is
+	// claimed must be the message that was rendered inside the transaction.
+	HTML string
 	// DedupeKey makes enqueueing idempotent, e.g. "invoice_issued:<invoice id>".
 	// Empty means "always enqueue", which is only correct for a message a human
 	// explicitly asked for.
@@ -61,11 +81,21 @@ type Queue struct {
 	MaxAttempts int
 	// Now is injectable for tests.
 	Now func() time.Time
+	// Mirror posts delivered events to the operator's Discord channel. It is nil by default in a
+	// zero Queue and set by NewQueue; a test replaces it with a double to assert what was posted
+	// without an HTTP client.
+	Mirror Mirror
 }
 
 // NewQueue constructs a Queue.
 func NewQueue(pool *store.Pool) *Queue {
-	return &Queue{pool: pool, MaxAttempts: 5, Now: func() time.Time { return time.Now().UTC() }}
+	q := &Queue{pool: pool, MaxAttempts: 5, Now: func() time.Time { return time.Now().UTC() }}
+	if pool != nil {
+		// The mirror is wired here rather than by every caller because "the operator selected this
+		// event" is a property of the installation, not of which subsystem emitted the event.
+		q.Mirror = discordMirror{notifier: growth.NewDiscordNotifier(pool)}
+	}
+	return q
 }
 
 // Enqueue writes a delivery row inside the caller's transaction.
@@ -85,11 +115,12 @@ func (q *Queue) Enqueue(ctx context.Context, tx pgx.Tx, m Message) (id string, c
 		key = m.DedupeKey
 	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO notification_deliveries (kind, to_address, subject, body, status, dedupe_key)
-		VALUES ($1, $2, $3, $4, 'queued', $5)
+		INSERT INTO notification_deliveries
+			(kind, to_address, subject, body, body_html, status, dedupe_key)
+		VALUES ($1, $2, $3, $4, $5, 'queued', $6)
 		ON CONFLICT (dedupe_key) DO NOTHING
 		RETURNING id`,
-		m.Kind, m.To, m.Subject, m.Body, key).Scan(&id)
+		m.Kind, m.To, m.Subject, m.Body, m.HTML, key).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Already queued under this dedupe key.
 		return "", false, nil
@@ -112,10 +143,10 @@ func (q *Queue) Suppress(ctx context.Context, tx pgx.Tx, m Message, reason strin
 	}
 	_, err := tx.Exec(ctx, `
 		INSERT INTO notification_deliveries
-			(kind, to_address, subject, body, status, dedupe_key, last_error)
-		VALUES ($1, $2, $3, $4, 'suppressed', $5, $6)
+			(kind, to_address, subject, body, body_html, status, dedupe_key, last_error)
+		VALUES ($1, $2, $3, $4, $5, 'suppressed', $6, $7)
 		ON CONFLICT (dedupe_key) DO NOTHING`,
-		m.Kind, m.To, m.Subject, m.Body, key, reason)
+		m.Kind, m.To, m.Subject, m.Body, m.HTML, key, reason)
 	if err != nil {
 		return fmt.Errorf("notify: record suppression: %w", err)
 	}
@@ -129,6 +160,7 @@ type Delivery struct {
 	To       string
 	Subject  string
 	Body     string
+	HTML     string
 	Attempts int
 }
 
@@ -167,7 +199,7 @@ func (q *Queue) RunOnce(ctx context.Context, sender Sender, limit int) (Result, 
 		SET status = 'sending'
 		FROM due
 		WHERE d.id = due.id
-		RETURNING d.id, d.kind, d.to_address, d.subject, d.body, d.attempts`,
+		RETURNING d.id, d.kind, d.to_address, d.subject, d.body, d.body_html, d.attempts`,
 		q.MaxAttempts, now, limit)
 	if err != nil {
 		return Result{}, fmt.Errorf("notify: claim deliveries: %w", err)
@@ -175,7 +207,7 @@ func (q *Queue) RunOnce(ctx context.Context, sender Sender, limit int) (Result, 
 	var claimed []Delivery
 	for rows.Next() {
 		var d Delivery
-		if err := rows.Scan(&d.ID, &d.Kind, &d.To, &d.Subject, &d.Body, &d.Attempts); err != nil {
+		if err := rows.Scan(&d.ID, &d.Kind, &d.To, &d.Subject, &d.Body, &d.HTML, &d.Attempts); err != nil {
 			rows.Close()
 			return Result{}, fmt.Errorf("notify: scan delivery: %w", err)
 		}
@@ -190,7 +222,7 @@ func (q *Queue) RunOnce(ctx context.Context, sender Sender, limit int) (Result, 
 	var res Result
 	for _, d := range claimed {
 		res.Attempts++
-		if err := sender.Send(ctx, d.To, d.Subject, d.Body); err != nil {
+		if err := sendOne(ctx, sender, d); err != nil {
 			res.Failed++
 			// Exponential backoff in minutes, capped so a permanently failing address
 			// stops consuming a slot on every pass.
@@ -213,7 +245,25 @@ func (q *Queue) RunOnce(ctx context.Context, sender Sender, limit int) (Result, 
 			return res, fmt.Errorf("notify: mark sent: %w", err)
 		}
 	}
+	// The mirror runs after the mails are settled and never changes the pass's result: a chat
+	// webhook that is down must not make a delivered message look failed.
+	q.mirrorDelivered(ctx, limit)
 	return res, nil
+}
+
+// sendOne delivers one claimed row, using the HTML alternative only when there is one and the
+// sender understands it.
+//
+// The fallback is the point: a Sender that predates this feature (a test double, an out-of-tree
+// integration) receives the plain body, never the markup. A failure to deliver must not be caused
+// by a decoration the recipient's client did not ask for.
+func sendOne(ctx context.Context, sender Sender, d Delivery) error {
+	if d.HTML != "" {
+		if hs, ok := sender.(HTMLSender); ok {
+			return hs.SendHTML(ctx, d.To, d.Subject, d.Body, d.HTML)
+		}
+	}
+	return sender.Send(ctx, d.To, d.Subject, d.Body)
 }
 
 func truncate(s string, n int) string {
@@ -240,6 +290,21 @@ func (s LogSender) Send(_ context.Context, to, subject, body string) error {
 	}
 	logger.Info("notification (log sender)",
 		"to", to, "subject", subject, "body_bytes", len(body))
+	return nil
+}
+
+// SendHTML implements HTMLSender.
+//
+// It logs the size of the HTML part rather than its content: a development installation's log is
+// not the place to read a customer's invoice, and the fact that both parts were rendered is what
+// a developer wants to know.
+func (s LogSender) SendHTML(ctx context.Context, to, subject, text, htmlPart string) error {
+	logger := s.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Info("notification (log sender)",
+		"to", to, "subject", subject, "body_bytes", len(text), "html_bytes", len(htmlPart))
 	return nil
 }
 

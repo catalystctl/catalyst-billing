@@ -49,6 +49,7 @@ import (
 
 	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/money"
+	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/settings"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
@@ -171,11 +172,25 @@ type Agreements struct {
 	Now func() time.Time
 	// auditor, when set, attributes the audit rows to the request that caused them.
 	auditor audit.Auditor
+	// notifier, when set, tells the customer a charge was declined. It is nil in the paths that
+	// have no outbox (a test, a CLI), and the decline record is written either way: the message is
+	// a courtesy, the state change is the fact.
+	notifier *notify.Queue
 }
 
 // NewAgreements constructs an Agreements store.
 func NewAgreements(pool *store.Pool) *Agreements {
 	return &Agreements{pool: pool, Now: func() time.Time { return time.Now().UTC() }}
+}
+
+// WithNotifier attaches the outbox that carries the payment-failed notice.
+//
+// It is optional because the attempt record and the method's failure state are the durable facts;
+// a charge path that only works when a mail queue is wired would silently stop recording declines
+// in a deployment without one.
+func (a *Agreements) WithNotifier(q *notify.Queue) *Agreements {
+	a.notifier = q
+	return a
 }
 
 // WithCharger attaches the adapter that can charge a saved method.
@@ -870,7 +885,8 @@ func (a *Agreements) ChargeInvoice(ctx context.Context, invoiceID string) (Charg
 		if res.AmountMinor > 0 && res.AmountMinor != outstanding.Minor() {
 			// Recorded as a failure rather than applied: an amount that is not what was asked
 			// for is an anomaly, and allocating it would launder it into revenue.
-			_ = a.failAttempt(ctx, attemptID, method.ID, "amount_mismatch")
+			_ = a.failAttempt(ctx, attemptID, invoiceID, method.ID, "amount_mismatch",
+				"the amount the provider charged did not match the invoice, so it was not applied; the invoice is still open")
 			return out, fmt.Errorf("%w: charged %d, owed %d",
 				ErrAmountMismatch, res.AmountMinor, outstanding.Minor())
 		}
@@ -901,7 +917,8 @@ func (a *Agreements) ChargeInvoice(ctx context.Context, invoiceID string) (Charg
 	if code == "" {
 		code = res.Status
 	}
-	if err := a.failAttempt(ctx, attemptID, method.ID, code); err != nil {
+	if err := a.failAttempt(ctx, attemptID, invoiceID, method.ID, code,
+		res.FailureMessage); err != nil {
 		return out, err
 	}
 	out.Status = ChargeDeclined
@@ -1060,7 +1077,8 @@ func (a *Agreements) settle(ctx context.Context, invoiceID string, m Method, pro
 //
 // The invoice is not touched. It stays open, and dunning — which already escalates an open,
 // past-due invoice — takes it from there.
-func (a *Agreements) failAttempt(ctx context.Context, attemptID, methodID, code string) error {
+func (a *Agreements) failAttempt(ctx context.Context, attemptID, invoiceID, methodID, code,
+	customerMessage string) error {
 	return a.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			UPDATE payment_attempts SET status = 'failed', updated_at = now() WHERE id = $1`,
@@ -1073,9 +1091,21 @@ func (a *Agreements) failAttempt(ctx context.Context, attemptID, methodID, code 
 			WHERE id = $1`, methodID, code); err != nil {
 			return fmt.Errorf("payments: record method failure: %w", err)
 		}
-		return a.record(ctx, tx, "payment_method.charge_declined", methodID, map[string]any{
+		if err := a.record(ctx, tx, "payment_method.charge_declined", methodID, map[string]any{
 			"code": code,
-		})
+		}); err != nil {
+			return err
+		}
+		// Tell the customer, in the same transaction as the decline. The error is deliberately
+		// swallowed: rolling this transaction back would leave the attempt in 'created', and the
+		// next run would charge the card again — the exact retry loop this function exists to
+		// prevent. A missing template is an operator problem to fix; it must not resurrect a
+		// declined charge.
+		if a.notifier != nil {
+			_, _ = notify.InvoicePaymentFailedForInvoice(ctx, tx, a.notifier, invoiceID,
+				customerMessage, a.Now())
+		}
+		return nil
 	})
 }
 

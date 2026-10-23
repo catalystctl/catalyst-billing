@@ -133,7 +133,7 @@ func registerPaymentMethods(r *router) {
 // agreementsFor builds the domain service for one request, with the request's auditor so
 // the mandate audit row names the customer who gave it.
 func (s *Server) agreementsFor(r *http.Request) *payments.Agreements {
-	svc := payments.NewAgreements(s.pool).WithAuditor(s.auditorFor(r, ""))
+	svc := payments.NewAgreements(s.pool).WithAuditor(s.auditorFor(r, "")).WithNotifier(s.notify)
 	if w := currentOffSession(); w.charger != nil {
 		svc = svc.WithCharger(w.charger).WithApplier(w.applier).WithAccount(w.account)
 	}
@@ -692,7 +692,9 @@ func chargeOutcomeJSON(out payments.ChargeOutcome) map[string]any {
 }
 
 func (s *Server) chargeService(ctx context.Context) (*payments.Agreements, func(), error) {
-	svc := payments.NewAgreements(s.pool)
+	// The notifier is what makes a declined charge reach the customer instead of only the
+	// payment_attempts table (NTF-07).
+	svc := payments.NewAgreements(s.pool).WithNotifier(s.notify)
 	if w := currentOffSession(); w.charger != nil {
 		return svc.WithCharger(w.charger).WithApplier(w.applier).WithAccount(w.account), func() {}, nil
 	}

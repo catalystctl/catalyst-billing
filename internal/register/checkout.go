@@ -1468,27 +1468,47 @@ func (s *CheckoutService) queueInvoice(ctx context.Context, tx pgx.Tx, invoiceID
 	var (
 		email    string
 		verified bool
+		name     string
+		userID   *string
 	)
 	if err := tx.QueryRow(ctx, `
-		SELECT c.email, COALESCE(u.email_verified_at IS NOT NULL, false)
+		SELECT c.email, COALESCE(u.email_verified_at IS NOT NULL, false), c.name,
+		       (SELECT ca.user_id::text FROM customer_accounts ca
+		         WHERE ca.customer_id = c.id
+		         ORDER BY (ca.role = 'owner') DESC, ca.created_at
+		         LIMIT 1)
 		FROM customers c
 		LEFT JOIN users u ON lower(u.email) = lower(c.email)
 		WHERE c.id = $1
 		ORDER BY u.created_at
-		LIMIT 1`, customerID).Scan(&email, &verified); err != nil {
+		LIMIT 1`, customerID).Scan(&email, &verified, &name, &userID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		return fmt.Errorf("checkout: read invoice recipient: %w", err)
 	}
-	msg := notify.InvoiceIssuedMessage(email, number, total.Format(),
-		dueAt.UTC().Format(time.RFC3339), invoiceID)
-	if !verified {
-		// "We did not send it" and "we failed to send it" are different answers to a
-		// support ticket, and only one of them is a bug.
-		return s.queue.Suppress(ctx, tx, msg, "recipient address is not verified")
+	in := notify.InvoiceIssuedInput{
+		Email:        email,
+		InvoiceID:    invoiceID,
+		Number:       number,
+		CustomerName: name,
+		Total:        total.Format(),
+		DueAt:        dueAt,
 	}
-	_, _, err := s.queue.Enqueue(ctx, tx, msg)
+	if userID != nil {
+		in.UserID = *userID
+	}
+	if !verified {
+		// "We did not send it" and "we failed to send it" are different answers to a support
+		// ticket, and only one of them is a bug. The hold records the rendered message as
+		// suppressed; the inbox row is still written, because the panel is a channel we know the
+		// customer can reach.
+		in.HoldMailReason = "recipient address is not verified"
+	}
+	// The wording now comes from the editable new_invoice_created template, so what a customer
+	// reads is the operator's sentence on the same branded shell as every other mail — instead of
+	// a Go literal that no screen could change.
+	_, err := notify.InvoiceIssued(ctx, tx, s.queue, in)
 	return err
 }
 

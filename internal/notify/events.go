@@ -150,6 +150,12 @@ type Target struct {
 	// Vars are the template variables. The event functions below build these, so a caller
 	// never has to know a template's vocabulary.
 	Vars map[string]string
+	// MailHold, when non-empty, is why the caller knows the mail channel must not be used even
+	// though the recipient exists — an unverified address, a bounced domain. The mail is then
+	// recorded as suppressed with this reason instead of being sent, and the inbox channel is
+	// unaffected. It exists so a caller does not have to choose between "send to an address we do
+	// not trust" and "drop the record of what we would have said".
+	MailHold string
 }
 
 // dispatch is the one implementation every event function calls.
@@ -191,6 +197,11 @@ func dispatch(ctx context.Context, tx pgx.Tx, queue *Queue, eventKey string, d T
 	rendered := Render(tmpl, vars)
 	// The mail gets the absolute form of the same links.
 	mailRendered := Render(tmpl, absoluteLinks(vars))
+	// The branded HTML shell is rendered here, inside the same transaction, because the drain
+	// runs later in another process: what it claims must be what this change produced, with the
+	// brand as it was when the change committed. `mail.brand_html = false` yields "", which is a
+	// plain-text mail, and the text body below is never affected either way.
+	mailHTML := MailBrandFor(ctx, tx).HTMLPart(mailRendered, publicURL())
 
 	// ---- mail ----
 	//
@@ -214,8 +225,23 @@ func dispatch(ctx context.Context, tx pgx.Tx, queue *Queue, eventKey string, d T
 				To:        d.Email,
 				Subject:   mailRendered.Subject,
 				Body:      mailRendered.Body,
+				HTML:      mailHTML,
 				DedupeKey: dedupeKey(eventKey, d.DedupeKey),
 			}, "mail.disable is set"); err != nil {
+				return res, err
+			}
+		}
+	} else if strings.TrimSpace(d.MailHold) != "" {
+		res.Reason = "mail_held"
+		if queue != nil {
+			if err := queue.Suppress(ctx, tx, Message{
+				Kind:      eventKey,
+				To:        d.Email,
+				Subject:   mailRendered.Subject,
+				Body:      mailRendered.Body,
+				HTML:      mailHTML,
+				DedupeKey: dedupeKey(eventKey, d.DedupeKey),
+			}, d.MailHold); err != nil {
 				return res, err
 			}
 		}
@@ -224,7 +250,7 @@ func dispatch(ctx context.Context, tx pgx.Tx, queue *Queue, eventKey string, d T
 	} else if queue == nil {
 		return res, fmt.Errorf("notify: %s: no queue configured", eventKey)
 	} else {
-		created, err := enqueueMail(ctx, tx, queue, eventKey, d, mailRendered)
+		created, err := enqueueMail(ctx, tx, queue, eventKey, d, mailRendered, mailHTML)
 		if err != nil {
 			return res, err
 		}
@@ -297,7 +323,7 @@ func absoluteLinks(vars map[string]string) map[string]string {
 // not marked as a copy in the text; a deployment that needs "this was a copy" in the message
 // needs a header, which means a wider Sender, which is the integrator's call.
 func enqueueMail(ctx context.Context, tx pgx.Tx, queue *Queue, eventKey string,
-	d Target, r Rendered) (bool, error) {
+	d Target, r Rendered, htmlPart string) (bool, error) {
 
 	base := dedupeKey(eventKey, d.DedupeKey)
 	recipients := make([]struct {
@@ -331,6 +357,7 @@ func enqueueMail(ctx context.Context, tx pgx.Tx, queue *Queue, eventKey string,
 			To:        rcpt.to,
 			Subject:   r.Subject,
 			Body:      r.Body,
+			HTML:      htmlPart,
 			DedupeKey: base,
 		}
 		if rcpt.role != "" && base != "" {
@@ -448,6 +475,7 @@ func InvoiceIssued(ctx context.Context, tx pgx.Tx, queue *Queue, in InvoiceIssue
 	}
 	return dispatch(ctx, tx, queue, EventNewInvoiceCreated, Target{
 		UserID: in.UserID, Email: in.Email, DedupeKey: in.InvoiceID, Vars: vars,
+		MailHold: in.HoldMailReason,
 	})
 }
 
@@ -464,6 +492,10 @@ type InvoiceIssuedInput struct {
 	DueAt time.Time
 	// InvoiceURL is the panel path. A relative path is made absolute for the mail.
 	InvoiceURL string
+	// HoldMailReason suppresses the mail while still recording it, e.g. "recipient address is
+	// not verified". The inbox row is unaffected: the invoice is still visible in the panel,
+	// which is the one channel we know the customer can reach.
+	HoldMailReason string
 }
 
 // InvoicePaid thanks a customer for a payment.

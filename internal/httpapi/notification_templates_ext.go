@@ -153,6 +153,11 @@ func (s *Server) handlePreviewTemplate(w http.ResponseWriter, r *http.Request) {
 			"body":          preview.Mail.Body,
 			"cc_addresses":  preview.Mail.CC,
 			"bcc_addresses": preview.Mail.BCC,
+			// The branded alternative the recipient's client will render, and the facts the
+			// editor draws its preview frame from. Both come from the same render path the send
+			// uses, so the preview cannot show a shell the customer will not receive.
+			"html":  preview.HTML,
+			"brand": preview.Brand,
 		},
 		// The inbox row as it would be stored: panel-relative links, which is what the panel can
 		// resolve behind a proxy.

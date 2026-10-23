@@ -8,6 +8,14 @@ interface MeResponse {
   permissions: string[] | null;
   csrf_token: string;
   expires_at: string;
+  /** Set while an operator is acting as this account. Every identity read carries it, so the
+   *  banner survives a reload, a second tab and a bookmarked URL. */
+  impersonating?: boolean;
+  /** The operator's user id, alongside the flag. */
+  impersonated_by?: string | null;
+  /** The operator's email, so the banner can name a person. Optional: a server that cannot
+   *  resolve it still reports the id, and the client falls back to that. */
+  impersonated_by_email?: string | null;
   /** Set by an operator's MFA reset: the account owes the panel a new second factor. */
   mfa_enrolment_required?: boolean;
   /** The same facts, in full. Absent on a server built before the field existed. */
@@ -27,6 +35,11 @@ export async function loadSession(api: Api): Promise<Session | null> {
       permissions: new Set(me.permissions ?? []),
       csrfToken: me.csrf_token,
       expiresAt: me.expires_at,
+      // Absent means "an ordinary session". A server that does not report the field is not a
+      // server that is impersonating, so the default is the safe one: no banner, no stop button.
+      impersonating: me.impersonating === true,
+      impersonatedBy: me.impersonated_by ?? "",
+      impersonatedByEmail: me.impersonated_by_email ?? "",
       // The server may omit the field on a build without the route; absent means "nothing owed".
       mfaEnrolmentRequired: me.mfa_enrolment_required === true,
       // Defaulted rather than trusted: a screen that reads `session.mfa.has_mfa` on a server that

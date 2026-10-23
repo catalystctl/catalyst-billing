@@ -409,12 +409,6 @@ RECORDED = {
     "api GET /api/v1/staff/credit-notes/{id}/pdf":
         "GAP: an operator issues a credit note from /invoices/:id and cannot download the PDF. "
         "Recorded: web/src/views/invoice.ts is another package's file.",
-    "api POST /api/v1/portal/impersonation/stop":
-        "GAP: no screen starts or stops an impersonation, so the audited impersonation feature "
-        "is API-only. Recorded: the customer screen is another package's file.",
-    "write POST /api/v1/staff/users/{id}/impersonate":
-        "GAP: nothing in the panel starts an impersonation; the API exists and is audited. "
-        "Recorded: the customer screen is another package's file.",
     "write POST /api/v1/portal/invoices/{id}/pay-with-credit":
         "GAP: a customer with a credit balance cannot spend it on an invoice from the portal. "
         "Recorded: the portal invoice screen is another package's file.",

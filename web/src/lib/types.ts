@@ -40,6 +40,17 @@ export interface Session {
   permissions: Set<string>;
   csrfToken: string;
   expiresAt: string;
+  /** True when this session was opened by an operator acting as this account. The shell renders
+   *  the banner from it and refuses to let the operator forget it. Reported by
+   *  `GET /api/v1/auth/me` on every identity read, so a reload, a second tab and a bookmarked URL
+   *  all raise it again. */
+  impersonating: boolean;
+  /** The operator's user id, when impersonating; empty otherwise. It is what makes the banner
+   *  name a person instead of saying "somebody". */
+  impersonatedBy: string;
+  /** The operator's email, when the server could resolve it. Empty when it could not, and the
+   *  banner falls back to the id rather than inventing a name. */
+  impersonatedByEmail: string;
   /** True when the account owes the panel a second factor: an operator reset it, or it is
    *  otherwise required. The shell sends the customer to the enrolment screen while it is set,
    *  and `ctx.refreshSession()` clears it once a new factor is confirmed. */

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -134,10 +135,160 @@ func (s *Server) loadSession(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// An impersonated session is a real session for the customer whose identity is worn, so
+		// every other guard in this server answers for them — which is exactly why the actions
+		// that would turn looking into acting have to be refused here, before any of them run.
+		// See impersonationRefused for what is refused and why it is refused in one place.
+		if sess.ImpersonatedBy != "" {
+			if rule, refused := impersonationRefusal(r.Method, r.URL.Path); refused {
+				writeProblem(w, http.StatusForbidden, "impersonating", rule.refusal())
+				return
+			}
+		}
 		ctx := context.WithValue(r.Context(), ctxSession, sess)
 		ctx = context.WithValue(ctx, ctxUser, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// ------------------------------------------------------- impersonation limits --
+
+// impersonationRule is one request an impersonated session may not make.
+type impersonationRule struct {
+	Method string
+	// Pattern is the router's own pattern, `{id}` wildcards included, so this table and the
+	// route table are written in the same language and a test can compare them.
+	Pattern string
+	// Noun names the family of action in the refusal: "money", "credentials", "account".
+	Noun string
+}
+
+// refusal is the sentence the caller reads. It names the family rather than the endpoint so the
+// refusal explains itself without describing the permission model to whoever is holding the
+// borrowed session.
+func (r impersonationRule) refusal() string {
+	return "an impersonated session cannot change " + r.Noun +
+		"; stop impersonating and act as yourself"
+}
+
+// impersonationRefused is the list of actions an impersonated session cannot take.
+//
+// Impersonation exists so an operator can *see* what a customer sees. Every route below turns
+// looking into acting as somebody else, and the families are refused for different reasons:
+//
+//   - money: paying an invoice, spending credit, checking out an order, refunding a payment.
+//     A transaction the customer never authorised is attributed to the customer, and the ledger
+//     is then wrong in a way no audit row can undo.
+//   - credentials: changing a password, enrolling or removing a second factor, unlinking a
+//     sign-in identity, minting an API key, granting a role. Each one hands the operator a way
+//     back into the account after the impersonation ends. That is a takeover, not support.
+//   - account: closing the record. It ends the login and its sessions, and there is no undo.
+//
+// The refusal lives in the middleware every request passes through (loadSession), not in the
+// handlers. A handler-by-handler guard is a list that grows a hole the first time somebody adds
+// a payment endpoint without knowing this file exists, and its completeness cannot be proved.
+// Here the rule is one table, and impersonation_test.go checks every entry against the live route
+// table — so an entry cannot go stale, and the routes that must stay reachable (reading the
+// customer, /auth/me, stopping the impersonation) are proven reachable by the same test.
+//
+// Staff routes are listed even though an impersonated session cannot hold a staff permission
+// today. The rule is a property of the session, not of the current permission model: the day
+// somebody allows impersonating a colleague, the money and credential actions are already shut.
+var impersonationRefused = []impersonationRule{
+	// -- money --
+	{http.MethodPost, "/api/v1/portal/invoices/{id}/checkout", "money"},
+	{http.MethodPost, "/api/v1/portal/invoices/{id}/pay-with-credit", "money"},
+	{http.MethodPost, "/api/v1/portal/credits/deposit", "money"},
+	{http.MethodPost, "/api/v1/portal/orders", "money"},
+	{http.MethodPost, "/api/v1/staff/payments", "money"},
+	{http.MethodPost, "/api/v1/staff/payments/{id}/refunds", "money"},
+	{http.MethodPost, "/api/v1/staff/invoices/{id}/payments", "money"},
+	{http.MethodPost, "/api/v1/staff/invoices/{id}/credit-notes", "money"},
+	{http.MethodPost, "/api/v1/staff/invoices/{id}/void", "money"},
+	{http.MethodPost, "/api/v1/staff/customers/{id}/credit", "money"},
+	{http.MethodPost, "/api/v1/staff/customers/{id}/credit/apply", "money"},
+	{http.MethodPost, "/api/v1/staff/customers/{id}/credit/debit", "money"},
+	{http.MethodPost, "/api/v1/staff/affiliates/{id}/payout", "money"},
+	{http.MethodPost, "/api/v1/staff/affiliates/{id}/payouts", "money"},
+
+	// -- credentials --
+	{http.MethodPost, "/api/v1/auth/password/change", "credentials"},
+	{http.MethodGet, "/api/v1/auth/mfa", "credentials"},
+	{http.MethodPost, "/api/v1/auth/mfa/enrol", "credentials"},
+	{http.MethodPost, "/api/v1/auth/mfa/confirm", "credentials"},
+	{http.MethodPost, "/api/v1/auth/mfa/disable", "credentials"},
+	{http.MethodDelete, "/api/v1/portal/social-links/{id}", "credentials"},
+	{http.MethodPost, "/api/v1/staff/users/{id}/password", "credentials"},
+	{http.MethodPost, "/api/v1/staff/users/{id}/mfa/reset", "credentials"},
+	{http.MethodPost, "/api/v1/staff/api-keys", "credentials"},
+	{http.MethodDelete, "/api/v1/staff/api-keys/{id}", "credentials"},
+	{http.MethodPut, "/api/v1/staff/api-keys/{id}/ip-allowlist", "credentials"},
+	{http.MethodPost, "/api/v1/staff/roles", "credentials"},
+	{http.MethodPut, "/api/v1/staff/roles/{id}/permissions", "credentials"},
+
+	// -- account --
+	{http.MethodPost, "/api/v1/portal/account-closure", "account"},
+}
+
+// impersonationRefusal reports which rule refuses this request, if any.
+//
+// The path is cleaned first. `path.Clean` collapses `//`, `.` and a trailing slash, so
+// `/api/v1/portal/credits/deposit/` is judged by the same rule as the canonical spelling instead
+// of sliding past it into whatever the mux decides to do with the variant.
+func impersonationRefusal(method, rawPath string) (impersonationRule, bool) {
+	segments := splitSegments(path.Clean("/" + rawPath))
+	for _, rule := range impersonationRefused {
+		if rule.Method != method {
+			continue
+		}
+		if matchSegments(splitSegments(rule.Pattern), segments) {
+			return rule, true
+		}
+	}
+	return impersonationRule{}, false
+}
+
+// ImpersonationRefusedRoutes lists the `METHOD /pattern` pairs an impersonated session may not
+// call.
+//
+// It is exported for the same reason Routes() is: a property of the whole surface should be
+// assertable from outside the package. impersonation_test.go uses it to prove every entry names a
+// route that actually exists, so the table cannot rot into a list of paths that stopped being
+// routed — a refusal that protects nothing while looking thorough.
+func ImpersonationRefusedRoutes() []string {
+	out := make([]string, 0, len(impersonationRefused))
+	for _, rule := range impersonationRefused {
+		out = append(out, rule.Method+" "+rule.Pattern)
+	}
+	return out
+}
+
+func splitSegments(p string) []string {
+	trimmed := strings.Trim(p, "/")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "/")
+}
+
+// matchSegments compares a route pattern to a request path, treating `{...}` as one wildcard
+// segment. Segment counts must agree: a wildcard never swallows a `/`.
+func matchSegments(pattern, segments []string) bool {
+	if len(pattern) != len(segments) {
+		return false
+	}
+	for i, want := range pattern {
+		if strings.HasPrefix(want, "{") && strings.HasSuffix(want, "}") {
+			if segments[i] == "" {
+				return false
+			}
+			continue
+		}
+		if want != segments[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // bearerToken returns the Authorization bearer value, if any.
@@ -545,7 +696,12 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		},
 		"impersonating":   sess.ImpersonatedBy != "",
 		"impersonated_by": sess.ImpersonatedBy,
-		"permissions":     perms,
+		// The operator's address, because the banner has to name a person. "Impersonated by
+		// 6f2a…" is a fact nobody can act on: the point of the warning is that the operator
+		// recognises the colleague behind it. Best effort — a failed read leaves the field out
+		// and the banner falls back to the id rather than failing the identity request.
+		"impersonated_by_email": s.impersonatorEmail(r, sess.ImpersonatedBy),
+		"permissions":           perms,
 		// The same demand the sign-in response carries, so a page load, a second tab or a
 		// bookmarked URL is told about it too. Cleared by a confirmed enrolment.
 		"mfa_enrolment_required": s.enrolmentRequired(r, user.ID),
@@ -557,6 +713,24 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"csrf_token": sess.CSRFToken,
 		"expires_at": sess.ExpiresAt,
 	})
+}
+
+// impersonatorEmail resolves the operator behind an impersonated session, or "" when there is
+// none or it cannot be read.
+//
+// Best effort on purpose: the banner names a person when the name is available and falls back to
+// the id when it is not. A failed lookup must not fail the identity request — the customer's
+// `/auth/me` is the request every screen makes, and a 500 there signs them out over a cosmetic
+// detail.
+func (s *Server) impersonatorEmail(r *http.Request, operatorID string) string {
+	if operatorID == "" || s.auth == nil || s.auth.Service == nil {
+		return ""
+	}
+	operator, err := s.auth.Service.UserByID(r.Context(), operatorID)
+	if err != nil {
+		return ""
+	}
+	return operator.Email
 }
 
 // enrolmentRequired reports whether the account owes the panel a second factor.

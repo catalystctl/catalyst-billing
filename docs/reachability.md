@@ -139,27 +139,33 @@ done here.
 | `GET /api/v1/staff/affiliates/payouts` | see the all-affiliates payout report; `/affiliates` reads one affiliate at a time |
 | `GET /api/v1/staff/credit-notes/{id}/pdf` | download the credit note they just issued from `/invoices/:id` |
 | `GET /api/v1/portal/credit-notes/{id}/pdf` | download the credit note they were sent |
-| `POST /api/v1/portal/impersonation/stop` | — see the impersonation row below |
 | `GET /api/v1/announcements` | — see the announcement row below |
 
-Two of these are worth naming as *inert features* rather than missing screens:
+One of these is worth naming as an *inert feature* rather than a missing screen:
 
-* **Impersonation is API-only.** `POST /api/v1/staff/users/{id}/impersonate` and
-  `POST /api/v1/portal/impersonation/stop` are audited and tested; no screen starts one and no
-  banner offers to end one. The customer overview explains why an impersonated session cannot
-  act, for a session nobody can enter.
 * **The announcement feed is read by nothing.** `GET /api/v1/announcements` is documented as
   "the storefront and dashboard feed", and the `announcements.enabled` setting is described as
   "whether the announcement feed is shown to customers" — but no screen calls the endpoint and
   no Go code reads the setting. An operator publishes a maintenance notice and nobody sees it.
 
-### Write endpoints with no UI affordance (17)
+Impersonation used to be on this list and is not any more. `POST
+/api/v1/staff/users/{id}/impersonate` is started from the customer record ("Sign in as this
+customer", `staff:manage`, offered only for an account with a login) and `POST
+/api/v1/portal/impersonation/stop` from a banner that every screen carries while the session is
+borrowed — the shell's, and the storefront's, which renders outside the shell. The banner names
+the customer and the operator, and the session's limits are the server's rather than the screen's:
+`impersonationRefused` in `internal/httpapi/auth.go` refuses money, credential and
+account-closure routes for any session carrying `impersonated_by`, and
+`internal/httpapi/impersonation_test.go` calls each of those endpoints directly with the borrowed
+cookie to prove it. `scripts/e2e-ui.mjs` drives the whole path — the button, the confirmation, the
+banner, a refused deposit, the stop — in a real browser.
+
+### Write endpoints with no UI affordance (16)
 
 | Surface | Verdict |
 |---|---|
 | `POST /api/v1/portal/cart/items` | **the headline gap** — see the purchase funnel above |
 | `POST /api/v1/portal/invoices/{id}/pay-with-credit` | a customer with credit cannot spend it on an invoice from the portal |
-| `POST /api/v1/staff/users/{id}/impersonate` | nothing starts an impersonation (audited, tested, unreachable) |
 | `POST /api/v1/portal/services/{id}/cancellation` | the portal cancels through the older `/cancel`; the newer request row the staff queue reads is API-only |
 | `POST /api/v1/portal/services/{id}/upgrade` | a customer cannot request an upgrade from the portal |
 | `PUT /api/v1/portal/services/{id}/config` | a customer cannot edit a service's config options |

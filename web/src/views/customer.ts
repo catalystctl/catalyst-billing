@@ -183,6 +183,78 @@ function tabFrom(value: string | null): TabKey {
   return match?.key ?? "overview";
 }
 
+// ------------------------------------------------------------- impersonation --
+
+/** The facts the start flow needs about the account it is about to wear. */
+export interface ImpersonationTarget {
+  /** The *user* id — the login, not the customer record. The impersonation endpoint issues a
+   *  session for a user, so passing the customer id is a 404 that looks like a missing feature. */
+  userId: string;
+  email: string;
+  name?: string;
+}
+
+/**
+ * Opens a session as the customer, from the customer record.
+ *
+ * The confirmation is not ceremony. Everything the operator does after it is recorded against the
+ * customer and attributed to the operator, and the session cannot move money or change
+ * credentials — which is precisely why the dialog states those limits *before* the session exists
+ * rather than leaving them to be discovered by hitting a 403 halfway through a support call.
+ *
+ * After the server issues the session, the identity is re-read (`ctx.refreshSession`) rather than
+ * assumed: `impersonating` is a fact about the session, and the shell renders the banner from it.
+ * Then the operator lands on the portal — the screen they asked to see — instead of staying on a
+ * staff record the borrowed identity cannot read.
+ */
+export async function startImpersonation(ctx: Ctx, target: ImpersonationTarget): Promise<void> {
+  const who = target.name || target.email;
+  const confirmed = await ctx.confirm({
+    title: `Sign in as ${who}?`,
+    body:
+      "You will get a session that is theirs, and every action you take in it is recorded against " +
+      "their account and attributed to you by name. Moving money, changing credentials and " +
+      "closing the account are refused by the server while the session lasts. A banner on every " +
+      "screen shows whose account you are in, with the way back to yours.",
+    confirmLabel: "Sign in as them",
+    cancelLabel: "Cancel",
+    note: "The audit log records both accounts, at the start and at the end.",
+  });
+  if (!confirmed) return;
+
+  try {
+    await ctx.api.post(`/api/v1/staff/users/${encodeURIComponent(target.userId)}/impersonate`, {});
+  } catch (err) {
+    if (err instanceof ApiError) {
+      const message =
+        err.code === "forbidden"
+          ? "That account cannot be impersonated — staff accounts never can."
+          : err.code === "account_disabled"
+            ? "That account is disabled, so there is no session to open."
+            : err.code === "session_required"
+              ? "Impersonation needs a signed-in browser session, not an API key."
+              : err.detail || `The session was not opened (${err.code}).`;
+      ctx.toast("Could not sign in as the customer", { tone: "danger", detail: message });
+      return;
+    }
+    ctx.toast("Could not sign in as the customer", {
+      tone: "danger",
+      detail: "The server could not be reached, so nothing changed.",
+    });
+    return;
+  }
+
+  // The cookie is already the impersonated session. Re-reading the identity is what tells the
+  // shell to raise its banner, and it is also the only way to be sure the session the server
+  // issued is the one this browser is now carrying.
+  await ctx.refreshSession();
+  ctx.toast(`Signed in as ${target.email}`, {
+    tone: "success",
+    detail: "Stop from the banner to return to your own account.",
+  });
+  ctx.navigate("/portal");
+}
+
 // --------------------------------------------------------------------- page --
 
 export default async function customerPage(ctx: Ctx): Promise<Node> {
@@ -199,6 +271,10 @@ export default async function customerPage(ctx: Ctx): Promise<Node> {
   const render = (detail: CustomerDetail): Node => {
     const customer = detail.customer;
     const displayName = customer.name || customer.email;
+    // The login to wear, if there is one. The impersonation endpoint is keyed by user id, and a
+    // customer record is not a user: the two ids are different rows, which is exactly the kind of
+    // difference that turns "the feature does not work" into a 404 nobody reads.
+    const login = (detail.accounts ?? [])[0];
     ctx.setTitle(displayName);
     ctx.setCrumbs([{ label: "Customers", href: "/customers" }, { label: displayName }]);
 
@@ -279,6 +355,22 @@ export default async function customerPage(ctx: Ctx): Promise<Node> {
               href: `/customers/${customer.id}/portal`,
               icon: "eye",
               size: "sm",
+            })
+          : null,
+        // And when looking is not enough: a session that *is* theirs, for a bounded time, with a
+        // banner that says so and a server that refuses the actions that would turn support into
+        // a takeover. Offered only where it can work — the session is issued for a *user*, so the
+        // account linked to this customer is what the button names, and a customer without one has
+        // nothing to impersonate. Not while already wearing somebody's identity either: stacking
+        // one impersonation inside another is a support visit nobody can audit.
+        ctx.can("staff:manage") && login && !ctx.session.impersonating
+          ? btn("Sign in as this customer", {
+              size: "sm",
+              variant: "ghost",
+              icon: "user",
+              title: `Open a session as ${login.email}`,
+              onclick: () =>
+                void startImpersonation(ctx, { userId: login.user_id, email: login.email, name: customer.name }),
             })
           : null,
         btn("Refresh", { icon: "refresh", size: "sm", onclick: () => draw() }),

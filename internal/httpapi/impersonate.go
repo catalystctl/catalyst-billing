@@ -198,8 +198,11 @@ func (s *Server) recordImpersonationAudit(r *http.Request, action, targetID, ope
 	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
 		ev := s.auditEvent(r, action, "user", targetID, audit.OutcomeSuccess)
 		// The actor is the target user, not the operator: the account that was acted on is
-		// what a per-record review filters by.
-		ev.Actor = audit.Actor{ID: targetID, Kind: audit.ActorUser}
+		// what a per-record review filters by. The operator goes in the dedicated
+		// `impersonated_by` column as well as in `changes`, so "every action this operator took
+		// while wearing somebody else's identity" is one indexed query rather than a scan of a
+		// JSON column.
+		ev.Actor = audit.Actor{ID: targetID, Kind: audit.ActorUser, ImpersonatedBy: operatorID}
 		return audit.Record(ctx, tx, ev.WithChanges(changes))
 	})
 	return err
@@ -207,20 +210,15 @@ func (s *Server) recordImpersonationAudit(r *http.Request, action, targetID, ope
 
 // impersonationGuard refuses an action that must be performed as yourself.
 //
-// It is applied to the handful of endpoints that would turn a support visit into a
-// takeover — changing a password, enrolling or removing MFA, minting an API key. Those
-// endpoints live in shared files (auth_lifecycle.go, apikeys.go), so this function is the
-// ready-made hook for them rather than an edit here.
+// It is applied to the endpoints that would turn a support visit into a takeover and that are
+// reachable from a customer-scoped session — enrolling or removing a second factor, and reading
+// the second-factor state (auth_lifecycle.go, mfa_state.go). Money and the remaining credential
+// actions are refused a layer earlier, by the route table in auth.go's `impersonationRefused`,
+// which every request passes through; this guard is kept for the handlers that want the refusal
+// to be part of their own contract rather than an inherited property of the middleware.
 //
-// UNREFERENCED ON PURPOSE, and must be wired by the integrator: add
-//
-//	if !s.impersonationGuard(w, r) {
-//		return
-//	}
-//
-// as the first statement of handleMFAEnrol, handleMFADisable, and handleAPIKeyCreate. Until
-// then an operator who is impersonating a customer can enrol an authenticator on that
-// customer's account, which is a real takeover path — it is the reason this guard exists.
+// Both layers answer 403 with code `impersonating`, so a client cannot tell them apart and does
+// not have to: the answer to either is the same — stop impersonating and act as yourself.
 func (s *Server) impersonationGuard(w http.ResponseWriter, r *http.Request) bool {
 	sess, ok := sessionFrom(r.Context())
 	if !ok || sess.ID == "" || s.auth == nil || s.auth.Service == nil {

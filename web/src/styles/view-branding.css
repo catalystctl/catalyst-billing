@@ -1,0 +1,252 @@
+/* Branding.
+ *
+ * The screen is a form on the left and a preview on the right, and the preview is the part that
+ * needs styles: it is a mock of the panel chrome, painted with the values in the form. It is
+ * deliberately *not* a screenshot or an iframe — an iframe would be a second document to keep in
+ * step with the shell, and a screenshot would be a picture of a panel that may not exist yet.
+ *
+ * The preview carries its own copy of the accent custom properties, scoped to `.brand-preview`,
+ * so it can show a colour the operator has typed but not saved. That is why the rules below read
+ * `var(--accent)` rather than a literal: the properties are set on the element by the screen.
+ */
+
+.brand-preview-host {
+  position: sticky;
+  top: var(--s-4);
+}
+
+.brand-preview {
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  min-height: 208px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.brand-preview-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  background: var(--surface-2);
+  border-right: 1px solid var(--line);
+}
+
+.brand-preview .brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 0;
+  font-weight: 650;
+  font-size: var(--text-sm);
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.brand-preview .brand-mark {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.brand-preview-nav {
+  display: flex;
+}
+
+.brand-preview-item {
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+}
+
+/* The active navigation item, painted with the brand's soft tint: the one place in the panel
+ * where the accent appears as a surface rather than as a line or a glyph. */
+.brand-preview-item--active {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.brand-preview-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  min-width: 0;
+}
+
+.brand-preview-title {
+  font-size: var(--text-md);
+  color: var(--text);
+}
+
+.brand-preview-text {
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+  max-width: 42ch;
+}
+
+.brand-preview-btn {
+  pointer-events: none;
+}
+
+.brand-preview-link {
+  color: var(--accent-text);
+  font-size: var(--text-sm);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* The invoice hint: a rule in the brand colour, because that is the one line every document
+ * carries and the thing a tenant recognises first on paper. */
+.brand-preview-doc {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin-top: auto;
+  padding-top: var(--s-3);
+}
+
+.brand-preview-doc-rule {
+  display: block;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+
+.brand-preview-doc-label {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+/* The two swatches under the preview: what each mode would look like, so a tenant who only uses
+ * the light theme can still see what their dark-mode accent does. */
+.brand-swatches {
+  gap: var(--s-3);
+}
+
+.brand-swatch {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+}
+
+.brand-swatch-label {
+  min-width: 3.5ch;
+}
+
+.brand-swatch-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--line);
+}
+
+/* "built-in": no accent is configured for this mode, so the chip shows a word rather than a
+ * colour. A colour here would be a claim about a value that does not exist. */
+.brand-swatch-chip[data-unset="true"] {
+  color: var(--text-faint);
+  background: var(--surface-3);
+}
+
+/* The legibility report. It is a report, not a refusal: a pale accent is a legitimate brand
+ * colour, and the sentence beside it says what will be used for small text instead. */
+.brand-legibility {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.brand-legibility-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  font-size: var(--text-sm);
+}
+
+.brand-legibility-ok {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--success);
+}
+
+.brand-legibility-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warning);
+}
+
+/* A colour field is a native picker beside a text box. The picker is 34px so it lines up with
+ * an input's height rather than sitting inside it looking like a mistake. */
+.colour-field {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.input--color {
+  width: 44px;
+  height: 34px;
+  padding: 3px;
+  flex: none;
+  cursor: pointer;
+}
+
+.input--color::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.input--color::-webkit-color-swatch {
+  border: 0;
+  border-radius: var(--r-xs);
+}
+
+.brand-logo-preview {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: var(--s-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+
+.brand-logo-preview img {
+  max-height: 48px;
+  max-width: 220px;
+  object-fit: contain;
+}
+
+@media (max-width: 900px) {
+  .brand-preview-host {
+    position: static;
+  }
+
+  .brand-preview {
+    grid-template-columns: 1fr;
+  }
+
+  .brand-preview-rail {
+    flex-direction: row;
+    align-items: center;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}

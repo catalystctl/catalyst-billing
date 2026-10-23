@@ -90,6 +90,12 @@
   --accent-hover: #94a9ff;
   --accent-press: #6b86f5;
   --accent-ink: #0a0d13;
+  /* --accent-text is the accent as *text*: a link, a small label, a badge word. It exists as a
+   * token of its own because a tenant's brand colour is chosen for a logo, not for 12px type —
+   * so a brand sets this to the nearest readable relative of the same hue while --accent stays
+   * the colour they picked. Unset (the default) it is simply the accent, which is why an
+   * installation with no brand is byte-identical to one built before branding existed. */
+  --accent-text: var(--accent);
   --accent-soft: rgba(123, 149, 255, 0.14);
   --accent-soft-strong: rgba(123, 149, 255, 0.22);
 
@@ -138,6 +144,9 @@
   --accent-hover: #2f4bc4;
   --accent-press: #2943b0;
   --accent-ink: #ffffff;
+  /* See the dark theme's note: a brand may set a readable relative for text without changing
+   * the accent itself. The default is the accent. */
+  --accent-text: var(--accent);
   --accent-soft: rgba(59, 91, 219, 0.09);
   --accent-soft-strong: rgba(59, 91, 219, 0.16);
 
@@ -161,6 +170,36 @@
    * that owns the screen. */
   --overlay: rgba(15, 21, 35, 0.55);
   --scrollbar: #cdd4e0;
+}
+
+/* ----------------------------------------------------------------- brand --
+ *
+ * A tenant's brand is an *overlay* on the two themes above, not a third theme. It is applied by
+ * `lib/brand.ts`, which writes five custom properties onto <html> — the accent family only — and
+ * only when an accent is configured for the mode that is active. Nothing here can change a
+ * surface, a text colour, a radius or a layout, so a brand cannot make the panel unreadable in
+ * one mode only, and an installation with no brand writes no property at all.
+ *
+ * The two rules below are the ones a brand needs that no theme token can express: a logo drawn
+ * in place of the built-in mark, and a link colour that is allowed to differ from the accent.
+ */
+
+/* The logo box. The mark is a 26px tile with a 22px glyph; a tenant's logo is bounded to the
+ * same height so a wide wordmark cannot push the navigation down, and `object-fit: contain`
+ * keeps its aspect ratio rather than stretching it. */
+.brand-logo {
+  display: block;
+  max-width: 132px;
+  max-height: 22px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+/* Links read the accent as text, which a brand may have adjusted for legibility. It falls back
+ * to the accent, so the default rendering is unchanged. */
+a:not(.btn):not(.nav-item):not(.menu-item) {
+  color: var(--accent-text);
 }
 
 @media (prefers-reduced-motion: reduce) {

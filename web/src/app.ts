@@ -5,6 +5,7 @@
 // renders one screen.
 
 import { Api, connectEvents, type EventStream, type LiveEvent } from "./lib/api";
+import { NO_BRAND, applyBrand, applyBrandChrome, loadBrand, type Brand } from "./lib/brand";
 import { fill } from "./lib/dom";
 import { currentLocale, enabledLocales, initI18n, onLocaleChange, refreshLocales, setLocale, tx } from "./lib/i18n";
 import { icon } from "./lib/icons";
@@ -26,6 +27,10 @@ import { createToaster } from "./ui/toast";
 export async function bootstrap(root: HTMLElement): Promise<void> {
   let theme: Theme = initTheme();
   const api = new Api();
+  // The tenant's brand. Empty until the fetch below lands, which is the point: the panel paints
+  // in its built-in colours and the brand arrives a moment later, rather than the first paint
+  // waiting on a network round trip.
+  let brand: Brand = NO_BRAND;
   const toaster = createToaster();
 
   let session: Session | null = null;
@@ -40,6 +45,23 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
   // call never throws — an installation whose locale endpoint is down is a panel in English,
   // not a panel that fails to start.
   await initI18n(api);
+
+  // The brand is read before the first screen for the same reason, and it never throws: an
+  // installation with no brand — or no branding endpoint at all — renders in its built-in
+  // colours, which is byte-identical to the panel as it was before branding existed. An empty
+  // brand writes no custom property at all, so "unset" is a fallback rather than a lookalike.
+  brand = await loadBrand(api);
+  applyBrand(brand, theme);
+
+  // Saving on the branding screen re-applies without a reload. The screen cannot import this
+  // file (it is the shell), so the handoff is an event — the same pattern the live feed uses.
+  window.addEventListener("catalyst:brand", (event) => {
+    const next = (event as CustomEvent<Brand>).detail;
+    if (!next) return;
+    brand = next;
+    applyBrand(brand, theme);
+    if (shell) applyBrandChrome(shell.el, brand);
+  });
 
   try {
     session = await loadSession(api);
@@ -285,7 +307,11 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       },
       toast: (title, options) => toaster.push(title, options),
     };
-    root.replaceChildren(await mod.default(ctx));
+    const rendered = await mod.default(ctx);
+    root.replaceChildren(rendered);
+    // The sign-in and reset panels carry the wordmark too. They are not the shell, so they are
+    // decorated on the same path that replaced them.
+    applyBrandChrome(root, brand);
   }
 
   function nextQuery(): string | null {
@@ -338,11 +364,19 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
         theme = toggleTheme(theme);
         const btn = document.getElementById("theme-toggle");
         if (btn) fill(btn, icon(theme === "dark" ? "sun" : "moon", 14));
+        // The accent is per mode, so switching themes has to re-resolve it: the brand paints
+        // from the light accent in light mode and the dark one in dark mode, and a mode with no
+        // accent configured falls back to the built-in colour rather than keeping the other
+        // mode's.
+        applyBrand(brand, theme);
       },
       onLogout: () => void signOut(),
       onOpenPalette: () => openPaletteNow(),
     });
     root.replaceChildren(shell.el);
+    // The shell is built before the brand is applied to it — it is rebuilt on a language change
+    // — so the wordmark and the mark are decorated here rather than built branded.
+    applyBrandChrome(shell.el, brand);
     return shell;
   }
 

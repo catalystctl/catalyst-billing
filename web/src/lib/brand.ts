@@ -242,20 +242,27 @@ export interface Rgb {
   b: number;
 }
 
-/** Parses `#rgb` or `#rrggbb` (the `#` optional). Returns null for anything else. */
+/**
+ * Parses `#rgb` or `#rrggbb` (the `#` optional). Returns null for anything else.
+ *
+ * The shape is checked with a pattern before any digit is parsed, because `parseInt` stops at
+ * the first character it does not understand: `parseInt("dg", 16)` is 13, so a typo would
+ * silently become a colour rather than a refusal. That is the difference between a validation
+ * and a coercion.
+ */
 export function parseHex(input: string): Rgb | null {
   const raw = (input || "").trim().replace(/^#/, "");
-  if (raw.length === 3) {
-    const [r, g, b] = [raw[0], raw[1], raw[2]].map((c) => parseInt(c + c, 16));
-    if ([r, g, b].some((v) => Number.isNaN(v))) return null;
+  if (/^[0-9a-fA-F]{3}$/.test(raw)) {
+    const [r, g, b] = [raw.charAt(0), raw.charAt(1), raw.charAt(2)].map((c) => parseInt(c + c, 16));
+    if (r === undefined || g === undefined || b === undefined) return null;
     return { r, g, b };
   }
-  if (raw.length === 6) {
-    const r = parseInt(raw.slice(0, 2), 16);
-    const g = parseInt(raw.slice(2, 4), 16);
-    const b = parseInt(raw.slice(4, 6), 16);
-    if ([r, g, b].some((v) => Number.isNaN(v))) return null;
-    return { r, g, b };
+  if (/^[0-9a-fA-F]{6}$/.test(raw)) {
+    return {
+      r: parseInt(raw.slice(0, 2), 16),
+      g: parseInt(raw.slice(2, 4), 16),
+      b: parseInt(raw.slice(4, 6), 16),
+    };
   }
   return null;
 }
@@ -312,4 +319,92 @@ export function readableHex(c: Rgb, bg: Rgb, min = 4.5): string {
     }
   }
   return hexOf(best);
+}
+
+// ---------------------------------------------------------------- the chrome --
+
+/**
+ * The brand's own markup, kept so it can be put back.
+ *
+ * `applyBrandChrome` decorates elements the shell already rendered rather than making the shell
+ * build them, because the shell is created before the brand has been fetched (the panel must not
+ * wait on a network round trip to paint) and is rebuilt when the language changes. Saving a
+ * brand therefore has to be able to *undo* itself, and that needs the original children.
+ */
+const originalChrome = new WeakMap<Element, Node[]>();
+
+/** Remembers an element's children the first time it is decorated. */
+function remember(el: Element): void {
+  if (originalChrome.has(el)) return;
+  originalChrome.set(
+    el,
+    Array.from(el.childNodes).map((n) => n.cloneNode(true)),
+  );
+}
+
+/** Puts an element's original children back. */
+function restoreChrome(el: Element): void {
+  const saved = originalChrome.get(el);
+  if (!saved) return;
+  el.replaceChildren(...saved.map((n) => n.cloneNode(true)));
+}
+
+/**
+ * Paints the brand into the shell's chrome: the wordmark in the sidebar, the mark beside it, and
+ * the wordmark on the sign-in panel.
+ *
+ * It is a decoration rather than a build step for a reason worth stating: the shell is rendered
+ * before the brand is known, and it is rebuilt on a language change. Decorating means an
+ * unbranded installation gets *exactly* the markup it had before this feature existed — there is
+ * no branch in the shell that has to produce the old appearance, and no way for the branding code
+ * to change a layout it does not own.
+ *
+ * Every lookup is a no-op when the element is absent, so a shell that stops rendering `.brand-name`
+ * loses the wordmark and nothing else.
+ */
+export function applyBrandChrome(root: ParentNode, brand: Brand | null | undefined): void {
+  const name = (brand?.name ?? "").trim();
+  const logo = (brand?.logo_url ?? "").trim();
+
+  // The sidebar wordmark: "Catalyst" over "Billing". A brand replaces both with one line,
+  // because a tenant's name is not a product name with a subtitle.
+  for (const el of Array.from(root.querySelectorAll(".brand-name"))) {
+    remember(el);
+    if (!name) {
+      restoreChrome(el);
+      continue;
+    }
+    el.replaceChildren(document.createTextNode(name));
+    el.setAttribute("title", name);
+  }
+
+  // The mark, in the sidebar and on the sign-in panel. A stored logo replaces the built-in
+  // glyph; an empty logo restores it.
+  for (const el of Array.from(root.querySelectorAll(".brand-mark"))) {
+    remember(el);
+    if (!logo) {
+      restoreChrome(el);
+      continue;
+    }
+    const img = document.createElement("img");
+    img.className = "brand-logo";
+    img.src = logo;
+    img.alt = name || "Logo";
+    // The glyph is 22px tall in the rail, so the logo is bounded to the same box: a tenant who
+    // uploads a wide wordmark must not push the navigation down.
+    img.height = 22;
+    el.replaceChildren(img);
+  }
+
+  // The sign-in panel's wordmark. It is a separate element (`.auth-brand`) rather than a
+  // `.brand-name`, because the auth pages are not the shell.
+  for (const el of Array.from(root.querySelectorAll(".auth-brand"))) {
+    remember(el);
+    if (!name) {
+      restoreChrome(el);
+      continue;
+    }
+    const label = el.querySelector(":scope > span:last-child");
+    if (label) label.textContent = name;
+  }
 }

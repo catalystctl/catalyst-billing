@@ -22,6 +22,7 @@ import "./styles/view-catalog.css";
 import "./styles/view-commerce.css";
 import "./styles/view-support.css";
 import "./styles/view-platform.css";
+import "./styles/view-branding.css";
 
 import { bootstrap } from "./app";
 

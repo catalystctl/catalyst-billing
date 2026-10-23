@@ -70,7 +70,10 @@ p {
 }
 
 a {
-  color: var(--accent);
+  /* The accent as text, which a tenant's brand may have adjusted until it reads on this
+   * theme's background. It is the accent itself unless a brand set it, so the default
+   * rendering is unchanged. */
+  color: var(--accent-text);
   text-decoration: none;
   text-underline-offset: 2px;
 }

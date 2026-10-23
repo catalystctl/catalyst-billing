@@ -1447,6 +1447,149 @@ try {
     }
   }
 
+  // ------------------------------------------------------------------ branding --
+  //
+  // The tenant's brand is the one setting whose *effect* is the feature: a form that saves is
+  // not a brand, and a brand that reaches the panel but not the invoice is a brand the customer
+  // never sees. So this block does not stop at "the screen renders". It sets a brand through the
+  // form, and then reads the document back:
+  //
+  //   1. the accent is on <html> as an inline custom property, in the colour that was typed;
+  //   2. the sidebar wordmark is the tenant's name, not the built-in one;
+  //   3. switching the theme swaps the accent to the *other* mode's colour, which is what proves
+  //      a brand is an overlay on the two themes rather than a replacement for one of them;
+  //   4. resetting removes the inline property entirely — not "sets it to the default", which is
+  //      the difference between a fallback and a lookalike, and the property the invoice's
+  //      byte-identical fallback rests on;
+  //   5. the wordmark comes back.
+  //
+  // The brand is reset at the end so the rest of the run sees the panel it expects.
+  {
+    const branding = await assertNewScreen("branding", {
+      path: "/branding",
+      expect: ["Branding", "Accent"],
+    });
+    if (branding.status === "present") {
+      // Two distinct accents, so "the accent followed the theme" cannot be satisfied by the
+      // built-in colour by accident.
+      const LIGHT = "#c0392b";
+      const DARK = "#1e88e5";
+      const setField = async (id, value) => {
+        const ok = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(id)});
+          if (!el) return false;
+          el.value = ${JSON.stringify(value)};
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          return true;
+        })()`);
+        check(`branding: the ${id} field accepts a value`, ok, `no ${id} field`);
+      };
+      await setField("#brand-name", "Acme Hosting");
+      await setField("#brand-accent-light", LIGHT);
+      await setField("#brand-accent-dark", DARK);
+
+      // The preview must have repainted from the form, before any save: a preview that only
+      // updates after a round trip is a preview of the last save, not of the values on screen.
+      const preview = await evaluate(`(() => {
+        const el = document.querySelector('.brand-preview');
+        if (!el) return null;
+        return {
+          accent: el.style.getPropertyValue('--accent').trim(),
+          name: (el.querySelector('.brand-name') || {}).textContent || '',
+        };
+      })()`);
+      check("branding: the preview paints the typed accent", preview?.accent === LIGHT, JSON.stringify(preview));
+      check("branding: the preview shows the typed name", (preview?.name || "").includes("Acme"), preview?.name ?? "");
+
+      const saved = await evaluate(`(() => {
+        const b = Array.from(document.querySelectorAll('button')).find((x) => /save brand/i.test(x.textContent || ''));
+        if (!b) return false;
+        b.click();
+        return true;
+      })()`);
+      check("branding: the save button is pressable", saved, "no Save brand button");
+
+      // Wait for the effect rather than for a delay: the shell applies the brand when the save
+      // resolves, and the wordmark is the visible consequence.
+      const applied = await until(
+        "the brand to reach the shell",
+        "document.documentElement.style.getPropertyValue('--accent').trim() !== ''",
+        10_000,
+      ).catch(() => false);
+      check("branding: saving applies the accent to the panel", Boolean(applied));
+
+      const painted = await evaluate(`(() => {
+        const mode = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+        return {
+          mode,
+          inlineAccent: document.documentElement.style.getPropertyValue('--accent').trim(),
+          wordmark: (document.querySelector('.sidebar .brand-name') || {}).textContent || '',
+          // The properties a brand must never touch. A brand that could set these would be a
+          // theme registry by another name, and would be able to make one mode unreadable.
+          touchesSurface: document.documentElement.style.getPropertyValue('--bg') !== '',
+          touchesText: document.documentElement.style.getPropertyValue('--text') !== '',
+        };
+      })()`);
+      const expected = painted.mode === "light" ? LIGHT : DARK;
+      check(
+        `branding: the ${painted.mode} theme uses its own accent`,
+        painted.inlineAccent === expected,
+        `${painted.inlineAccent} (want ${expected})`,
+      );
+      check("branding: the sidebar wordmark is the tenant's name", painted.wordmark.includes("Acme"), painted.wordmark);
+      check("branding: the brand does not touch the surface colour", !painted.touchesSurface);
+      check("branding: the brand does not touch the text colour", !painted.touchesText);
+
+      // The theme toggle must swap the accent, not keep the one that was painted last. This is
+      // the assertion that the light and dark modes are still two modes.
+      const beforeToggle = painted.mode;
+      await click("#theme-toggle");
+      const afterToggle = await evaluate(`(() => {
+        const mode = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+        return { mode, accent: document.documentElement.style.getPropertyValue('--accent').trim() };
+      })()`);
+      check("branding: the theme toggle still switches the theme", afterToggle.mode !== beforeToggle, `${beforeToggle} -> ${afterToggle.mode}`);
+      check(
+        `branding: the ${afterToggle.mode} theme uses its own accent`,
+        afterToggle.accent === (afterToggle.mode === "light" ? LIGHT : DARK),
+        `${afterToggle.accent}`,
+      );
+      // Back to the mode the run started in.
+      await click("#theme-toggle");
+
+      // The public read is what a storefront and a fresh panel use, so the brand must be there
+      // and must be the values that were saved.
+      const api = await evaluate(`fetch('/api/v1/branding', { headers: { Accept: 'application/json' } })
+        .then((r) => r.json()).catch(() => null)`);
+      check("branding: the public brand read carries the saved name", api?.name === "Acme Hosting", JSON.stringify(api?.name));
+      check("branding: the public brand read carries both accents", api?.accent_light === LIGHT && api?.accent_dark === DARK, JSON.stringify([api?.accent_light, api?.accent_dark]));
+
+      await screenshot("branding-branded");
+
+      // Reset, and prove the fallback in the browser: the inline property is gone, not defaulted.
+      const reset = await evaluate(`(() => {
+        const b = Array.from(document.querySelectorAll('button')).find((x) => /reset to the built-in/i.test(x.textContent || ''));
+        if (!b) return false;
+        b.click();
+        return true;
+      })()`);
+      check("branding: the reset button is pressable", reset, "no Reset button");
+      const cleared = await until(
+        "the brand to be cleared",
+        "document.documentElement.style.getPropertyValue('--accent').trim() === ''",
+        10_000,
+      ).catch(() => false);
+      check("branding: resetting removes the accent from the panel", Boolean(cleared));
+      const restored = await evaluate(`(() => ({
+        wordmark: (document.querySelector('.sidebar .brand-name') || {}).textContent || '',
+        anyBrandProperty: ['--accent', '--accent-ink', '--accent-text', '--accent-soft', '--accent-soft-strong']
+          .some((p) => document.documentElement.style.getPropertyValue(p) !== ''),
+      }))()`);
+      check("branding: resetting restores the built-in wordmark", restored.wordmark.includes("Catalyst"), restored.wordmark);
+      check("branding: an unset brand writes no custom property at all", !restored.anyBrandProperty);
+    }
+  }
+
   // A settings screen that offers to save must actually be able to: the form fields come
   // from the settings API, so an empty form is a broken screen even though it has a heading.
   await visit("/settings/system");

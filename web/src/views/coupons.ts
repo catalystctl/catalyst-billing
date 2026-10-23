@@ -16,6 +16,11 @@
 //    historic redemption, so the server refuses it and this form disables the field when
 //    editing, with the reason next to it.
 //
+// A coupon has two lives, and the screen shows both. The redemption dialog answers "what did this
+// code discount"; the renewal dialog answers "what will it still discount", which is the question a
+// `recurring_cycles` value makes necessary. Before that view existed, a "first three cycles"
+// promotion looked exactly like a lifetime one once the first invoice had been paid.
+//
 // The amounts are exact: a percentage is a rational *string* ("10", "12.5") and a fixed
 // discount is minor units plus a currency. Neither is ever a float here.
 
@@ -82,6 +87,26 @@ interface CouponList {
 
 interface RedemptionList {
   data: Redemption[];
+}
+
+/** One subscription carrying a coupon, from `coupon.SubscriptionsCarrying` in
+ *  internal/coupon/renewal.go. `remaining` is null for a lifetime coupon and 0 once the window is
+ *  used up — two different facts the screen must not conflate. */
+interface CouponSubscription {
+  subscription_id: string;
+  service_id?: string;
+  customer_id: string;
+  customer_email: string;
+  product_name: string;
+  status: string;
+  cycles_applied: number;
+  cycles_total: number | null;
+  remaining: number | null;
+  created_at: string;
+}
+
+interface CouponSubscriptionList {
+  data: CouponSubscription[];
 }
 
 interface ProductHit {
@@ -167,7 +192,13 @@ export default async function couponsPage(ctx: Ctx): Promise<Node> {
       key: "value",
       label: "Value",
       align: "right",
-      render: (row) => couponValue(row, formats),
+      render: (row) =>
+        h(
+          "div",
+          { class: "cell-main" },
+          h("div", { class: "primary" }, couponValue(row, formats)),
+          h("div", { class: "secondary" }, cyclesSummary(row)),
+        ),
     },
     {
       key: "applies",
@@ -200,7 +231,15 @@ export default async function couponsPage(ctx: Ctx): Promise<Node> {
             size: "sm",
             variant: "ghost",
             icon: "users",
+            title: "Every invoice this code has discounted",
             onclick: () => void showRedemptions(row),
+          }),
+          btn("Renewals", {
+            size: "sm",
+            variant: "ghost",
+            icon: "refresh",
+            title: "The subscriptions this code discounts, and how many cycles each has left",
+            onclick: () => void showRenewals(row),
           }),
           canWrite
             ? row.enabled
@@ -318,6 +357,125 @@ export default async function couponsPage(ctx: Ctx): Promise<Node> {
     } catch (err) {
       report(err, enabled ? "The coupon could not be re-enabled" : "The coupon could not be retired");
     }
+  }
+
+  // --------------------------------------------------------------- renewals --
+
+  /**
+   * The renewal side of a coupon: which subscriptions carry it, how many cycles each has already
+   * been discounted, and how many are left.
+   *
+   * The numbers are the server's (`applied`, `total`, `remaining`), not recomputed here: a screen
+   * that subtracted on its own could disagree with the renewal engine, and the disagreement would
+   * be about money. A lifetime coupon reports no `remaining` at all, which is why the column says
+   * "every cycle" rather than a number.
+   */
+  async function showRenewals(row: Coupon): Promise<void> {
+    const host = h("div", { class: "stack" }, h("div", { class: "skeleton-rows" }, h("div", { class: "skeleton skeleton-line w-80" })));
+    const handle = openDialog({
+      title: `Renewals — ${row.code}`,
+      subtitle:
+        row.recurring_cycles === null || row.recurring_cycles === undefined
+          ? "This code discounts every billing cycle. The subscriptions below will keep receiving it until they end."
+          : `This code discounts the first ${row.recurring_cycles} cycle${row.recurring_cycles === 1 ? "" : "s"} of a subscription, then stops. The counter on each subscription is what makes that a fact rather than a guess.`,
+      body: host,
+      wide: true,
+    });
+    try {
+      const res = await ctx.api.get<CouponSubscriptionList>(
+        `/api/v1/staff/coupons/${encodeURIComponent(row.id)}/subscriptions`,
+        { cache: false },
+      );
+      const list = res.data ?? [];
+      if (list.length === 0) {
+        swap(
+          host,
+          emptyState({
+            title: "No subscription carries this code",
+            body: "A subscription appears here when a checkout with this coupon creates a recurring service. One-off orders do not renew, so they never appear.",
+            icon: "tag",
+          }),
+        );
+        return;
+      }
+      swap(
+        host,
+        h(
+          "div",
+          { class: "stack" },
+          h(
+            "div",
+            { class: "row-wrap" },
+            badge(`${list.length} subscription${list.length === 1 ? "" : "s"}`, "info"),
+            h("span", { class: "dim" }, "Applied and remaining cycles are read from each subscription's own counter."),
+          ),
+          h(
+            "div",
+            { class: "table-wrap" },
+            h(
+              "table",
+              { class: "table" },
+              h(
+                "thead",
+                null,
+                h(
+                  "tr",
+                  null,
+                  h("th", { scope: "col" }, "Customer"),
+                  h("th", { scope: "col" }, "Plan"),
+                  h("th", { scope: "col" }, "Status"),
+                  h("th", { scope: "col", class: "num" }, "Cycles"),
+                  h("th", { scope: "col", class: "num" }, "Remaining"),
+                ),
+              ),
+              h(
+                "tbody",
+                null,
+                ...list.map((sub) =>
+                  h(
+                    "tr",
+                    null,
+                    h(
+                      "td",
+                      null,
+                      h("a", { class: "linkish", href: `/customers/${sub.customer_id}` }, sub.customer_email || shortRef(sub.customer_id)),
+                    ),
+                    h("td", null, sub.product_name || h("span", { class: "faint" }, "—")),
+                    h("td", null, h("span", { class: "dim" }, sub.status)),
+                    h(
+                      "td",
+                      { class: "num mono" },
+                      sub.cycles_total === null || sub.cycles_total === undefined
+                        ? `${sub.cycles_applied} applied`
+                        : `${sub.cycles_applied} / ${sub.cycles_total}`,
+                    ),
+                    h(
+                      "td",
+                      { class: "num" },
+                      sub.remaining === null || sub.remaining === undefined
+                        ? h("span", { class: "dim" }, "Every cycle")
+                        : sub.remaining > 0
+                          ? badge(`${sub.remaining} left`, "success")
+                          : badge("Used up", "neutral"),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    } catch (err) {
+      swap(
+        host,
+        banner(
+          "danger",
+          "The subscriptions could not be read",
+          err instanceof ApiError ? err.detail || err.code : "The server could not be reached.",
+        ),
+      );
+    }
+    void handle;
   }
 
   // ------------------------------------------------------------ redemptions --
@@ -758,6 +916,13 @@ function couponValue(row: Coupon, formats: ReturnType<typeof formatsOf>): Node {
   }
   const pct = row.percentage ?? "";
   return h("span", { class: "mono" }, `${pct}%`);
+}
+
+/** One line describing how long the coupon lasts, for the Value column. */
+function cyclesSummary(row: Coupon): string {
+  if (row.recurring_cycles === null || row.recurring_cycles === undefined) return "Every cycle";
+  if (row.recurring_cycles === 1) return "First invoice only";
+  return `First ${row.recurring_cycles} cycles`;
 }
 
 function appliesLabel(value: string): string {

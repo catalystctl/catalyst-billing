@@ -22,6 +22,7 @@ import (
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/commerce"
 	"github.com/catalyst/billing/internal/portal"
+	"github.com/catalyst/billing/internal/tax"
 )
 
 // registerCartRoutes is the portal cart surface.
@@ -95,6 +96,16 @@ func (s *Server) cartError(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, http.StatusUnprocessableEntity, "coupon_expired", err.Error())
 	case errors.Is(err, commerce.ErrExhausted):
 		writeProblem(w, http.StatusUnprocessableEntity, "coupon_exhausted", err.Error())
+	case errors.Is(err, tax.ErrRefused):
+		// The jurisdiction rules will not price this sale. The refusal carries its own stable code
+		// and the facts that are missing, which is exactly what the cart needs to show instead of a
+		// plausible total that nobody should invoice.
+		var refusal *tax.Refusal
+		if errors.As(err, &refusal) {
+			writeProblem(w, http.StatusUnprocessableEntity, refusal.Code, refusal.Detail)
+			return
+		}
+		writeProblem(w, http.StatusUnprocessableEntity, "tax_refused", err.Error())
 	default:
 		s.commerceError(w, r, err)
 	}
@@ -170,6 +181,21 @@ func totalsJSON(t commerce.Totals) map[string]any {
 		"total":      amountJSON(t.Total),
 		"item_count": len(t.Lines),
 	}
+	// The cart-level tax explanation, lifted from the first line that has one. The storefront and
+	// the cart both render "incl. 19% VAT" above the total, and re-deriving that from a per-line
+	// object would mean two renderers guessing the same thing differently.
+	for _, lt := range t.Lines {
+		if lt.TaxEvidence == nil {
+			continue
+		}
+		out["tax_evidence"] = map[string]any{
+			"jurisdiction":     lt.TaxEvidence.Jurisdiction,
+			"rate":             lt.TaxEvidence.Rate,
+			"inclusive":        lt.TaxEvidence.Inclusive,
+			"exemption_reason": lt.TaxEvidence.ExemptionReason,
+		}
+		break
+	}
 	if t.Coupon != nil {
 		out["coupon"] = map[string]any{
 			"coupon_id":        t.Coupon.CouponID,
@@ -226,7 +252,7 @@ func (s *Server) cartTotals(r *http.Request, customerID string) (commerce.Totals
 		// No tax configured: price net, which is the honest default.
 		return s.commerceStore().Totals(r.Context(), customerID, nil)
 	}
-	return s.commerceStore().Totals(r.Context(), customerID, *pricer)
+	return s.commerceStore().Totals(r.Context(), customerID, pricer)
 }
 
 // addItemBody is the add-to-cart body.

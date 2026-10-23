@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/authn"
+	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/commerce"
+	"github.com/catalyst/billing/internal/tax"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -133,43 +135,16 @@ func (s *Server) handleDeleteTaxRate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// taxPricerFor builds the tax pricer the cart and checkout use for a customer.
+// taxPricerFor builds the pricer the cart and checkout use for a customer.
 //
-// It reads the customer's billing country and tax-exemption flag, and returns nil when the
-// installation has tax disabled. Returning nil rather than a zero-rate pricer matters: a
-// cart priced by "a pricer that always charges nothing" would record tax evidence claiming a
-// zero rate was resolved, and that evidence would be a lie.
-func (s *Server) taxPricerFor(ctx context.Context, customerID string, at time.Time) (*commerce.TaxPricer, error) {
-	store := s.commerceStore()
-	enabled, err := store.TaxEnabled(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if !enabled {
-		return nil, nil
-	}
-	var (
-		country   string
-		region    string
-		exempt    bool
-		exemptWhy string
-	)
-	err = s.pool.QueryRow(ctx, `
-		SELECT bp.country_code, bp.region, bp.tax_exempt, bp.tax_exemption_reason
-		  FROM billing_profiles bp
-		 WHERE bp.customer_id = $1`, customerID).
-		Scan(&country, &region, &exempt, &exemptWhy)
-	if err != nil {
-		// A customer with no billing profile has no country, which is the "no jurisdiction"
-		// path inside the pricer: zero tax, with a reason.
-		return &commerce.TaxPricer{Store: store, At: at}, nil
-	}
-	return &commerce.TaxPricer{
-		Store:           store,
-		CountryCode:     country,
-		RegionCode:      region,
-		Exempt:          exempt,
-		ExemptionReason: exemptWhy,
-		At:              at,
-	}, nil
+// It delegates to the jurisdiction rules engine (internal/tax) rather than resolving a rate here,
+// because the question is not only "what is the rate for DE" — it is "does the German rate apply to
+// this sale at all". A validated VAT ID on a cross-border EU supply, and a US destination with no
+// declared nexus, are both decisions that a rate lookup cannot express.
+//
+// It returns nil when tax is switched off, and the cart prices net. Nil rather than a zero-rate
+// pricer matters: a cart priced by "a pricer that always charges nothing" would record tax evidence
+// claiming a rate was resolved, and that evidence would be a lie.
+func (s *Server) taxPricerFor(ctx context.Context, customerID string, at time.Time) (billing.Pricer, error) {
+	return tax.NewRules(s.pool).PricerForCustomer(ctx, customerID, at)
 }

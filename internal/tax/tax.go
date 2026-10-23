@@ -1,9 +1,25 @@
-// Package tax imports the jurisdiction rate table from an external document.
+// Package tax answers two questions a rate table cannot answer on its own.
+//
+// # Where a rate comes from
 //
 // The rate table itself is `internal/commerce`'s (a dated row per jurisdiction, resolved by the
-// pricer, never rewritten once it has taken effect). This package is the answer to a different
-// question: *where does the row come from*. It configures one source, fetches it over HTTP,
-// parses it, shows what would change, and writes the changes — each with provenance.
+// pricer, never rewritten once it has taken effect). The importer below is the answer to *where
+// does the row come from*: it configures one source, fetches it over HTTP, parses it, shows what
+// would change, and writes the changes — each with provenance.
+//
+// # Whether a rate applies at all
+//
+// `jurisdiction.go` is the other half, and it is the one that matters legally. A rate table says
+// "19% for Germany"; it cannot say "this German business supplied a validated VAT ID and the supply
+// is cross-border, so no VAT is charged", and it cannot say "this California customer is in a state
+// where the installation has no nexus, so no sales tax is collected". Those are rules about facts —
+// where the seller is established, what a validation service answered about an identifier, where
+// nexus has been declared — so they are evaluated before a rate is applied, and the engine refuses
+// with a stable problem code rather than guessing when it cannot decide. A wrong tax rate is a
+// legal problem; a refusal is a support ticket.
+//
+// `pricer.go` is the bridge: a `billing.Pricer` built for one customer's supply, which is what the
+// cart and (once wired) the invoice issuer should use instead of a fixed rate.
 //
 // # The rules, and why each one is not negotiable
 //

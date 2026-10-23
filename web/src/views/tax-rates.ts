@@ -134,6 +134,64 @@ interface TaxSourceResponse {
   last_run?: TaxRun;
 }
 
+/** The jurisdiction rules, from `jurisdictionStatusResponse` in internal/httpapi/tax_rates.go.
+ *  `config` is the five tax settings; `nexus` is every declaration, retired excluded by the
+ *  server's own query; `eu_member_states` is served so the page cannot disagree with the engine
+ *  about membership. */
+interface JurisdictionStatus {
+  config: {
+    seller_country: string;
+    reverse_charge: boolean;
+    nexus_enforced: boolean;
+    vat_validation_url: string;
+    vat_validation_ttl_hours: number;
+  };
+  nexus: NexusDeclaration[];
+  eu_member_states: string[];
+  nexus_gaps: string[];
+  warnings: string[];
+}
+
+/** One sales-tax nexus declaration. */
+interface NexusDeclaration {
+  id: string;
+  country_code: string;
+  region_code: string;
+  jurisdiction: string;
+  note: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** The reply of the dry run, from `handleExplainDecision`. A refusal is an answer, so it arrives
+ *  with the same 200 as a decision. */
+interface DecisionExplanation {
+  outcome: "decided" | "refused";
+  decision?: {
+    kind: string;
+    policy: string;
+    jurisdiction: string;
+    rate: string;
+    inclusive: boolean;
+    charges: boolean;
+    reason?: string;
+    validation?: VATValidation;
+  };
+  refusal?: { code: string; detail: string; missing?: string[] };
+}
+
+interface VATValidation {
+  country_code: string;
+  vat_id: string;
+  status: "valid" | "invalid" | "unavailable";
+  trader_name?: string;
+  service_url?: string;
+  detail?: string;
+  checked_at: string;
+  cached: boolean;
+}
+
 /** One rate's origin, from the provenance endpoint. Joined to the rate list by id, because the
  *  rate list is commerce's projection and provenance is the importer's fact. */
 interface TaxProvenance {
@@ -191,6 +249,485 @@ export default async function taxRatesPage(ctx: Ctx): Promise<Node> {
     // The card renders its unconfigured prompt; the preview and import will explain the rest.
   }
   const sourceHost = h("div");
+
+  // ----------------------------------------------------- import run history --
+
+  // ADM-07: what the refresh actually did, over time.
+  //
+  // The source card shows the last run in one sentence, which is enough to notice that something
+  // happened and not enough to investigate it. A rate change is a change to what customers are
+  // charged, so "the scheduler did something at 03:00" has to be answerable: when, from where, how
+  // many rows changed, and the per-row report for each one.
+  let runsState: TaxRun[] = [];
+  let runsProblem = "";
+  const historyHost = h("div");
+
+  async function refreshRuns(): Promise<void> {
+    try {
+      // The server caps this at its own limit; 20 is what the screen shows without a page control.
+      const res = await ctx.api.get<{ data: TaxRun[] }>("/api/v1/staff/tax-import/runs?limit=20", { cache: false });
+      runsState = res.data ?? [];
+      runsProblem = "";
+    } catch (err) {
+      runsProblem = err instanceof ApiError ? err.detail || err.code : "The server could not be reached.";
+    }
+    swap(historyHost, runHistoryCard());
+  }
+
+  function runHistoryCard(): HTMLElement {
+    if (runsProblem) {
+      return card({
+        title: "Import history",
+        sub: "What each refresh did",
+        body: banner("danger", "The run history could not be read", runsProblem),
+      });
+    }
+    if (runsState.length === 0) {
+      return card({
+        title: "Import history",
+        sub: "What each refresh did",
+        body: h(
+          "p",
+          { class: "dim" },
+          "No import has ever run. Every rate in the table was entered by hand, and the table above says so in its Source column.",
+        ),
+      });
+    }
+    return card({
+      title: "Import history",
+      sub: "What each refresh did, newest first",
+      actions: btn("Refresh", { size: "sm", variant: "ghost", icon: "refresh", onclick: () => void refreshRuns() }),
+      body: h(
+        "div",
+        { class: "table-wrap" },
+        h(
+          "table",
+          { class: "table" },
+          h(
+            "thead",
+            null,
+            h(
+              "tr",
+              null,
+              h("th", { scope: "col" }, "Started"),
+              h("th", { scope: "col" }, "Trigger"),
+              h("th", { scope: "col" }, "Outcome"),
+              h("th", { scope: "col", class: "num" }, "Rows"),
+              h("th", { scope: "col", class: "num" }, "Added"),
+              h("th", { scope: "col", class: "num" }, "Replaced"),
+              h("th", { scope: "col", class: "num" }, "Refused"),
+              h("th", { scope: "col" }, ""),
+            ),
+          ),
+          h(
+            "tbody",
+            null,
+            ...runsState.map((run) =>
+              h(
+                "tr",
+                null,
+                h("td", null, h("span", { title: dateTime(run.started_at) }, dateTime(run.started_at))),
+                h("td", null, h("span", { class: "dim" }, run.trigger)),
+                h("td", null, runOutcomeBadge(run.outcome)),
+                h("td", { class: "num mono" }, String(run.counts.rows)),
+                h("td", { class: "num mono" }, String(run.counts.created)),
+                h("td", { class: "num mono" }, String(run.counts.updated)),
+                h("td", { class: "num" }, run.counts.rejected ? badge(String(run.counts.rejected), "danger") : h("span", { class: "mono faint" }, "0")),
+                h(
+                  "td",
+                  { class: "num" },
+                  btn("Report", { size: "sm", variant: "ghost", icon: "search", onclick: () => showRunReport(run) }),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    });
+  }
+
+  function runOutcomeBadge(outcome: TaxRun["outcome"]): Node {
+    switch (outcome) {
+      case "ok":
+        return badge("OK", "success", { dot: true });
+      case "failed":
+        return badge("Failed", "danger", { dot: true });
+      default:
+        return badge("Running", "warning", { dot: true });
+    }
+  }
+
+  /** The stored per-row report of one run: what every row became, and why each refusal was refused. */
+  function showRunReport(run: TaxRun): void {
+    const handle = openDialog({
+      title: `Import run — ${dateTime(run.started_at)}`,
+      subtitle: run.detail || `${run.trigger} import from ${run.source_url}`,
+      body: run.report
+        ? previewBody(run.report)
+        : h("p", { class: "dim" }, "This run recorded no per-row report. A failed fetch records the reason and nothing else, because there were no rows to report."),
+      wide: true,
+      footer: h("div", { class: "row spacer" }, btn("Close", { variant: "ghost", onclick: () => handle.close() })),
+    });
+  }
+
+  // ------------------------------------------------------- jurisdiction rules --
+
+  // TAX-05/06 and ADM-07: the facts a rate table cannot state.
+  //
+  // A rate table answers "how much is tax in DE". It cannot answer "does the German rate apply to
+  // this sale": a validated VAT ID on a cross-border EU supply is charged nothing, and a US state
+  // where the installation has no nexus is not collected at all. Those rules need the seller's own
+  // country, a service to check VAT IDs against, and a list of where the installation may collect —
+  // so this card shows all three, and says plainly when they contradict each other.
+  let jurisdictionState: JurisdictionStatus | null = null;
+  let jurisdictionProblem = "";
+  const jurisdictionHost = h("div");
+
+  async function refreshJurisdiction(): Promise<void> {
+    try {
+      jurisdictionState = await ctx.api.get<JurisdictionStatus>("/api/v1/staff/tax-jurisdiction", { cache: false });
+      jurisdictionProblem = "";
+    } catch (err) {
+      jurisdictionProblem = err instanceof ApiError ? err.detail || err.code : "The server could not be reached.";
+    }
+    swap(jurisdictionHost, jurisdictionCard());
+  }
+
+  function jurisdictionCard(): HTMLElement {
+    if (jurisdictionProblem) {
+      return card({
+        title: "Jurisdiction rules",
+        sub: "Reverse charge, VAT IDs and nexus",
+        body: banner("danger", "The rules could not be read", jurisdictionProblem),
+      });
+    }
+    const status = jurisdictionState;
+    if (!status) {
+      return card({ title: "Jurisdiction rules", sub: "Loading", body: h("div", { class: "skeleton skeleton-line w-60" }) });
+    }
+    const config = status.config;
+    const rulesOn = config.reverse_charge || config.nexus_enforced;
+    const nexusTable = status.nexus.length
+      ? h(
+          "div",
+          { class: "table-wrap" },
+          h(
+            "table",
+            { class: "table" },
+            h(
+              "thead",
+              null,
+              h(
+                "tr",
+                null,
+                h("th", { scope: "col" }, "Jurisdiction"),
+                h("th", { scope: "col" }, "Basis"),
+                h("th", { scope: "col" }, "Declared"),
+                h("th", { scope: "col" }, ""),
+              ),
+            ),
+            h(
+              "tbody",
+              null,
+              ...status.nexus.map((row) =>
+                h(
+                  "tr",
+                  null,
+                  h("td", null, h("span", { class: "mono row-title" }, row.jurisdiction)),
+                  h("td", null, h("span", { class: "dim" }, row.note || "No basis recorded")),
+                  h("td", null, h("span", { class: "dim nowrap", title: dateTime(row.created_at) }, dateOnly(row.created_at))),
+                  h(
+                    "td",
+                    { class: "num" },
+                    btn("Remove", { size: "sm", variant: "ghost", icon: "trash", onclick: () => void retireNexus(row) }),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        )
+      : h(
+          "p",
+          { class: "faint" },
+          config.nexus_enforced
+            ? "No jurisdiction is declared, so nexus governs nothing yet: every destination is priced from the rate table. Declare the states the installation has nexus in, and tax stops being collected everywhere else in that country."
+            : "Nexus enforcement is off, so the rate table decides everywhere. Switch it on in the tax settings to make a rate in a state without nexus stop applying.",
+        );
+
+    return card({
+      title: "Jurisdiction rules",
+      sub: rulesOn ? "Reverse charge and nexus are in force" : "Off — the rate table decides every destination",
+      actions: h(
+        "div",
+        { class: "row" },
+        btn("Explain a sale", { size: "sm", variant: "ghost", icon: "search", onclick: () => decideDialog() }),
+        btn("Declare nexus", { size: "sm", variant: "ghost", icon: "plus", onclick: () => nexusDialog() }),
+        btn("Settings", {
+          size: "sm",
+          variant: "ghost",
+          icon: "settings",
+          title: "Seller country, reverse charge, VAT-ID validation service and the nexus switch live in the tax settings group",
+          href: "/settings/system?group=tax",
+        }),
+      ),
+      body: h(
+        "div",
+        { class: "stack-sm" },
+        h(
+          "div",
+          { class: "row-wrap" },
+          badge(config.reverse_charge ? "Reverse charge on" : "Reverse charge off", config.reverse_charge ? "success" : "neutral", { dot: true }),
+          badge(config.nexus_enforced ? "Nexus enforced" : "Nexus off", config.nexus_enforced ? "success" : "neutral", { dot: true }),
+          config.seller_country
+            ? badge(`Established in ${config.seller_country}`, "info")
+            : badge("Seller country not set", "warning"),
+          badge(
+            config.reverse_charge && config.vat_validation_url ? "VAT-ID service configured" : "No VAT-ID service",
+            config.reverse_charge && config.vat_validation_url ? "success" : "neutral",
+          ),
+        ),
+        h(
+          "p",
+          { class: "dim" },
+          config.reverse_charge
+            ? `A business in another EU member state that supplies a validated VAT ID is charged nothing, with a reverse-charge note on the invoice. A VAT ID that cannot be checked refuses the sale instead of guessing. Member states: ${status.eu_member_states.join(", ")}.`
+            : "Reverse charge is off: an EU business supplying a VAT ID is charged the destination rate like any other customer. Switching it on changes what those customers are charged, so it is a decision rather than a default.",
+        ),
+        status.warnings.length
+          ? h(
+              "div",
+              { class: "stack-sm" },
+              ...status.warnings.map((warning) => banner("warning", "Check this configuration", warning)),
+            )
+          : null,
+        status.nexus_gaps.length
+          ? h(
+              "p",
+              { class: "dim" },
+              `Rates configured but not charged, because no nexus is declared there: ${status.nexus_gaps.join(", ")}.`,
+            )
+          : null,
+        h("h3", { class: "section-title" }, "Sales-tax nexus"),
+        nexusTable,
+      ),
+    });
+  }
+
+  async function retireNexus(row: NexusDeclaration): Promise<void> {
+    const ok = await ctx.confirm({
+      title: `Remove the ${row.jurisdiction} declaration?`,
+      body: "Tax stops being collected there at the next price. Invoices already issued keep the decision they were priced with, so nothing is rewritten — but a declaration that was wrong is worth recording as a mistake rather than leaving in place.",
+      confirmLabel: "Remove declaration",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await ctx.api.del(`/api/v1/staff/tax-jurisdiction/nexus/${encodeURIComponent(row.id)}`);
+      ctx.toast("Nexus declaration removed", { tone: "success", detail: row.jurisdiction });
+      await refreshJurisdiction();
+    } catch (err) {
+      reportJurisdiction(err, "The declaration could not be removed");
+    }
+  }
+
+  function nexusDialog(): void {
+    const country = input({ id: "nexus-country", placeholder: "US", class: "input--mono", maxlength: 2, required: true });
+    const region = input({ id: "nexus-region", placeholder: "CA", class: "input--mono", maxlength: 8 });
+    const note = input({ id: "nexus-note", placeholder: "Warehouse in Reno, or economic nexus since 2023", maxlength: 200 });
+    const errorHost = h("div");
+    const submit = btn("Declare nexus", { variant: "primary", type: "submit" });
+    const cancel = btn("Cancel", { variant: "ghost" });
+    const form = h(
+      "form",
+      { class: "stack", novalidate: true },
+      errorHost,
+      h(
+        "div",
+        { class: "form-grid" },
+        field({ label: "Country", control: country, id: "nexus-country", required: true, hint: "ISO 3166-1 alpha-2, e.g. US." }),
+        field({ label: "Region", control: region, id: "nexus-region", hint: "A state or province. Empty means the whole country." }),
+        field({
+          label: "Basis",
+          control: note,
+          id: "nexus-note",
+          class: "span-2",
+          hint: "Why this jurisdiction is declarable. An auditor will ask, and the person who made the claim is recorded with it.",
+        }),
+      ),
+    );
+    bindForm(form, submit);
+    const handle = openDialog({
+      title: "Declare sales-tax nexus",
+      subtitle: "Declaring any jurisdiction in a country makes that country's tax nexus-governed: tax is collected only where a declaration matches. That is deliberately an explicit act.",
+      body: form,
+      footer: h("div", { class: "row spacer" }, cancel, submit),
+      wide: true,
+    });
+    cancel.addEventListener("click", () => handle.close());
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void (async () => {
+        errorHost.replaceChildren();
+        const code = country.value.trim().toUpperCase();
+        if (!/^[A-Z]{2}$/.test(code)) {
+          swap(errorHost, h("div", { class: "banner banner--danger" }, "A country is two upper-case letters, e.g. US."));
+          return;
+        }
+        if (submit instanceof HTMLButtonElement) submit.disabled = true;
+        try {
+          await ctx.api.post("/api/v1/staff/tax-jurisdiction/nexus", {
+            country_code: code,
+            region_code: region.value.trim().toUpperCase(),
+            note: note.value.trim(),
+          });
+          ctx.toast("Nexus declared", { tone: "success", detail: region.value.trim() ? `${code}-${region.value.trim().toUpperCase()}` : code });
+          handle.close();
+          await refreshJurisdiction();
+        } catch (err) {
+          swap(errorHost, h("div", { class: "banner banner--danger" }, jurisdictionError(err)));
+        } finally {
+          if (submit instanceof HTMLButtonElement) submit.disabled = false;
+        }
+      })();
+    });
+  }
+
+  /**
+   * "Why would this sale be taxed?" — the dry run.
+   *
+   * It is the only way to see the engine's reasoning without issuing an invoice: the decision, the
+   * rule that made it, the validation it used, and — when it refuses — the facts that are missing.
+   * A refusal is shown as an answer, not as an error, because it is the answer.
+   */
+  function decideDialog(): void {
+    const customer = input({ id: "decide-customer", placeholder: "Customer id (optional)", class: "input--mono", autocomplete: "off" });
+    const country = input({ id: "decide-country", placeholder: "DE", class: "input--mono", maxlength: 2 });
+    const region = input({ id: "decide-region", placeholder: "CA (optional)", class: "input--mono", maxlength: 8 });
+    const vatID = input({ id: "decide-vat", placeholder: "DE123456789 (optional)", class: "input--mono" });
+    const resultHost = h("div", { class: "stack" }, h("p", { class: "dim" }, "Fill in a destination, or a customer id, and run the check."));
+    const run = btn("Check", {
+      variant: "primary",
+      icon: "search",
+      onclick: () =>
+        void (async () => {
+          swap(resultHost, h("p", { class: "dim" }, "Deciding…"));
+          try {
+            const res = await ctx.api.post<DecisionExplanation>("/api/v1/staff/tax-jurisdiction/decide", {
+              customer_id: customer.value.trim(),
+              country: country.value.trim().toUpperCase(),
+              region: region.value.trim().toUpperCase(),
+              vat_id: vatID.value.trim(),
+            });
+            swap(resultHost, decisionBody(res));
+            await refreshJurisdiction();
+          } catch (err) {
+            swap(resultHost, h("div", { class: "banner banner--danger" }, jurisdictionError(err)));
+          }
+        })(),
+    });
+    const handle = openDialog({
+      title: "Explain a sale",
+      subtitle: "The decision is recorded in the audit log, because 'the engine said reverse charge' is the question asked when a zero-rated invoice is audited. Nothing is charged and no invoice is created.",
+      body: h(
+        "div",
+        { class: "stack" },
+        h(
+          "div",
+          { class: "form-grid" },
+          field({ label: "Customer", control: customer, id: "decide-customer", hint: "Optional. When set, the destination and VAT ID come from the billing profile." }),
+          field({ label: "Country", control: country, id: "decide-country", hint: "The destination, e.g. DE or US." }),
+          field({ label: "Region", control: region, id: "decide-region", hint: "A state, for a subdivision rate." }),
+          field({ label: "VAT ID", control: vatID, id: "decide-vat", hint: "A VAT ID checks against the configured service." }),
+        ),
+        resultHost,
+      ),
+      footer: h("div", { class: "row spacer" }, btn("Close", { variant: "ghost", onclick: () => handle.close() }), run),
+      wide: true,
+    });
+  }
+
+  function decisionBody(res: DecisionExplanation): HTMLElement {
+    if (res.outcome === "refused" && res.refusal) {
+      return h(
+        "div",
+        { class: "stack-sm" },
+        banner(
+          "warning",
+          "Refused — no tax decision can be made",
+          h(
+            "div",
+            { class: "stack-sm" },
+            h("p", null, res.refusal.detail),
+            res.refusal.missing && res.refusal.missing.length
+              ? h("p", { class: "dim" }, `Missing: ${res.refusal.missing.join(", ")}`)
+              : null,
+          ),
+        ),
+        h("span", { class: "mono faint" }, res.refusal.code),
+      );
+    }
+    const decision = res.decision;
+    if (!decision) return h("p", { class: "faint" }, "The server returned no decision.");
+    return h(
+      "div",
+      { class: "stack-sm" },
+      h(
+        "div",
+        { class: "row-wrap" },
+        badge(decision.kind.replace(/_/g, " "), decision.charges ? "success" : "info"),
+        decision.charges ? badge(`rate ${decision.rate}`, "neutral") : badge("no tax charged", "neutral"),
+        decision.inclusive ? badge("inclusive", "info") : null,
+        h("span", { class: "mono dim" }, decision.jurisdiction || "—"),
+      ),
+      h("p", null, decision.reason || "The rate table's own rate applies, with no exemption or nexus rule involved."),
+      decision.validation
+        ? h(
+            "div",
+            { class: "stack-sm" },
+            h("h4", { class: "section-title" }, "VAT-ID validation"),
+            h(
+              "div",
+              { class: "row-wrap" },
+              badge(decision.validation.status, decision.validation.status === "valid" ? "success" : "warning", { dot: true }),
+              h("span", { class: "mono dim" }, `${decision.validation.country_code}${decision.validation.vat_id}`),
+              decision.validation.trader_name ? h("span", { class: "dim" }, decision.validation.trader_name) : null,
+              h("span", { class: "faint" }, `${dateTime(decision.validation.checked_at)}${decision.validation.cached ? " · cached" : ""}`),
+            ),
+            decision.validation.detail ? h("p", { class: "dim" }, decision.validation.detail) : null,
+          )
+        : null,
+      h("span", { class: "faint mono" }, decision.policy),
+    );
+  }
+
+  function reportJurisdiction(err: unknown, fallback: string): void {
+    if (err instanceof ApiError) {
+      ctx.toast(err.detail || fallback, { tone: "danger", detail: err.code });
+      return;
+    }
+    ctx.toast(fallback, { tone: "danger", detail: "The server could not be reached." });
+  }
+
+  function jurisdictionError(err: unknown): string {
+    if (!(err instanceof ApiError)) return "The server could not be reached, so nothing was recorded.";
+    switch (err.code) {
+      case "nexus_exists":
+        return "That jurisdiction is already declared. One declaration per jurisdiction keeps 'is there nexus' a fact rather than a row order.";
+      case "vat_id_malformed":
+        return err.detail || "That identifier does not match the format the country publishes.";
+      case "vat_id_unverified":
+      case "vat_id_validation_failed":
+        return err.detail || "The VAT ID could not be validated against a service.";
+      case "seller_country_missing":
+        return "Reverse charge cannot be decided until the seller country is set in the tax settings.";
+      case "invalid_input":
+        return err.detail || "The value was refused. Check the country and region codes.";
+      case "forbidden":
+        return "You do not hold tax:write, so the change was not saved.";
+      default:
+        return err.detail || `The request was refused (${err.code}).`;
+    }
+  }
 
   const columns: Column<TaxRate>[] = [
     {
@@ -697,6 +1234,11 @@ export default async function taxRatesPage(ctx: Ctx): Promise<Node> {
 
   swap(sourceHost, importCard());
 
+  // Both cards are read after the table is built, so a slow rules read or a long run history cannot
+  // delay the rate table itself: the table is the reason the operator opened the page.
+  void refreshJurisdiction();
+  void refreshRuns();
+
   // ------------------------------------------------------------- mutations --
 
   async function closeRate(row: TaxRate): Promise<void> {
@@ -939,6 +1481,8 @@ export default async function taxRatesPage(ctx: Ctx): Promise<Node> {
       ),
     ),
     sourceHost,
+    jurisdictionHost,
+    historyHost,
     rows.length === 0 ? null : summaryStrip(rows),
     table.el,
   );

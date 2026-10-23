@@ -280,12 +280,6 @@ nav_permissions = {}
 for m in re.finditer(r'href:\s*[`"\']([^`"\']+)[`"\']\s*,\s*icon:\s*[^,]+(?:,\s*permission:\s*"([^"]+)")?', layout):
     if m.group(2):
         nav_permissions.setdefault(m.group(2), set()).add(m.group(1))
-# An entry may also be gated on any of several permissions (`permissionAny`), which is how one
-# screen serves two audiences with different grants. A typo in that list hides the entry from
-# everyone just as silently, so it is checked by the same rule.
-for m in re.finditer(r'href:\s*[`"\']([^`"\']+)[`"\'](?:(?!href:)[\s\S])*?permissionAny:\s*\[([^\]]*)\]', layout):
-    for pm in re.finditer(r'"([^"]+)"', m.group(2)):
-        nav_permissions.setdefault(pm.group(1), set()).add(m.group(1))
 
 # A view's own permission gates: ctx.can("invoice:void"), pageCtx.can(permission).
 gate_permissions = {}

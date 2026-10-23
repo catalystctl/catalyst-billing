@@ -596,9 +596,14 @@ func TestStorefrontSettingsChangeWhatTheShopPublishes(t *testing.T) {
 	}); rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("negative threshold = %d, want 422: %s", rec.Code, rec.Body)
 	}
+	var stored int
 	if err := env.pool.QueryRow(ctx, `
-		SELECT count(*) FROM settings WHERE group_key = 'storefront' AND key = 'low_stock_threshold' AND value = '-1'`).
-		Scan(new(int)); err != nil {
+		SELECT count(*) FROM settings
+		 WHERE group_key = 'storefront' AND key = 'low_stock_threshold' AND value = '-1'`).
+		Scan(&stored); err != nil {
 		t.Fatalf("count rejected settings row: %v", err)
+	}
+	if stored != 0 {
+		t.Fatal("a negative low-stock threshold was stored")
 	}
 }

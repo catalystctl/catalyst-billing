@@ -162,7 +162,6 @@ type ConfigOption struct {
 	ParentID     *string             `json:"parent_id"`
 	EnvVariable  string              `json:"env_variable"`
 	Upgradable   bool                `json:"upgradable"`
-	CreatedAt    string              `json:"created_at,omitempty"`
 	OptionPrices []ConfigOptionPrice `json:"prices"`
 }
 

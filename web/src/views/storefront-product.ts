@@ -43,7 +43,6 @@ import type { AuthCtx, Session } from "../lib/types";
 import { badge, btn, emptyState, errorState, field, select, skeletonPage } from "../ui/kit";
 import { loadCurrencies, type PublicCurrency } from "./cart";
 import {
-  intervalLabel,
   productGrid,
   storefrontCurrencySelect,
   type PublicCategory,

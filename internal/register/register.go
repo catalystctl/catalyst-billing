@@ -17,6 +17,14 @@
 // billing account cannot buy anything, and a billing account with no login cannot
 // be reached — so all three commit together or none do.
 //
+// The same rule applies to the affiliate programme. A referred signup writes a fourth
+// row, the attribution, and it joins the transaction rather than following it: a referral
+// without its customer would pay somebody for an account that does not exist, and a
+// customer without their referral would quietly cost the affiliate the commission they
+// earned. A code that cannot be attributed — mistyped, retired, the affiliate's own —
+// discards the referral and keeps the account, because the visitor's mistake is not
+// grounds to refuse them a login.
+//
 // Non-enumeration. A duplicate address must not be distinguishable from a fresh
 // one, for the same reason the password-reset request is not: "is this address
 // registered" is the question an attacker asks first, and a registration form that
@@ -103,7 +111,19 @@ type Service struct {
 	// configuration, never a request-derived value: a link built from the Host header
 	// is a link an attacker can point at their own domain.
 	baseURL string
+	// attribute records the referral, if any. It may be nil: registration still works,
+	// the signup simply earns no affiliate anything.
+	attribute ReferralAttributor
 }
+
+// ReferralAttributor links a customer created by a registration to the affiliate whose
+// code brought them in.
+//
+// It is a function rather than a growth.Store because the rule that makes it safe — the
+// attribution shares the registration's transaction, and a refusal is never allowed to
+// fail the signup — belongs here, while "which affiliate owns this code" belongs to the
+// growth package. The HTTP layer supplies the implementation.
+type ReferralAttributor func(ctx context.Context, tx pgx.Tx, code, customerID string) error
 
 // New constructs a Service.
 func New(pool *store.Pool, hasher *authn.Hasher) *Service {
@@ -122,6 +142,16 @@ func (s *Service) WithVerification(auth *authn.Service, queue *notify.Queue, bas
 	return s
 }
 
+// WithReferralAttribution attaches the affiliate programme's attribution.
+//
+// It is separate from New for the same reason WithVerification is: an installation that
+// runs no affiliate programme registers accounts without one, and the growth package is
+// the HTTP layer's dependency rather than this package's.
+func (s *Service) WithReferralAttribution(a ReferralAttributor) *Service {
+	s.attribute = a
+	return s
+}
+
 // Request is one registration.
 type Request struct {
 	Email string
@@ -133,6 +163,9 @@ type Request struct {
 	AcceptedTOS bool
 	// IP is recorded on the authentication event, for the operator's benefit.
 	IP string
+	// ReferralCode is the affiliate code the visitor arrived with, already normalised
+	// by the caller. Empty means "no referral", which is the ordinary case.
+	ReferralCode string
 }
 
 // Result reports what was created.
@@ -148,6 +181,12 @@ type Result struct {
 	// outbox. It is false when the address was already verified, when no mail path is
 	// configured, or when the account already existed.
 	VerificationQueued bool
+	// ReferralRefusal is why a code the visitor presented earned nobody anything: an
+	// unknown or disabled code, a self-referral, an account that already existed, or a
+	// failure reading the affiliates table. Nil means nothing was refused — either no
+	// code was presented or it was attributed. It is a fact for the operator's log, never
+	// for the client: the customer is not the one who mistyped the link.
+	ReferralRefusal error
 }
 
 // Policy reads the settings a registration depends on.
@@ -284,6 +323,14 @@ func (s *Service) Register(ctx context.Context, req Request) (Result, error) {
 		}
 
 		out.UserID, out.CustomerID = userID, customerID
+
+		// The attribution shares this transaction, so a referral row can never exist
+		// without the customer it refers and a referred customer can never commit
+		// without it: the two are one write, not two that a crash can separate.
+		if req.ReferralCode != "" && s.attribute != nil {
+			out.ReferralRefusal = s.attributeSignup(ctx, tx, req.ReferralCode, customerID)
+		}
+
 		return recordEvent(ctx, tx, userID, "registered", req.IP)
 	})
 	if err != nil {
@@ -302,6 +349,35 @@ func (s *Service) Register(ctx context.Context, req Request) (Result, error) {
 		out.VerificationQueued = true
 	}
 	return out, nil
+}
+
+// attributeSignup runs the attribution inside a savepoint of the registration's
+// transaction.
+//
+// Every way an attribution can fail must leave the registration standing. A customer is
+// not responsible for a mistyped or retired referral link, and an infrastructure error on
+// the affiliate path is not a reason to refuse somebody an account. That rules out
+// returning the error to the caller — but it does not rule out the error's *consequences*:
+// a failed statement inside a transaction poisons it, and every later write (the auth
+// event, the commit) would then fail too. A savepoint is the only shape that keeps both
+// properties: the referral is discarded, the account is not, and nothing half-written is
+// left behind.
+func (s *Service) attributeSignup(ctx context.Context, tx pgx.Tx, code, customerID string) error {
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("register: open attribution savepoint: %w", err)
+	}
+	if err := s.attribute(ctx, sp, code, customerID); err != nil {
+		// Best-effort by design: a savepoint that cannot be rolled back means the outer
+		// transaction is already unusable, and the registration will fail on its next
+		// statement with a better error than this one.
+		_ = sp.Rollback(ctx)
+		return err
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return fmt.Errorf("register: release attribution savepoint: %w", err)
+	}
+	return nil
 }
 
 // adoptOrCreateCustomer returns the billing account for an address.

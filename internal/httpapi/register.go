@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/catalyst/billing/internal/authn"
+	"github.com/catalyst/billing/internal/growth"
 	"github.com/catalyst/billing/internal/register"
+	"github.com/jackc/pgx/v5"
 )
 
 // Customer self-registration and the signed-in password change (IDN-01, IDN-06,
@@ -75,6 +78,14 @@ func (s *Server) registerService() (*register.Service, error) {
 		return nil, err
 	}
 	svc := register.New(s.pool, hasher)
+	// Attribution is wired here rather than inside internal/register so the registration
+	// package stays free of the affiliate programme: it decides *when* a referral is
+	// recorded (inside its own transaction, and never at the cost of the account), and
+	// the growth package decides *which* affiliate a code belongs to.
+	svc.WithReferralAttribution(func(ctx context.Context, tx pgx.Tx, code, customerID string) error {
+		_, err := growth.AttributeSignup(ctx, tx, code, customerID)
+		return err
+	})
 	if s.auth != nil && s.auth.Service != nil {
 		// The verification token and the outbox are attached only when the
 		// installation has them: an account is still creatable without a mail path,
@@ -110,6 +121,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// CaptchaToken is the challenge's answer. It is empty when no provider is configured,
 		// and requireCaptcha then makes no outbound call at all.
 		CaptchaToken string `json:"captcha_token"`
+		// ReferralCode is the affiliate code the visitor arrived with. The storefront
+		// normally leaves it in the billing_ref cookie instead; the field is honoured so a
+		// client that carries the code itself does not have to be told about the cookie.
+		ReferralCode string `json:"referral_code"`
 	}
 	if !s.decodeJSON(w, r, &req, 8<<10) {
 		return
@@ -137,12 +152,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = svc.Register(r.Context(), register.Request{
-		Email:       req.Email,
-		Password:    req.Password,
-		DisplayName: req.DisplayName,
-		AcceptedTOS: req.AcceptTOS,
-		IP:          s.clientIP(r),
+	// The code is read once, before the service runs, so the response can decide whether
+	// the visitor is still holding it. A code that turns out to be wrong is cleared along
+	// with a good one: it has had its answer, and keeping it would re-attempt the same
+	// refusal on the next registration from this browser.
+	referralCode := s.referralCodeForRegistration(r, req.ReferralCode)
+
+	res, err := svc.Register(r.Context(), register.Request{
+		Email:        req.Email,
+		Password:     req.Password,
+		DisplayName:  req.DisplayName,
+		AcceptedTOS:  req.AcceptTOS,
+		IP:           s.clientIP(r),
+		ReferralCode: referralCode,
 	})
 	if err != nil {
 		switch {
@@ -182,6 +204,25 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// is the same for every caller, so it reveals nothing about any account. The
 	// service's Result is deliberately not consulted — its Duplicate field is exactly
 	// what must not reach the wire.
+
+	// The code has now been decided: attributed, or refused. Either way the visitor stops
+	// carrying it, so a second registration from this browser is not silently attributed
+	// to a link that has already had its answer. A duplicate consumed nothing — no account
+	// was created, so no attribution was attempted — and the cookie stays for the browser
+	// that may still register the account it was meant for.
+	if referralCode != "" && !res.Duplicate {
+		s.clearReferralCode(w)
+	}
+	if res.ReferralRefusal != nil {
+		// Refusing the attribution is not refusing the customer: the response below is
+		// byte-for-byte the one a registration with no code gets, because a mistyped or
+		// retired link is not something the person signing up can be asked to fix. The
+		// reason goes to the operator's log, which is where a broken affiliate link is
+		// findable.
+		s.cfg.Logger.InfoContext(r.Context(), "referral attribution refused",
+			"reason", res.ReferralRefusal, "code", referralCode)
+	}
+
 	policy, perr := svc.Policy(r.Context())
 	if perr != nil {
 		// The account is already committed; a settings read failure must not turn a

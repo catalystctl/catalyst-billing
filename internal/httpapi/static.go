@@ -21,6 +21,11 @@ func (s *Server) WithWeb(h *web.Handler) *Server {
 // that decides between "a client-side route, serve the shell" and "an unknown endpoint,
 // say so in JSON". Serving HTML for /api/v1/typo is the failure this prevents: a client
 // that expected JSON gets a parse error instead of a 404 it can branch on.
+//
+// It is also where a referral link is cashed in: ?ref= arrives on the document request,
+// because that is the URL the affiliate published, and this is the only handler that sees
+// the storefront's own navigations. Capturing it here means the code survives until the
+// registration POST without the frontend being involved at all.
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	if s.web == nil {
 		writeProblem(w, http.StatusNotFound, "not_found", "no such endpoint")
@@ -30,5 +35,6 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotFound, "not_found", "no such endpoint")
 		return
 	}
+	s.captureReferralCode(w, r)
 	s.web.ServeHTTP(w, r)
 }

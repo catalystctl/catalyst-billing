@@ -1601,6 +1601,24 @@ try {
       expect: ["Branding", "Accent"],
     });
     if (branding.status === "present") {
+      // Start from an unset brand, whatever a previous run left behind.
+      //
+      // This block resets the brand at the END, which is enough when a run finishes. It is not
+      // enough when one crashes: the brand persists, and the next run's assertions read the
+      // previous run's colours and fail with values nobody in this run typed. Clearing first makes
+      // the block self-healing, which matters because the harness is run by several agents.
+      await evaluate(`(() => {
+        const b = Array.from(document.querySelectorAll('button'))
+          .find((x) => /reset to the built-in/i.test(x.textContent || ''));
+        if (b) b.click();
+        return Boolean(b);
+      })()`);
+      await until(
+        "the brand to be clear before the assertions",
+        "document.documentElement.style.getPropertyValue('--accent').trim() === ''",
+        10_000,
+      ).catch(() => {});
+
       // Two distinct accents, so "the accent followed the theme" cannot be satisfied by the
       // built-in colour by accident.
       const LIGHT = "#c0392b";
@@ -1642,12 +1660,21 @@ try {
 
       // Wait for the effect rather than for a delay: the shell applies the brand when the save
       // resolves, and the wordmark is the visible consequence.
+      // Assert the accent we typed, not merely that some accent exists.
+      //
+      // This check used to be `!== ''`, which a brand left behind by an EARLIER run satisfies
+      // perfectly — so it passed while the save was doing nothing, and the real failure surfaced
+      // three assertions later as a mystery colour nobody in this run had typed.
       const applied = await until(
         "the brand to reach the shell",
-        "document.documentElement.style.getPropertyValue('--accent').trim() !== ''",
+        `document.documentElement.style.getPropertyValue('--accent').trim() === ${JSON.stringify(LIGHT)}`,
         10_000,
       ).catch(() => false);
-      check("branding: saving applies the accent to the panel", Boolean(applied));
+      check(
+        "branding: saving applies the accent to the panel",
+        Boolean(applied),
+        await evaluate("document.documentElement.style.getPropertyValue('--accent').trim()"),
+      );
 
       const painted = await evaluate(`(() => {
         const mode = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';

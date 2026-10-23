@@ -396,13 +396,6 @@ RECORDED = {
     "api GET /api/v1/staff/refunds/{id}":
         "the refund is read from the payment it belongs to and rendered in the refund dialog; "
         "the standalone read is for API clients",
-    "api GET /api/v1/portal/credit-notes/{id}/pdf":
-        "GAP: a customer receives a credit note and cannot download it. The PDF endpoint exists "
-        "and nothing links to it. Recorded: the invoice/credit-note screens belong to another "
-        "package's files.",
-    "api GET /api/v1/staff/credit-notes/{id}/pdf":
-        "GAP: an operator issues a credit note from /invoices/:id and cannot download the PDF. "
-        "Recorded: web/src/views/invoice.ts is another package's file.",
     "write POST /api/v1/portal/services/{id}/cancellation":
         "GAP: the portal still cancels through the older /cancel endpoint; the newer "
         "cancellation request (the one the staff queue reads) is API-only. Recorded: which "

@@ -1812,6 +1812,148 @@ paths:
             summary: The caller's invoices
             x-permission: invoice:read:self
             x-rate-class: read
+    /api/v1/me/locale:
+        get:
+            description: |-
+                The read-back half of the switcher. Empty is an answer rather than an absence: it means this account has no opinion, so the `Accept-Language` header decides for it. `default` is the installation's default locale, so a client can render "no preference, so English" without a second request.
+
+                The same preference is what `GET /api/v1/i18n/locales` reports as `resolved.source = preference`, which is the resolution the storefront should render with.
+            operationId: GetMeLocale
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    default:
+                                        description: The locale a request with no usable preference resolves to.
+                                        type: string
+                                    locale:
+                                        description: A BCP-47 code, or `""` when this account never chose one.
+                                        type: string
+                                required:
+                                    - locale
+                                    - default
+                                type: object
+                    description: The stored preference and the installation's default.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The language this account chose, or the empty string if it never did
+            x-rate-class: read
+        put:
+            description: |-
+                The durable half of the switcher: a choice made on one device follows the person to another and is what their queued mail is composed in. The code is normalised, so `DE` and `de` are one preference.
+
+                An empty `locale` clears the preference, which is how a customer goes back to following the browser they are sitting in front of. A locale that is not enabled is refused with 422 `locale_not_enabled` rather than stored: a preference for a language the catalogue cannot render is a customer whose every label falls through to the key itself.
+            operationId: PutMeLocale
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                locale:
+                                    description: An enabled BCP-47 code, or `""` to clear the preference.
+                                    type: string
+                            required:
+                                - locale
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    default:
+                                        description: The locale a request with no usable preference resolves to.
+                                        type: string
+                                    locale:
+                                        description: 'What is now stored: the normalised code, or `""` for no preference.'
+                                        type: string
+                                required:
+                                    - locale
+                                    - default
+                                type: object
+                    description: The stored preference, echoed after normalisation, and the installation's default.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Store the caller's language
+            x-csrf-required: true
+            x-rate-class: mutation
     /api/v1/media/{id}:
         get:
             description: Public, because an <img> on the storefront has no session. Served with nosniff and an immutable cache. SVG is the one format that can carry a script, so it is served with a sandboxing Content-Security-Policy rather than as a document.

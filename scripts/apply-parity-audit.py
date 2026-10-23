@@ -35,7 +35,7 @@ MARK_CHARS = set(MARKS.values())
 
 # A row is `| ID | feature | catalyst today | mark | phase |`. The feature text may contain escaped
 # pipes (\|), so the split is on unescaped pipes only.
-ROW = re.compile(r"^\|\s*([A-Z]+-\d+)\s*\|")
+ROW = re.compile(r"^\|\s*([A-Z][A-Z0-9]*-\d+)\s*\|")
 
 
 def split_row(line: str) -> list[str] | None:

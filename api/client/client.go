@@ -799,6 +799,14 @@ func (c *Client) GetMeInvoices(ctx context.Context, query url.Values, body any) 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetMeLocale calls GET /api/v1/me/locale.
+//
+// The language this account chose, or the empty string if it never did
+func (c *Client) GetMeLocale(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/me/locale"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetMediaById calls GET /api/v1/media/{id}.
 //
 // A stored logo
@@ -3803,6 +3811,15 @@ func (c *Client) PostWebhooksByProvider(ctx context.Context, provider string, qu
 func (c *Client) PostWebhooksMailPiping(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/webhooks/mail/piping"
 	return c.do(ctx, "POST", path, query, body, false, false)
+}
+
+// PutMeLocale calls PUT /api/v1/me/locale.
+//
+// Store the caller's language
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+func (c *Client) PutMeLocale(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/me/locale"
+	return c.do(ctx, "PUT", path, query, body, true, false)
 }
 
 // PutPortalBillingprofile calls PUT /api/v1/portal/billing-profile.

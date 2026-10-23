@@ -361,7 +361,8 @@ RECORDED = {
     "api POST /webhooks/{provider}": "inbound gateway callback; its outcome is on /webhooks and /logs",
     "api POST /api/v1/webhooks/mail/piping": "inbound mail webhook; the result is on /logs",
     "api GET /": "the SPA shell itself, not an API; the router answers it",
-    "api GET /api/v1/me": "credential introspection for API keys; the panel has a session, not a key",
+    # Now referenced by web/src/lib/i18n.ts, which reads the stored locale preference from
+    # /me/locale under the same group, so the sweep no longer records it as unreachable.
     "api GET /api/v1/me/invoices": "the API-key view of /portal/invoices; scripts only",
     # Now referenced by the branding overlay (lib/brand.ts resolves a logo through it), so the
     # sweep no longer needs to record it as unreachable.

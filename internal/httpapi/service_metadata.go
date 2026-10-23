@@ -2,14 +2,18 @@
 //
 // Two audiences, and the split is the permission:
 //
-//   - A customer renames and describes their own service with service:write:self. Every
-//     statement behind that route carries the ownership predicate in SQL, so another
-//     customer's service id answers 404 — the same answer as an id that does not exist.
+//   - A customer renames and describes their own service with service:write:self, and edits the
+//     property values whose definition the operator marked customer_visible. A property that is
+//     defined but not visible is refused with 403 `property_not_visible` rather than ignored, so
+//     a customer is never told a change landed when it did not. Every statement behind that route
+//     carries the ownership predicate in SQL, so another customer's service id answers 404 — the
+//     same answer as an id that does not exist.
 //   - Staff read the whole record — the label, the description, the plan, the quantity, the
 //     price and the properties — with service:read:all, and edit the metadata with
-//     service:write:all. The property *definitions* are installation configuration, so they
-//     live behind the same permission: whether a property prints on an invoice is an operator
-//     decision, not a support one.
+//     service:write:all, including the properties no customer can see. The property
+//     *definitions* are installation configuration, so they live behind the same permission:
+//     whether a property prints on an invoice, and whether a customer may edit it, is an
+//     operator decision, not a support one.
 //
 // The metadata response is deliberately one object rather than four: "what is this service?"
 // is a question, and answering it with a label, a plan, a price and a property list that a
@@ -62,9 +66,9 @@ func registerServiceMetadata(r *router) {
 
 // serviceMetadataRequest is the body of a metadata edit.
 //
-// The two text fields are pointers so "not mentioned" and "set to empty" stay different. A
-// customer's route rejects `custom_properties` explicitly rather than ignoring it: a client that
-// believes it set a property must be told it did not.
+// The two text fields are pointers so "not mentioned" and "set to empty" stay different.
+// `custom_properties` is accepted from both audiences: a customer may name only the keys whose
+// definition is customer_visible, and naming any other is a 403 the store decides.
 type serviceMetadataRequest struct {
 	Label            *string            `json:"label"`
 	Description      *string            `json:"description"`
@@ -249,7 +253,8 @@ func (s *Server) handlePortalServiceMetadata(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, serviceMetadataJSON(m, true))
 }
 
-// handleUpdatePortalServiceMetadata lets a customer rename and describe their own service.
+// handleUpdatePortalServiceMetadata lets a customer rename their service, describe it, and edit
+// the property values the operator made visible to them.
 func (s *Server) handleUpdatePortalServiceMetadata(w http.ResponseWriter, r *http.Request) {
 	if s.pool == nil {
 		writeProblem(w, http.StatusServiceUnavailable, "database_not_configured",
@@ -263,13 +268,6 @@ func (s *Server) handleUpdatePortalServiceMetadata(w http.ResponseWriter, r *htt
 	}
 	var req serviceMetadataRequest
 	if !s.decodeJSON(w, r, &req, 16<<10) {
-		return
-	}
-	if req.CustomProperties != nil {
-		// Named explicitly: a customer who thinks they set a property must be told that the
-		// installation's record is the operator's, not silently ignored.
-		writeProblem(w, http.StatusForbidden, "forbidden",
-			"custom properties are recorded by staff")
 		return
 	}
 	user, _ := userFrom(r.Context())
@@ -369,13 +367,16 @@ func (s *Server) handleDeleteServiceProperty(w http.ResponseWriter, r *http.Requ
 // writeServiceMetadataError maps a metadata error to a problem document.
 //
 // The codes are stable because the UI branches on them: "unknown_property" points at the
-// properties screen, "property_in_use" explains why a definition cannot be deleted, and
-// "invalid_label" keeps the form open with the text the customer typed. Everything else is the
-// lifecycle mapper's business, so it is delegated rather than duplicated.
+// properties screen, "property_not_visible" says a customer named a property that is not theirs
+// to edit, "property_in_use" explains why a definition cannot be deleted, and "invalid_label"
+// keeps the form open with the text the customer typed. Everything else is the lifecycle
+// mapper's business, so it is delegated rather than duplicated.
 func (s *Server) writeServiceMetadataError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, service.ErrUnknownProperty):
 		writeProblem(w, http.StatusBadRequest, "unknown_property", err.Error())
+	case errors.Is(err, service.ErrPropertyNotVisible):
+		writeProblem(w, http.StatusForbidden, "property_not_visible", err.Error())
 	case errors.Is(err, service.ErrPropertyInUse):
 		writeProblem(w, http.StatusConflict, "property_in_use", err.Error())
 	case errors.Is(err, service.ErrPropertyValueInvalid):

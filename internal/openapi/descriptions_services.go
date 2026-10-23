@@ -474,6 +474,26 @@ func serviceOperations() map[string]Operation {
 				"change does not silently re-price an existing service.",
 			Responses: []Response{{Status: 200, Description: "The selection"}},
 		},
+		"GET /api/v1/portal/services/{id}/config-options": {
+			Summary: "The options a customer may change, priced on their own plan",
+			Description: "What a change form needs and `GET .../config` cannot answer: every option on the " +
+				"service's product that the operator did not hide, the choices each one offers, and the amount " +
+				"each choice carries **on this service's price version** — the same `config_option_prices` row " +
+				"that `PUT .../config` charges from, so the price on the screen and the price on the invoice " +
+				"are one row. `value` is the option's current selection (empty when the service has not chosen " +
+				"it), so a form opens on what the customer has rather than on the first choice. An option with " +
+				"`upgradable: false` is listed but is not changeable, which is the operator's decision stated " +
+				"rather than hidden. `can_change` says whether the server would accept a re-price at all — a " +
+				"service with no billing schedule, or one whose subscription has ended, cannot be — and " +
+				"`change_blocked_reason` is the sentence to show when it is false, so a page offers the forms " +
+				"only where they would be accepted. The service is resolved through the caller's customer " +
+				"account in SQL, so another customer's identifier is a 404.",
+			Responses: []Response{
+				{Status: 200, Description: "The changeable options, priced"},
+				{Status: 404, Description: "No such service, or it belongs to another customer",
+					Schema: ProblemRef()},
+			},
+		},
 		"PUT /api/v1/portal/services/{id}/config": {
 			Summary: "Change an upgradable option on a service",
 			Description: "An upgrade in everything but name: the option changes what the subscription renews at, " +

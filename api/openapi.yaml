@@ -5764,6 +5764,61 @@ paths:
                 required: true
             x-permission: service:upgrade:self
             x-rate-class: mutation
+    /api/v1/portal/services/{id}/config-options:
+        get:
+            description: 'What a change form needs and `GET .../config` cannot answer: every option on the service''s product that the operator did not hide, the choices each one offers, and the amount each choice carries **on this service''s price version** — the same `config_option_prices` row that `PUT .../config` charges from, so the price on the screen and the price on the invoice are one row. `value` is the option''s current selection (empty when the service has not chosen it), so a form opens on what the customer has rather than on the first choice. An option with `upgradable: false` is listed but is not changeable, which is the operator''s decision stated rather than hidden. `can_change` says whether the server would accept a re-price at all — a service with no billing schedule, or one whose subscription has ended, cannot be — and `change_blocked_reason` is the sentence to show when it is false, so a page offers the forms only where they would be accepted. The service is resolved through the caller''s customer account in SQL, so another customer''s identifier is a 404.'
+            operationId: GetPortalServicesByIdConfigoptions
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The changeable options, priced
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service, or it belongs to another customer
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The options a customer may change, priced on their own plan
+            x-permission: service:read:self
+            x-rate-class: read
     /api/v1/portal/services/{id}/hooks/{extension}/{action}:
         post:
             description: 'Calls one service action the extension declared, with the service id. The guard is the *declared* permission, not the route''s: the extension named a permission at registration and the caller must hold exactly it, so a hook declared as `service:terminate` cannot be called by someone holding only `service:write:self`. The method called is the one the extension advertised in its handshake, which is what keeps the surface at "call this hook" rather than "run this code". The `Idempotency-Key` is passed to the extension as the operation key, so a retried click returns the first result instead of acting twice. Every call is audited; a call whose audit row cannot be written is not reported as a success. The service id is resolved in SQL against the caller''s own account, so another customer''s service is a 404 rather than a 403 that confirms it exists.'
@@ -6082,7 +6137,7 @@ paths:
             x-permission: service:read:self
             x-rate-class: read
         put:
-            description: 'The customer''s own label and description, and nothing else: a body that names `custom_properties` is refused with 403 rather than silently ignored, because the property record is the operator''s account of the installation. An absent field is left alone, so renaming a service does not blank the description an operator wrote. A label is collapsed to one line; a description keeps its newlines. Another customer''s identifier is a 404, and nothing is written.'
+            description: The customer's own label and description, and the property values the operator marked `customer_visible`. A key whose definition is not customer_visible is refused with 403 `property_not_visible` rather than silently ignored — a customer who believes they changed an internal record has to be told they did not — and the edit is refused whole rather than applied in part. Which properties a customer may write is the operator's decision on the definitions screen, not a rule invented here. An absent field is left alone, so renaming a service does not blank the description an operator wrote. A label is collapsed to one line; a description keeps its newlines. Another customer's identifier is a 404, and nothing is written.
             operationId: PutPortalServicesByIdMetadata
             parameters:
                 - in: path
@@ -6096,6 +6151,12 @@ paths:
                         schema:
                             additionalProperties: false
                             properties:
+                                custom_properties:
+                                    additionalProperties:
+                                        maxLength: 200
+                                        type: string
+                                    description: 'A partial edit of the property values: a key that is named is set (or, with an empty string, unset) and a key that is not named is left alone. A key with no definition is a 400: a value nobody can label is a value nobody can explain. A customer may name only the keys whose definition is `customer_visible`; naming any other is a 403 `property_not_visible`, and the edit is refused whole rather than applied in part.'
+                                    type: object
                                 description:
                                     description: Replaces the description. An empty string clears it, which restores the derived description. Newlines and tabs are allowed; other control characters are a 400.
                                     maxLength: 2000
@@ -6263,7 +6324,7 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Problem'
-                    description: The label or the description is not acceptable
+                    description: The label, the description or a property value is not acceptable
                 "401":
                     content:
                         application/json:
@@ -6275,7 +6336,7 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Problem'
-                    description: The body tried to set a custom property
+                    description: The body named a property the customer may not edit
                 "404":
                     content:
                         application/json:
@@ -6297,7 +6358,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: Rename or describe your own service
+            summary: Rename your service, describe it, and edit the properties shown to you
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key

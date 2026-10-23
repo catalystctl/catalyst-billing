@@ -523,20 +523,20 @@ Source: `app/Models/NotificationTemplate.php`, `NotificationPreference.php`,
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| NTF-01 | Notification templates per event, admin-editable (subject, mail body, in-app title/body/url) | Hardcoded Go templates for 4 kinds | 🟡 | P3 |
-| NTF-02 | Per-template channel toggles (`mail_enabled`, `in_app_enabled`, `enabled`) | None | ❌ | P3 |
-| NTF-03 | Per-user notification preferences (`force` / `choice_on` / `choice_off` / `never`) | None | ❌ | P3 |
-| NTF-04 | In-app notification inbox: list, unread, mark read, deep link | None | ❌ | P3 |
-| NTF-05 | Web push subscriptions (VAPID keys, subscribe, test push) | None | ❌ | P3 |
-| NTF-06 | Email log: to, subject, status, error, sent_at; retention | `notification_deliveries` records status/attempts/error but no admin view | 🟡 | P3 |
-| NTF-07 | Events: new login, new invoice, invoice paid, payment failed, new order, service activated/suspended/terminated, cancellation received, ticket reply, email verification, password reset | 4 kinds: password reset, email verification, invoice issued, dunning reminder | 🟡 | P3 |
-| NTF-08 | CC/BCC per template | None | ❌ | P3 |
-| NTF-09 | System emails (cron failure, test email) | No admin test email; worker failures are logged | 🟡 | P3 |
-| NTF-10 | Mail settings: disable mail, must verify, SMTP host/port/user/pass/encryption/from | Env-only SMTP; no admin surface | 🟡 | P5 |
-| NTF-11 | Mail header/footer/CSS branding | Plain text only | ❌ | P3 |
-| NTF-12 | Durable outbox with retries and dedupe | `notification_deliveries` + worker | ✅ stronger | — |
-| NTF-13 | Discord notifications extension (webhook, selectable events) | None | ❌ | P6 |
-| NTF-14 | Notification on login from a new device | `auth_events` records logins; no email | 🟡 | P3 |
+| NTF-01 | Notification templates per event, admin-editable (subject, mail body, in-app title/body/url) | internal/notify/templates.go (Template, SaveTemplate, DefaultTemplates, SeedTemplates) backs the staff editor at PUT /api/v1/staff/notification-templates/{event_key}, with subject, body and in-app title/body/url edited in web/src/views/notification-templates.ts. | ✅ | P3 |
+| NTF-02 | Per-template channel toggles (`mail_enabled`, `in_app_enabled`, `enabled`) | Per-template enabled, mail_enabled and in_app_enabled columns (internal/store/migrations/0020_commerce.sql) are enforced by notify.dispatch in internal/notify/events.go and written through templateBody in internal/httpapi/notifications.go. | ✅ | P3 |
+| NTF-03 | Per-user notification preferences (`force` / `choice_on` / `choice_off` / `never`) | internal/notify/preferences.go implements force, choice_on, choice_off and never, SetPreference refuses an opt-out of a force event, and GET/PUT /api/v1/portal/notifications/preferences in internal/httpapi/notifications.go serve the set. | ✅ | P3 |
+| NTF-04 | In-app notification inbox: list, unread, mark read, deep link | internal/notify/inbox.go with handleListNotifications, handleUnreadCount, handleMarkNotificationRead and handleMarkAllNotificationsRead in internal/httpapi/notifications.go backs web/src/views/portal-notifications.ts, and every row carries a url for the deep link. | ✅ | P3 |
+| NTF-05 | Web push subscriptions (VAPID keys, subscribe, test push) | internal/notify/push.go and internal/notify/webpush/vapid.go plus the push settings group (enabled, vapid_public_key, vapid_private_key, subject) serve GET /api/v1/push/config, POST /api/v1/push/subscriptions and POST /api/v1/push/test. | ✅ | P3 |
+| NTF-06 | Email log: to, subject, status, error, sent_at; retention | handleEmailLog at GET /api/v1/staff/logs/email in internal/httpapi/logs.go lists notification_deliveries with to, subject, status, error and sent_at, and internal/retention/retention.go ages the table out. | ✅ | P3 |
+| NTF-07 | Events: new login, new invoice, invoice paid, payment failed, new order, service activated/suspended/terminated, cancellation received, ticket reply, email verification, password reset | notify.Catalogue in internal/notify/events.go lists twelve templated events, but new_invoice_created still sends the hardcoded notify.InvoiceIssuedMessage, invoice_payment_failed and server_suspended have no call site, and new_ticket_message fires only from internal/tickets/piping.go rather than the portal and staff reply handlers. | 🟡 | P3 |
+| NTF-08 | CC/BCC per template | Template.CC and Template.BCC in internal/notify/templates.go (cc_addresses, bcc_addresses columns) are fanned out as byte-identical copies by enqueueMail in internal/notify/events.go. | ✅ | P3 |
+| NTF-09 | System emails (cron failure, test email) | No test-email route exists (only POST /api/v1/push/test for push) and no cron-failure mail is sent, while cron and worker failures are recorded in error_logs through internal/httpapi/logs.go. | 🟡 | P3 |
+| NTF-10 | Mail settings: disable mail, must verify, SMTP host/port/user/pass/encryption/from | The mail settings group in internal/settings/settings.go (disable, must_verify, smtp_host, smtp_port, smtp_username, smtp_password, smtp_encryption, smtp_from) is editable via PUT /api/v1/staff/settings and web/src/views/system-settings.ts, with the password returned only as is_set. | ✅ | P5 |
+| NTF-11 | Mail header/footer/CSS branding | internal/notify/templates.go and notify.SMTPSender are plain text only: there is no HTML mail, no header or footer hook and no CSS branding anywhere in the render path. | ❌ | P3 |
+| NTF-12 | Durable outbox with retries and dedupe | notify.Queue in internal/notify/notify.go writes notification_deliveries with attempts, error and dedupe_key (internal/store/migrations/0024_notification_dedupe.sql) and the worker drains it with retries. | ✅ | — |
+| NTF-13 | Discord notifications extension (webhook, selectable events) | internal/growth/discord.go DiscordNotifier, the discord settings group and PUT /api/v1/staff/discord exist with selectable events, but no production call site invokes Notify so no event actually reaches the webhook. | 🟡 | P6 |
+| NTF-14 | Notification on login from a new device | The OnNewDevice hook installed by httpapi.Server.WithAuth in internal/httpapi/server.go calls notify.NewLogin, which renders the new_login_detected template with login_at, ip_address and user_agent. | ✅ | P3 |
 
 **Design note.** The outbox is already the hard part and it is done. `NTF-01`/`NTF-02` are a
 template table plus a render step; `NTF-05` needs a push subscription table and VAPID keys.
@@ -551,30 +551,30 @@ Source: `routes/web.php`, `app/Livewire/Auth/*`, `app/Livewire/Client/Security.p
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| IDN-01 | Self-registration (first/last name, email, password, captcha, TOS) | No registration endpoint or page; customers are created by CLI | ❌ | P1 |
-| IDN-02 | Login with email/password | `POST /api/v1/auth/login` | ✅ | — |
-| IDN-03 | TOTP two-factor with a second login step | TOTP + recovery codes, sealed secrets, challenge token; **staff UI only** (no customer security page) | 🟡 | P1 |
-| IDN-04 | Email verification with signed link | Hashed single-use token; non-enumerating | ✅ | — |
-| IDN-05 | Password reset by email | Hashed single-use token; revokes all sessions | ✅ | — |
-| IDN-06 | Change password while signed in | No endpoint or UI (only reset) | ❌ | P1 |
-| IDN-07 | Social login: Google | None | ❌ | P6 |
-| IDN-08 | Social login: GitHub | None | ❌ | P6 |
-| IDN-09 | Social login: Discord | None | ❌ | P6 |
-| IDN-10 | OAuth client records + redirect + secret regeneration (Passport) | None | ❌ | P6 |
-| IDN-11 | OAuth2 authorization server: `/oauth/authorize`, `/oauth/token`, scopes, `/api/me` | Static API keys only; no OAuth2 flow | ❌ | P6 |
-| IDN-12 | API keys with IP allowlist, enabled toggle, last used | `api_keys` with prefix, digest, scopes, expiry, last_used; no IP allowlist | 🟡 | P5 |
-| IDN-13 | Editable roles and permissions (Role model, permission matrix) | 4 fixed roles, 27 fixed permissions, code-defined | 🟡 | P5 |
-| IDN-14 | Impersonate a user, with a banner and audit trail | None | ❌ | P5 |
-| IDN-15 | Session list and per-session logout | Sessions stored, revoked on reset; settings shows the current session only, no list/revoke | 🟡 | P5 |
-| IDN-16 | Session validation locked to IP and/or user agent (admin/client/both) | No IP/UA binding | ❌ | P5 |
-| IDN-17 | Login history (`user_authentication_logs`) | `auth_events` recorded; no client/staff view | 🟡 | P5 |
-| IDN-18 | CAPTCHA: reCAPTCHA v2/v3, Turnstile, hCaptcha | None | ❌ | P6 |
-| IDN-19 | TOS URL setting + acceptance | None | ❌ | P1 |
-| IDN-20 | Trusted proxies setting (CIDR) | `BILLING_TRUSTED_PROXIES` env, correctly gated | ✅ | — |
-| IDN-21 | Registration disabled setting | Registration does not exist | ❌ | P1 |
-| IDN-22 | Admin API: users, invoices, invoice-items, tickets, ticket-messages, orders, services, coupons, credits, products, categories, properties | Own staff API (78 operations) but no customer CRUD, no ticket API, no credit grant | 🟡 | P5 |
-| IDN-23 | API documentation (Scramble) | Generated OpenAPI + typed client + drift check | ✅ stronger | — |
-| IDN-24 | Personal access tokens / `oauth_personal_access_clients` | API keys serve this purpose | ✅ | — |
+| IDN-01 | Self-registration (first/last name, email, password, captcha, TOS) | internal/register/register.go creates users, customers and customer_accounts in one transaction behind POST /api/v1/auth/register with captcha and accept_tos, and web/src/views/login.ts links to /register. | ✅ | P1 |
+| IDN-02 | Login with email/password | POST /api/v1/auth/login in internal/httpapi/auth.go verifies an Argon2id hash through internal/authn/password.go and applies the per-address throttle in internal/authn/session.go. | ✅ | — |
+| IDN-03 | TOTP two-factor with a second login step | internal/authn/mfa.go implements TOTP enrolment, recovery codes returned once, a challenge-token second step and a DisableMFA that demands password and code, while web/src/views/portal-security.ts and web/src/views/settings.ts drive it through web/src/lib/mfa.ts, which draws the QR locally with web/src/lib/qr.ts. | ✅ | P1 |
+| IDN-04 | Email verification with signed link | authn.RequestEmailVerification and authn.VerifyEmail in internal/authn/reset.go store a hashed single-use token and answer non-enumerating 202s, served by POST /api/v1/auth/verify/request and GET /api/v1/auth/verify. | ✅ | — |
+| IDN-05 | Password reset by email | authn.RequestPasswordReset and authn.ResetPassword in internal/authn/reset.go use a hashed single-use token and revoke every session in the same transaction, served by POST /api/v1/auth/password-reset/request and /complete. | ✅ | — |
+| IDN-06 | Change password while signed in | register.Service.ChangePassword in internal/register/register.go is exposed as POST /api/v1/auth/password/change in internal/httpapi/register.go and used by web/src/views/portal-security.ts. | ✅ | P1 |
+| IDN-07 | Social login: Google | Google works as a row in social_providers (internal/store/migrations/0038_oauth.sql) managed at /api/v1/staff/oauth-providers and used by the public /oauth/social/{slug}/start and /callback routes in internal/httpapi/social.go. | ✅ | P6 |
+| IDN-08 | Social login: GitHub | GitHub is an operator-created row in social_providers with configurable authorization, token and userinfo endpoints plus subject and email claims, driven by internal/oauth/social.go and listed on the sign-in screen from GET /api/v1/auth/providers. | ✅ | P6 |
+| IDN-09 | Social login: Discord | Discord is a social_providers row configured through web/src/views/providers.ts and authenticated by the generic OAuth2 flow in internal/oauth/social.go, including the account-exists refusal instead of a silent merge. | ✅ | P6 |
+| IDN-10 | OAuth client records + redirect + secret regeneration (Passport) | OAuth client records with redirect URIs and secret regeneration live at GET/POST /api/v1/staff/oauth-clients, POST /api/v1/staff/oauth-clients/{id}/rotate-secret and DELETE /api/v1/staff/oauth-clients/{id}/secret in internal/httpapi/oauth.go, edited by web/src/views/oauth-clients.ts. | ✅ | P6 |
+| IDN-11 | OAuth2 authorization server: `/oauth/authorize`, `/oauth/token`, scopes, `/api/me` | internal/httpapi/oauth.go serves GET and POST /oauth/authorize and POST /oauth/token with signed keys from migration 0038_oauth.sql, and scoped bearer access to GET /api/v1/me and /api/v1/me/invoices. | ✅ | P6 |
+| IDN-12 | API keys with IP allowlist, enabled toggle, last used | api_keys (internal/store/migrations/0014_account_lifecycle.sql) carries last_used_at and an ip_allowlist checked on every request by apiKeyIdentity in internal/httpapi/auth.go, with GET/PUT /api/v1/staff/api-keys/{id}/ip-allowlist in internal/httpapi/apikeys_ext.go and revoke in internal/httpapi/apikeys.go. | ✅ | P5 |
+| IDN-13 | Editable roles and permissions (Role model, permission matrix) | POST /api/v1/staff/roles, PATCH /api/v1/staff/roles/{id}, PUT /api/v1/staff/roles/{id}/permissions and DELETE /api/v1/staff/roles/{id} in internal/httpapi/roles_ext.go edit roles against the served GET /api/v1/staff/permissions, and authn.ErrSystemRole in internal/authn/roles.go keeps the four built-in roles immutable. | ✅ | P5 |
+| IDN-14 | Impersonate a user, with a banner and audit trail | POST /api/v1/staff/users/{id}/impersonate and POST /api/v1/portal/impersonation/stop in internal/httpapi/impersonate.go write an audit row before the session is usable, refuse staff targets, and web/src/app.ts renders the banner from session.impersonating. | ✅ | P5 |
+| IDN-15 | Session list and per-session logout | GET /api/v1/portal/sessions with DELETE /api/v1/portal/sessions/{id} and POST /api/v1/portal/sessions/revoke-others in internal/httpapi/sessions.go back the session list in web/src/views/portal-security.ts, and staff get GET/DELETE /api/v1/staff/sessions. | ✅ | P5 |
+| IDN-16 | Session validation locked to IP and/or user agent (admin/client/both) | Sessions record ip and user_agent for display in internal/authn/session.go but nothing validates them on later requests, and internal/settings/settings.go has no security group or bind-to-IP or bind-to-agent key. | ❌ | P5 |
+| IDN-17 | Login history (`user_authentication_logs`) | GET /api/v1/portal/login-history and the staff GET /api/v1/staff/security/sign-ins in internal/httpapi/sessions.go and sessions_ext.go read auth_events, rendered by web/src/views/security.ts. | ✅ | P5 |
+| IDN-18 | CAPTCHA: reCAPTCHA v2/v3, Turnstile, hCaptcha | internal/captcha/captcha.go verifies Turnstile, reCAPTCHA and hCaptcha from the captcha settings group, internal/captcha/origins.go widens the CSP by exactly the configured provider's origins, and web/src/lib/captcha.ts mounts the widget on web/src/views/register.ts and web/src/views/forgot-password.ts. | ✅ | P6 |
+| IDN-19 | TOS URL setting + acceptance | general.tos in internal/settings/settings.go makes acceptance mandatory through Policy.TOSRequired in internal/register/register.go and the checkout guard, and web/src/views/register.ts renders the accept_tos box. | ✅ | P1 |
+| IDN-20 | Trusted proxies setting (CIDR) | BILLING_TRUSTED_PROXIES is parsed and applied only for listed CIDRs through the TrustedProxies option on httpapi.Auth in cmd/billing/serve.go. | ✅ | — |
+| IDN-21 | Registration disabled setting | general.registration_disabled is checked by register.Service before any write and answers 403 registration_disabled from POST /api/v1/auth/register, editable in web/src/views/system-settings.ts. | ✅ | P1 |
+| IDN-22 | Admin API: users, invoices, invoice-items, tickets, ticket-messages, orders, services, coupons, credits, products, categories, properties | The staff API now covers every listed resource: /api/v1/staff/users and /customers (internal/httpapi/users.go, customers_staff.go), /invoices with lines and /credit-notes, /tickets with /{id}/replies, /orders, /services, /coupons, /credit/grants and /credit/debits, /catalog/products, /catalog/categories and /config-options. | ✅ | P5 |
+| IDN-23 | API documentation (Scramble) | internal/openapi generates the specification with internal/openapi/parity_test.go failing on drift, the typed client lives in apiclient and the descriptions are maintained in internal/openapi/descriptions_*.go. | ✅ | — |
+| IDN-24 | Personal access tokens / `oauth_personal_access_clients` | api_keys with prefix, digest, scopes, expiry, revoke and last_used_at in internal/authn/apikey.go and internal/httpapi/apikeys.go serve the personal-token role, managed from web/src/views/api-keys.ts. | ✅ | — |
 
 **Design note (`IDN-01`).** Registration is the single highest-leverage gap: without it the
 storefront cannot acquire a customer. It must be paired with rate limiting (already exists),
@@ -588,43 +588,43 @@ Source: `app/Admin/Resources/**`, `app/Admin/Pages/**`, `app/Admin/Widgets/**`,
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| ADM-01 | Dashboard: revenue chart, overview stats with period/trend, active users, support table | Exception-focused dashboard with counts and latest invoices | 🟡 | P5 |
-| ADM-02 | Settings page (11 groups, 77 keys) | No system settings API or UI; env + DB policies | ❌ | P5 |
-| ADM-03 | Product/category CRUD | Catalog CRUD exists | ✅ | — |
-| ADM-04 | Plan/price editor, product duplicate | Add-price-version UI exists; no plan type/period editor, no duplicate | 🟡 | P5 |
-| ADM-05 | Coupon CRUD | None | ❌ | P5 |
-| ADM-06 | Config option CRUD | None | ❌ | P5 |
-| ADM-07 | Tax rate CRUD | None | ❌ | P5 |
-| ADM-08 | Currency CRUD | None | ❌ | P5 |
-| ADM-09 | Custom property CRUD | None | ❌ | P5 |
-| ADM-10 | Gateway CRUD + config | None | ❌ | P4 |
-| ADM-11 | Server CRUD + config + test connection | None | ❌ | P4 |
-| ADM-12 | Extension list, enable/disable, install from marketplace, upload zip, scaffold, upgrade | JSON-RPC extensions; no install UI or marketplace | ❌ | P6 |
-| ADM-13 | Role CRUD + permission matrix | Fixed roles | 🟡 | P5 |
-| ADM-14 | API key admin CRUD | Own keys only | 🟡 | P5 |
-| ADM-15 | OAuth client CRUD | None | ❌ | P6 |
-| ADM-16 | Notification template CRUD | None | ❌ | P5 |
-| ADM-17 | Email log viewer | None | ❌ | P5 |
-| ADM-18 | Failed job viewer with retry/delete/mark resolved | Operations queue with automatic retry; no manual retry | 🟡 | P5 |
-| ADM-19 | Error log viewer | None | ❌ | P5 |
-| ADM-20 | HTTP log viewer (request/response/headers) | None | ❌ | P5 |
-| ADM-21 | Audit viewer | Staff audit screen + append-only log | ✅ stronger | — |
-| ADM-22 | Cron statistics page | Ops overview; no per-task run history | 🟡 | P5 |
-| ADM-23 | Updates page: check/update app and extensions | None | ❌ | P6 |
-| ADM-24 | Invoice transactions resource (create/edit/delete/refund) | Payments list/detail + refund; no manual create | 🟡 | P5 |
-| ADM-25 | Adjustment notes resource (credit/debit, void) | Credit notes only | 🟡 | P5 |
-| ADM-26 | Service cancellation resource | None | ❌ | P2 |
-| ADM-27 | Ticket message resource | None | ❌ | P3 |
-| ADM-28 | User detail tabs: tickets, services, invoices, credits, billing agreements | Customer detail: accounts, subscriptions, services, invoices, balance, holds, auth events | 🟡 | P5 |
-| ADM-29 | User CRUD (create/edit/delete, role, verified, 2FA) | Read + billing profile; no create/update/delete | 🟡 | P5 |
-| ADM-30 | Impersonation | None | ❌ | P5 |
-| ADM-31 | Create invoice with item repeater, send-email toggle, publish, PDF | Line editor with product picker + `issue`; no send-email toggle, no PDF | 🟡 | P5 |
-| ADM-32 | Create order with product/plan/price/quantity/services | `/orders/new`: price-version picker, customer picker, quantity, deep links | ✅ | — |
-| ADM-33 | Create service | None | ❌ | P5 |
-| ADM-34 | Add credit to a user | Credit-note application only | 🟡 | P5 |
-| ADM-35 | Bulk actions (delete many) | Deliberately absent on immutable records | ⛔ | — |
-| ADM-36 | Admin navigation groups (Administration, Configuration, Extensions, System) | Staff nav grouped Overview/Revenue/Operations/Trust | 🟡 | P5 |
-| ADM-37 | Admin clusters (Extensions, Invoice, Services) | None | ❌ | P5 |
+| ADM-01 | Dashboard: revenue chart, overview stats with period/trend, active users, support table | web/src/views/dashboard.ts renders the period widget set from GET /api/v1/staff/dashboard/widgets (revenue per currency, active and new customers, open tickets, overdue invoices), the exception queue and Latest invoices, but there is no revenue chart, no previous-period trend, and support is a count rather than a table. | 🟡 | P5 |
+| ADM-02 | Settings page (11 groups, 77 keys) | internal/settings/settings.go declares 72 keys in 16 groups served by GET and PUT /api/v1/staff/settings and rendered group-by-group at /settings/system in web/src/views/system-settings.ts with write-only secrets and one transaction per group, which is stronger than Paymenter's 11 groups. | ✅ | P5 |
+| ADM-03 | Product/category CRUD | web/src/views/catalog-admin.ts and catalog-admin-product.ts create, edit and hide products and delete categories and servers, but DELETE /api/v1/staff/catalog/products/{id} (catalog.DeleteProductTx) is served with no screen, the editor offering only Hide from the storefront. | 🟡 | — |
+| ADM-04 | Plan/price editor, product duplicate | web/src/views/catalog-admin-product.ts edits plans with billing interval, anchor day, setup fee and plan order, and Duplicate posts /api/v1/staff/catalog/products/{id}/duplicate to copy prices and options, so the price editor and duplicate are both closed. | ✅ | P5 |
+| ADM-05 | Coupon CRUD | web/src/views/coupons.ts creates and edits coupons with a product picker and reads redemptions per row, and Retire sets enabled false through PUT /api/v1/staff/coupons/{id} because a coupon referenced by an invoice is never deleted. | ✅ | P5 |
+| ADM-06 | Config option CRUD | web/src/views/config-options.ts creates, edits and deletes options and their per-price-version amounts through /api/v1/staff/config-options, /api/v1/staff/config-options/{id} and /api/v1/staff/config-options/{id}/prices. | ✅ | P5 |
+| ADM-07 | Tax rate CRUD | web/src/views/tax-rates.ts creates dated rates, closes them and deletes only a rate that never took effect, and drives tax-import source, preview and import, but the run history at GET /api/v1/staff/tax-import/runs still has no screen. | 🟡 | P5 |
+| ADM-08 | Currency CRUD | web/src/views/currencies.ts creates, edits, disables and promotes a default currency through POST /api/v1/staff/currencies and PUT /api/v1/staff/currencies/{code}, showing the server's own formatted example for every row. | ✅ | P5 |
+| ADM-09 | Custom property CRUD | web/src/views/service-properties.ts creates, edits, reorders and deletes property definitions through /api/v1/staff/service-properties and /service-properties/{key} and /reorder, with the customer_visible and show_on_invoice flags. | ✅ | P5 |
+| ADM-10 | Gateway CRUD + config | web/src/views/gateways.ts saves the gateway configuration through PUT /api/v1/staff/gateways with write-only secrets and tests the saved configuration at GET /api/v1/staff/gateways/test. | ✅ | P4 |
+| ADM-11 | Server CRUD + config + test connection | web/src/views/servers.ts creates, edits and deletes provisioning servers through /api/v1/staff/servers and tests the saved configuration at GET /api/v1/staff/servers/test, rendering the plans the adapter advertises. | ✅ | P4 |
+| ADM-12 | Extension list, enable/disable, install from marketplace, upload zip, scaffold, upgrade | web/src/views/marketplace.ts lists installed extensions and installs from the index with a digest pin and refresh, but there is no enable/disable, no zip upload, no scaffold and no upgrade of an installed extension, because loading is by environment variable only. | 🟡 | P6 |
+| ADM-13 | Role CRUD + permission matrix | web/src/views/roles.ts edits custom roles against the served catalogue at GET /api/v1/staff/permissions and PUT /api/v1/staff/roles/{id}/permissions and shows the four compiled-in system roles read-only in internal/authn/authz.go, which is the permission matrix. | ✅ | P5 |
+| ADM-14 | API key admin CRUD | web/src/views/api-keys.ts creates, lists, revokes and CIDR-allowlists keys, but every read is scoped to the caller (ListAPIKeys(user.ID) in internal/httpapi/apikeys.go) so there is no administrator view of another user's keys. | 🟡 | P5 |
+| ADM-15 | OAuth client CRUD | web/src/views/oauth-clients.ts lists, creates, rotates and deletes OAuth2 clients through /api/v1/staff/oauth-clients and edits social providers as rows on the same screen. | ✅ | P6 |
+| ADM-16 | Notification template CRUD | web/src/views/notification-templates.ts is a master-detail editor over /api/v1/staff/notification-templates/{event_key} with a server-rendered preview, a served placeholder vocabulary and a reset action. | ✅ | P5 |
+| ADM-17 | Email log viewer | The Email tab of web/src/views/logs.ts reads GET /api/v1/staff/logs/email with status, kind and recipient filters over the durable outbox, so a delivery and its last_error are both visible. | ✅ | P5 |
+| ADM-18 | Failed job viewer with retry/delete/mark resolved | web/src/views/operations.ts lists service_operations read-only and web/src/views/automation.ts lists jobs with the worker heartbeat, but no screen and no route in internal/httpapi offers a manual retry, a delete or a mark-resolved. | 🟡 | P5 |
+| ADM-19 | Error log viewer | The Errors tab of web/src/views/logs.ts reads GET /api/v1/staff/logs/errors with level and source filters. | ✅ | P5 |
+| ADM-20 | HTTP log viewer (request/response/headers) | The HTTP tab of web/src/views/logs.ts reads GET /api/v1/staff/logs/http with status, min_status and path filters. | ✅ | P5 |
+| ADM-21 | Audit viewer | web/src/views/audit.ts reads the append-only GET /api/v1/staff/audit with filters and a redacted changes diff, and web/src/views/approvals.ts adds the second-signature queue, so this is stronger than Paymenter's viewer. | ✅ | — |
+| ADM-22 | Cron statistics page | web/src/views/automation.ts shows the registered job list and GET /api/v1/staff/cron/heartbeat, but the per-run history served by GET /api/v1/staff/cron from cron_runs in internal/httpapi/cron.go has no screen. | 🟡 | P5 |
+| ADM-23 | Updates page: check/update app and extensions | web/src/views/updates.ts checks the update server, records an approval and previews the telemetry payload through /api/v1/staff/updates, but it cannot install a version and offers no extension upgrade because apply.steps is a deploy procedure shown as text. | 🟡 | P6 |
+| ADM-24 | Invoice transactions resource (create/edit/delete/refund) | web/src/views/payments.ts lists payments, web/src/views/refund.ts refunds one through POST /api/v1/staff/payments/{id}/refunds and web/src/views/invoice.ts records an offline payment through POST /api/v1/staff/invoices/{id}/payments, but a payment has no edit or delete because the row is immutable. | 🟡 | P5 |
+| ADM-25 | Adjustment notes resource (credit/debit, void) | Credit notes are issued from web/src/views/invoice.ts (POST /api/v1/staff/invoices/{id}/credit-notes) and download at /api/v1/staff/credit-notes/{id}/pdf, and web/src/views/credits.ts posts grants and debits, but no adjustment note can be voided. | 🟡 | P5 |
+| ADM-26 | Service cancellation resource | web/src/views/cancellations.ts is the queue over GET /api/v1/staff/cancellations with execute and reject (reason required) and a staff-initiated request at POST /api/v1/staff/services/{id}/cancellation. | ✅ | P2 |
+| ADM-27 | Ticket message resource | web/src/views/ticket.ts and tickets.ts reply, close, assign, update, attach and set custom fields through /api/v1/staff/tickets/{id}/replies, /close, /assign and /fields, with GET /api/v1/staff/tickets/meta driving the form. | ✅ | P3 |
+| ADM-28 | User detail tabs: tickets, services, invoices, credits, billing agreements | web/src/views/customer.ts has Overview (services, subscriptions, balance, portal access, holds), Invoices, Billing details and Activity tabs, but no tickets tab, no credits tab and no billing-agreement tab, since payment methods are portal-only and internal/payments/agreements.go has no staff route. | 🟡 | P5 |
+| ADM-29 | User CRUD (create/edit/delete, role, verified, 2FA) | web/src/views/users.ts creates a login with a role, a verified address and its billing account in one act and edits, disables, deletes and sets a password, with last_administrator and self_lockout enforced server-side and the 2FA reset on the customer screen. | ✅ | P5 |
+| ADM-30 | Impersonation | web/src/views/customer.ts posts /api/v1/staff/users/{id}/impersonate and web/src/ui/layout.ts renders a non-dismissible banner rebuilt from /api/v1/auth/me, while internal/httpapi/auth.go refuses money and credential routes during an impersonation. | ✅ | P5 |
+| ADM-31 | Create invoice with item repeater, send-email toggle, publish, PDF | web/src/views/invoice-new.ts has the line repeater with a product picker, customer search and a draft-or-issue choice and the PDF downloads from /api/v1/staff/invoices/{id}/pdf afterwards, but there is no send-email toggle and no PDF at creation. | 🟡 | P5 |
+| ADM-32 | Create order with product/plan/price/quantity/services | web/src/views/order-new.ts posts /api/v1/staff/orders with a customer picker, a price-version picker, quantity and deep links to the created order. | ✅ | — |
+| ADM-33 | Create service | The New service dialog in web/src/views/services.ts posts /api/v1/staff/services with customer and product pickers, config options, a required reason and a comped path that creates no subscription. | ✅ | P5 |
+| ADM-34 | Add credit to a user | web/src/views/credits.ts grants credit through POST /api/v1/staff/customers/{id}/credit, which issues a numbered credit note with a required reason and reads the note, its audit row and the new balance back. | ✅ | P5 |
+| ADM-35 | Bulk actions (delete many) | No screen offers multi-select (web/src/ui/table.ts has no selection column) and bulk delete stays absent by design on immutable invoices, journal rows, audit rows and credit notes, the many-record need being met by the CSV exports at /api/v1/staff/exports/invoices.csv, customers.csv and services.csv. | ⛔ | — |
+| ADM-36 | Admin navigation groups (Administration, Configuration, Extensions, System) | web/src/ui/layout.ts groups staff navigation into Overview, Revenue, People, Operations, Support, Configuration, Integrations, Platform and Trust, each entry filtered by both its permission and hasRoute. | ✅ | P5 |
+| ADM-37 | Admin clusters (Extensions, Invoice, Services) | Related-page grouping exists as the Integrations rail group (gateways, servers, marketplace) and as the Related, Holds and Operations cards on /services/:id plus the payments and credit-notes sections on /invoices/:id, but there is no cluster abstraction or cluster landing page. | 🟡 | P5 |
 
 **Deliberate divergence (`ADM-35`).** Paymenter offers bulk delete. Catalyst refuses to
 delete issued invoices, journal rows, audit rows and credit notes at the database level. Bulk
@@ -638,26 +638,26 @@ Source: `routes/console.php`, `app/Console/Commands/*`, `app/Admin/Pages/*`,
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| OPS-01 | Daily cron: create renewal invoices, apply credits, charge agreements | Renewal engine + notify outbox | ✅ | — |
-| OPS-02 | Cron: cancel unpaid orders after N days, restore stock | No order-cancel rule | ❌ | P2 |
-| OPS-03 | Cron: recalculate/cancel pending upgrade invoices | No upgrades | ❌ | P2 |
-| OPS-04 | Cron: suspend overdue services after N days | Dunning engine with configurable steps | ✅ stronger | — |
-| OPS-05 | Cron: terminate after N days suspended | Dunning suspends; termination is a staff action (or an approval-gated one) | 🟡 | P2 |
-| OPS-06 | Cron: close stale tickets | No tickets | ❌ | P3 |
-| OPS-07 | Cron: delete old email logs | Retention policies | ✅ | — |
-| OPS-08 | Cron statistics (`cron_stats`) + last run + next run + heartbeat | Ops overview; no run history | 🟡 | P5 |
-| OPS-09 | Settings-driven cron thresholds (invoice days, reminder days, cancel/suspend/terminate days) | Dunning policy in DB; no admin surface | 🟡 | P5 |
-| OPS-10 | WHMCS importer (CLI, batch, currencies/users/admins/categories/config options/products/tickets/orders/services/cancellations/invoices/items/payments) | None | ❌ | P6 |
-| OPS-11 | Paymenter importer | None | ❌ | P6 |
-| OPS-12 | Update checker + self-update + extension updates | None | ❌ | P6 |
-| OPS-13 | Telemetry (opt-in, daily, anonymous) | None | ❌ | P6 |
-| OPS-14 | Extension marketplace client (list, install, upload, update) | None | ❌ | P6 |
-| OPS-15 | Debug mode + HTTP/error/debug log tables | Structured logs; no DB log tables/views | 🟡 | P5 |
-| OPS-16 | Scheduled task heartbeat (`ScheduleHeartbeatCommand`) | Worker ticker + `doctor`; no heartbeat row | 🟡 | P5 |
-| OPS-17 | `app:init`, `app:user:create`, `app:user:password-reset`, `app:settings:change`, `app:logs` CLI | `billing admin create-user/create-customer/issue-invoice/purge-test-data`, `doctor`, `migrate`, `version` | 🟡 | P5 |
-| OPS-18 | Health/readiness | `/healthz`, `/readyz`, `doctor` | ✅ stronger | — |
-| OPS-19 | Metrics | `/metrics` (staff-auth) | ✅ | — |
-| OPS-20 | Webhook inbox with reprocessing visibility | `gateway_events` + staff webhook screen | ✅ | — |
+| OPS-01 | Daily cron: create renewal invoices, apply credits, charge agreements | The renewals job in cmd/billing/jobs.go issues invoices for due subscriptions and the notify outbox drains them, but credit.ApplyCreditToInvoice runs only from internal/register/checkout.go and payments.Agreements.ChargeDue is scheduled nowhere, so the cron's apply-credits and charge-agreements halves are absent. | 🟡 | — |
+| OPS-02 | Cron: cancel unpaid orders after N days, restore stock | internal/lifecycle/orders.go CancelUnpaidOrders reads cronjob.order_cancel_days, voids the open invoices, restores stock and cancels the pending subscription, registered through lifecycle.Jobs in cmd/billing/jobs.go with its own kill switch. | ✅ | P2 |
+| OPS-03 | Cron: recalculate/cancel pending upgrade invoices | internal/service/upgrades.go CancelStaleUpgrades voids unpaid upgrade invoices after StaleUpgradeAfter and cancels the row, but its own doc comment still says 'wire it into cmd/billing/jobs.go' and no jobSpec calls it. | 🟡 | P2 |
+| OPS-04 | Cron: suspend overdue services after N days | internal/dunning Engine.Advance plus suspendEligible and resumeCleared in cmd/billing/jobs.go escalate overdue invoices, suspend exhausted services and resume paid ones, with BILLING_DISABLE_SUSPENSION as the brake. | ✅ | — |
+| OPS-05 | Cron: terminate after N days suspended | internal/lifecycle/terminate.go TerminateSuspended reads cronjob.terminate_days, refuses a service under an active hold or with nothing owed, and enqueues a terminate operation through the provisioning queue instead of writing services.status. | ✅ | P2 |
+| OPS-06 | Cron: close stale tickets | tickets.CloseStale is the ticket-autoclose job in cmd/billing/jobs.go, running every six hours against the tickets.autoclose_days setting. | ✅ | P3 |
+| OPS-07 | Cron: delete old email logs | internal/retention sweeps a closed allow-list of tables including notification_deliveries against per-table policies as the six-hour retention job. | ✅ | — |
+| OPS-08 | Cron statistics (`cron_stats`) + last run + next run + heartbeat | cron_runs and its readers at GET /api/v1/staff/cron and GET /api/v1/staff/cron/heartbeat exist in internal/httpapi/cron.go, but cmd/billing/worker.go calls neither httpapi.RecordRun nor httpapi.Beat, so the history and heartbeat are written only by tests. | 🟡 | P5 |
+| OPS-09 | Settings-driven cron thresholds (invoice days, reminder days, cancel/suspend/terminate days) | cronjob.order_cancel_days, cronjob.terminate_days and tickets.autoclose_days are declared in internal/settings/settings.go and rendered by web/src/views/system-settings.ts, but the dunning ladder still runs the hard-coded dunning.DefaultPolicy() constants from cmd/billing/jobs.go. | 🟡 | P5 |
+| OPS-10 | WHMCS importer (CLI, batch, currencies/users/admins/categories/config options/products/tickets/orders/services/cancellations/invoices/items/payments) | internal/importer/profile.go whmcsProfile reads only clients, invoices, invoice_items, services and transactions, so tickets, products, orders, cancellations, admins and currencies from a WHMCS dump are not imported. | 🟡 | P6 |
+| OPS-11 | Paymenter importer | source=paymenter selects paymenterProfile in internal/importer/profile.go behind POST /api/v1/staff/imports, with a dry run by default, idempotency on the legacy id and per-row rejection codes. | ✅ | P6 |
+| OPS-12 | Update checker + self-update + extension updates | internal/updates/check.go performs the cached check and POST /api/v1/staff/updates/approval records the approved target version, while applying it stays a deploy step named in the response's apply.steps - a deliberate deployment-shape divergence rather than a missing button. | ✅ | P6 |
+| OPS-13 | Telemetry (opt-in, daily, anonymous) | internal/updates/telemetry.go builds an opt-in payload of fixed integer counts with a preview and a telemetry_sends history, but delivery only happens when an operator calls POST /api/v1/staff/updates/telemetry/send, as no daily job exists. | 🟡 | P6 |
+| OPS-14 | Extension marketplace client (list, install, upload, update) | internal/marketplace installs an indexed extension only after a SHA-256 match and serves the verified artifact, but there is no upload of a local extension and no in-place update - a same-version reinstall with different bytes is refused as marketplace_already_installed. | 🟡 | P6 |
+| OPS-15 | Debug mode + HTTP/error/debug log tables | error_logs and http_logs have keyset viewers in internal/httpapi/logs.go and 'billing admin logs tail', but nothing in the middleware or worker calls WriteError/WriteHTTP, so both tables stay empty, and internal/settings/settings.go declares no debug-mode setting. | 🟡 | P5 |
+| OPS-16 | Scheduled task heartbeat (`ScheduleHeartbeatCommand`) | worker_heartbeat, Beat and the stale-derivation reader live in internal/httpapi/cron.go, but cmd/billing/worker.go never calls httpapi.Beat, so the row that would prove the scheduler is alive is only written by operator_test.go. | 🟡 | P5 |
+| OPS-17 | `app:init`, `app:user:create`, `app:user:password-reset`, `app:settings:change`, `app:logs` CLI | cmd/billing/main.go exposes serve, worker, migrate, doctor, admin and version and cmd/billing/admin.go adds create-user, create-customer, issue-invoice, purge-test-data, setting set and logs tail, but there is no password-reset subcommand. | 🟡 | P5 |
+| OPS-18 | Health/readiness | /healthz is liveness with no database touch and /readyz pings the pool and counts pending migrations (internal/httpapi/server.go), backed by 'billing doctor' in cmd/billing/main.go which also starts each configured extension. | ✅ | — |
+| OPS-19 | Metrics | /metrics is registered in internal/httpapi/routes_core.go as a staff-only route and exposes Prometheus counters and uptime. | ✅ | — |
+| OPS-20 | Webhook inbox with reprocessing visibility | gateway_events is the durable inbox with processed_at and last_error, and GET /api/v1/staff/webhooks in internal/httpapi/staff_read.go backs the reprocessing screen in web/src/views/webhooks.ts. | ✅ | — |
 
 ### 3.18 Growth extensions
 
@@ -665,11 +665,11 @@ Source: `extensions/Others/*`.
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| GRW-01 | Announcements: model, admin CRUD, home + dashboard display, nav entry, policy | None | ❌ | P6 |
-| GRW-02 | Affiliates: affiliate model, signup tracking, referral middleware, order association, commission, payout view, policy, nav, API permission | None | ❌ | P6 |
-| GRW-03 | Affiliate commission on order paid, recurring or one-time | None | ❌ | P6 |
-| GRW-04 | Discord notifications: webhook, selectable events, rich embeds | None | ❌ | P6 |
-| GRW-05 | Extension hook surface: events, navigation, permissions, admin resources/pages, API permissions, checkout config, service actions | JSON-RPC gateway/provisioner only; no UI/event hooks | ❌ | P4 |
+| GRW-01 | Announcements: model, admin CRUD, home + dashboard display, nav entry, policy | internal/httpapi/announcements.go gives staff CRUD and a public feed with server-derived state gated on announcements.enabled, with a nav entry in web/src/ui/layout.ts and display on the storefront and dashboard through web/src/ui/announcement-feed.ts. | ✅ | P6 |
+| GRW-02 | Affiliates: affiliate model, signup tracking, referral middleware, order association, commission, payout view, policy, nav, API permission | internal/growth/affiliates.go has the model, exact-rational rate, suspend/reinstate/delete, payouts and web/src/views/affiliates.ts, but growth.AttributeSignup has no call site - handleRegister in internal/httpapi/register.go accepts no referral code and ReferralCodeFromRequest is never used - so no referral row is ever created. | 🟡 | P6 |
+| GRW-03 | Affiliate commission on order paid, recurring or one-time | growth.RecordSettledInvoiceCommission is called inside the settlement transaction in internal/fulfilment/applier.go and covers the first-order commission plus the recurring one from internal/growth/recurring.go, bounded by affiliates.recurring_cycles. | ✅ | P6 |
+| GRW-04 | Discord notifications: webhook, selectable events, rich embeds | internal/growth/discord.go posts rich embeds to the settings-held webhook URL for a closed set of selectable events (KnownEvents), best-effort after commit and never inside the transaction. | ✅ | P6 |
+| GRW-05 | Extension hook surface: events, navigation, permissions, admin resources/pages, API permissions, checkout config, service actions | internal/extproto/hooks.go and internal/httpapi/extension_hooks.go deliver nav items, permission-checked service actions and broker events to a v2 extension, but no web/src view consumes /api/v1/extensions/hooks and there are no admin-resource, page or checkout-config hooks. | 🟡 | P4 |
 
 **Design note (`GRW-05`).** Paymenter extensions are in-process PHP classes that can register
 navigation, permissions, admin resources and event listeners. Catalyst's extensions are
@@ -684,14 +684,14 @@ Source: `lang/*` (24 locales), `themes/*`, `app/Livewire/Components/LanguageSwit
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| I18N-01 | 24 locales, per-user locale, allowed-locale setting | English only | ❌ | P6 |
-| I18N-02 | Language switcher in the client UI | None | ❌ | P6 |
-| I18N-03 | Translated validation/error messages | English only | ❌ | P6 |
-| I18N-04 | Theme packages (`themes/*`, theme settings, color tokens) | One design system, CSS tokens, light/dark toggle | 🟡 | P6 |
-| I18N-05 | Theme marketplace (24 listings) | None | ⛔ | — |
-| I18N-06 | Mail template branding (header/footer/CSS) | Plain text | ❌ | P3 |
-| I18N-07 | Logo (light/dark), favicon, company name, system email settings | No branding settings | ❌ | P5 |
-| I18N-08 | Gravatar default avatar | No avatars | ❌ | P6 |
+| I18N-01 | 24 locales, per-user locale, allowed-locale setting | locales and message_catalog are rows with coverage, a default enforced by partial unique index and an enabled set (internal/i18n, migration 0037_i18n.sql), but i18n.Store.SetUserLocale has no HTTP route and web/src/lib/i18n.ts persists the choice in localStorage only, so a per-user preference is never written. | 🟡 | P6 |
+| I18N-02 | Language switcher in the client UI | languageSwitcher in web/src/lib/i18n.ts renders in web/src/ui/layout.ts and web/src/views/storefront.ts and is absent when one locale is enabled, and sign-in, register, forgot-password, storefront and portal all render through tx(). | ✅ | P6 |
+| I18N-03 | Translated validation/error messages | client-side field validation goes through catalogue keys such as register.error.name_required in web/src/views/register.ts, but the problem details written by writeProblem in internal/httpapi are English strings with no catalogue keys. | 🟡 | P6 |
+| I18N-04 | Theme packages (`themes/*`, theme settings, color tokens) | web/src/styles/tokens.css is one token vocabulary with light and dark themes, extended by the per-mode accent overlay in web/src/lib/brand.ts, but there are no theme packages, presets or per-scope overrides (docs/branding.md section 5). | 🟡 | P6 |
+| I18N-05 | Theme marketplace (24 listings) | No theme marketplace by design: web/web.go serves style-src 'self' and img-src 'self' data:, so a listing that shipped arbitrary CSS or JS could not run without loosening the CSP (docs/branding.md section 5). | ⛔ | — |
+| I18N-06 | Mail template branding (header/footer/CSS) | notification templates are editable rows in internal/notify/templates.go with a staff editor, but they are text/plain with {{company_name}} substitution only - no branded header, footer or CSS, and HTML mail is refused on purpose. | 🟡 | P3 |
+| I18N-07 | Logo (light/dark), favicon, company name, system email settings | internal/httpapi/branding.go and web/src/views/branding.ts give a per-tenant name, one uploaded PNG or JPEG logo and a per-mode accent that reach the panel chrome and the invoice PDF, but there is no dark-mode logo, favicon or social card (docs/branding.md section 5) and SMTP sender settings live separately in internal/settings/settings.go. | 🟡 | P5 |
+| I18N-08 | Gravatar default avatar | No Gravatar: avatars are local initials from avatar() in web/src/ui/kit.ts, and the img-src 'self' data: CSP in web/web.go would refuse a gravatar.com origin. | ❌ | P6 |
 
 **Deliberate divergence (`I18N-05`).** The CSP is a deliberate boundary (`img-src 'self' data:`,
 no inline styles). A theme marketplace that ships arbitrary CSS/JS would either require

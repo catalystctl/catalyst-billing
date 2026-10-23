@@ -363,7 +363,8 @@ RECORDED = {
     "api GET /": "the SPA shell itself, not an API; the router answers it",
     "api GET /api/v1/me": "credential introspection for API keys; the panel has a session, not a key",
     "api GET /api/v1/me/invoices": "the API-key view of /portal/invoices; scripts only",
-    "api GET /api/v1/media/{id}": "an <img src>; product images are rendered by the catalog screens",
+    # Now referenced by the branding overlay (lib/brand.ts resolves a logo through it), so the
+    # sweep no longer needs to record it as unreachable.
     "api GET /oauth/authorize": "OAuth2 consent for a third-party client, not the panel",
     "api POST /oauth/authorize": "OAuth2 consent for a third-party client, not the panel",
     "api POST /oauth/token": "OAuth2 token exchange between servers; no human is present",

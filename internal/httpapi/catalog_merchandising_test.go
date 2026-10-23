@@ -34,10 +34,26 @@ func seedCategoryImage(t *testing.T, env *staffEnv) string {
 	return body.ID
 }
 
+// resetStorefrontSettings removes this package's storefront writes.
+//
+// `settings` is reference data (seeded by migrations) and is never truncated between tests, so a
+// test that writes the storefront group has to put it back: leaving `currency_switcher = false`
+// behind would silently change what every later public read in this package returns.
+func resetStorefrontSettings(t *testing.T, env *staffEnv) {
+	t.Helper()
+	t.Cleanup(func() {
+		if _, err := env.pool.Exec(context.Background(),
+			`DELETE FROM settings WHERE group_key = 'storefront'`); err != nil {
+			t.Fatalf("reset storefront settings: %v", err)
+		}
+	})
+}
+
 // TestPublicCatalogListsTopLevelBranchesWithProducts is SF-01: the strip is the roots that have
 // something under them, ordered by sort, and an empty branch is not offered.
 func TestPublicCatalogListsTopLevelBranchesWithProducts(t *testing.T) {
 	env := newStaffEnv(t)
+	resetStorefrontSettings(t, env)
 	ctx := context.Background()
 
 	// A root with a product two levels down.
@@ -455,9 +471,9 @@ func TestCategoryImageViaTheCatalogAPI(t *testing.T) {
 		t.Fatalf("create category = %d: %s", rec.Code, rec.Body)
 	}
 	var created struct {
-		ID       string  `json:"id"`
-		ImageID  *string `json:"image_id"`
-		SortOrd  int     `json:"sort_order"`
+		ID      string  `json:"id"`
+		ImageID *string `json:"image_id"`
+		SortOrd int     `json:"sort_order"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -488,4 +504,101 @@ func TestCategoryImageViaTheCatalogAPI(t *testing.T) {
 		}
 	}
 	t.Fatalf("the category is missing from the public tree: %+v", tree.Categories)
+}
+
+// TestStorefrontSettingsChangeWhatTheShopPublishes proves the settings seam is consumed rather
+// than declared: the three operator choices in the `storefront` group change the public payload.
+//
+// The assert that matters is the negative one. A stock count exists so a shopper knows the shop
+// is thin; an operator who turns it off is publishing less, and "the setting saved" is not the
+// same as "the storefront stopped saying it".
+func TestStorefrontSettingsChangeWhatTheShopPublishes(t *testing.T) {
+	env := newStaffEnv(t)
+	resetStorefrontSettings(t, env)
+	ctx := context.Background()
+	cat := env.seedTreeCategory(t, "sf-settings", nil)
+	product := env.seedTreeProduct(t, "sf-settings-product", cat)
+	ten := 10
+	if rec := env.putJSON(t, "/api/v1/staff/catalog/products/"+product+"/merchandising",
+		env.admin, env.adminCSRF, map[string]any{"stock": ten}); rec.Code != http.StatusOK {
+		t.Fatalf("set stock = %d: %s", rec.Code, rec.Body)
+	}
+
+	type publicProduct struct {
+		Stock             *int `json:"stock"`
+		InStock           bool `json:"in_stock"`
+		LowStock          bool `json:"low_stock"`
+		LowStockThreshold int  `json:"low_stock_threshold"`
+		CurrencySwitcher  bool `json:"currency_switcher"`
+	}
+	read := func() publicProduct {
+		rec := env.publicGet(t, "/api/v1/catalog/sf-settings-product")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("public product = %d: %s", rec.Code, rec.Body)
+		}
+		var body publicProduct
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return body
+	}
+
+	// The defaults: the count is published, ten units is not "low" against a default threshold
+	// of five, and the switcher is offered.
+	if got := read(); got.Stock == nil || *got.Stock != 10 || got.LowStock || !got.CurrencySwitcher {
+		t.Fatalf("defaults = %+v", got)
+	}
+
+	if rec := env.putJSON(t, "/api/v1/staff/settings", env.admin, env.adminCSRF, map[string]any{
+		"group":  "storefront",
+		"values": map[string]string{"show_stock": "false", "low_stock_threshold": "1", "currency_switcher": "false"},
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("write storefront settings = %d: %s", rec.Code, rec.Body)
+	}
+	got := read()
+	if got.Stock != nil {
+		t.Fatalf("stock = %v, want it withheld when show_stock is off", *got.Stock)
+	}
+	if !got.InStock {
+		t.Fatal("withholding the count must not make an available product unbuyable")
+	}
+	if got.LowStock {
+		t.Fatal("a withheld count must not be reported as low stock")
+	}
+	if got.CurrencySwitcher {
+		t.Fatal("currency_switcher = false did not reach the storefront")
+	}
+
+	// Publishing it again with a threshold of one: ten units is above it, one is not.
+	if rec := env.putJSON(t, "/api/v1/staff/settings", env.admin, env.adminCSRF, map[string]any{
+		"group":  "storefront",
+		"values": map[string]string{"show_stock": "true", "low_stock_threshold": "1"},
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("re-enable stock = %d: %s", rec.Code, rec.Body)
+	}
+	if got := read(); got.LowStock {
+		t.Fatalf("ten units at a threshold of one was reported low: %+v", got)
+	}
+	one := 1
+	if rec := env.putJSON(t, "/api/v1/staff/catalog/products/"+product+"/merchandising",
+		env.admin, env.adminCSRF, map[string]any{"stock": one}); rec.Code != http.StatusOK {
+		t.Fatalf("set stock to one = %d: %s", rec.Code, rec.Body)
+	}
+	if got := read(); !got.LowStock || got.LowStockThreshold != 1 {
+		t.Fatalf("one unit at a threshold of one was not reported low: %+v", got)
+	}
+
+	// A negative threshold is refused rather than stored: a comparison against it would report
+	// every product as low.
+	if rec := env.putJSON(t, "/api/v1/staff/settings", env.admin, env.adminCSRF, map[string]any{
+		"group":  "storefront",
+		"values": map[string]string{"low_stock_threshold": "-1"},
+	}); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("negative threshold = %d, want 422: %s", rec.Code, rec.Body)
+	}
+	if err := env.pool.QueryRow(ctx, `
+		SELECT count(*) FROM settings WHERE group_key = 'storefront' AND key = 'low_stock_threshold' AND value = '-1'`).
+		Scan(new(int)); err != nil {
+		t.Fatalf("count rejected settings row: %v", err)
+	}
 }

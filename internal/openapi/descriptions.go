@@ -531,16 +531,16 @@ func coreOperations() map[string]Operation {
 		// ------------------------------------------------------------ storefront --
 		"GET /api/v1/catalog": {
 			Summary:     "The public catalog",
-			Description: "Unauthenticated and cacheable for 60 seconds. Returns only published products in visible categories that have at least one price; a hidden product is indistinguishable from a missing one. Omits provision targets, active-subscription counts and every internal id.",
+			Description: "Unauthenticated and cacheable for 60 seconds. Returns only published products in visible categories that have at least one price; a hidden product is indistinguishable from a missing one. Omits provision targets, active-subscription counts and every internal id. `?currency=` filters to the products sold in that currency, at that currency's prices — there is no exchange rate, so a code with no price row is not converted. `categories` is the top-level strip (or every visible category, per the `storefront.home_categories` setting), pruned to the branches that still hold a product after that filter. Each product carries `in_stock`, and `stock` only when the operator publishes it.",
 			Responses: []Response{
 				{Status: 200, Description: "Categories and their published products"},
 			},
 		},
 		"GET /api/v1/catalog/{slug}": {
-			Summary:     "One public product",
-			Description: "Same visibility rules as the index: hidden, in a hidden category, or unpriced all answer 404.",
+			Summary:     "One public product or category",
+			Description: "One storefront address for two records: the response's `kind` is `product` or `category`. A category answers with its visible children and every product in its branch, which is what gives a category a shareable URL; a product answers with its plans, its config options (with the amount attached to each plan) and its stock. Same visibility rules as the index: hidden, in a hidden category, or unpriced all answer 404, and `?currency=` filters as it does there.",
 			Responses: []Response{
-				{Status: 200, Description: "The product"},
+				{Status: 200, Description: "The product, or the category and its branch's products"},
 				{Status: 404, Description: "Not published", Schema: ProblemRef()},
 			},
 		},

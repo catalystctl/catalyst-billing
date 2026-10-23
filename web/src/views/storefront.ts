@@ -349,6 +349,52 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
             productGrid(featured, currency),
           );
 
+    // The category cards (SF-06). The chips are a filter row; a category that has an image deserves
+    // to be seen, so the strip is followed by a card per top-level branch — but only when at least
+    // one image exists, because otherwise this would be the chips drawn twice.
+    const pictured = categories.filter((c) => Boolean(c.image_url));
+    const categoryCards =
+      pictured.length === 0
+        ? null
+        : h(
+            "div",
+            { class: "store-section" },
+            h(
+              "div",
+              { class: "store-section-head" },
+              h("h2", null, tx("storefront.section.categories", "Browse by category")),
+              h("p", { class: "dim" }, tx("storefront.section.categories_sub", "Every branch of the catalog, with what it holds.")),
+            ),
+            h(
+              "div",
+              { class: "store-grid" },
+              ...pictured.map((c) =>
+                h(
+                  "a",
+                  { class: "store-card", href: withCurrency(`/products/${encodeURIComponent(c.slug)}`), dataset: { categoryCard: c.slug } },
+                  h("div", { class: "store-card-logo" }, h("img", { src: c.image_url, alt: "", loading: "lazy", decoding: "async" })),
+                  h(
+                    "div",
+                    { class: "store-card-body" },
+                    h("div", { class: "store-card-cat" }, tx("storefront.category.subcategory", "Category")),
+                    h("h3", { class: "store-card-name" }, c.name),
+                    h(
+                      "p",
+                      { class: "store-card-desc" },
+                      c.description || tx("storefront.category.count", "Products in this branch."),
+                    ),
+                  ),
+                  h(
+                    "div",
+                    { class: "store-card-foot" },
+                    h("span", { class: "dim" }, `${c.product_count ?? 0} ${tx("storefront.category.products", "products")}`),
+                    h("span", { class: "store-card-go" }, icon("arrowRight", 14)),
+                  ),
+                ),
+              ),
+            ),
+          );
+
     const grid =
       products.length === 0
         ? emptyState({
@@ -379,6 +425,7 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
       // Between the pitch and the catalogue: a visitor reads "we are closed on Sunday" before
       // deciding on a plan, and a returning customer sees it without signing in.
       feed,
+      categoryCards,
       featuredRow,
       h(
         "section",
@@ -415,6 +462,10 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
         h("a", { href: "/healthz", "data-native": "true" }, tx("storefront.footer.status", "Status")),
       ),
     );
+
+  /** withCurrency keeps the visitor in the currency they chose across storefront links. */
+  const withCurrency = (path: string): string =>
+    currency ? `${path}${path.includes("?") ? "&" : "?"}currency=${encodeURIComponent(currency)}` : path;
 
   /** The currency control, built by the shared helper below. */
   const currencySelect = (data: CatalogResponse): HTMLElement | null =>

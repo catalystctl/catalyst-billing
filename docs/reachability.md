@@ -139,21 +139,11 @@ done here.
 | `GET /api/v1/staff/affiliates/payouts` | see the all-affiliates payout report; `/affiliates` reads one affiliate at a time |
 | `GET /api/v1/staff/credit-notes/{id}/pdf` | download the credit note they just issued from `/invoices/:id` |
 | `GET /api/v1/portal/credit-notes/{id}/pdf` | download the credit note they were sent |
-| `POST /api/v1/portal/impersonation/stop` | — see the impersonation row below |
-
-One of these is worth naming as an *inert feature* rather than a missing screen:
-
-* **Impersonation is API-only.** `POST /api/v1/staff/users/{id}/impersonate` and
-  `POST /api/v1/portal/impersonation/stop` are audited and tested; no screen starts one and no
-  banner offers to end one. The customer overview explains why an impersonated session cannot
-  act, for a session nobody can enter.
-### Write endpoints with no UI affordance (17)
 
 | Surface | Verdict |
 |---|---|
 | `POST /api/v1/portal/cart/items` | **the headline gap** — see the purchase funnel above |
 | `POST /api/v1/portal/invoices/{id}/pay-with-credit` | a customer with credit cannot spend it on an invoice from the portal |
-| `POST /api/v1/staff/users/{id}/impersonate` | nothing starts an impersonation (audited, tested, unreachable) |
 | `POST /api/v1/portal/services/{id}/cancellation` | the portal cancels through the older `/cancel`; the newer request row the staff queue reads is API-only |
 | `POST /api/v1/portal/services/{id}/upgrade` | a customer cannot request an upgrade from the portal |
 | `PUT /api/v1/portal/services/{id}/config` | a customer cannot edit a service's config options |

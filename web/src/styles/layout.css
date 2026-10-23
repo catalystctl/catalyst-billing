@@ -597,3 +597,78 @@
   width: 15px;
   height: 15px;
 }
+
+/* ---------------------------------------------------------- impersonation -- */
+
+/*
+ * The impersonation strip.
+ *
+ * It is the one warning on the panel that must survive every screen, so it is pinned under the
+ * top bar instead of scrolling away with the content: an operator who has scrolled to the bottom
+ * of a customer's invoice list is exactly the operator who has forgotten whose list it is.
+ *
+ * The colour is the danger family rather than the info family, and that is a decision, not a
+ * theme: "you are in somebody else's account" is a warning about the current session, not a note
+ * about the page. It stays legible in both themes because it is built from the same tokens as
+ * every other banner.
+ */
+.shell-impersonation:empty {
+  display: none;
+}
+
+.impersonation-banner {
+  position: sticky;
+  top: var(--topbar-h);
+  z-index: 29;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-5);
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 38%, var(--line));
+  background: var(--danger-soft);
+  color: color-mix(in srgb, var(--danger) 58%, var(--text));
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  backdrop-filter: blur(12px);
+}
+
+/* The storefront renders outside the shell and has no top bar to sit under. */
+.impersonation-banner--flush {
+  top: 0;
+  z-index: 70;
+}
+
+.impersonation-banner > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--danger);
+}
+
+.impersonation-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.impersonation-banner-text strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.impersonation-banner-actions {
+  flex: none;
+}
+
+@media (max-width: 640px) {
+  .impersonation-banner {
+    flex-wrap: wrap;
+    padding: var(--s-2) var(--s-3);
+  }
+
+  .impersonation-banner-actions {
+    width: 100%;
+  }
+}

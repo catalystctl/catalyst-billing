@@ -23,6 +23,7 @@ import (
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/calendar"
 	"github.com/catalyst/billing/internal/catalog"
+	"github.com/catalyst/billing/internal/invoicepdf"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
@@ -324,6 +325,19 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 		lines = append(lines, surcharges...)
 		dueAt := now.AddDate(0, 0, p.PaymentTermsDays)
 
+		// The number format is a setting (INV-03). It is read in the issuing transaction, and a
+		// failure to read it is fatal for this subscription rather than silently falling back to
+		// the compiled-in series: a renewal that quietly renumbers is the kind of divergence the
+		// gap-free sequence exists to prevent.
+		numbering, err := invoicepdf.LoadNumbering(ctx, tx)
+		if err != nil {
+			return err
+		}
+		series, err := numbering.InvoiceSeries(now)
+		if err != nil {
+			return err
+		}
+
 		req := billing.IssueRequest{
 			CustomerID:     sub.CustomerID,
 			SubscriptionID: sub.ID,
@@ -338,7 +352,7 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 			},
 			Terms:           e.Terms,
 			DueAt:           dueAt,
-			Series:          e.Series,
+			Series:          series,
 			PriceVersionIDs: []string{sub.PriceVersionID},
 		}
 		if err := fillCustomer(ctx, tx, &req.Customer); err != nil {
@@ -349,7 +363,7 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 		if err != nil {
 			return err
 		}
-		issued, err := e.issuer.Issue(ctx, tx, invoiceID, e.Series)
+		issued, err := e.issuer.Issue(ctx, tx, invoiceID, series)
 		if err != nil {
 			return err
 		}

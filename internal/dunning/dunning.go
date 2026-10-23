@@ -28,6 +28,8 @@ import (
 	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/ledger"
 	"github.com/catalyst/billing/internal/money"
+	"github.com/catalyst/billing/internal/notify"
+	"github.com/catalyst/billing/internal/settings"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
 )
@@ -140,9 +142,17 @@ func (e *Engine) Advance(ctx context.Context, limit int) ([]AdvanceResult, error
 		limit = 100
 	}
 	now := e.Now()
+	sch := e.schedule(ctx)
+	policy := e.policyFor(ctx)
 
 	// Bring newly overdue invoices into dunning, and resolve settled ones.
 	if err := e.sync(ctx, now); err != nil {
+		return nil, err
+	}
+
+	// The pre-due reminder is queued whether or not anything is overdue: an installation with
+	// nothing overdue is exactly when it is due to arrive.
+	if _, err := e.remindDueSoon(ctx, now, sch); err != nil {
 		return nil, err
 	}
 
@@ -175,7 +185,7 @@ func (e *Engine) Advance(ctx context.Context, limit int) ([]AdvanceResult, error
 
 	results := make([]AdvanceResult, 0, len(dues))
 	for _, d := range dues {
-		res, err := e.advanceOne(ctx, d.id, d.step, now)
+		res, err := e.advanceOne(ctx, d.id, d.step, now, policy, sch)
 		if err != nil {
 			return results, err
 		}
@@ -185,6 +195,12 @@ func (e *Engine) Advance(ctx context.Context, limit int) ([]AdvanceResult, error
 }
 
 // sync creates dunning state for overdue invoices and closes settled ones.
+//
+// The escalation schedule itself is unchanged: an invoice that is past due enters dunning
+// immediately, because that is what makes a service suspension-eligible after the configured
+// grace period. What the reminder settings control is *mail*, not the state machine — see
+// advanceOne — so an operator who sets "remind 3 days overdue" moves the first email without
+// moving the escalation.
 func (e *Engine) sync(ctx context.Context, now time.Time) error {
 	// Newly overdue: an open invoice past its due date with no dunning state.
 	if _, err := e.pool.Exec(ctx, `
@@ -210,13 +226,30 @@ func (e *Engine) sync(ctx context.Context, now time.Time) error {
 }
 
 // advanceOne performs one dunning step.
-func (e *Engine) advanceOne(ctx context.Context, invoiceID string, step int, now time.Time) (AdvanceResult, error) {
+func (e *Engine) advanceOne(ctx context.Context, invoiceID string, step int, now time.Time,
+	policy Policy, sch settings.ReminderSchedule) (AdvanceResult, error) {
 	res := AdvanceResult{InvoiceID: invoiceID}
 	err := e.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		// Re-check the invoice: it may have been paid between the scan and now.
-		var status string
-		if err := tx.QueryRow(ctx, `SELECT status FROM invoices WHERE id = $1 FOR UPDATE`,
-			invoiceID).Scan(&status); err != nil {
+		// Re-check the invoice: it may have been paid between the scan and now. The same lock
+		// carries the facts the reminder needs, so the mail cannot describe an amount that was
+		// settled a moment earlier.
+		var (
+			status, currency, number, email string
+			totalMinor, paidMinor           int64
+			dueAt                           *time.Time
+			verified                        bool
+		)
+		if err := tx.QueryRow(ctx, `
+			SELECT i.status, i.currency, COALESCE(i.number, ''), i.total_minor,
+			       i.amount_paid_minor, i.due_at, c.email,
+			       EXISTS (
+			           SELECT 1 FROM customer_accounts ca
+			           JOIN users u ON u.id = ca.user_id
+			           WHERE ca.customer_id = c.id AND u.email_verified_at IS NOT NULL)
+			FROM invoices i JOIN customers c ON c.id = i.customer_id
+			WHERE i.id = $1 FOR UPDATE OF i`, invoiceID).
+			Scan(&status, &currency, &number, &totalMinor, &paidMinor, &dueAt, &email,
+				&verified); err != nil {
 			return fmt.Errorf("dunning: lock invoice: %w", err)
 		}
 		if status != "open" {
@@ -231,13 +264,13 @@ func (e *Engine) advanceOne(ctx context.Context, invoiceID string, step int, now
 		}
 
 		nextStep := step + 1
-		exhausted := nextStep >= e.policy.MaxSteps
+		exhausted := nextStep >= policy.MaxSteps
 		nextState := StateOverdue
 		var next *time.Time
 		if exhausted {
 			nextState = StateExhausted
 		} else {
-			t := now.Add(e.policy.ReminderInterval)
+			t := now.Add(policy.ReminderInterval)
 			next = &t
 		}
 
@@ -253,6 +286,36 @@ func (e *Engine) advanceOne(ctx context.Context, invoiceID string, step int, now
 		}
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("dunning: invoice %s was advanced concurrently", invoiceID)
+		}
+
+		// The reminder is queued in the same transaction that advanced the step, so a crash
+		// between the two cannot repeat a reminder or skip one: the step and the mail commit
+		// together, and the dedupe key makes a replay a no-op.
+		//
+		// `reminder_days_overdue` delays the first *mail*, not the escalation: a step that
+		// fires before the configured number of days does its bookkeeping and stays quiet.
+		// Sending at midnight on the due date would be a different policy wearing the
+		// operator's label.
+		overdueEnough := dueAt != nil &&
+			!now.Before(dueAt.AddDate(0, 0, sch.DaysOverdue))
+		if overdueEnough {
+			message, merr := reminderMessage(reminderInput{
+				InvoiceID: invoiceID, Number: number, Currency: currency,
+				TotalMinor: totalMinor, PaidMinor: paidMinor, DueAt: *dueAt,
+				Email: email, Verified: verified, Kind: reminderOverdue, Step: nextStep,
+			})
+			if merr != nil {
+				return merr
+			}
+			queue := notify.NewQueue(e.pool)
+			if !verified {
+				if serr := queue.Suppress(ctx, tx, message,
+					"the customer has no verified address"); serr != nil {
+					return serr
+				}
+			} else if _, _, qerr := queue.Enqueue(ctx, tx, message); qerr != nil {
+				return qerr
+			}
 		}
 
 		res.State = nextState

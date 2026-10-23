@@ -120,6 +120,8 @@ interface RefundRow {
 interface CreditNote {
   id: string;
   number: string;
+  /** "credit" or "debit": the two adjustment directions share one document table (INV-10). */
+  kind?: string;
   currency: string;
   total: Amount;
   tax: Amount;
@@ -127,6 +129,10 @@ interface CreditNote {
   status: string;
   issued_at: string | null;
   created_at: string;
+  /** Set when the note was cancelled; the note is kept, its posting reversed (ADM-25). */
+  void_reason?: string;
+  voided_at?: string | null;
+  voidable?: boolean;
   invoice_id?: string;
 }
 
@@ -147,6 +153,26 @@ interface JournalTx {
   entries: JournalEntry[];
 }
 
+/**
+ * One money movement on the invoice, as `GET /staff/invoices/{id}/transactions` reports it:
+ * a payment, a credit application or an adjustment note. They are one list because "how did
+ * this balance get here" is one question (ADM-24).
+ */
+interface InvoiceTransaction {
+  id: string;
+  kind: "payment" | "credit_application" | "adjustment_note";
+  amount: Amount;
+  occurred_at: string | null;
+  status: string;
+  reference?: string;
+  method?: string;
+  note?: string;
+  number?: string;
+  adjustment?: string;
+  refundable?: boolean;
+  refund_url?: string;
+}
+
 interface Detail {
   invoice: InvoiceHead;
   payments: Payment[];
@@ -154,6 +180,7 @@ interface Detail {
   refunds: RefundRow[];
   credit_notes: CreditNote[];
   journal: JournalTx[];
+  transactions?: InvoiceTransaction[];
 }
 
 // ------------------------------------------------------------------- page --
@@ -179,6 +206,18 @@ export default async function invoicePage(ctx: Ctx): Promise<Node> {
         cache: false,
         signal: controller.signal,
       });
+      // The transaction list is its own resource, so it is its own read: a failure there must
+      // not take the document down with it, because the invoice is what the operator came for.
+      try {
+        const transactions = await ctx.api.get<{ transactions: InvoiceTransaction[] }>(
+          `/api/v1/staff/invoices/${encodeURIComponent(id)}/transactions`,
+          { cache: false, signal: controller.signal },
+        );
+        detail.transactions = transactions.transactions ?? [];
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        detail.transactions = [];
+      }
       if (controller.signal.aborted) return;
       current = detail;
       host.replaceChildren(...render(ctx, detail, () => void load()));
@@ -221,6 +260,7 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
   const allocations = detail.allocations ?? [];
   const refunds = detail.refunds ?? [];
   const creditNotes = detail.credit_notes ?? [];
+  const transactions = detail.transactions ?? [];
   const journal = detail.journal ?? [];
 
   const currency = inv.total.currency;
@@ -295,16 +335,48 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
   };
 
   const issue = async () => {
-    const confirmed = await ctx.confirm({
+    // INV-14: publishing and mailing are two decisions. The checkbox starts from the
+    // installation's default and can be overridden per document; an operator who issues a
+    // reprint to themselves must not mail the customer.
+    const sendEmail = h("input", { type: "checkbox", checked: true });
+    await ctx.formDialog({
       title: "Issue this invoice?",
-      body: "Issuing allocates the next number in the series, posts to the subledger and queues the customer's notification in the same transaction. An issued invoice cannot be un-issued: a mistake is corrected with a credit note.",
-      confirmLabel: "Issue invoice",
-    });
-    if (!confirmed) return;
-    await mutate(ctx, {
-      run: () => ctx.api.post(`/api/v1/staff/invoices/${inv.id}/issue`, {}),
-      success: "Invoice issued",
-      after: reload,
+      subtitle:
+        "Issuing allocates the next number in the series, posts to the subledger and records the customer notification in the same transaction. An issued invoice cannot be un-issued: a mistake is corrected with a credit note.",
+      submitLabel: "Issue invoice",
+      body: h(
+        "div",
+        { class: "stack" },
+        h(
+          "label",
+          { class: "checkbox" },
+          sendEmail,
+          h(
+            "span",
+            null,
+            "Email the customer — the 'your invoice is ready' message. Unticking it records the suppression instead of sending anything.",
+          ),
+        ),
+      ),
+      onSubmit: async () => {
+        try {
+          await ctx.api.post(`/api/v1/staff/invoices/${encodeURIComponent(inv.id)}/issue`, {
+            send_email: sendEmail.checked,
+          });
+          ctx.toast("Invoice issued", {
+            tone: "success",
+            detail: sendEmail.checked ? "The customer has been emailed." : "No email was sent.",
+          });
+          reload();
+        } catch (err) {
+          if (err instanceof ApiError) {
+            if (err.code === "not_draft") return err.detail || "Only a draft can be issued.";
+            return err.detail || humanStatus(err.code);
+          }
+          return "The invoice could not be issued.";
+        }
+        return undefined;
+      },
     });
   };
 
@@ -613,6 +685,184 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
     });
   };
 
+  // A debit note is the other adjustment direction: the invoice under-charged, and the
+  // correction is a second numbered document rather than an edit (INV-10).
+  const createDebitNote = async () => {
+    const amountInput = input({ id: "debit-note-amount", class: "input--mono", inputmode: "decimal", value: "" });
+    const reasonInput = textarea({ id: "debit-note-reason", placeholder: "Why is more being charged?", maxlength: 500 });
+    await ctx.formDialog({
+      title: "Issue a debit note",
+      subtitle:
+        "A debit note charges more against this invoice. Like a credit note it is immutable and numbered in its own series; the invoice itself is untouched.",
+      submitLabel: "Issue debit note",
+      body: h(
+        "div",
+        { class: "stack" },
+        banner(
+          "info",
+          "The tax share comes from this invoice",
+          "The note is a correction to this document, so the tax rate it carries is the rate this document recorded. It is not re-taxed at today's rates.",
+        ),
+        field({
+          label: "Amount",
+          control: amountInput,
+          id: "debit-note-amount",
+          required: true,
+          hint: "The total charge, in the invoice's currency.",
+        }),
+        field({
+          label: "Reason",
+          control: reasonInput,
+          id: "debit-note-reason",
+          required: true,
+          hint: "Printed on the debit note and recorded in the audit log.",
+        }),
+      ),
+      onSubmit: async () => {
+        const minor = amountFromInput(amountInput.value, scale);
+        if (minor === null) return "That amount is not a number. Use digits and a decimal point, e.g. 120.00.";
+        if (minor <= 0) return "The amount must be greater than zero.";
+        const reason = reasonInput.value.trim();
+        if (reason.length < 3) return "A debit note needs a reason.";
+        try {
+          await ctx.api.post(`/api/v1/staff/invoices/${encodeURIComponent(inv.id)}/debit-notes`, {
+            amount_minor: minor,
+            reason,
+          });
+          ctx.toast("Debit note issued", { tone: "success", detail: moneyWithCode(amt(minor)) });
+          reload();
+        } catch (err) {
+          if (err instanceof ApiError) {
+            if (err.code === "not_issuable") return err.detail || "This invoice cannot be charged again.";
+            return err.detail || humanStatus(err.code);
+          }
+          return "The debit note could not be issued.";
+        }
+        return undefined;
+      },
+    });
+  };
+
+  // Cancelling an adjustment note. The note is kept and its posting reversed: an issued
+  // document is never deleted, and the subledger is append-only (ADM-25).
+  const voidAdjustmentNote = async (note: CreditNote) => {
+    const reason = textarea({ id: "void-note-reason", placeholder: "Why is this note being cancelled?", maxlength: 500 });
+    await ctx.formDialog({
+      title: `Void ${note.number || "this adjustment note"}?`,
+      subtitle: "The note stays on the record and its ledger posting is reversed, with the reason you give printed on a reprint.",
+      danger: true,
+      submitLabel: "Void note",
+      body: h(
+        "div",
+        { class: "stack" },
+        banner(
+          "warning",
+          "Credit that has already been spent cannot be voided",
+          "If the customer has used this credit, the server refuses and the correction is a debit note.",
+        ),
+        field({ label: "Reason", control: reason, id: "void-note-reason", required: true, hint: "Recorded in the audit log with your name." }),
+      ),
+      onSubmit: async () => {
+        const text = reason.value.trim();
+        if (text.length < 3) return "A reason is required.";
+        try {
+          await ctx.api.post(`/api/v1/staff/credit-notes/${encodeURIComponent(note.id)}/void`, { reason: text });
+          ctx.toast("Note voided", { tone: "success", detail: note.number || undefined });
+          reload();
+        } catch (err) {
+          if (err instanceof ApiError) {
+            if (err.code === "already_void") return err.detail || "This note is already void.";
+            if (err.code === "not_voidable") return err.detail || "This note cannot be voided; issue a debit note instead.";
+            return err.detail || humanStatus(err.code);
+          }
+          return "The note could not be voided.";
+        }
+        return undefined;
+      },
+    });
+  };
+
+  // Editing a draft (INV-05). A draft is a worksheet; the server re-prices every line, so the
+  // client sends what the operator typed and reports what the document now totals.
+  const editDraftLines = async () => {
+    const rows: Array<{ description: HTMLInputElement; quantity: HTMLInputElement; unit: HTMLInputElement }> = [];
+    const list = h("div", { class: "stack-sm" });
+    const addRow = (line?: InvoiceLine) => {
+      const description = input({ class: "input", placeholder: "What is being charged", value: line?.description ?? "" });
+      const quantity = input({ class: "input input--mono", type: "number", min: "1", value: line ? String(Number(line.quantity)) : "1" });
+      const unit = input({
+        class: "input input--mono",
+        inputmode: "decimal",
+        placeholder: "0.00",
+        value: line ? money(amt(line.unit_minor)) : "",
+      });
+      const remove = btn("Remove", {
+        size: "sm",
+        variant: "ghost",
+        onclick: () => {
+          const index = rows.findIndex((r) => r.description === description);
+          if (index >= 0) rows.splice(index, 1);
+          row.remove();
+        },
+      });
+      const row = h(
+        "div",
+        { class: "row spacer" },
+        field({ label: "Description", control: description }),
+        field({ label: "Qty", control: quantity }),
+        field({ label: "Unit", control: unit }),
+        remove,
+      );
+      rows.push({ description, quantity, unit });
+      list.appendChild(row);
+      return row;
+    };
+    for (const line of inv.lines) addRow(line);
+    if (inv.lines.length === 0) addRow();
+
+    await ctx.formDialog({
+      title: `Edit the lines of ${inv.number || "this draft"}`,
+      subtitle:
+        "A draft has no number, so it can still be corrected. Every line is re-priced by the server on save — tax included — and the invoice stops being editable the moment it is issued.",
+      submitLabel: "Save lines",
+      body: h(
+        "div",
+        { class: "stack" },
+        banner("info", "This is a draft", "Once issued, the correction is a credit note or a debit note, never an edit."),
+        list,
+        btn("Add a line", { size: "sm", icon: "plus", onclick: () => void addRow() }),
+      ),
+      onSubmit: async () => {
+        if (rows.length === 0) return "An invoice needs at least one line.";
+        const lines = [];
+        for (const row of rows) {
+          const description = row.description.value.trim();
+          const quantity = Number(row.quantity.value);
+          const unitMinor = amountFromInput(row.unit.value, scale);
+          if (description === "") return "Every line needs a description.";
+          if (!Number.isInteger(quantity) || quantity <= 0) return "Every quantity must be a positive whole number.";
+          if (unitMinor === null) return "Every unit price must be an amount, e.g. 12.50.";
+          lines.push({ description, quantity, unit_amount_minor: unitMinor, currency });
+        }
+        try {
+          const res = await ctx.api.put<{ totals: { total: Amount } }>(
+            `/api/v1/staff/invoices/${encodeURIComponent(inv.id)}/lines`,
+            { lines },
+          );
+          ctx.toast("Draft updated", { tone: "success", detail: `New total ${moneyWithCode(res.totals.total)}` });
+          reload();
+        } catch (err) {
+          if (err instanceof ApiError) {
+            if (err.code === "not_draft") return err.detail || "This invoice has been issued and cannot be edited.";
+            return err.detail || humanStatus(err.code);
+          }
+          return "The draft could not be saved.";
+        }
+        return undefined;
+      },
+    });
+  };
+
   // A proforma: issue a draft without consuming a number. The document is payable, and the
   // number is allocated exactly once — in the transition that stops it being provisional, which
   // is the payment. Issuing it twice is refused by the server (`already_issued`), so the dialog
@@ -743,6 +993,14 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
     actions.push(pdfLink(`/api/v1/staff/invoices/${encodeURIComponent(inv.id)}/pdf`, "PDF", { size: "sm" }));
   }
   if (canWrite && inv.status === "draft") {
+    actions.push(
+      btn("Edit lines", {
+        size: "sm",
+        icon: "edit",
+        title: "While it is a draft, its lines can still be corrected",
+        onclick: () => void editDraftLines(),
+      }),
+    );
     actions.push(btn("Issue", { variant: "primary", size: "sm", icon: "send", onclick: () => void issue() }));
     actions.push(
       btn("Issue proforma", {
@@ -765,6 +1023,14 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
   }
   if (canWrite && (inv.status === "open" || inv.status === "paid")) {
     actions.push(btn("Credit note", { size: "sm", icon: "undo", onclick: () => void createCreditNote() }));
+    actions.push(
+      btn("Debit note", {
+        size: "sm",
+        icon: "plus",
+        title: "Charge more against this invoice with a separate numbered document",
+        onclick: () => void createDebitNote(),
+      }),
+    );
   }
   if (canRecordPayment && inv.due.minor > 0 && inv.status !== "void" && inv.status !== "draft") {
     actions.push(
@@ -931,20 +1197,100 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
           ),
   });
 
-  // -------------------------------------------------------- credit notes --
-  const creditNotesCard = card({
-    title: "Credit notes",
+  // ------------------------------------------------------------ transactions --
+  //
+  // Every movement on this invoice in one list (ADM-24). A payment has no edit and no delete,
+  // and there is no button here that pretends otherwise: a payment is a fact the gateway or
+  // the bank confirmed, and the correction is a refund — which is its own record with its own
+  // status. Credit applications and adjustment notes sit beside it because between them they
+  // are the whole answer to "why is the balance what it is".
+  const transactionsCard = card({
+    title: "Transactions",
+    sub: transactions.length === 0 ? "None" : `${transactions.length}`,
+    flush: true,
+    body:
+      transactions.length === 0
+        ? emptyState({
+            title: "Nothing has moved",
+            body: "Payments, applied credit and adjustment notes appear here as they happen. A draft invoice has none of them.",
+            icon: "activity",
+          })
+        : dataTable<InvoiceTransaction>(
+            [
+              {
+                label: "Movement",
+                primary: true,
+                render: (tx) =>
+                  h(
+                    "div",
+                    { class: "cell-main" },
+                    h(
+                      "div",
+                      { class: "primary" },
+                      tx.kind === "payment"
+                        ? "Payment"
+                        : tx.kind === "credit_application"
+                          ? "Credit applied"
+                          : tx.adjustment === "debit"
+                            ? "Debit note"
+                            : "Credit note",
+                      tx.number ? h("span", { class: "secondary mono" }, ` ${tx.number}`) : null,
+                    ),
+                    h("div", { class: "secondary" }, tx.method ? titleCase(tx.method) : tx.kind === "payment" ? tx.reference ?? "" : ""),
+                    tx.note ? h("div", { class: "secondary" }, tx.note) : null,
+                  ),
+              },
+              { label: "Amount", align: "right", render: (tx) => moneyEl(tx.amount) },
+              { label: "Status", render: (tx) => statusBadge(tx.status) },
+              {
+                label: "When",
+                render: (tx) =>
+                  tx.occurred_at
+                    ? h("span", { class: "dim", title: dateTime(tx.occurred_at) }, relative(tx.occurred_at))
+                    : h("span", { class: "faint" }, "—"),
+              },
+              {
+                label: "",
+                align: "right",
+                render: (tx) =>
+                  canRefund && tx.kind === "payment" && tx.refundable
+                    ? btn("Refund", {
+                        size: "sm",
+                        onclick: () => {
+                          const payment = payments.find((p) => p.id === tx.id);
+                          if (payment) openRefund(payment);
+                        },
+                      })
+                    : h("span", { class: "faint" }, ""),
+              },
+            ],
+            transactions,
+          ),
+  });
+
+  // ----------------------------------------------------- adjustment notes --
+  //
+  // Credit and debit notes are one list because they are one kind of document with two
+  // directions (INV-10). A note that was cancelled stays here with its reason: it is part of
+  // the invoice's history, not something that disappears.
+  const adjustmentNotesCard = card({
+    title: "Adjustment notes",
     sub: creditNotes.length === 0 ? "None" : `${creditNotes.length}`,
     actions:
       canWrite && (inv.status === "open" || inv.status === "paid")
-        ? btn("Create credit note", { size: "sm", icon: "plus", onclick: () => void createCreditNote() })
+        ? h(
+            "div",
+            { class: "row" },
+            btn("Credit note", { size: "sm", icon: "minus", onclick: () => void createCreditNote() }),
+            btn("Debit note", { size: "sm", icon: "plus", onclick: () => void createDebitNote() }),
+          )
         : null,
     flush: true,
     body:
       creditNotes.length === 0
         ? emptyState({
-            title: "No credit notes",
-            body: "Crediting this invoice issues a separate numbered document. It is how a mistake is corrected without rewriting the invoice.",
+            title: "No adjustment notes",
+            body: "Crediting or charging more against this invoice issues a separate numbered document. It is how a mistake is corrected without rewriting the invoice.",
             icon: "undo",
           })
         : dataTable<CreditNote>(
@@ -952,25 +1298,47 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
               {
                 label: "Number",
                 primary: true,
-                render: (cn) => h("div", { class: "cell-main" }, h("div", { class: "primary mono" }, cn.number), h("div", { class: "secondary" }, cn.reason || "No reason recorded")),
+                render: (cn) =>
+                  h(
+                    "div",
+                    { class: "cell-main" },
+                    h(
+                      "div",
+                      { class: "primary mono" },
+                      cn.number,
+                      " ",
+                      badge(cn.kind === "debit" ? "Debit" : "Credit", cn.kind === "debit" ? "warning" : "info"),
+                    ),
+                    h("div", { class: "secondary" }, cn.reason || "No reason recorded"),
+                    cn.void_reason ? h("div", { class: "secondary" }, `Voided: ${cn.void_reason}`) : null,
+                  ),
               },
               { label: "Total", align: "right", render: (cn) => moneyEl(cn.total) },
               { label: "Tax", align: "right", render: (cn) => moneyEl(cn.tax) },
               { label: "Status", render: (cn) => statusBadge(cn.status) },
               {
                 label: "Issued",
-                render: (cn) => (cn.issued_at ? h("span", { class: "dim", title: dateTime(cn.issued_at) }, dateOnly(cn.issued_at)) : h("span", { class: "faint" }, "Not issued")),
+                render: (cn) =>
+                  cn.issued_at
+                    ? h("span", { class: "dim", title: dateTime(cn.issued_at) }, dateOnly(cn.issued_at))
+                    : h("span", { class: "faint" }, "Not issued"),
               },
               {
-                // The credit note is a document the customer was sent, so it is downloadable
-                // from the screen that lists it rather than only from the API.
                 label: "Document",
                 align: "right",
                 render: (cn) =>
                   pdfLink(`/api/v1/staff/credit-notes/${encodeURIComponent(cn.id)}/pdf`, "PDF", {
                     size: "sm",
-                    title: `Download credit note ${cn.number || "as a PDF"}`,
+                    title: `Download ${cn.kind === "debit" ? "debit" : "credit"} note ${cn.number || "as a PDF"}`,
                   }),
+              },
+              {
+                label: "",
+                align: "right",
+                render: (cn) =>
+                  canVoid && cn.voidable
+                    ? btn("Void", { size: "sm", variant: "danger", onclick: () => void voidAdjustmentNote(cn) })
+                    : h("span", { class: "faint" }, cn.void_reason ? "Voided" : ""),
               },
             ],
             creditNotes,
@@ -1136,7 +1504,17 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
     h(
       "div",
       { class: "split" },
-      h("div", { class: "stack" }, document, paymentsCard, refundsCard, creditNotesCard, journalCard, snapshotCard),
+      h(
+        "div",
+        { class: "stack" },
+        document,
+        paymentsCard,
+        transactionsCard,
+        refundsCard,
+        adjustmentNotesCard,
+        journalCard,
+        snapshotCard,
+      ),
       h("div", { class: "stack" }, settlementCard, customerCard),
     ),
   ];

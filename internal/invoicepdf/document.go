@@ -19,6 +19,10 @@ const (
 	KindInvoice Kind = iota
 	// KindCreditNote is the counter-document that corrects an invoice.
 	KindCreditNote
+	// KindDebitNote is the counter-document that charges more. It has the same shape as a
+	// credit note and the opposite sign, which is why it is a kind rather than a second
+	// document type.
+	KindDebitNote
 )
 
 // ErrEmptyDocument is returned when there is nothing to print.
@@ -96,6 +100,10 @@ type Document struct {
 	// unbranded document, and it renders byte-identically to a document printed before
 	// branding existed — which is what makes "unset" a fallback rather than a lookalike.
 	Brand Brand
+	// Template is the theme's presentation: headings, the bill-to label, the total label and
+	// an optional footer note. The zero value is the built-in wording, so an installation with
+	// no template renders exactly the bytes it rendered before templates existed.
+	Template Template
 }
 
 // FromInvoice builds a Document from an issued invoice's snapshot and its
@@ -131,7 +139,7 @@ func FromInvoice(snap billing.Snapshot, meta Meta) Document {
 	}
 }
 
-// CreditNoteData is the part of a credit note the document needs.
+// CreditNoteData is the part of a counter-document the renderer needs.
 type CreditNoteData struct {
 	Number string
 	// InvoiceNumber is the invoice the note corrects. A credit note that does
@@ -143,9 +151,14 @@ type CreditNoteData struct {
 	TaxMinor      int64
 	Reason        string
 	Status        string
+	// Kind says which direction the adjustment goes. The zero value is a credit note, which
+	// keeps every existing caller correct: a note that does not say it is a credit is one.
+	Kind Kind
+	// VoidReason is printed beside the void banner when the note was cancelled.
+	VoidReason string
 }
 
-// FromCreditNote builds a credit-note Document.
+// FromCreditNote builds a counter-document (credit or debit note).
 //
 // The merchant and the customer come from the invoice the note corrects: a credit
 // note is not a standalone document, it is a correction of a named invoice, and a
@@ -153,26 +166,43 @@ type CreditNoteData struct {
 // The base snapshot supplies that, and it is why a credit note needs no separate
 // customer snapshot of its own.
 //
-// The note renders as a single negative line. One line is honest: a credit note
-// corrects an amount, not a list of prices, and inventing per-item negatives from
-// the original invoice would state a breakdown the credit never asserted.
+// The note renders as a single line. One line is honest: an adjustment note corrects
+// an amount, not a list of prices, and inventing per-item negatives from the
+// original invoice would state a breakdown the credit never asserted. A debit note
+// carries the same amounts with the opposite sign.
 func FromCreditNote(base billing.Snapshot, cn CreditNoteData) Document {
+	kind := cn.Kind
+	if kind != KindDebitNote {
+		kind = KindCreditNote
+	}
 	meta := Meta{
 		Number:        cn.Number,
 		Status:        cn.Status,
 		IssuedAt:      cn.IssuedAt,
 		InvoiceNumber: cn.InvoiceNumber,
+		VoidReason:    cn.VoidReason,
 	}
-	netMinor := cn.TotalMinor - cn.TaxMinor
-	desc := "Credit against invoice " + meta.InvoiceNumber
+	// The sign of every amount follows the direction of the adjustment. A debit note is a
+	// positive charge; a credit note is a negative one. Doing it here rather than in the
+	// caller means the renderer's sign and the ledger's direction cannot disagree.
+	sign := int64(-1)
+	verb := "Credit"
+	if kind == KindDebitNote {
+		sign = 1
+		verb = "Debit"
+	}
+	netMinor := (cn.TotalMinor - cn.TaxMinor) * sign
+	totalMinor := cn.TotalMinor * sign
+	taxMinor := cn.TaxMinor * sign
+	desc := verb + " against invoice " + meta.InvoiceNumber
 	if meta.InvoiceNumber == "" {
-		desc = "Credit"
+		desc = verb
 	}
 	if cn.Reason != "" {
 		desc += " — " + cn.Reason
 	}
 	return Document{
-		Kind:     KindCreditNote,
+		Kind:     kind,
 		Meta:     meta,
 		Currency: cn.Currency,
 		Merchant: base.Merchant,
@@ -183,15 +213,15 @@ func FromCreditNote(base billing.Snapshot, cn CreditNoteData) Document {
 		Lines: []Line{{
 			Description:   desc,
 			QuantityMilli: 1000,
-			UnitMinor:     -cn.TotalMinor,
-			NetMinor:      -netMinor,
-			TaxMinor:      -cn.TaxMinor,
-			TotalMinor:    -cn.TotalMinor,
+			UnitMinor:     totalMinor,
+			NetMinor:      netMinor,
+			TaxMinor:      taxMinor,
+			TotalMinor:    totalMinor,
 		}},
 		Totals: Totals{
-			SubtotalMinor: -netMinor,
-			TaxMinor:      -cn.TaxMinor,
-			TotalMinor:    -cn.TotalMinor,
+			SubtotalMinor: netMinor,
+			TaxMinor:      taxMinor,
+			TotalMinor:    totalMinor,
 		},
 		TaxEvidence: base.TaxEvidence,
 	}
@@ -263,8 +293,15 @@ func newRenderer(doc Document) *renderer {
 }
 
 // accent returns the document accent, and whether one is configured.
+//
+// The brand wins when both are set: the tenant configured their own colour, and a theme is
+// a house style rather than a licence to override it. The template accent is what a theme
+// supplies on an installation whose brand left the colour alone.
 func (r *renderer) accent() (brand.Colour, bool) {
 	if r.doc.Brand.Accent.IsZero() {
+		if c, ok := r.doc.Template.accentOverride(false); ok {
+			return c, true
+		}
 		return brand.Colour{}, false
 	}
 	return r.doc.Brand.Accent, true
@@ -368,15 +405,12 @@ func (r *renderer) drawHeader() {
 	} else if r.doc.Meta.Proforma {
 		rows = append(rows, [2]string{"Number", "not yet assigned"})
 	}
-	if r.doc.Meta.InvoiceNumber != "" && r.doc.Kind == KindCreditNote {
+	if r.doc.Meta.InvoiceNumber != "" &&
+		(r.doc.Kind == KindCreditNote || r.doc.Kind == KindDebitNote) {
 		rows = append(rows, [2]string{"Invoice", r.doc.Meta.InvoiceNumber})
 	}
 	if r.doc.Meta.IssuedAt != nil {
-		label := "Issued"
-		if r.doc.Kind == KindCreditNote {
-			label = "Issued"
-		}
-		rows = append(rows, [2]string{label, formatDate(*r.doc.Meta.IssuedAt)})
+		rows = append(rows, [2]string{"Issued", formatDate(*r.doc.Meta.IssuedAt)})
 	}
 	if r.doc.Meta.DueAt != nil {
 		rows = append(rows, [2]string{"Due", formatDate(*r.doc.Meta.DueAt)})
@@ -421,15 +455,7 @@ func (r *renderer) drawHeader() {
 
 // title is the document heading.
 func (r *renderer) title() string {
-	switch r.doc.Kind {
-	case KindCreditNote:
-		return "CREDIT NOTE"
-	default:
-		if r.doc.Meta.Proforma {
-			return "PROFORMA INVOICE"
-		}
-		return "INVOICE"
-	}
+	return r.doc.Template.titleFor(r.doc.Kind, r.doc.Meta.Proforma)
 }
 
 // maxAddressLines bounds a letterhead or address block. It is a limit on a field
@@ -468,7 +494,7 @@ func (r *renderer) drawParties() {
 	const leftWidth = 260.0
 	startY := r.y
 
-	r.cur.text(contentLeft, r.y, "Bill to", HelveticaBold, smallSize)
+	r.cur.text(contentLeft, r.y, r.doc.Template.billTo(), HelveticaBold, smallSize)
 	r.y -= lineGap + 1
 
 	c := r.doc.Customer
@@ -620,13 +646,7 @@ func (r *renderer) drawTotals() {
 	r.cur.line(labelLeft, y+8, valueRight, y+8, 0.8)
 	y -= 4
 
-	label := "Total"
-	if r.doc.Kind == KindCreditNote {
-		label = "Total credited"
-	}
-	if r.doc.Meta.Proforma {
-		label = "Total due"
-	}
+	label := r.doc.Template.totalLabelFor(r.doc.Kind, r.doc.Meta.Proforma)
 	r.cur.text(labelLeft, y, label, HelveticaBold, 11)
 	r.cur.textRight(valueRight, y, FormatAmount(r.doc.Totals.TotalMinor, r.doc.Currency), HelveticaBold, 11)
 	r.y = y - 20
@@ -767,6 +787,12 @@ func (r *renderer) drawFooter(page *canvas, n, total int) {
 	left := r.footerText()
 	page.text(contentLeft, y, truncate(Helvetica, 7.5, left, contentWidth-120), Helvetica, 7.5)
 	page.textRight(contentRight, y, fmt.Sprintf("Page %d of %d", n, total), Helvetica, 7.5)
+	// A theme's footer note sits above the identity line rather than replacing it: the
+	// identity is the page's legal trace, and a decoration must not be able to remove it.
+	if note := r.doc.Template.footerNote(); note != "" {
+		page.text(contentLeft, y+11,
+			truncate(Helvetica, 7.5, note, contentWidth-120), Helvetica, 7.5)
+	}
 }
 
 // footerText is the identifying line at the bottom of every page.
@@ -775,6 +801,8 @@ func (r *renderer) footerText() string {
 	switch {
 	case r.doc.Kind == KindCreditNote:
 		parts = append(parts, "Credit note")
+	case r.doc.Kind == KindDebitNote:
+		parts = append(parts, "Debit note")
 	case r.doc.Meta.Proforma:
 		parts = append(parts, "Proforma invoice")
 	default:

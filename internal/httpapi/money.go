@@ -324,6 +324,19 @@ func (s *Server) handleIssueCreditNote(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := userFrom(r.Context())
 
+	// The note's number format is a setting (INV-18), read before the issue so a malformed
+	// pattern is a client-visible error rather than a half-written note. The read is its own
+	// small transaction; Issue opens the one that writes.
+	var series creditnote.Series
+	if err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		resolved, serr := s.adjustSeries(ctx, tx, creditnote.KindCredit)
+		series = resolved
+		return serr
+	}); err != nil {
+		s.staffError(w, r, err)
+		return
+	}
+
 	note, err := creditnote.New(s.pool).WithAuditor(s.auditorFor(r, req.Reason)).
 		Issue(r.Context(), creditnote.IssueRequest{
 			InvoiceID:   invoiceID,
@@ -331,6 +344,8 @@ func (s *Server) handleIssueCreditNote(w http.ResponseWriter, r *http.Request) {
 			TaxMinor:    req.TaxMinor,
 			Reason:      req.Reason,
 			IssuedBy:    user.ID,
+			Kind:        creditnote.KindCredit,
+			Series:      &series,
 		})
 	switch {
 	case err == nil:

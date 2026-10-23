@@ -21,7 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/catalyst/billing/internal/audit"
@@ -40,6 +40,14 @@ const (
 	StatusVoid    = "void"
 )
 
+// Kinds. A credit note reduces what the customer owes; a debit note increases it. They
+// share one table and one numbering apparatus because they are the same document with
+// opposite signs, and `kind` is frozen by the 0065 trigger once the note has a number.
+const (
+	KindCredit = "credit"
+	KindDebit  = "debit"
+)
+
 var (
 	// ErrNotFound is returned for an unknown credit note or invoice.
 	ErrNotFound = errors.New("creditnote: not found")
@@ -49,18 +57,58 @@ var (
 	ErrInsufficientCredit = errors.New("creditnote: insufficient customer credit")
 	// ErrNotIssuable is returned when the invoice is not in a state that accepts a credit.
 	ErrNotIssuable = errors.New("creditnote: this invoice cannot be credited")
+	// ErrInvalidKind is returned for a kind that is neither a credit nor a debit.
+	ErrInvalidKind = errors.New("creditnote: unknown adjustment kind")
+	// ErrNotVoidable is returned when the note has already been spent or cancelled.
+	ErrNotVoidable = errors.New("creditnote: this note cannot be voided")
+	// ErrAlreadyVoid is returned for a second void of the same note.
+	ErrAlreadyVoid = errors.New("creditnote: this note is already void")
 )
+
+// Series is a document-number series: which persisted sequence, and how to render it.
+//
+// It is the same shape as billing.NumberSeries and has its own because a credit note is not
+// an invoice and this package does not otherwise depend on the billing domain. Suffix exists
+// so a configured pattern such as "{number}/{year}" renders here too (INV-03/INV-18).
+type Series struct {
+	Scope  string
+	Prefix string
+	Suffix string
+	Width  int
+}
 
 // CreditSeries is the number series credit notes use.
 //
 // It is separate from the invoice series on purpose: a customer's paperwork, and a tax filing, refer
 // to "invoice numbers" and "credit note numbers" as two sequences, and interleaving them would make
 // both harder to audit.
-var CreditSeries = struct {
-	Scope  string
-	Prefix string
-	Width  int
-}{Scope: "credit_note", Prefix: "CN-", Width: 6}
+var CreditSeries = Series{Scope: "credit_note", Prefix: "CN-", Width: 6}
+
+// DebitSeries is the number series debit notes use (INV-10). It mirrors CreditSeries for the
+// same reason: a debit note is quoted back to us on its own, and a shared sequence would make
+// "DN-000004" arrive as "CN-000004".
+var DebitSeries = Series{Scope: "debit_note", Prefix: "DN-", Width: 6}
+
+// Render formats the nth number in the series.
+func (s Series) Render(n int64) string {
+	width := s.Width
+	if width <= 0 {
+		width = 6
+	}
+	return s.Prefix + fmt.Sprintf("%0*d", width, n) + s.Suffix
+}
+
+// seriesFor returns the series a kind allocates from.
+func SeriesFor(kind string) (Series, error) {
+	switch kind {
+	case KindCredit, "":
+		return CreditSeries, nil
+	case KindDebit:
+		return DebitSeries, nil
+	default:
+		return Series{}, fmt.Errorf("%w: %q", ErrInvalidKind, kind)
+	}
+}
 
 // Service issues credit notes and applies credit.
 type Service struct {
@@ -84,18 +132,27 @@ func New(pool *store.Pool) *Service {
 	return &Service{pool: pool, Now: func() time.Time { return time.Now().UTC() }}
 }
 
-// IssueRequest describes a credit note.
+// IssueRequest describes a credit or debit note.
 type IssueRequest struct {
 	InvoiceID string
-	// AmountMinor is the total credit. It must not exceed what remains on the invoice.
+	// AmountMinor is the total adjustment. A credit must not exceed what remains on the
+	// invoice; a debit has no such ceiling because it is charging more, not giving back.
 	AmountMinor int64
-	// TaxMinor is the tax share of the credit, which posts to tax_payable rather than revenue.
+	// TaxMinor is the tax share of the adjustment, which posts to tax_payable rather than
+	// revenue. On a credit it reduces the liability, on a debit it increases it.
 	TaxMinor int64
 	Reason   string
 	IssuedBy string
+	// Kind is KindCredit (the default when empty) or KindDebit.
+	Kind string
+	// Series, when set, is the numbering the caller read from settings. Nil means the
+	// package default for the kind, which is what a caller with no settings access gets.
+	Series *Series
 }
 
-// CreditNote is an issued counter-document.
+// CreditNote is an issued counter-document. Despite the name it carries debit notes too:
+// the table is one, and two nearly-identical types would be a place for the sign to get
+// lost.
 type CreditNote struct {
 	ID         string
 	Number     string
@@ -106,6 +163,11 @@ type CreditNote struct {
 	TaxMinor   int64
 	Reason     string
 	Status     string
+	// Kind is KindCredit or KindDebit.
+	Kind string
+	// VoidReason and VoidedAt are set when the note was cancelled.
+	VoidReason string
+	VoidedAt   *time.Time
 	IssuedAt   *time.Time
 	CreatedAt  time.Time
 }
@@ -133,9 +195,21 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (CreditNote, erro
 	if req.Reason == "" {
 		return CreditNote{}, errors.New("creditnote: a reason is required")
 	}
+	kind := req.Kind
+	if kind == "" {
+		kind = KindCredit
+	}
+	fallback, err := SeriesFor(kind)
+	if err != nil {
+		return CreditNote{}, err
+	}
+	series := fallback
+	if req.Series != nil {
+		series = *req.Series
+	}
 
 	var out CreditNote
-	err := s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+	err = s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var (
 			customerID, currency, status string
 			totalMinor, paidMinor        int64
@@ -163,25 +237,28 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (CreditNote, erro
 
 		// What is left to credit is the invoice total minus the credits already issued against it.
 		// It is not reduced by payments: a customer can be credited for an amount they paid, and the
-		// refund path is what returns money.
+		// refund path is what returns money. Voided notes do not count: a cancellation gave nothing
+		// back, and a debit note is in the other direction, so neither reduces the room to credit.
 		var credited int64
 		if err := tx.QueryRow(ctx, `
 			SELECT COALESCE(SUM(total_minor), 0) FROM credit_notes
-			WHERE invoice_id = $1 AND status IN ('issued', 'applied')`,
+			WHERE invoice_id = $1 AND status IN ('issued', 'applied') AND kind = 'credit'`,
 			req.InvoiceID).Scan(&credited); err != nil {
 			return fmt.Errorf("creditnote: sum existing credits: %w", err)
 		}
-		remaining := totalMinor - credited
-		if req.AmountMinor > remaining {
-			return fmt.Errorf("%w: %s requested, %s remaining",
-				ErrExceedsInvoice,
-				money.New(req.AmountMinor, cur).Format(),
-				money.New(remaining, cur).Format())
+		if kind == KindCredit {
+			remaining := totalMinor - credited
+			if req.AmountMinor > remaining {
+				return fmt.Errorf("%w: %s requested, %s remaining",
+					ErrExceedsInvoice,
+					money.New(req.AmountMinor, cur).Format(),
+					money.New(remaining, cur).Format())
+			}
 		}
 
 		// The number is allocated inside this transaction from the same persisted sequence the
-		// issuer uses, so a concurrent credit note cannot take the same number.
-		number, err := allocateNumber(ctx, tx)
+		// issuer uses, so a concurrent note cannot take the same number.
+		number, err := allocateNumber(ctx, tx, series)
 		if err != nil {
 			return err
 		}
@@ -192,12 +269,13 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (CreditNote, erro
 		)
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO credit_notes (number, customer_id, invoice_id, currency, total_minor,
-				tax_minor, reason, status, issued_at, snapshot, created_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, 'issued', now(), $8, $9)
+				tax_minor, reason, status, kind, issued_at, snapshot, created_by)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'issued', $8, now(), $9, $10)
 			RETURNING id, issued_at`,
 			number, customerID, req.InvoiceID, currency, req.AmountMinor, req.TaxMinor,
-			req.Reason, map[string]any{
+			req.Reason, kind, map[string]any{
 				"schema_version":  1,
+				"kind":            kind,
 				"invoice_id":      req.InvoiceID,
 				"invoice_total":   totalMinor,
 				"credited_before": credited,
@@ -208,33 +286,17 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (CreditNote, erro
 			return fmt.Errorf("creditnote: insert: %w", err)
 		}
 
-		// Debit revenue (and tax payable), credit the customer's credit balance. The tax share is
-		// separated because a tax authority cares about the difference: crediting revenue for the tax
-		// would understate what is owed.
-		revenueMinor := req.AmountMinor - req.TaxMinor
-		debits := []ledger.Entry{{Account: ledger.AccountRevenue, Amount: money.New(revenueMinor, cur)}}
-		if req.TaxMinor > 0 {
-			debits = append(debits,
-				ledger.Entry{Account: ledger.AccountTaxPayable, Amount: money.New(req.TaxMinor, cur)})
-		}
-		if _, _, err := ledger.Post(ctx, tx, ledger.Posting{
-			Kind:        ledger.KindCreditNote,
-			Reference:   ledger.RefRefund, // credit notes share the "refund" reference family
-			ReferenceID: id,
-			CustomerID:  customerID,
-			Currency:    cur,
-			Debits:      debits,
-			Credits: []ledger.Entry{{
-				Account: ledger.AccountCredit,
-				Amount:  money.New(req.AmountMinor, cur),
-			}},
+		if err := postAdjustment(ctx, tx, postInput{
+			Kind: kind, NoteID: id, CustomerID: customerID, Cur: cur,
+			AmountMinor: req.AmountMinor, TaxMinor: req.TaxMinor,
 		}); err != nil {
-			return fmt.Errorf("creditnote: post: %w", err)
+			return err
 		}
 
 		changes := map[string]any{
 			"invoice_id": req.InvoiceID,
 			"number":     number,
+			"kind":       kind,
 			"amount":     req.AmountMinor,
 			"tax":        req.TaxMinor,
 			"reason":     req.Reason,
@@ -257,7 +319,7 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (CreditNote, erro
 		out = CreditNote{
 			ID: id, Number: number, CustomerID: customerID, InvoiceID: req.InvoiceID,
 			Currency: currency, TotalMinor: req.AmountMinor, TaxMinor: req.TaxMinor,
-			Reason: req.Reason, Status: StatusIssued, IssuedAt: &issuedAt,
+			Reason: req.Reason, Status: StatusIssued, Kind: kind, IssuedAt: &issuedAt,
 		}
 		return nil
 	})
@@ -267,32 +329,232 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (CreditNote, erro
 	return out, nil
 }
 
-// allocateNumber consumes the next number in the credit-note series.
+// postInput is what an adjustment posting needs.
+type postInput struct {
+	Kind        string
+	NoteID      string
+	CustomerID  string
+	Cur         money.Currency
+	AmountMinor int64
+	TaxMinor    int64
+	// Voided marks a reversal, which posts the opposite entries under a reference that
+	// says it is a cancellation rather than a second note.
+	Voided bool
+}
+
+// postAdjustment writes the ledger entries for a note (or its cancellation).
+//
+// The direction is the whole point of the kind: a credit note debits revenue and credits the
+// customer's credit balance, because the shop owes them; a debit note does the reverse and
+// creates a receivable. Tax is separated on both sides because a tax authority cares about
+// the difference — booking the tax share as revenue would understate what is owed.
+func postAdjustment(ctx context.Context, tx pgx.Tx, in postInput) error {
+	if in.AmountMinor <= 0 {
+		return errors.New("creditnote: the amount must be positive")
+	}
+	if in.TaxMinor < 0 || in.TaxMinor > in.AmountMinor {
+		return errors.New("creditnote: the tax share must be between zero and the total")
+	}
+	revenueMinor := in.AmountMinor - in.TaxMinor
+	total := money.New(in.AmountMinor, in.Cur)
+	revenue := money.New(revenueMinor, in.Cur)
+	tax := money.New(in.TaxMinor, in.Cur)
+
+	posting := ledger.Posting{
+		CustomerID:  in.CustomerID,
+		Currency:    in.Cur,
+		ReferenceID: in.NoteID,
+	}
+	// The direction is the whole point of the kind: a credit note debits revenue and credits
+	// the customer's credit balance, because the shop owes them; a debit note does the reverse
+	// and creates a receivable. Tax is separated on both sides because a tax authority cares
+	// about the difference — booking the tax share as revenue would understate what is owed.
+	if in.Kind == KindDebit {
+		posting.Kind = ledger.KindAdjustment
+		posting.Reference = ledger.RefDebit
+		posting.Debits = []ledger.Entry{{Account: ledger.AccountReceivable, Amount: total}}
+		posting.Credits = []ledger.Entry{{Account: ledger.AccountRevenue, Amount: revenue}}
+		if in.TaxMinor > 0 {
+			posting.Credits = append(posting.Credits,
+				ledger.Entry{Account: ledger.AccountTaxPayable, Amount: tax})
+		}
+	} else {
+		posting.Kind = ledger.KindCreditNote
+		posting.Reference = ledger.RefCredit
+		posting.Debits = []ledger.Entry{{Account: ledger.AccountRevenue, Amount: revenue}}
+		if in.TaxMinor > 0 {
+			posting.Debits = append(posting.Debits,
+				ledger.Entry{Account: ledger.AccountTaxPayable, Amount: tax})
+		}
+		posting.Credits = []ledger.Entry{{Account: ledger.AccountCredit, Amount: total}}
+	}
+
+	if in.Voided {
+		// A cancellation is the exact contra posting: whatever the note did, this undoes it.
+		// It gets its own reference type so the (kind, reference, id) uniqueness does not
+		// mistake the reversal for a replay of the note itself and post nothing.
+		posting.Debits, posting.Credits = posting.Credits, posting.Debits
+		posting.Kind = ledger.KindAdjustment
+		if in.Kind == KindDebit {
+			posting.Reference = ledger.RefDebitVoid
+		} else {
+			posting.Reference = ledger.RefCreditVoid
+		}
+	}
+
+	if _, _, err := ledger.Post(ctx, tx, posting); err != nil {
+		return fmt.Errorf("creditnote: post %s: %w", in.Kind, err)
+	}
+	return nil
+}
+
+// allocateNumber consumes the next number in the given series.
 //
 // The UPDATE ... RETURNING is the allocation: two concurrent callers get different numbers because
 // the row lock serialises them, and a rolled-back transaction returns the number to the sequence
 // rather than leaving a gap.
-func allocateNumber(ctx context.Context, tx pgx.Tx) (string, error) {
+func allocateNumber(ctx context.Context, tx pgx.Tx, series Series) (string, error) {
+	if series.Scope == "" {
+		return "", errors.New("creditnote: number series has no scope")
+	}
 	var next int64
 	err := tx.QueryRow(ctx, `
 		INSERT INTO invoice_number_sequences (scope, next_value)
 		VALUES ($1, 2)
 		ON CONFLICT (scope) DO UPDATE
 			SET next_value = invoice_number_sequences.next_value + 1
-		RETURNING next_value - 1`, CreditSeries.Scope).Scan(&next)
+		RETURNING next_value - 1`, series.Scope).Scan(&next)
 	if err != nil {
 		return "", fmt.Errorf("creditnote: allocate number: %w", err)
 	}
-	digits := strconv.FormatInt(next, 10)
-	for len(digits) < CreditSeries.Width {
-		digits = "0" + digits
-	}
-	return CreditSeries.Prefix + digits, nil
+	return series.Render(next), nil
 }
 
 // Get returns one credit note.
 func (s *Service) Get(ctx context.Context, id string) (CreditNote, error) {
 	return scanNote(s.pool.QueryRow(ctx, selectColumns+` WHERE id = $1`, id))
+}
+
+// VoidRequest describes cancelling an adjustment note (ADM-25).
+type VoidRequest struct {
+	ID     string
+	Reason string
+	// VoidedBy is the operator, for the audit row.
+	VoidedBy string
+}
+
+// Void cancels an issued adjustment note and reverses its posting.
+//
+// Three rules make a cancellation safe to offer:
+//
+//  1. Only an `issued` note can be voided. An `applied` credit note has already been spent —
+//     its credit is on an invoice — and un-spending it here would silently un-pay that
+//     invoice. Spending is reversed by the application's own accounting, not by a void.
+//  2. The reversal is a contra posting, never a deletion and never an edit. The subledger is
+//     append-only, so "this note was cancelled" and "this note was never issued" stay two
+//     distinguishable facts, which is what an auditor needs.
+//  3. The status transition and the reversal commit together. A note that reads `void` while
+//     its credit is still spendable would be a balance nobody can reconcile, and the reverse —
+//     a reversal with an active-looking note — would invite a second credit.
+func (s *Service) Void(ctx context.Context, req VoidRequest) (CreditNote, error) {
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		return CreditNote{}, errors.New("creditnote: voiding needs a reason")
+	}
+
+	var out CreditNote
+	err := s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var (
+			status, currency, kind string
+			totalMinor, taxMinor   int64
+			customerID             string
+		)
+		err := tx.QueryRow(ctx, `
+			SELECT status, currency, kind, total_minor, tax_minor, customer_id
+			FROM credit_notes WHERE id = $1 FOR UPDATE`, req.ID).
+			Scan(&status, &currency, &kind, &totalMinor, &taxMinor, &customerID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("creditnote: lock note: %w", err)
+		}
+		switch status {
+		case StatusVoid:
+			return ErrAlreadyVoid
+		case StatusIssued:
+		default:
+			return fmt.Errorf("%w: its status is %s", ErrNotVoidable, status)
+		}
+
+		cur, err := currencyOf(currency)
+		if err != nil {
+			return err
+		}
+		if kind == KindCredit {
+			// Credit that has been spent cannot be un-issued: the invoice it paid would become
+			// unpaid without anybody deciding that. The check is the balance the subledger
+			// reports, not a status column — application is balance-based, so a note's credit
+			// is spent when the customer no longer holds that much of it.
+			available, berr := creditBalance(ctx, tx, customerID, cur)
+			if berr != nil {
+				return berr
+			}
+			if available < totalMinor {
+				return fmt.Errorf("%w: %s of this credit has already been used",
+					ErrNotVoidable,
+					money.New(totalMinor-available, cur).Format())
+			}
+		}
+		if err := postAdjustment(ctx, tx, postInput{
+			Kind: kind, NoteID: req.ID, CustomerID: customerID, Cur: cur,
+			AmountMinor: totalMinor, TaxMinor: taxMinor, Voided: true,
+		}); err != nil {
+			return err
+		}
+
+		// One statement carries the status, the reason and the timestamp so no reader can
+		// observe a cancelled note without its explanation. The 0065 trigger refuses a reason
+		// that arrives without the transition and refuses any change after it.
+		if _, err := tx.Exec(ctx, `
+			UPDATE credit_notes
+			SET status = 'void', void_reason = $2, voided_at = now()
+			WHERE id = $1`, req.ID, reason); err != nil {
+			return fmt.Errorf("creditnote: void: %w", err)
+		}
+
+		changes := map[string]any{
+			"kind":            kind,
+			"reason":          reason,
+			"amount":          totalMinor,
+			"previous_status": status,
+		}
+		if s.auditor != nil {
+			if err := s.auditor.RecordAction(ctx, tx, "credit_note.void", "credit_note", req.ID, changes); err != nil {
+				return err
+			}
+		} else if err := audit.Record(ctx, tx, audit.Event{
+			Actor:      audit.Actor{ID: req.VoidedBy, Kind: audit.ActorUser},
+			Action:     "credit_note.void",
+			TargetType: "credit_note",
+			TargetID:   req.ID,
+			Outcome:    audit.OutcomeSuccess,
+			Changes:    changes,
+		}); err != nil {
+			return err
+		}
+
+		note, err := scanNote(tx.QueryRow(ctx, selectColumns+` WHERE id = $1`, req.ID))
+		if err != nil {
+			return err
+		}
+		out = note
+		return nil
+	})
+	if err != nil {
+		return CreditNote{}, err
+	}
+	return out, nil
 }
 
 // List returns credit notes, newest first.
@@ -558,7 +820,8 @@ func creditBalance(ctx context.Context, tx pgx.Tx, customerID string, cur money.
 
 const selectColumns = `
 	SELECT id, COALESCE(number, ''), customer_id, COALESCE(invoice_id::text, ''), currency,
-	       total_minor, tax_minor, reason, status, issued_at, created_at
+	       total_minor, tax_minor, reason, status, kind, COALESCE(void_reason, ''),
+	       voided_at, issued_at, created_at
 	FROM credit_notes`
 
 type scanner interface{ Scan(...any) error }
@@ -566,7 +829,8 @@ type scanner interface{ Scan(...any) error }
 func scanNote(row scanner) (CreditNote, error) {
 	var c CreditNote
 	err := row.Scan(&c.ID, &c.Number, &c.CustomerID, &c.InvoiceID, &c.Currency, &c.TotalMinor,
-		&c.TaxMinor, &c.Reason, &c.Status, &c.IssuedAt, &c.CreatedAt)
+		&c.TaxMinor, &c.Reason, &c.Status, &c.Kind, &c.VoidReason, &c.VoidedAt,
+		&c.IssuedAt, &c.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CreditNote{}, ErrNotFound
 	}

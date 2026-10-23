@@ -199,6 +199,7 @@ func (s *Server) serveInvoiceDocument(w http.ResponseWriter, r *http.Request, do
 	// colour, the name and the mark.
 	document := invoicepdf.FromInvoice(doc.Snapshot, meta)
 	document.Brand = s.invoiceBrand(r.Context())
+	document.Template = s.invoiceTemplate(r.Context())
 	pdf, err := invoicepdf.Render(document)
 	if err != nil {
 		s.cfg.Logger.ErrorContext(r.Context(), "render invoice pdf", "error", err)
@@ -261,6 +262,8 @@ type creditNoteRow struct {
 	TaxMinor   int64
 	Reason     string
 	Status     string
+	Kind       string
+	VoidReason string
 	IssuedAt   *time.Time
 	CustomerID string
 	Customer   billing.CustomerDetails
@@ -279,8 +282,8 @@ func (s *Server) loadCreditNoteDocument(ctx context.Context, userID, id string) 
 	}
 	query := `
 		SELECT COALESCE(cn.number, ''), COALESCE(cn.invoice_id::text, ''), cn.currency,
-		       cn.total_minor, cn.tax_minor, cn.reason, cn.status, cn.issued_at,
-		       cn.customer_id,
+		       cn.total_minor, cn.tax_minor, cn.reason, cn.status, cn.kind,
+		       COALESCE(cn.void_reason, ''), cn.issued_at, cn.customer_id,
 		       COALESCE(i.snapshot, '{}'::jsonb)
 		FROM credit_notes cn
 		LEFT JOIN invoices i ON i.id = cn.invoice_id`
@@ -302,7 +305,8 @@ func (s *Server) loadCreditNoteDocument(ctx context.Context, userID, id string) 
 	)
 	if err := s.pool.QueryRow(ctx, query, args...).Scan(
 		&out.Number, &out.InvoiceID, &out.Currency, &out.TotalMinor, &out.TaxMinor,
-		&out.Reason, &out.Status, &issuedAt, &out.CustomerID, &rawBase); err != nil {
+		&out.Reason, &out.Status, &out.Kind, &out.VoidReason, &issuedAt,
+		&out.CustomerID, &rawBase); err != nil {
 		return creditNoteRow{}, err
 	}
 	out.IssuedAt = issuedAt
@@ -354,7 +358,11 @@ func (s *Server) serveCreditNoteDocument(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	pdf, err := invoicepdf.Render(withBrand(invoicepdf.FromCreditNote(base, invoicepdf.CreditNoteData{
+	kind := invoicepdf.KindCreditNote
+	if cn.Kind == "debit" {
+		kind = invoicepdf.KindDebitNote
+	}
+	doc := invoicepdf.FromCreditNote(base, invoicepdf.CreditNoteData{
 		Number:        cn.Number,
 		InvoiceNumber: invoiceNumber,
 		IssuedAt:      cn.IssuedAt,
@@ -363,7 +371,11 @@ func (s *Server) serveCreditNoteDocument(w http.ResponseWriter, r *http.Request,
 		TaxMinor:      cn.TaxMinor,
 		Reason:        cn.Reason,
 		Status:        cn.Status,
-	}), s.invoiceBrand(r.Context())))
+		Kind:          kind,
+		VoidReason:    cn.VoidReason,
+	})
+	pdf, err := invoicepdf.Render(withTemplate(withBrand(doc, s.invoiceBrand(r.Context())),
+		s.invoiceTemplate(r.Context())))
 	if err != nil {
 		s.cfg.Logger.ErrorContext(r.Context(), "render credit note pdf", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "render_failed",
@@ -380,6 +392,29 @@ func (s *Server) serveCreditNoteDocument(w http.ResponseWriter, r *http.Request,
 // note would be a document a customer receives unbranded and cannot explain.
 func withBrand(doc invoicepdf.Document, b invoicepdf.Brand) invoicepdf.Document {
 	doc.Brand = b
+	return doc
+}
+
+// invoiceTemplate reads the theme-supplied PDF presentation (INV-15).
+//
+// A malformed template is a missing template, not a failed document: a theme's JSON must not
+// be able to stop a customer downloading the invoice they are being asked to pay. It is
+// logged, because a template that silently does nothing is a theme bug nobody can see.
+func (s *Server) invoiceTemplate(ctx context.Context) invoicepdf.Template {
+	if s.pool == nil {
+		return invoicepdf.Template{}
+	}
+	tpl, err := invoicepdf.LoadTemplate(ctx, s.pool)
+	if err != nil {
+		s.cfg.Logger.ErrorContext(ctx, "read the invoice PDF template; using the built-in layout",
+			"error", err)
+	}
+	return tpl
+}
+
+// withTemplate attaches the theme's presentation to a document.
+func withTemplate(doc invoicepdf.Document, t invoicepdf.Template) invoicepdf.Document {
+	doc.Template = t
 	return doc
 }
 

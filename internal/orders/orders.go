@@ -31,6 +31,7 @@ import (
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/calendar"
 	"github.com/catalyst/billing/internal/catalog"
+	"github.com/catalyst/billing/internal/invoicepdf"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/jackc/pgx/v5"
 )
@@ -182,8 +183,18 @@ func (s *Service) Create(ctx context.Context, tx pgx.Tx, req Request) (Result, e
 	if req.Quantity < 1 || req.Quantity > maxQuantity {
 		return Result{}, ErrInvalidQuantity
 	}
+	// The number format is an operator setting (INV-03). An empty series means "the
+	// configured one"; a caller that passes a series explicitly (a test, an import) keeps it.
 	if req.Series.Scope == "" {
-		req.Series = billing.DefaultSeries
+		numbering, err := invoicepdf.LoadNumbering(ctx, tx)
+		if err != nil {
+			return Result{}, err
+		}
+		series, err := numbering.InvoiceSeries(req.Now)
+		if err != nil {
+			return Result{}, err
+		}
+		req.Series = series
 	}
 	if req.Now.IsZero() {
 		req.Now = time.Now().UTC()

@@ -16,6 +16,7 @@ import (
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/portal"
+	"github.com/catalyst/billing/internal/settings"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -594,6 +595,11 @@ type createInvoiceRequest struct {
 	DueInDays int                  `json:"due_in_days"`
 	Lines     []invoiceLineRequest `json:"lines"`
 	Memo      string               `json:"memo"`
+	// SendEmail asks for the "your invoice is ready" mail when the document is issued now.
+	// Nil means "the installation's default" (`invoices.email_on_issue`, on unless turned
+	// off), which is what a client that knows nothing about the setting sends (INV-14,
+	// ADM-31).
+	SendEmail *bool `json:"send_email"`
 }
 
 func (s *Server) handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
@@ -640,17 +646,24 @@ func (s *Server) handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dueInDays := req.DueInDays
-	if dueInDays <= 0 {
-		dueInDays = 30
-	}
-
 	var (
 		invoiceID string
 		number    string
 		status    string
 	)
 	err = s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		// The payment term and the number format are read inside the transaction that issues
+		// (INV-03, INV-17): they are operator settings, so a hard-coded 30 days or the
+		// compiled-in series here would be the one path that ignored them.
+		dueInDays := req.DueInDays
+		if dueInDays <= 0 {
+			dueInDays = settings.InvoiceDueDays(ctx, tx)
+		}
+		series, err := s.invoiceSeries(ctx, tx)
+		if err != nil {
+			return err
+		}
+
 		lines := make([]billing.Line, 0, len(req.Lines))
 		for _, line := range req.Lines {
 			var productID, versionID *string
@@ -691,7 +704,7 @@ func (s *Server) handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 			Customer:   customer,
 			Terms:      s.terms,
 			DueAt:      s.now().AddDate(0, 0, dueInDays),
-			Series:     s.series,
+			Series:     series,
 		}
 
 		id, _, _, err := s.issuer.CreateDraft(ctx, tx, issueReq)
@@ -701,15 +714,19 @@ func (s *Server) handleCreateInvoice(w http.ResponseWriter, r *http.Request) {
 		invoiceID, status = id, "draft"
 
 		if req.IssueNow {
-			issued, err := s.issuer.Issue(ctx, tx, id, s.series)
+			issued, err := s.issuer.Issue(ctx, tx, id, series)
 			if err != nil {
 				return err
 			}
 			number, status = issued.Number, "open"
-			// Queue the notification in the same transaction: a crash between issuing and
-			// mailing must not lose the mail, and a retry must not send it twice.
-			if err := s.queueInvoiceNotification(ctx, tx, id, issued.Number,
-				issued.Totals.Total, issueReq.DueAt); err != nil {
+			// The mail is queued in the same transaction as the number: a crash between
+			// issuing and mailing must not lose it, and a retry must not send it twice.
+			if s.issueMailsCustomer(ctx, tx, req.SendEmail) {
+				if err := s.queueInvoiceNotification(ctx, tx, id, issued.Number,
+					issued.Totals.Total, issueReq.DueAt); err != nil {
+					return err
+				}
+			} else if err := s.suppressInvoiceNotification(ctx, tx, id, issued.Number); err != nil {
 				return err
 			}
 		}
@@ -791,6 +808,18 @@ func (s *Server) handleIssueInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var req struct {
+		SendEmail *bool `json:"send_email"`
+	}
+	// An empty body means "publish and mail by default", which is the button an operator
+	// presses most often; ContentLength -1 may still carry a body, so only a definite zero
+	// skips decoding.
+	if r.ContentLength != 0 {
+		if !s.decodeJSON(w, r, &req, 4<<10) {
+			return
+		}
+	}
+
 	var (
 		number string
 		total  money.Amount
@@ -809,7 +838,11 @@ func (s *Server) handleIssueInvoice(w http.ResponseWriter, r *http.Request) {
 			return errNotDraft
 		}
 
-		issued, err := s.issuer.Issue(ctx, tx, id, s.series)
+		series, err := s.invoiceSeries(ctx, tx)
+		if err != nil {
+			return err
+		}
+		issued, err := s.issuer.Issue(ctx, tx, id, series)
 		if err != nil {
 			return err
 		}
@@ -819,12 +852,19 @@ func (s *Server) handleIssueInvoice(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("staff: read invoice due date: %w", err)
 		}
 		dueAt = due
-		if err := s.queueInvoiceNotification(ctx, tx, id, issued.Number, issued.Totals.Total, due); err != nil {
+		mailsCustomer := s.issueMailsCustomer(ctx, tx, req.SendEmail)
+		if mailsCustomer {
+			if err := s.queueInvoiceNotification(ctx, tx, id, issued.Number,
+				issued.Totals.Total, due); err != nil {
+				return err
+			}
+		} else if err := s.suppressInvoiceNotification(ctx, tx, id, issued.Number); err != nil {
 			return err
 		}
 		return audit.Record(ctx, tx, s.auditEvent(r, "invoice.issue", "invoice", id,
 			audit.OutcomeSuccess).WithChanges(map[string]any{
-			"number": issued.Number,
+			"number":     issued.Number,
+			"send_email": mailsCustomer,
 		}))
 	})
 	if err != nil {

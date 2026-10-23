@@ -221,7 +221,8 @@ type RefundRow struct {
 	FinishedAt       *time.Time
 }
 
-// CreditNoteRow is one credit note.
+// CreditNoteRow is one adjustment note. The name predates debit notes; the table is shared
+// and `Kind` is what tells the direction apart (INV-10).
 type CreditNoteRow struct {
 	ID         string
 	Number     string
@@ -231,6 +232,11 @@ type CreditNoteRow struct {
 	TaxMinor   int64
 	Reason     string
 	Status     string
+	// Kind is "credit" or "debit".
+	Kind string
+	// VoidReason and VoidedAt are set when the note was cancelled.
+	VoidReason string
+	VoidedAt   *time.Time
 	IssuedAt   *time.Time
 	CreatedAt  time.Time
 }
@@ -442,7 +448,8 @@ func (s *Service) refundsForInvoice(ctx context.Context, invoiceID string) ([]Re
 func (s *Service) creditNotesForInvoice(ctx context.Context, invoiceID string) ([]CreditNoteRow, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, COALESCE(number, ''), COALESCE(invoice_id::text, ''), currency,
-		       total_minor, tax_minor, reason, status, issued_at, created_at
+		       total_minor, tax_minor, reason, status, kind, COALESCE(void_reason, ''),
+		       voided_at, issued_at, created_at
 		FROM credit_notes WHERE invoice_id = $1 ORDER BY created_at DESC`, invoiceID)
 	if err != nil {
 		return nil, fmt.Errorf("staff: list credit notes: %w", err)
@@ -453,8 +460,8 @@ func (s *Service) creditNotesForInvoice(ctx context.Context, invoiceID string) (
 	for rows.Next() {
 		var row CreditNoteRow
 		if err := rows.Scan(&row.ID, &row.Number, &row.InvoiceID, &row.Currency,
-			&row.TotalMinor, &row.TaxMinor, &row.Reason, &row.Status, &row.IssuedAt,
-			&row.CreatedAt); err != nil {
+			&row.TotalMinor, &row.TaxMinor, &row.Reason, &row.Status, &row.Kind,
+			&row.VoidReason, &row.VoidedAt, &row.IssuedAt, &row.CreatedAt); err != nil {
 			return nil, fmt.Errorf("staff: scan credit note: %w", err)
 		}
 		out = append(out, row)

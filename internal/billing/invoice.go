@@ -172,6 +172,10 @@ type InvoiceNumber struct {
 	// Prefix and padding are part of the series definition, not the value.
 	Prefix string
 	Width  int
+	// Suffix is the text a configured pattern puts after the digits, e.g. "/2026" in
+	// "INV-000042/2026". It is empty for the default series, which is what keeps the
+	// rendered number of an unconfigured installation unchanged.
+	Suffix string
 }
 
 // Format renders the number, e.g. "INV-000042".
@@ -180,13 +184,17 @@ func (n InvoiceNumber) Format() string {
 	if width <= 0 {
 		width = 6
 	}
-	return fmt.Sprintf("%s%0*d", n.Prefix, width, n.Value)
+	return fmt.Sprintf("%s%0*d%s", n.Prefix, width, n.Value, n.Suffix)
 }
 
 // NumberSeries allocates invoice numbers from a persisted sequence.
 type NumberSeries struct {
 	Scope  string
 	Prefix string
+	// Suffix is appended after the zero-padded value. A pattern such as
+	// "{number}/{year}" needs it, and without it that pattern cannot be expressed at all:
+	// Format would have nowhere to put the trailing text.
+	Suffix string
 	Width  int
 }
 
@@ -212,7 +220,8 @@ func (s NumberSeries) Allocate(ctx context.Context, tx pgx.Tx) (InvoiceNumber, e
 	if err != nil {
 		return InvoiceNumber{}, fmt.Errorf("billing: allocate invoice number: %w", err)
 	}
-	return InvoiceNumber{Scope: s.Scope, Value: value, Prefix: s.Prefix, Width: s.Width}, nil
+	return InvoiceNumber{Scope: s.Scope, Value: value, Prefix: s.Prefix, Width: s.Width,
+		Suffix: s.Suffix}, nil
 }
 
 // IssueRequest is everything needed to turn a draft into an issued invoice.
@@ -258,33 +267,66 @@ func NewIssuer(p Pricer) *Issuer { return &Issuer{pricer: p} }
 // before the document exists in the legal sense. The moment it is issued it
 // becomes immutable.
 func (s *Issuer) CreateDraft(ctx context.Context, tx pgx.Tx, req IssueRequest) (string, Totals, Snapshot, error) {
+	cur, results, snap, err := s.prepare(ctx, req)
+	if err != nil {
+		return "", Totals{}, Snapshot{}, err
+	}
+	totals := snap.Totals
+
+	var invoiceID string
+	err = tx.QueryRow(ctx, `
+		INSERT INTO invoices (customer_id, order_id, subscription_id, period_key, status, currency,
+			subtotal_minor, tax_minor, total_minor, due_at, snapshot)
+		VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $8, $9, $10)
+		RETURNING id`,
+		req.CustomerID, nullable(req.OrderID), nullable(req.SubscriptionID), nullable(req.PeriodKey),
+		cur.Code(), totals.Subtotal.Minor(), totals.Tax.Minor(), totals.Total.Minor(),
+		req.DueAt, snap,
+	).Scan(&invoiceID)
+	if err != nil {
+		return "", Totals{}, Snapshot{}, fmt.Errorf("billing: insert draft invoice: %w", err)
+	}
+
+	if err := insertLines(ctx, tx, invoiceID, results); err != nil {
+		return "", Totals{}, Snapshot{}, err
+	}
+
+	return invoiceID, totals, snap, nil
+}
+
+// prepare validates the request, prices it and builds the snapshot a draft stores.
+//
+// It is shared by CreateDraft and UpdateDraft so that a draft edited a week after it was
+// created is priced by exactly the same rules as one created today: two code paths that
+// price the same lines differently is how a draft turns into a document nobody can explain.
+func (s *Issuer) prepare(ctx context.Context, req IssueRequest) (money.Currency, []LineResult, Snapshot, error) {
 	if req.CustomerID == "" {
-		return "", Totals{}, Snapshot{}, fmt.Errorf("%w: missing customer", ErrInvalidInvoice)
+		return money.Currency{}, nil, Snapshot{}, fmt.Errorf("%w: missing customer", ErrInvalidInvoice)
 	}
 	if len(req.Lines) == 0 {
-		return "", Totals{}, Snapshot{}, fmt.Errorf("%w: no lines", ErrInvalidInvoice)
+		return money.Currency{}, nil, Snapshot{}, fmt.Errorf("%w: no lines", ErrInvalidInvoice)
 	}
 
 	cur := req.Lines[0].UnitPrice.Currency()
 	if !cur.IsValid() {
-		return "", Totals{}, Snapshot{}, fmt.Errorf("%w: line has no currency", ErrInvalidInvoice)
+		return money.Currency{}, nil, Snapshot{}, fmt.Errorf("%w: line has no currency", ErrInvalidInvoice)
 	}
 	for i, l := range req.Lines {
 		if l.Description == "" {
-			return "", Totals{}, Snapshot{}, fmt.Errorf("%w: line %d has no description", ErrInvalidInvoice, i)
+			return money.Currency{}, nil, Snapshot{}, fmt.Errorf("%w: line %d has no description", ErrInvalidInvoice, i)
 		}
 		if l.QuantityMilli <= 0 {
-			return "", Totals{}, Snapshot{}, fmt.Errorf("%w: line %d has non-positive quantity", ErrInvalidInvoice, i)
+			return money.Currency{}, nil, Snapshot{}, fmt.Errorf("%w: line %d has non-positive quantity", ErrInvalidInvoice, i)
 		}
 		if !l.UnitPrice.Currency().Equal(cur) {
-			return "", Totals{}, Snapshot{}, fmt.Errorf("%w: line %d is %s, invoice is %s",
+			return money.Currency{}, nil, Snapshot{}, fmt.Errorf("%w: line %d is %s, invoice is %s",
 				ErrCurrencyMismatch, i, l.UnitPrice.Currency(), cur)
 		}
 	}
 
 	results, totals, evidence, err := s.pricer.Price(ctx, req.Lines, cur)
 	if err != nil {
-		return "", Totals{}, Snapshot{}, err
+		return money.Currency{}, nil, Snapshot{}, err
 	}
 
 	snap := Snapshot{
@@ -301,21 +343,11 @@ func (s *Issuer) CreateDraft(ctx context.Context, tx pgx.Tx, req IssueRequest) (
 		TaxEvidence:     evidence,
 		PriceVersionIDs: req.PriceVersionIDs,
 	}
+	return cur, results, snap, nil
+}
 
-	var invoiceID string
-	err = tx.QueryRow(ctx, `
-		INSERT INTO invoices (customer_id, order_id, subscription_id, period_key, status, currency,
-			subtotal_minor, tax_minor, total_minor, due_at, snapshot)
-		VALUES ($1, $2, $3, $4, 'draft', $5, $6, $7, $8, $9, $10)
-		RETURNING id`,
-		req.CustomerID, nullable(req.OrderID), nullable(req.SubscriptionID), nullable(req.PeriodKey),
-		cur.Code(), totals.Subtotal.Minor(), totals.Tax.Minor(), totals.Total.Minor(),
-		req.DueAt, snap,
-	).Scan(&invoiceID)
-	if err != nil {
-		return "", Totals{}, Snapshot{}, fmt.Errorf("billing: insert draft invoice: %w", err)
-	}
-
+// insertLines writes the priced lines of a document.
+func insertLines(ctx context.Context, tx pgx.Tx, invoiceID string, results []LineResult) error {
 	for i, l := range results {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO invoice_lines (invoice_id, position, description, quantity,
@@ -327,11 +359,10 @@ func (s *Issuer) CreateDraft(ctx context.Context, tx pgx.Tx, req IssueRequest) (
 			l.Net.Minor(), l.TaxRate, l.Tax.Minor(), l.Total.Minor(),
 			l.ProductID, l.PriceVersionID,
 		); err != nil {
-			return "", Totals{}, Snapshot{}, fmt.Errorf("billing: insert invoice line %d: %w", i, err)
+			return fmt.Errorf("billing: insert invoice line %d: %w", i, err)
 		}
 	}
-
-	return invoiceID, totals, snap, nil
+	return nil
 }
 
 // Issue freezes a draft: it allocates the number, records the issuance time,

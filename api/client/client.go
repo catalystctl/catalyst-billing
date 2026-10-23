@@ -807,7 +807,7 @@ func (c *Client) GetEvents(ctx context.Context, query url.Values, body any) (*Re
 
 // GetExtensionsHooks calls GET /api/v1/extensions/hooks.
 //
-// Extension-contributed navigation and service actions
+// Extension-contributed navigation, service actions and staff surfaces
 func (c *Client) GetExtensionsHooks(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/extensions/hooks"
 	return c.do(ctx, "GET", path, query, body, false, false)

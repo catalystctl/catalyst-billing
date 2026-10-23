@@ -118,24 +118,45 @@ func extensionOperations() map[string]Operation {
 		"whose audit row cannot be written is not reported as a success."
 	return map[string]Operation{
 		"GET /api/v1/extensions/hooks": {
-			Summary: "Extension-contributed navigation and service actions",
+			Summary: "Extension-contributed navigation, service actions and staff surfaces",
 			Description: "What the installed extensions would like the panel to show, filtered to " +
 				"the permissions the caller holds. An item whose permission the caller lacks is " +
 				"omitted rather than shown and refused on click. The declarations are data only: " +
 				"an extension never supplies markup, script or a URL to load, so contributing UI " +
 				"does not mean running its code in an operator's session. " +
-				"`Cache-Control: no-store`, because the answer depends on who is asking.",
+				"`Cache-Control: no-store`, because the answer depends on who is asking.\n\n" +
+				"Beyond navigation and service actions, an extension may declare `admin_resources` " +
+				"(additional staff collections to list), `pages` (whole staff screens it provides) and " +
+				"`checkout_config` (fields to collect at checkout). They are additive and each is " +
+				"permission-filtered the same way, so an older client that ignores them still works — " +
+				"a panel whose checkout depends on an extension being installed is a panel that breaks " +
+				"when it is disabled.",
 			Responses: []Response{
 				{
 					Status:      200,
 					Description: "The hooks this caller may use",
 					Schema: map[string]any{
 						"type":     "object",
-						"required": []string{"nav_items", "service_actions"},
+						"required": []string{"nav_items", "service_actions", "admin_resources", "pages", "checkout_config"},
 						"properties": map[string]any{
 							"nav_items": map[string]any{
 								"type":  "array",
 								"items": hookNavItemSchema(),
+							},
+							"admin_resources": map[string]any{
+								"type":        "array",
+								"items":       hookNavItemSchema(),
+								"description": "Staff collections an extension adds. Same shape as a nav item: a label, a path and the permission that gates it.",
+							},
+							"pages": map[string]any{
+								"type":        "array",
+								"items":       hookNavItemSchema(),
+								"description": "Whole staff screens an extension provides, surfaced as navigation entries.",
+							},
+							"checkout_config": map[string]any{
+								"type":        "array",
+								"items":       hookNavItemSchema(),
+								"description": "Fields an extension wants collected at checkout. Empty for every installation with no such extension, which is the common case.",
 							},
 							"service_actions": map[string]any{
 								"type":  "array",

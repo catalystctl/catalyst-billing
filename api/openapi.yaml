@@ -1530,7 +1530,10 @@ paths:
             x-rate-class: ""
     /api/v1/extensions/hooks:
         get:
-            description: 'What the installed extensions would like the panel to show, filtered to the permissions the caller holds. An item whose permission the caller lacks is omitted rather than shown and refused on click. The declarations are data only: an extension never supplies markup, script or a URL to load, so contributing UI does not mean running its code in an operator''s session. `Cache-Control: no-store`, because the answer depends on who is asking.'
+            description: |-
+                What the installed extensions would like the panel to show, filtered to the permissions the caller holds. An item whose permission the caller lacks is omitted rather than shown and refused on click. The declarations are data only: an extension never supplies markup, script or a URL to load, so contributing UI does not mean running its code in an operator's session. `Cache-Control: no-store`, because the answer depends on who is asking.
+
+                Beyond navigation and service actions, an extension may declare `admin_resources` (additional staff collections to list), `pages` (whole staff screens it provides) and `checkout_config` (fields to collect at checkout). They are additive and each is permission-filtered the same way, so an older client that ignores them still works — a panel whose checkout depends on an extension being installed is a panel that breaks when it is disabled.
             operationId: GetExtensionsHooks
             responses:
                 2XX:
@@ -1538,7 +1541,103 @@ paths:
                         application/json:
                             schema:
                                 properties:
+                                    admin_resources:
+                                        description: 'Staff collections an extension adds. Same shape as a nav item: a label, a path and the permission that gates it.'
+                                        items:
+                                            properties:
+                                                extension:
+                                                    description: The extension that declared the item. It is what the client sends back when calling an action of the same extension.
+                                                    type: string
+                                                icon:
+                                                    description: The name of an icon in the panel's own set. Not a URL and not SVG.
+                                                    pattern: ^[a-z0-9][a-z0-9-]*$
+                                                    type: string
+                                                id:
+                                                    description: Stable within the extension. The client keys on `extension` + `id`.
+                                                    type: string
+                                                label:
+                                                    description: Plain text. The client renders it as text, never as markup.
+                                                    type: string
+                                                path:
+                                                    description: An absolute in-panel path, e.g. `/staff/extensions/example-hooks`. It is a path the panel already routes; it is never an external URL and never a scheme such as `javascript:`.
+                                                    type: string
+                                                permission:
+                                                    description: The permission required to see and use the item. It is one of the core's declared permissions; a declaration naming anything else was refused at registration.
+                                                    type: string
+                                            required:
+                                                - extension
+                                                - id
+                                                - label
+                                                - path
+                                                - icon
+                                                - permission
+                                            type: object
+                                        type: array
+                                    checkout_config:
+                                        description: Fields an extension wants collected at checkout. Empty for every installation with no such extension, which is the common case.
+                                        items:
+                                            properties:
+                                                extension:
+                                                    description: The extension that declared the item. It is what the client sends back when calling an action of the same extension.
+                                                    type: string
+                                                icon:
+                                                    description: The name of an icon in the panel's own set. Not a URL and not SVG.
+                                                    pattern: ^[a-z0-9][a-z0-9-]*$
+                                                    type: string
+                                                id:
+                                                    description: Stable within the extension. The client keys on `extension` + `id`.
+                                                    type: string
+                                                label:
+                                                    description: Plain text. The client renders it as text, never as markup.
+                                                    type: string
+                                                path:
+                                                    description: An absolute in-panel path, e.g. `/staff/extensions/example-hooks`. It is a path the panel already routes; it is never an external URL and never a scheme such as `javascript:`.
+                                                    type: string
+                                                permission:
+                                                    description: The permission required to see and use the item. It is one of the core's declared permissions; a declaration naming anything else was refused at registration.
+                                                    type: string
+                                            required:
+                                                - extension
+                                                - id
+                                                - label
+                                                - path
+                                                - icon
+                                                - permission
+                                            type: object
+                                        type: array
                                     nav_items:
+                                        items:
+                                            properties:
+                                                extension:
+                                                    description: The extension that declared the item. It is what the client sends back when calling an action of the same extension.
+                                                    type: string
+                                                icon:
+                                                    description: The name of an icon in the panel's own set. Not a URL and not SVG.
+                                                    pattern: ^[a-z0-9][a-z0-9-]*$
+                                                    type: string
+                                                id:
+                                                    description: Stable within the extension. The client keys on `extension` + `id`.
+                                                    type: string
+                                                label:
+                                                    description: Plain text. The client renders it as text, never as markup.
+                                                    type: string
+                                                path:
+                                                    description: An absolute in-panel path, e.g. `/staff/extensions/example-hooks`. It is a path the panel already routes; it is never an external URL and never a scheme such as `javascript:`.
+                                                    type: string
+                                                permission:
+                                                    description: The permission required to see and use the item. It is one of the core's declared permissions; a declaration naming anything else was refused at registration.
+                                                    type: string
+                                            required:
+                                                - extension
+                                                - id
+                                                - label
+                                                - path
+                                                - icon
+                                                - permission
+                                            type: object
+                                        type: array
+                                    pages:
+                                        description: Whole staff screens an extension provides, surfaced as navigation entries.
                                         items:
                                             properties:
                                                 extension:
@@ -1600,6 +1699,9 @@ paths:
                                 required:
                                     - nav_items
                                     - service_actions
+                                    - admin_resources
+                                    - pages
+                                    - checkout_config
                                 type: object
                     description: The hooks this caller may use
                 "400":
@@ -1641,7 +1743,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: Extension-contributed navigation and service actions
+            summary: Extension-contributed navigation, service actions and staff surfaces
             x-rate-class: read
     /api/v1/i18n/locales:
         get:

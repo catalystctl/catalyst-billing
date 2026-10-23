@@ -89,6 +89,7 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
         { label: "Config options", href: "/config-options", icon: "sliders", permission: "config:write" },
         { label: "Tax rates", href: "/tax-rates", icon: "percent", permission: "tax:write" },
         { label: "Currencies", href: "/currencies", icon: "globe", permission: "currency:write" },
+        { label: "Branding", href: "/branding", icon: "sparkles", permission: "settings:write" },
         { label: "System settings", href: "/settings/system", icon: "settings", permission: "settings:write" },
       ],
     });
@@ -151,6 +152,10 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
           { label: "Security", href: "/portal/security", icon: "shield" },
           { label: "Notifications", href: "/portal/notifications", icon: "radio" },
           { label: "Payment methods", href: "/portal/payment-methods", icon: "card" },
+          // Gated on the permission the endpoint actually declares (customer:read:self), not a
+          // guessed `affiliate:read:self`: a nav entry filtered by an undeclared permission is
+          // hidden from every role, which is a documented trap in docs/reachability.md.
+          { label: "Affiliate", href: "/portal/affiliate", icon: "percent" },
         ],
   });
 

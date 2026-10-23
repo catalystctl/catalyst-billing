@@ -347,26 +347,14 @@ func loadPriceVersion(ctx context.Context, q interface {
 // the same reason they are there: the alternative — sharing one of those, which are unexported in
 // packages this one does not own — would either widen those packages or duplicate the *rule*.
 // Deriving a period from the anchor rather than adding a fixed number of days is what makes
-// month-end and leap-day behaviour correct, and that rule lives in internal/calendar, which is what
-// is called below.
+// month-end and leap-day behaviour correct, and a day-count price ("every 45 days") is counted
+// from the anchor day by the same rule. The rule lives in internal/calendar, which is what is
+// called below, so all four purchase paths agree by construction.
 func periodFor(p priceVersion, now time.Time) (time.Time, time.Time, error) {
-	interval, err := calendar.ParseInterval(p.Interval)
+	period, err := calendar.FirstPeriod(p.Interval, p.AnchorDay, p.Timezone, now)
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("%w: %v", ErrInvalidSchedule, err)
 	}
-	loc, err := time.LoadLocation(p.Timezone)
-	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("%w: unknown timezone %q", ErrInvalidSchedule, p.Timezone)
-	}
-	anchor, err := calendar.NewAnchor(p.AnchorDay, 0, 0)
-	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("%w: %v", ErrInvalidSchedule, err)
-	}
-	schedule, err := calendar.NewSchedule(interval, anchor, loc)
-	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("%w: %v", ErrInvalidSchedule, err)
-	}
-	period := schedule.PeriodAt(now)
 	return period.Start, period.End, nil
 }
 

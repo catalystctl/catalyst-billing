@@ -57,6 +57,17 @@ type Service struct {
 	// server would refuse is a broken promise, so this list is computed from the
 	// same rules the action handlers enforce.
 	Actions []string
+	// CanChange is whether the server would accept a plan change or a config-option change on
+	// this service right now. Both are a re-price of the subscription rather than a field on the
+	// service, so they need a billing schedule and a subscription that is still live.
+	//
+	// It is computed here, next to Actions, for the reason Actions exists: the portal page
+	// renders the change forms only when this is true, and a form the API would refuse with a
+	// 409 after the customer filled it in is the same broken promise as a button that 403s.
+	CanChange bool
+	// ChangeBlockedReason is the sentence to show in place of the change forms when CanChange
+	// is false. Empty when CanChange is true.
+	ChangeBlockedReason string
 }
 
 // Customer is the billing identity.
@@ -366,7 +377,8 @@ func (m *Manager) Balance(ctx context.Context, userID string) (Balance, error) {
 // Services lists the customer's services with the actions they may take.
 func (m *Manager) ServicesForCustomer(ctx context.Context, customerID string) ([]Service, error) {
 	rows, err := m.pool.Query(ctx, `
-		SELECT s.id, p.name, s.status, sub.next_billing_at, sub.cancel_at_period_end
+		SELECT s.id, p.name, s.status, sub.next_billing_at, sub.cancel_at_period_end,
+		       (s.subscription_id IS NOT NULL), COALESCE(sub.status, '')
 		FROM services s
 		JOIN products p ON p.id = s.product_id
 		LEFT JOIN subscriptions sub ON sub.id = s.subscription_id
@@ -380,15 +392,19 @@ func (m *Manager) ServicesForCustomer(ctx context.Context, customerID string) ([
 	out := []Service{}
 	for rows.Next() {
 		var (
-			svc         Service
-			nextBill    *time.Time
-			cancelAtEnd *bool
+			svc                Service
+			nextBill           *time.Time
+			cancelAtEnd        *bool
+			hasSchedule        bool
+			subscriptionStatus string
 		)
-		if err := rows.Scan(&svc.ID, &svc.Name, &svc.Status, &nextBill, &cancelAtEnd); err != nil {
+		if err := rows.Scan(&svc.ID, &svc.Name, &svc.Status, &nextBill, &cancelAtEnd,
+			&hasSchedule, &subscriptionStatus); err != nil {
 			return nil, fmt.Errorf("portal: scan service: %w", err)
 		}
 		svc.NextBill = nextBill
 		svc.Actions = actionsFor(svc.Status, cancelAtEnd)
+		svc.CanChange, svc.ChangeBlockedReason = changeabilityFor(svc.Status, hasSchedule, subscriptionStatus)
 		out = append(out, svc)
 	}
 	return out, rows.Err()
@@ -409,17 +425,21 @@ func (m *Manager) Service(ctx context.Context, userID, serviceID string) (Servic
 		return Service{}, err
 	}
 	var (
-		svc         Service
-		nextBill    *time.Time
-		cancelAtEnd *bool
+		svc                Service
+		nextBill           *time.Time
+		cancelAtEnd        *bool
+		hasSchedule        bool
+		subscriptionStatus string
 	)
 	err = m.pool.QueryRow(ctx, `
-		SELECT s.id, p.name, s.status, sub.next_billing_at, sub.cancel_at_period_end
+		SELECT s.id, p.name, s.status, sub.next_billing_at, sub.cancel_at_period_end,
+		       (s.subscription_id IS NOT NULL), COALESCE(sub.status, '')
 		FROM services s
 		JOIN products p ON p.id = s.product_id
 		LEFT JOIN subscriptions sub ON sub.id = s.subscription_id
 		WHERE s.id = $1 AND s.customer_id = $2`, serviceID, customerID).
-		Scan(&svc.ID, &svc.Name, &svc.Status, &nextBill, &cancelAtEnd)
+		Scan(&svc.ID, &svc.Name, &svc.Status, &nextBill, &cancelAtEnd, &hasSchedule,
+			&subscriptionStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Service{}, ErrNotFound
 	}
@@ -428,6 +448,7 @@ func (m *Manager) Service(ctx context.Context, userID, serviceID string) (Servic
 	}
 	svc.NextBill = nextBill
 	svc.Actions = actionsFor(svc.Status, cancelAtEnd)
+	svc.CanChange, svc.ChangeBlockedReason = changeabilityFor(svc.Status, hasSchedule, subscriptionStatus)
 	return svc, nil
 }
 
@@ -450,6 +471,42 @@ func actionsFor(status string, cancelAtEnd *bool) []string {
 	default:
 		return []string{}
 	}
+}
+
+// changeabilityFor answers "may this customer change the plan or the options from here?".
+//
+// Three facts decide it, and each one is a refusal the handlers already make — stated here so the
+// page can say it before a form is filled in rather than after it is submitted:
+//
+//	no subscription             -> nothing to re-price (service.Store.ErrNotUpgradable)
+//	terminated / terminating    -> the service is over (same)
+//	subscription not live       -> the re-price would move a schedule that is not running (same)
+//
+// "Live" is `active` or `past_due`, which is exactly the pair `service.Store.upgrade` accepts: a
+// service that is behind on an invoice may still upgrade, because the change is a new charge on a
+// subscription that is running.
+//
+// The sentence is written for the customer, because it is rendered where the form would have
+// been. It is empty when the answer is yes, so a caller can branch on either value.
+func changeabilityFor(serviceStatus string, hasSchedule bool, subscriptionStatus string) (bool, string) {
+	if !hasSchedule {
+		return false, "This service has no billing schedule, so there is no period to re-price."
+	}
+	switch serviceStatus {
+	case "terminated", "terminating":
+		return false, "This service is being terminated, so it can no longer be changed."
+	}
+	switch subscriptionStatus {
+	case "active", "past_due":
+		return true, ""
+	case "cancelled", "canceled", "ended":
+		return false, "The subscription has ended, so there is nothing left to re-price."
+	case "pending":
+		return false, "The subscription has not started yet, so there is no period to re-price."
+	case "":
+		return false, "This service has no billing schedule, so there is no period to re-price."
+	}
+	return false, fmt.Sprintf("The subscription is %s, so it cannot be changed from here.", subscriptionStatus)
 }
 
 // RequestCancellation schedules cancellation at the end of the paid period.

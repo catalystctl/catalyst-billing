@@ -4,7 +4,7 @@
 // feed, and the boundary between signed-out and signed-in. Everything else is a module that
 // renders one screen.
 
-import { Api, connectEvents, type EventStream, type LiveEvent } from "./lib/api";
+import { Api, ApiError, connectEvents, type EventStream, type LiveEvent } from "./lib/api";
 import { NO_BRAND, applyBrand, applyBrandChrome, loadBrand, type Brand } from "./lib/brand";
 import { fill } from "./lib/dom";
 import { currentLocale, enabledLocales, initI18n, onLocaleChange, refreshLocales, setLocale, tx } from "./lib/i18n";
@@ -15,7 +15,7 @@ import { initTheme, toggleTheme, type Theme } from "./lib/theme";
 import type { AuthCtx, Crumb, Ctx, PageMeta, Session } from "./lib/types";
 import { SEGMENT_LABELS, isCustomerPath, isPublicPath, isStorefrontPath, routes } from "./routes";
 import { confirmDialog, formDialog } from "./ui/dialog";
-import { createShell, openPalette, type Shell } from "./ui/layout";
+import { createShell, impersonationBanner, openPalette, type Shell } from "./ui/layout";
 import { skeletonPage } from "./ui/kit";
 import { createToaster } from "./ui/toast";
 
@@ -307,10 +307,17 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       },
       toast: (title, options) => toaster.push(title, options),
     };
-    const rendered = await mod.default(ctx);
-    root.replaceChildren(rendered);
-    // The sign-in and reset panels carry the wordmark too. They are not the shell, so they are
-    // decorated on the same path that replaced them.
+    const page = await mod.default(ctx);
+    // The storefront renders outside the shell, so it would be the one screen an impersonated
+    // operator could work behind. The banner is mounted above it instead.
+    root.replaceChildren(
+      ...(session?.impersonating
+        ? [impersonationBanner(session, () => void stopImpersonation(), { flush: true })]
+        : []),
+      page,
+    );
+    // The sign-in, reset and storefront panels carry the wordmark too. They are not the shell,
+    // so they are decorated on the same path that replaced them.
     applyBrandChrome(root, brand);
   }
 
@@ -371,6 +378,7 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
         applyBrand(brand, theme);
       },
       onLogout: () => void signOut(),
+      onStopImpersonation: () => void stopImpersonation(),
       onOpenPalette: () => openPaletteNow(),
     });
     root.replaceChildren(shell.el);
@@ -399,6 +407,62 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
     shell = null;
     disposePage();
     router.navigate("/login", { replace: true });
+  }
+
+  /**
+   * Ends an impersonation and returns the operator to their own session.
+   *
+   * Three things have to happen in order, and each one is load-bearing:
+   *
+   *  1. The server ends the borrowed session and rotates the operator's own token into the
+   *     cookie. That rotation is why the local CSRF token must be replaced below — the old one
+   *     belongs to a session that no longer exists, and every mutation would fail with
+   *     `csrf_failed` until the next reload.
+   *  2. The identity is re-read rather than patched locally. `impersonating` is a fact about the
+   *     session, not a flag this file owns; asking `/auth/me` is what makes the banner disappear
+   *     for the same reason it appeared.
+   *  3. The shell is rebuilt from the new session, so the navigation, the role list and the
+   *     "whose account is this" question all change together. A page left rendered as the
+   *     customer would be a screen the operator can no longer act on.
+   *
+   * A failure is reported and *not* papered over: if the server refuses, the operator is still
+   * impersonating and the banner must stay up saying so.
+   */
+  async function stopImpersonation(): Promise<void> {
+    try {
+      await api.post("/api/v1/portal/impersonation/stop", {});
+    } catch (err) {
+      // `operator_session_ended` means the operator's own session is gone too. The API client's
+      // 401 handler has already sent them to the sign-in screen; saying anything else here
+      // would be a second, conflicting message.
+      if (err instanceof ApiError && err.code === "operator_session_ended") return;
+      toaster.push(tx("app.impersonation.stop_failed", "The impersonation was not ended"), {
+        tone: "danger",
+        detail:
+          err instanceof ApiError
+            ? err.detail || err.code
+            : tx("app.impersonation.stop_failed_detail", "The server could not be reached."),
+      });
+      return;
+    }
+
+    const next = await loadSession(api);
+    if (!next) {
+      // The rotation landed but the identity read did not: the honest answer is the sign-in
+      // screen, not a shell built from a session nobody confirmed.
+      session = null;
+      shell = null;
+      router.navigate("/login", { replace: true });
+      return;
+    }
+    session = next;
+    api.setCSRFToken(next.csrfToken);
+    shell?.updateSession(next);
+    toaster.push(tx("app.impersonation.stopped", "Back in your own account"), {
+      tone: "success",
+      detail: next.user.email,
+    });
+    router.navigate(homeFor(next), { replace: true });
   }
 
   function startLive(): void {

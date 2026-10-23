@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/authn"
+	"github.com/catalyst/billing/internal/calendar"
 	"github.com/catalyst/billing/internal/ledger"
 	"github.com/catalyst/billing/internal/ops"
 	"github.com/catalyst/billing/internal/staff"
@@ -289,11 +290,14 @@ func (s *Server) dashboardOpenTickets(r *http.Request, body *dashboardBody) erro
 
 // dashboardRecurring computes normalised monthly recurring revenue per currency.
 //
-// Each active subscription's price is divided by its interval in months, so a quarterly
-// price contributes a third and an annual price a twelfth. The division is integer
-// arithmetic on minor units: a rounding error of one minor unit per subscription is
-// acceptable for a dashboard figure, and a float would be unacceptable anywhere in this
-// system.
+// Each active subscription's price is divided by its interval, so a quarterly price contributes
+// a third and an annual price a twelfth. A day-count interval ("every 45 days") has no month to
+// divide by, so it is normalised over a 365-day year: a 45-day price contributes 365/(45*12) of
+// itself per month. That is a *dashboard* figure, not a billable amount — the only place in the
+// system where a year is assumed to be 365 days is here, and it is stated rather than implied.
+//
+// The arithmetic is integer throughout. A rounding error of one minor unit per subscription is
+// acceptable for a headline number, and a float would be unacceptable anywhere in this system.
 func (s *Server) dashboardRecurring(r *http.Request, body *dashboardBody) error {
 	rows, err := s.pool.Query(r.Context(), `
 		SELECT pv.currency, sub.interval, pv.amount_minor
@@ -320,8 +324,8 @@ func (s *Server) dashboardRecurring(r *http.Request, body *dashboardBody) error 
 		if err := rows.Scan(&code, &interval, &amount); err != nil {
 			return err
 		}
-		months := intervalMonths(interval)
-		if months <= 0 {
+		num, den, ok := monthlyShare(interval)
+		if !ok {
 			continue
 		}
 		a := byCurrency[code]
@@ -330,7 +334,7 @@ func (s *Server) dashboardRecurring(r *http.Request, body *dashboardBody) error 
 			byCurrency[code] = a
 			order = append(order, code)
 		}
-		a.minor += amount / int64(months)
+		a.minor += mulDiv(amount, num, den)
 		a.count++
 	}
 	if err := rows.Err(); err != nil {
@@ -357,7 +361,34 @@ func (s *Server) dashboardRecurring(r *http.Request, body *dashboardBody) error 
 	return nil
 }
 
-// intervalMonths maps a subscription interval to its length in months.
+// monthlyShare returns the fraction of a price that one month represents, as a numerator and
+// a denominator.
+//
+// A calendar interval is one month divided by its length in months. A day-count interval has no
+// length in months, so it is normalised over a 365-day year: every N days is N/365 of a year,
+// which is 365/(N*12) of a year per month. The denominator is never zero for a value the
+// database accepts, and an unknown interval reports false rather than dividing by zero.
+func monthlyShare(interval string) (num, den int64, ok bool) {
+	if days, dayCount := calendar.ParseDayInterval(interval); dayCount {
+		return 365, int64(days) * 12, true
+	}
+	if months := intervalMonths(interval); months > 0 {
+		return 1, int64(months), true
+	}
+	return 0, 0, false
+}
+
+// mulDiv computes v*num/den in integer arithmetic without overflowing on a large amount: the
+// quotient and the remainder are scaled separately, so an amount near the int64 limit cannot
+// wrap.
+func mulDiv(v, num, den int64) int64 {
+	if den == 0 {
+		return 0
+	}
+	return v/den*num + v%den*num/den
+}
+
+// intervalMonths maps a calendar subscription interval to its length in months.
 func intervalMonths(interval string) int {
 	switch interval {
 	case "monthly":

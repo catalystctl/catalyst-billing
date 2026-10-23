@@ -3,7 +3,7 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help dev dev-stop dev-config dev-reset seed seed-reset db-up db-ensure db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui web-build web-typecheck web-test brand brand-render brand-audit brand-regress brand-verify
+.PHONY: help dev dev-stop dev-config dev-reset seed seed-reset db-up db-ensure db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui money-e2e web-build web-typecheck web-test brand brand-render brand-audit brand-regress brand-verify
 
 help:
 	@echo "dev        database + schema + fixtures + demo data + a staff account, then serve (Ctrl-C stops)"
@@ -27,6 +27,7 @@ help:
 	@echo "client     regenerate the typed client from api/openapi.yaml"
 	@echo "smoke      drive the served UI in a real headless browser"
 	@echo "e2e-ui     sign in through the UI and assert live data renders"
+	@echo "money-e2e  drive the money documents and the small CRUD gaps in a real browser"
 	@echo "brand      regenerate the logo, banners and social cards (needs Python + fontTools)"
 	@echo "brand-render  rasterise the brand SVGs to PNG with Chromium"
 	@echo "brand-verify  prove the served brand assets load and render in a real browser"
@@ -207,6 +208,16 @@ smoke: build
 # Set E2E_SCREENSHOTS=dir to keep a PNG of each screen.
 e2e-ui: build
 	bash scripts/browser-e2e.sh
+
+# The money documents, clicked rather than inspected. `e2e-ui` asserts that screens render; this
+# drives the affordances that move documents: the invoice and credit-note downloads on both
+# audiences, the client-visible note, issuing a proforma, renaming and deleting a catalogue
+# server, and unlinking a sign-in provider. It seeds its own fixtures (an issued invoice, a
+# draft, a credit note, a server and a linked provider) and removes them on the way out.
+#
+# Set E2E_SCREENSHOTS=dir to keep a PNG of each step.
+money-e2e: build
+	bash scripts/browser-money-documents.sh
 
 clean:
 	rm -rf bin

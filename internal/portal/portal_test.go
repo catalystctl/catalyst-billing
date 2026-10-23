@@ -3,6 +3,7 @@ package portal_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -508,5 +509,82 @@ func TestEmptyCollectionsAreNotNil(t *testing.T) {
 	}
 	if overview.Balance.Outstanding == nil || overview.Balance.Credit == nil {
 		t.Fatalf("balance contains nil slices: %+v", overview.Balance)
+	}
+}
+
+// CanChange is the server's answer to "may I re-price this from the portal?", and the portal page
+// renders the plan and option forms only when it is true.
+//
+// The three refusals are the ones the upgrade and config handlers already make; stating them here
+// is what stops the page from offering a form that would come back 409 after the customer filled
+// it in. The sentence is asserted loosely (by the word that carries the reason) because it is copy:
+// what must not change is that a reason exists and names the cause.
+func TestCanChangeFollowsTheSubscription(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+
+	svc, err := w.manager.Service(ctx, w.alice.userID, w.alice.serviceID)
+	if err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	if !svc.CanChange || svc.ChangeBlockedReason != "" {
+		t.Fatalf("a live service cannot be changed: %+v", svc)
+	}
+
+	// A service with no billing schedule has nothing to re-price.
+	var bareID string
+	if err := w.pool.QueryRow(ctx, `
+		INSERT INTO services (customer_id, product_id, status, generation)
+		SELECT $1, product_id, 'active', 1 FROM services WHERE id = $2
+		RETURNING id`, w.alice.customerID, w.alice.serviceID).Scan(&bareID); err != nil {
+		t.Fatalf("seed scheduleless service: %v", err)
+	}
+	svc, err = w.manager.Service(ctx, w.alice.userID, bareID)
+	if err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	if svc.CanChange || !strings.Contains(svc.ChangeBlockedReason, "billing schedule") {
+		t.Fatalf("a service with no schedule offers a change: %+v", svc)
+	}
+
+	// A subscription that is no longer running cannot be re-priced: there is no period left.
+	if _, err := w.pool.Exec(ctx,
+		`UPDATE subscriptions SET status = 'cancelled' WHERE id = $1`, w.alice.subscription); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	svc, err = w.manager.Service(ctx, w.alice.userID, w.alice.serviceID)
+	if err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	if svc.CanChange || !strings.Contains(svc.ChangeBlockedReason, "ended") {
+		t.Fatalf("a cancelled subscription offers a change: %+v", svc)
+	}
+
+	// A terminated service is over.
+	if _, err := w.pool.Exec(ctx,
+		`UPDATE subscriptions SET status = 'active' WHERE id = $1`, w.alice.subscription); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	if _, err := w.pool.Exec(ctx,
+		`UPDATE services SET status = 'terminated' WHERE id = $1`, w.alice.serviceID); err != nil {
+		t.Fatalf("terminate: %v", err)
+	}
+	svc, err = w.manager.Service(ctx, w.alice.userID, w.alice.serviceID)
+	if err != nil {
+		t.Fatalf("service: %v", err)
+	}
+	if svc.CanChange || !strings.Contains(svc.ChangeBlockedReason, "terminated") {
+		t.Fatalf("a terminated service offers a change: %+v", svc)
+	}
+
+	// The list agrees with the detail read: one fact, two carriers, never two answers.
+	services, err := w.manager.Services(ctx, w.alice.userID)
+	if err != nil {
+		t.Fatalf("services: %v", err)
+	}
+	for _, listed := range services {
+		if listed.CanChange {
+			t.Fatalf("the list offers a change the detail read refuses: %+v", listed)
+		}
 	}
 }

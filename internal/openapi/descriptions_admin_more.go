@@ -104,10 +104,8 @@ func upgradeGraphPriceSchema() map[string]any {
 			"currency":         map[string]any{"type": "string", "pattern": "^[A-Z0-9]{2,12}$"},
 			"amount_minor":     map[string]any{"type": "integer", "format": "int64"},
 			"setup_minor":      map[string]any{"type": "integer", "format": "int64"},
-			"interval": map[string]any{
-				"type": "string", "enum": []string{"monthly", "quarterly", "semiannual", "annual"},
-			},
-			"amount": AmountRef(),
+			"interval":         intervalSchema(),
+			"amount":           AmountRef(),
 		},
 	}
 }

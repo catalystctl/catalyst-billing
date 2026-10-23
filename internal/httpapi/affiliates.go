@@ -83,6 +83,14 @@ func (s *Server) registerAffiliateRoutes(r *router) {
 		authn.PermCreditWrite, s.handleDeleteAffiliate)
 
 	// The payout is a money action: idempotent, audited, and gated on credit:write.
+	//
+	// KEPT AS AN ALIAS, not retired. It is in api/openapi.yaml and in the generated client under
+	// api/client, so an integration may be calling it, and a 404 is a worse answer than a second
+	// spelling of one operation. The two differ only in what they answer with: this one replies
+	// with the affiliate and the amount it settled (its original shape, unchanged), the newer
+	// route below replies with the payout record itself. Both call recordPayout, so there is one
+	// money path — `TestPayoutAliasesSettleTheSameBalance` is what keeps that true, because a
+	// duplicate route is only acceptable while both spellings move the same balance.
 	r.staffMutation(http.MethodPost, "/api/v1/staff/affiliates/{id}/payout",
 		authn.PermCreditWrite, s.handleAffiliatePayout)
 

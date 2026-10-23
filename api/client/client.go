@@ -959,6 +959,18 @@ func (c *Client) GetPortalInvoicesById(ctx context.Context, id string, query url
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetPortalInvoicesByIdDocument calls GET /api/v1/portal/invoices/{id}/document.
+//
+// # The customer's view of a document's lifecycle facts
+//
+// Permission: invoice:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalInvoicesByIdDocument(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/invoices/{id}/document"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetPortalInvoicesByIdPaymentstatus calls GET /api/v1/portal/invoices/{id}/payment-status.
 //
 // # Poll the local state of an invoice's payment attempt
@@ -1095,6 +1107,18 @@ func (c *Client) GetPortalServicesByIdCancellation(ctx context.Context, id strin
 // id is the id path parameter.
 func (c *Client) GetPortalServicesByIdConfig(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/portal/services/{id}/config"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetPortalServicesByIdConfigoptions calls GET /api/v1/portal/services/{id}/config-options.
+//
+// # The options a customer may change, priced on their own plan
+//
+// Permission: service:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalServicesByIdConfigoptions(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/services/{id}/config-options"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
@@ -3835,7 +3859,7 @@ func (c *Client) PutPortalServicesByIdConfig(ctx context.Context, id string, que
 
 // PutPortalServicesByIdMetadata calls PUT /api/v1/portal/services/{id}/metadata.
 //
-// # Rename or describe your own service
+// # Rename your service, describe it, and edit the properties shown to you
 //
 // Permission: service:write:self.
 // The CSRF token is sent from Client.CSRFToken; a session without one is refused.

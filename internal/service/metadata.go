@@ -33,10 +33,15 @@
 //     control character into a PDF. InvoiceProperties is the only supported way to read
 //     property values for a document.
 //
-//  5. **A customer edits their own service and nothing else.** Label and description are
-//     theirs (service:write:self); properties are the operator's record of the installation
-//     (service:write:all). Every customer-scoped statement carries the ownership predicate in
-//     SQL, so another customer's service id is indistinguishable from one that does not exist.
+//  5. **A customer edits their own service, and only the parts of it the operator exposed.**
+//     The label and the description are theirs (service:write:self). A property is theirs too,
+//     but only when its definition says `customer_visible`: the operator decides *which*
+//     properties a customer may write by choosing what to show them, and the writer applies that
+//     decision to the definition rather than to the request. A key that exists but is not
+//     visible is refused with `ErrPropertyNotVisible` — a 403, not a silent no-op — because a
+//     customer who believes they changed an internal record must be told they did not. Every
+//     customer-scoped statement carries the ownership predicate in SQL, so another customer's
+//     service id is indistinguishable from one that does not exist.
 package service
 
 import (
@@ -48,6 +53,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/catalyst/billing/internal/calendar"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -90,6 +96,9 @@ var (
 	// ErrPropertyInUse is returned when a definition is deleted while a service still carries
 	// its value. The values are cleared first, or the definition is renamed.
 	ErrPropertyInUse = errors.New("service: a service still carries this property")
+	// ErrPropertyNotVisible is returned when a customer writes a property whose definition the
+	// operator did not mark customer_visible. The key exists; it is simply not theirs to edit.
+	ErrPropertyNotVisible = errors.New("service: this property is not visible to the customer")
 )
 
 // PropertyDefinition is one operator-defined property.
@@ -230,8 +239,21 @@ type MetadataUpdate struct {
 	Label       *string
 	Description *string
 	// CustomProperties applies a partial edit to the stored object. A nil map means "leave it
-	// alone"; an empty string unsets one property. Staff only.
+	// alone"; an empty string unsets one property. A staff caller may name any defined key; a
+	// customer may name only the keys whose definition is customer_visible.
 	CustomProperties map[string]string
+}
+
+// propertyFilter is the set of definitions the actor may write, or nil when every one is theirs.
+//
+// It is a predicate over the *definition* and not over the request, which is what makes the rule
+// unbypassable from the body: a customer cannot make a key editable by naming it, and the
+// operator cannot widen the rule by forgetting to send a field.
+func (in MetadataUpdate) propertyFilter() func(PropertyDefinition) bool {
+	if in.Staff {
+		return nil
+	}
+	return func(d PropertyDefinition) bool { return d.CustomerVisible }
 }
 
 // ---------------------------------------------------------------- definitions --
@@ -544,14 +566,11 @@ func (s *Store) UpdateServiceMetadata(ctx context.Context, in MetadataUpdate) (S
 		properties := rawProperties
 		changes := map[string]any{}
 		if in.CustomProperties != nil {
-			if !in.Staff {
-				return fmt.Errorf("%w: custom properties are edited by staff", ErrInvalidInput)
-			}
 			stored, err := decodeProperties(rawProperties)
 			if err != nil {
 				return err
 			}
-			merged, err := mergeProperties(ctx, tx, stored, in.CustomProperties)
+			merged, err := mergeProperties(ctx, tx, stored, in.CustomProperties, in.propertyFilter())
 			if err != nil {
 				return err
 			}
@@ -560,7 +579,10 @@ func (s *Store) UpdateServiceMetadata(ctx context.Context, in MetadataUpdate) (S
 				return err
 			}
 			properties = encoded
-			changes["custom_properties"] = merged
+			// The audit row records the keys this request named, not the whole object: the
+			// object also holds properties the actor may not see, and a log line that repeated
+			// them would hand an internal value to everyone who can read the log.
+			changes["custom_properties"] = editedProperties(stored, merged, in.CustomProperties)
 		}
 
 		if label != nil && *label != currentLabel {
@@ -628,19 +650,39 @@ func prepareText(in MetadataUpdate) (label, description *string, err error) {
 	return label, description, nil
 }
 
+// editedProperties is the audit record of a property edit: the keys the request named, with the
+// value each one ended up with. An empty string means the key was unset.
+func editedProperties(stored, merged, edit map[string]string) map[string]string {
+	out := make(map[string]string, len(edit))
+	for key := range edit {
+		key = strings.TrimSpace(key)
+		out[key] = merged[key]
+		if _, ok := merged[key]; !ok {
+			out[key] = ""
+		}
+	}
+	return out
+}
+
 // mergeProperties applies a partial edit to the stored object.
 //
 // The whole edit is validated before anything is written: a request that names one good property
 // and one undefined one changes nothing, because a half-applied edit is a state the customer
 // never asked for.
-func mergeProperties(ctx context.Context, tx pgx.Tx, stored, edit map[string]string) (map[string]string, error) {
+//
+// allow is the actor's authority over the definitions — nil means "every defined key", which is
+// what a staff caller holds. A customer passes a filter that admits only customer_visible
+// definitions, so the visibility decision made on the properties screen is the one enforced here
+// rather than a second rule invented at the write path.
+func mergeProperties(ctx context.Context, tx pgx.Tx, stored, edit map[string]string,
+	allow func(PropertyDefinition) bool) (map[string]string, error) {
 	definitions, err := propertyDefinitions(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	known := make(map[string]struct{}, len(definitions))
+	known := make(map[string]PropertyDefinition, len(definitions))
 	for _, d := range definitions {
-		known[d.Key] = struct{}{}
+		known[d.Key] = d
 	}
 
 	merged := make(map[string]string, len(stored)+len(edit))
@@ -649,8 +691,15 @@ func mergeProperties(ctx context.Context, tx pgx.Tx, stored, edit map[string]str
 	}
 	for key, value := range edit {
 		key = strings.TrimSpace(key)
-		if _, ok := known[key]; !ok {
+		def, ok := known[key]
+		if !ok {
 			return nil, fmt.Errorf("%w: %s", ErrUnknownProperty, key)
+		}
+		if allow != nil && !allow(def) {
+			// Refused rather than skipped: a request that mixes a visible key and an
+			// internal one changes nothing, and the caller is told which key it may not
+			// touch instead of quietly succeeding on half of the edit.
+			return nil, fmt.Errorf("%w: %s", ErrPropertyNotVisible, key)
 		}
 		value = singleLine(value)
 		if value == "" {
@@ -877,6 +926,13 @@ func intervalPhrase(interval string) string {
 	case "annual":
 		return "billed annually"
 	default:
+		// A day-count period ("every_45_days") is a real billing period, so a description
+		// that omitted it would describe a service as "billed" with no cycle at all. The
+		// parse comes from internal/calendar, which is the package that decides what a
+		// period is: a second parser here would be a second answer to the same question.
+		if days, ok := calendar.ParseDayInterval(interval); ok {
+			return fmt.Sprintf("billed every %d days", days)
+		}
 		return ""
 	}
 }

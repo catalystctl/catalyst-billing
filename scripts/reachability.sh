@@ -373,71 +373,68 @@ RECORDED = {
     # -- surfaces that are referenced through a constructed path, so the diff cannot see it --
     "api GET /api/v1/portal/tickets/meta": "reached through ticketsMetaPath(); the ticket form reads it",
 
-    # -- duplicate surfaces: a screen exists, but it uses the other spelling --
+    # -- duplicate surfaces: KEPT as documented aliases, not retired --
+    #
+    # Each pair below was reviewed and the decision is "keep both, document which is which".
+    # Retiring either half is a breaking API change: every one of them is in api/openapi.yaml and
+    # in the generated client in api/client, so a third-party integration may be calling it, and
+    # a 404 is a worse answer than a second spelling. The full reasoning is in
+    # docs/reachability.md under "Duplicate routes, kept as aliases"; the short form is here so
+    # the sweep's report is readable on its own.
     "api GET /api/v1/staff/sessions":
-        "duplicate of /api/v1/staff/security/sessions, which /security uses; this one lists the "
-        "caller's own sessions and is API-only. Retiring it is a backend change (report).",
+        "KEPT ALIAS of /api/v1/staff/security/sessions. This one lists the caller's own sessions "
+        "under customer:read:all; /security uses the incident view (every account, staff:manage). "
+        "Different guard, different question, same word — both stay.",
     "api DELETE /api/v1/staff/sessions/{id}":
-        "duplicate of /api/v1/staff/security/sessions/{id}, which /security uses. Retiring it is "
-        "a backend change (report).",
+        "KEPT, and not quite a duplicate: both are staff:manage, but this one may revoke the "
+        "caller's own current session (and clears the cookies), while the /security spelling "
+        "refuses it as own_session because that is a sign-out. /security uses the second.",
     "write POST /api/v1/staff/affiliates/{id}/payout":
-        "duplicate of /api/v1/staff/affiliates/{id}/payouts, which the payout dialog uses",
+        "KEPT ALIAS of /api/v1/staff/affiliates/{id}/payouts. One money path (recordPayout); this "
+        "spelling answers with the affiliate, the newer one with the payout record. The payout "
+        "dialog uses /payouts.",
     "write POST /api/v1/staff/invoices/{id}/void-reason":
-        "duplicate: /invoices/:id voids through POST /void with the reason in the body",
+        "KEPT, and NOT a plain duplicate: it writes invoices.void_reason, so the reason travels "
+        "with the document. POST /void is the older spelling and stores no reason; /invoices/:id "
+        "still voids through it. Retiring either would drop a capability or break a caller.",
+    "write POST /api/v1/portal/tickets/{id}/attachments":
+        "reached through ticketsBase() in web/src/views/tickets.ts, which resolves to the portal "
+        "or the staff path from the session; the sweep cannot resolve a function call",
+    "write PUT /api/v1/portal/tickets/{id}/fields":
+        "reached through ticketFieldsPath() in web/src/views/tickets.ts, for the same reason",
+    "write PUT /api/v1/staff/tickets/{id}/fields":
+        "reached through ticketFieldsPath() in web/src/views/tickets.ts, for the same reason",
 
     # -- genuine gaps, recorded because they belong to a package that owns the area --
-    "api GET /api/v1/staff/upgrades":
-        "GAP: the pending-upgrade queue has no screen. /upgrades edits the upgrade graph "
-        "(catalog:write); an operator holding service:read:all cannot see what customers asked "
-        "to change. Recorded, not fixed here: the upgrades screen is another package's file.",
-    "api GET /api/v1/portal/affiliate":
-        "GAP: a customer who is an affiliate has no screen for their own referrals and "
-        "commission. Recorded: a new portal screen is a product decision, not a dead-link fix.",
     "api GET /api/v1/staff/refunds/{id}":
         "the refund is read from the payment it belongs to and rendered in the refund dialog; "
         "the standalone read is for API clients",
-    "api GET /api/v1/portal/credit-notes/{id}/pdf":
-        "GAP: a customer receives a credit note and cannot download it. The PDF endpoint exists "
-        "and nothing links to it. Recorded: the invoice/credit-note screens belong to another "
-        "package's files.",
-    "api GET /api/v1/staff/credit-notes/{id}/pdf":
-        "GAP: an operator issues a credit note from /invoices/:id and cannot download the PDF. "
-        "Recorded: web/src/views/invoice.ts is another package's file.",
-    "api POST /api/v1/portal/impersonation/stop":
-        "GAP: no screen starts or stops an impersonation, so the audited impersonation feature "
-        "is API-only. Recorded: the customer screen is another package's file.",
-    "write POST /api/v1/staff/users/{id}/impersonate":
-        "GAP: nothing in the panel starts an impersonation; the API exists and is audited. "
-        "Recorded: the customer screen is another package's file.",
     "write POST /api/v1/portal/services/{id}/cancellation":
         "GAP: the portal still cancels through the older /cancel endpoint; the newer "
         "cancellation request (the one the staff queue reads) is API-only. Recorded: which "
         "endpoint is canonical is a backend decision.",
-    "write POST /api/v1/portal/services/{id}/upgrade":
-        "GAP: a customer cannot request an upgrade from the portal. Recorded: the portal "
-        "service screen offers cancellation only.",
-    "write PUT /api/v1/portal/services/{id}/config":
-        "GAP: a customer cannot edit a service's config options from the portal",
-    "write PUT /api/v1/portal/services/{id}/metadata":
-        "GAP: a customer cannot edit the service properties marked customer_visible",
     "write POST /api/v1/staff/services/{id}/hooks/{extension}/{action}":
         "GAP: an extension can contribute a service action and no screen renders it",
     "write POST /api/v1/portal/services/{id}/hooks/{extension}/{action}":
         "GAP: an extension can contribute a customer-facing service action and no screen renders it",
-    "write PUT /api/v1/staff/invoices/{id}/client-note":
-        "GAP: a client-visible note cannot be written from the panel; the invoice screen edits "
-        "the invoice, not the note. Recorded: web/src/views/invoice.ts is another package's file.",
-    "write POST /api/v1/staff/invoices/{id}/proforma":
-        "GAP: an operator cannot issue a proforma, although the document and the setting exist. "
-        "Recorded: web/src/views/invoice.ts is another package's file.",
-    "write PUT /api/v1/staff/catalog/servers/{id}":
-        "GAP: a catalog server can be created and listed, but not renamed or removed. Recorded: "
-        "the catalog screen is another package's file.",
-    "write DELETE /api/v1/staff/catalog/servers/{id}":
-        "GAP: a catalog server cannot be removed from the panel. Recorded: the catalog screen "
-        "is another package's file.",
-    "write DELETE /api/v1/portal/social-links/{id}":
-        "GAP: a linked sign-in provider can be listed and linked, but not unlinked",
+    # -- exports: a helper appends a query string, so the path has no clean literal --
+    "api GET /api/v1/staff/exports/invoices.csv":
+        "built by the export helper in web/src/views/invoices.ts, which appends ?status=… to the "
+        "path; the sweep normalises that to one segment and cannot see the route",
+    "api GET /api/v1/staff/exports/customers.csv":
+        "built by the export helper in web/src/views/customers.ts, which appends ?q=…",
+    "api GET /api/v1/staff/exports/services.csv":
+        "built by the export helper in web/src/views/services.ts, which appends ?status=…",
+
+    # -- gaps that belong to another package's files --
+    "api GET /api/v1/staff/credit/debits":
+        "GAP: the staff credit ledger records debits and no screen reads them; /credits shows "
+        "the customer's balance. Recorded: the credit screens are another package's files.",
+    "api GET /api/v1/staff/tax-import/runs":
+        "GAP: a tax import records its runs and /tax-rates reads provenance, source, preview and "
+        "import but not the run history. Recorded: web/src/views/tax-rates.ts is another "
+        "package's file.",
+
     "api GET /api/v1/extensions/hooks":
         "the hook catalogue answers an extension asking what it may observe; the panel is not "
         "the caller",
@@ -460,8 +457,10 @@ RECORDED = {
     "write PUT /api/v1/portal/tickets/{id}/fields":
         "same helper as the staff variant; the customer ticket form saves through it",
     "write POST /api/v1/portal/tickets/{id}/attachments":
-        "the ticket screen uploads through the portal path for both audiences, by design — one "
-        "upload implementation rather than two",
+        "reached through ticketsBase() in web/src/views/tickets.ts, which resolves to the portal "
+        "path for a customer and the staff path for an operator; the sweep cannot resolve a "
+        "function call. The staff spelling is NOT a duplicate: the portal handler resolves the "
+        "caller's own customer, which a staff login does not have",
     "api GET /api/v1/staff/tax-import/runs":
         "GAP: an import's run history has no screen. /tax-rates reads provenance and the source "
         "and can preview and import, but the record of past runs — what was imported, when, and "

@@ -91,7 +91,12 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
       label: "Configuration",
       items: [
         { label: "Catalog", href: "/catalog-management", icon: "box", permission: "invoice:read:all" },
-        { label: "Upgrades", href: "/upgrades", icon: "trendUp", permission: "catalog:write" },
+        // Gated on the permission the queue endpoint declares (service:read:all), not on
+        // catalog:write, which the GRAPH endpoint needs. A support agent holds the first and not
+        // the second, so gating the menu on catalog:write hid a queue they are entitled to read.
+        // Every catalog:write holder is an administrator and also holds service:read:all, so one
+        // permission covers both audiences and needs no extra field.
+        { label: "Upgrades", href: "/upgrades", icon: "trendUp", permission: "service:read:all" },
         { label: "Config options", href: "/config-options", icon: "sliders", permission: "config:write" },
         { label: "Tax rates", href: "/tax-rates", icon: "percent", permission: "tax:write" },
         { label: "Currencies", href: "/currencies", icon: "globe", permission: "currency:write" },
@@ -215,6 +220,9 @@ export interface ShellOptions {
   onToggleTheme: () => void;
   onLogout: () => void;
   onOpenPalette: () => void;
+  /** Ends an impersonation and puts the operator back in their own session. Only ever called
+   *  from the banner, which only exists while impersonating. */
+  onStopImpersonation: () => void | Promise<void>;
   /** Called with the chosen code. The app persists it and rebuilds the shell and the current
    *  screen in the new language. */
   onLocaleChange: (code: string) => void;
@@ -234,6 +242,76 @@ function isActive(item: NavItem, path: string): boolean {
   if (item.exact) return path === item.href;
   if (item.href === "/") return path === "/";
   return path === item.href || path.startsWith(`${item.href}/`);
+}
+
+// ------------------------------------------------------------ impersonation --
+
+/**
+ * The impersonation banner.
+ *
+ * An operator wearing a customer's identity is one mis-click away from treating a support call as
+ * their own account, and the failure is silent: the screens look right because they *are* right,
+ * for somebody else. So the warning is not a toast that fades and not a badge in a corner — it is
+ * a full-width strip that every screen carries, that a reload cannot dismiss (it is rebuilt from
+ * `/api/v1/auth/me`, which reports the impersonation on every identity read), and that always
+ * carries the way out.
+ *
+ * It says the two things that matter: whose account this is, and what the session cannot do. The
+ * second half is a statement about the *server*, not about the buttons on the current page: money
+ * and credentials are refused there (internal/httpapi/auth.go, `impersonationRefused`), so the
+ * banner does not promise a restriction the UI is merely choosing to apply.
+ *
+ * It is exported because the storefront renders outside the shell, and a banner that appears on
+ * every screen except one is a banner an operator can work behind.
+ */
+export function impersonationBanner(
+  session: Session,
+  onStop: () => void | Promise<void>,
+  options?: { flush?: boolean },
+): HTMLElement {
+  const who = session.user.email;
+  // The email is the useful name; the id is the fallback when the server could not resolve it.
+  // A banner that says "somebody" is a banner that does not answer "who is behind this".
+  const operator = session.impersonatedByEmail || session.impersonatedBy;
+  return h(
+    "div",
+    {
+      class: `impersonation-banner${options?.flush ? " impersonation-banner--flush" : ""}`,
+      id: "impersonation-banner",
+      // `alert` rather than `status`: this is the one state on the panel a screen reader must
+      // interrupt for, because every sentence the operator reads afterwards is about somebody else.
+      role: "alert",
+    },
+    icon("eye", 16),
+    h(
+      "div",
+      { class: "impersonation-banner-text" },
+      h(
+        "strong",
+        null,
+        tx("shell.impersonation.title", "You are signed in as {{email}}", { email: who }),
+      ),
+      h(
+        "span",
+        null,
+        tx(
+          "shell.impersonation.body",
+          "Impersonated by {{operator}}. Moving money, changing credentials and closing the account are refused by the server while this session lasts.",
+          { operator },
+        ),
+      ),
+    ),
+    h(
+      "div",
+      { class: "impersonation-banner-actions" },
+      btn(tx("shell.impersonation.stop", "Stop impersonating"), {
+        size: "sm",
+        icon: "logout",
+        title: tx("shell.impersonation.stop_title", "Return to your own account"),
+        onclick: () => void onStop(),
+      }),
+    ),
+  );
 }
 
 export function createShell(options: ShellOptions): Shell {
@@ -459,6 +537,18 @@ export function createShell(options: ShellOptions): Shell {
   // It is dismissible for the tab, not forever: a warning that can be silenced permanently is
   // one that gets silenced in the first week and never seen again.
   const noticeHost = h("div", { class: "shell-notice" });
+  // The impersonation strip lives above the notice slot and is rebuilt from the session on every
+  // update, so it appears the moment a session becomes an impersonation and disappears the moment
+  // it stops being one. It is never dismissed, because there is nothing to dismiss: ending the
+  // impersonation is the dismissal.
+  const impersonationHost = h("div", { class: "shell-impersonation" });
+  const renderImpersonation = (session: Session) => {
+    if (!session.impersonating) {
+      impersonationHost.replaceChildren();
+      return;
+    }
+    impersonationHost.replaceChildren(impersonationBanner(session, options.onStopImpersonation));
+  };
   let dismissed = false;
   const renderNotice = (session: Session) => {
     const privileged = session.user.is_staff;
@@ -504,11 +594,12 @@ export function createShell(options: ShellOptions): Shell {
     );
   };
 
-  const main = h("div", { class: "main" }, topbar, noticeHost, content);
+  const main = h("div", { class: "main" }, topbar, impersonationHost, noticeHost, content);
   fill(app, sidebar, scrim, main);
   renderNav(options.session);
   renderUser(options.session);
   renderNotice(options.session);
+  renderImpersonation(options.session);
   setCrumbs([{ label: tx("shell.crumb.dashboard", "Dashboard") }]);
 
   function setActive(path: string) {
@@ -556,6 +647,7 @@ export function createShell(options: ShellOptions): Shell {
       renderNav(session);
       renderUser(session);
       renderNotice(session);
+      renderImpersonation(session);
       setActive(window.location.pathname);
     },
   };

@@ -931,9 +931,21 @@ try {
   if (customerEmail) {
     const text = await pageText();
     check("customers: lists the seeded customer", text.includes(customerEmail));
-    await click(`a[href^="/customers/"]`);
+    // The seeded customer, opened by its id when the harness was given one. Clicking the first
+    // row of the list looks equivalent and is not: the list is newest-first, so any other fixture
+    // in the database — another package's test run, a colleague's seed — becomes "the customer"
+    // and every assertion below is then made about a record this run did not create. That is how
+    // a green harness reports on somebody else's data.
+    if (serviceCustomerId) {
+      await goto(`/customers/${serviceCustomerId}`);
+    } else {
+      await click(`a[href^="/customers/"]`);
+    }
     await until("the customer detail", "location.pathname.startsWith('/customers/') && document.querySelector('.page') !== null");
     await until("the customer detail data", "document.querySelector('.page-skeleton') === null", 10_000);
+    // Remembered so the impersonation walk below can come back here: the record is where an
+    // operator decides to act as the customer, so that is the button under test.
+    const customerRecordPath = await evaluate("location.pathname");
     const detail = await pageText();
     check("customer detail: shows the email", detail.includes(customerEmail));
     check("customer detail: has tabs", /Overview/.test(detail) && /Invoices/.test(detail));
@@ -960,6 +972,125 @@ try {
     check("staff portal view: shows a balance", /Outstanding/i.test(viewed));
     // Read-only is the contract. A Pay button here would be impersonation that can move money.
     check("staff portal view: offers no payment action", !/\bPay now\b/i.test(viewed));
+
+    // ------------------------------------------------------------ impersonation --
+    //
+    // The capability was API-only: audited, tested, and unreachable without a curl command,
+    // which in practice means nobody used it during a support call. This walks the path a
+    // person walks — the button on the record, the confirmation, the banner, the stop — and it
+    // asserts the two facts that make the session safe rather than merely convenient: the
+    // banner follows the operator onto every screen, and the *server* refuses money while it is
+    // up. Hiding the Pay button is not the restriction under test here.
+    await goto(customerRecordPath);
+    const offered = await until(
+      "the offer to sign in as the customer",
+      `[...document.querySelectorAll('.page-actions .btn')].some((b) => /Sign in as this customer/i.test(b.textContent || ''))`,
+      12_000,
+    ).then(() => true).catch(() => false);
+    check("customer record: offers to sign in as the customer", offered, "no such button in the page actions");
+
+    if (offered) {
+      await evaluate(`(() => {
+        const b = [...document.querySelectorAll('.page-actions .btn')]
+          .find((x) => /Sign in as this customer/i.test(x.textContent || ''));
+        b.click();
+        return true;
+      })()`);
+      await until("the confirmation dialog", "document.querySelector('[role=dialog]') !== null", 5_000);
+      const dialogText = await evaluate("document.querySelector('[role=dialog]').innerText");
+      // The limits are stated before the session exists, not discovered by hitting a 403 in the
+      // middle of a support call.
+      check("impersonation: the dialog states the money limit", /money/i.test(dialogText), dialogText.slice(0, 160));
+      check("impersonation: the dialog states the audit", /record|audit/i.test(dialogText), dialogText.slice(0, 160));
+
+      await evaluate(`(() => {
+        const b = [...document.querySelectorAll('[role=dialog] button')]
+          .find((x) => /Sign in as them/i.test(x.textContent || ''));
+        if (!b) return false;
+        b.click();
+        return true;
+      })()`);
+
+      // The borrowed session is a customer session, so the app lands on their portal.
+      const landed = await until("the impersonated portal", "location.pathname === '/portal'", 12_000)
+        .then(() => true)
+        .catch(() => false);
+      check("impersonation: the session lands in the customer's portal", landed, `path: ${await evaluate("location.pathname")}`);
+
+      const banner = await until(
+        "the impersonation banner",
+        "document.querySelector('#impersonation-banner') !== null",
+        12_000,
+      ).then(() => true).catch(() => false);
+      const bannerText = banner ? await evaluate("document.querySelector('#impersonation-banner').innerText") : "";
+      check("impersonation: a banner is up", banner);
+      check("impersonation: the banner names the account", bannerText.includes(customerEmail), bannerText);
+      check("impersonation: the banner states the limits", /refused/i.test(bannerText), bannerText);
+      check("impersonation: the banner offers the way out", /Stop impersonating/i.test(bannerText), bannerText);
+
+      // Every screen, not just the landing one.
+      await goto("/portal/services");
+      const stillThere = await evaluate("document.querySelector('#impersonation-banner') !== null");
+      check("impersonation: the banner survives navigation", stillThere === true);
+
+      // The storefront renders outside the shell, so it is the one screen where the banner has
+      // to be mounted by hand. Missing there, it is the screen an operator could shop from while
+      // wearing a customer's identity.
+      await visit("/products");
+      const storefrontBanner = await evaluate("document.querySelector('#impersonation-banner') !== null");
+      check("impersonation: the banner is on the storefront too", storefrontBanner === true);
+      await goto("/portal");
+
+      // The server refuses, and this asks it directly with the impersonated cookie. A refusal
+      // from the UI would prove only that the UI agreed with itself. The CSRF header and the
+      // idempotency key travel with it on purpose: without them a 403 would be `csrf_failed` or
+      // `idempotency_key_required`, and the test would pass on the wrong refusal.
+      const refusal = await evaluate(`(async () => {
+        const csrf = (document.cookie.match(/(?:^|;\\s*)billing_csrf=([^;]+)/) || [])[1] || '';
+        const r = await fetch('/api/v1/portal/credits/deposit', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': decodeURIComponent(csrf),
+            'Idempotency-Key': crypto.randomUUID(),
+          },
+          credentials: 'same-origin',
+          body: JSON.stringify({ amount_minor: 1000, currency: 'USD' }),
+        });
+        let code = '';
+        try { code = (await r.json()).code || ''; } catch (e) { code = 'unreadable'; }
+        return { status: r.status, code };
+      })()`);
+      check(
+        "impersonation: the server refuses money",
+        refusal.status === 403 && refusal.code === "impersonating",
+        JSON.stringify(refusal),
+      );
+
+      // And the way out, from the banner rather than from a URL somebody has to remember.
+      await evaluate(`(() => {
+        const b = [...document.querySelectorAll('#impersonation-banner button')]
+          .find((x) => /Stop impersonating/i.test(x.textContent || ''));
+        if (!b) return false;
+        b.click();
+        return true;
+      })()`);
+      // The staff home is /dashboard, not /. `/` is the storefront — a staff session that landed
+      // there would be a bug, not a homecoming, and asserting `/` would have passed only by
+      // matching a page the operator should never be sent to. `homeFor()` in lib/session.ts is
+      // the single definition, and the storefront-link assertion above already relies on it.
+      const backHome = await until("the operator's own session", "location.pathname === '/dashboard'", 12_000)
+        .then(() => true)
+        .catch(() => false);
+      check("impersonation: stopping returns the operator to their own session", backHome, `path: ${await evaluate("location.pathname")}`);
+      const bannerGone = await evaluate("document.querySelector('#impersonation-banner') === null");
+      check("impersonation: the banner goes when the impersonation ends", bannerGone === true);
+      // The rail is staff navigation again: the session really is the operator's.
+      const staffRail = await until("the staff rail", "document.querySelector('.nav-item[data-href=\"/customers\"]') !== null", 8_000)
+        .then(() => true)
+        .catch(() => false);
+      check("impersonation: the operator's own navigation is back", staffRail);
+    }
   }
 
   const invoiceNumber = arg("expect-invoice");

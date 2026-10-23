@@ -238,9 +238,18 @@ export default async function staffPortalViewPage(ctx: Ctx): Promise<Node> {
           card({
             title: "What this page does not do",
             body: h(
-              "p",
-              { class: "field-hint" },
-              "There are no Pay, Cancel or Edit buttons here, and that is deliberate: an impersonated session that can move money is a much larger decision than one that can look. To act on this account, use the customer record, the invoice, or the service — each of those writes its own audit entry.",
+              "div",
+              { class: "stack-sm" },
+              h(
+                "p",
+                { class: "field-hint" },
+                "There are no Pay, Cancel or Edit buttons here, and that is deliberate: an impersonated session that can move money is a much larger decision than one that can look. To act on this account, use the customer record, the invoice, or the service — each of those writes its own audit entry.",
+              ),
+              h(
+                "p",
+                { class: "field-hint" },
+                "Signing in as the customer is the other way to see what they see, and it is not this page: start it from \"Sign in as this customer\" on the customer record. That session is theirs, a banner says so on every screen, and the server refuses money, credentials and account closure for as long as it lasts. Both accounts are named in the audit log at the start and at the end.",
+              ),
             ),
           }),
         ),

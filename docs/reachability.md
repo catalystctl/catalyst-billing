@@ -25,6 +25,7 @@ scripts/reachability.sh            # the report
 scripts/reachability.sh --check    # exit 1 on a finding that is not fixed or recorded
 scripts/reachability.sh --json     # machine-readable
 bash scripts/browser-e2e.sh        # the named screens, then every route
+make money-e2e                     # click the money documents: downloads, note, proforma, server CRUD, unlink
 E2E_STRICT_PLACEHOLDERS=1 bash scripts/browser-e2e.sh   # a release check: placeholders fail too
 ```
 
@@ -65,9 +66,10 @@ it resolves the method at the call site.
 
 ## Findings
 
-47 findings across 314 served routes, 75 screens and 55 navigation entries. Every one is
-either fixed in this pass or recorded with the reason it is deliberate or belongs to another
-owner. The script is the authoritative list; this is the reading of it.
+36 findings across 348 served routes, 79 screens and 60 navigation entries — the numbers the
+sweep prints, and every one is either fixed or recorded with the reason it is deliberate or
+belongs to another owner. `scripts/reachability.sh --check` exits 0. The script is the
+authoritative list; this is the reading of it.
 
 ### The purchase funnel is API-only — the largest gap in this report
 
@@ -93,8 +95,15 @@ That is a product decision and three files owned elsewhere; it is reported to th
 | Gap | The fix |
 |---|---|
 | `PUT /api/v1/staff/api-keys/{id}/ip-allowlist` had no UI: a key's CIDR allowlist was enforced by the server and could only be set with curl. | `web/src/views/api-keys.ts` now has a **Networks** action per live key. It reads the current rule, edits it as comma-separated CIDRs, and says plainly that a request from any other address is refused as if the key did not exist. Empty means no restriction. The sweep no longer reports the route. |
+| `GET /api/v1/staff/credit-notes/{id}/pdf` and `GET /api/v1/portal/credit-notes/{id}/pdf` had no link: an operator could issue a credit note and not download it, and a customer was sent one they could not open. | The staff invoice screen's credit-note table has a **PDF** action per note. The portal needed a read first — nothing told a customer which notes existed — so `GET /api/v1/portal/invoices/{id}/document` now lists them (scoped by `customer_accounts.user_id` in the SQL) and `web/src/views/portal-invoice.ts` renders a credit-note section with the same download. The portal also gains the invoice download, from the same read. |
+| `PUT /api/v1/staff/invoices/{id}/client-note` and `POST /api/v1/staff/invoices/{id}/proforma` had no control on the invoice screen. | `web/src/views/invoice.ts` has **Client note** (a dialog that says whether the installation prints notes, and that a note is stored when it does not) and **Issue proforma** on a draft. The staff invoice payload now carries `client_note`, `proforma`, `void_reason` and `notes_client_visible`, so the screen shows what it wrote and can tell a proforma from a numbered invoice. The customer's note is printed on their portal invoice as well as on the PDF. |
+| `PUT` and `DELETE /api/v1/staff/catalog/servers/{id}` had no screen: a catalogue server could be created by API and never renamed or removed. | `web/src/views/catalog-admin.ts` has a **Servers** card: create, edit (rename, region, node, enable) and delete, with the delete refused while products reference the target — the dialog says so before the server refuses. |
+| `DELETE /api/v1/portal/social-links/{id}` had no button: a provider could be linked and never unlinked. | The **Your own linked accounts** card on `/providers` has an **Unlink** action per identity, behind a confirmation that says the password still works. |
+| `GET /api/v1/staff/upgrades` — the pending-upgrade queue — had no screen. `/upgrades` was the graph editor and answered a refusal to anyone without `catalog:write`, so a holder of `service:read:all` saw nothing. | `/upgrades` now renders **two halves, each on its own permission**: the queue (`service:read:all`) with an all-pending / invoice-paid filter, the per-currency prorated totals, and a link to the service, the customer and the invoice of every row; and the graph (`catalog:write`) unchanged. A role holding one half gets that half plus a sentence saying what the other needs. The route's guard was already `service:read:all` — the screen was the missing piece, and it was the *screen* that had inherited the graph's permission. |
+| `GET /api/v1/portal/affiliate` had no screen: a customer who is an affiliate could not see their code, their referrals or their commission. | New screen `/portal/affiliate` (`web/src/views/portal-affiliate.ts`), linked from the portal overview and from the customer navigation. It renders the code with a copy button, the rate, one owed/paid figure per currency and every referral with the commission it produced. A customer who is **not** enrolled gets the server's `not_an_affiliate` 404 rendered as a state with a next step (an operator enrols them), not as an error with a retry that cannot change the answer. |
+| `GET /api/v1/staff/affiliates/payouts` — the all-affiliates payout report — had no screen; `/affiliates` read one affiliate at a time. | `/affiliates` opens with a **Payout report** card: every payee with a balance, per currency, with the server's own totals and a **Reconcile** action that selects that payee in the report below. It is re-read after a payout, a suspension or a deletion, because each of those changes the total. |
 
-### API surfaces with no screen (27)
+### API surfaces with no screen (25)
 
 **Deliberate — no human is the audience:**
 
@@ -118,56 +127,44 @@ That is a product decision and three files owned elsewhere; it is reported to th
 | `GET /api/v1/portal/tickets/meta` | `ticketsMetaPath()` in `views/tickets.ts` |
 | `GET /api/v1/staff/locales/keys` | `` `${ENDPOINT}/keys` `` in `views/locales.ts` |
 
-**Duplicates — a screen exists, under the other spelling:**
+### Duplicate routes, kept as aliases
 
-| Surface | The one the panel uses |
-|---|---|
-| `GET /api/v1/staff/sessions`, `DELETE /api/v1/staff/sessions/{id}` | `/api/v1/staff/security/sessions…`, read by `/security` |
-| `POST /api/v1/staff/affiliates/{id}/payout` | `/payouts`, called by the payout dialog |
-| `POST /api/v1/staff/invoices/{id}/void-reason` | `POST /void` with the reason in the body |
-| `POST /api/v1/staff/tickets/{id}/attachments` | the ticket screen uploads through the portal path for both audiences |
+Four pairs look like duplicates. Each was reviewed and **each is kept**: every one of them is in
+`api/openapi.yaml` and in the generated client under `api/client`, so an integration may be
+calling it, and a 404 is a worse answer than a second spelling of one operation. What was missing
+was not a deletion but a record of which spelling the panel uses and why both survive.
 
-Retiring the duplicate session routes is a backend change, so it is recorded rather than
-done here.
+| Pair | Which the panel uses | Why both stay |
+|---|---|---|
+| `GET`/`DELETE /api/v1/staff/sessions[/{id}]` vs `/api/v1/staff/security/sessions[/{id}]` | `/security` reads the `security` spelling | The reads answer two questions: `/staff/sessions` lists **the caller's own** sessions (`customer:read:all`), `/staff/security/sessions` is the incident view of **every** account (`staff:manage`). The two deletes share `staff:manage` and still differ in behaviour — the `security` one refuses your own current session (`own_session`, 409) because that is a sign-out, the older one performs it and clears the cookies. |
+| `POST /api/v1/staff/affiliates/{id}/payout` vs `/payouts` | the payout dialog calls `/payouts` | One money path (`recordPayout`) behind two responses: the older one answers with the affiliate and the amount, the newer one with the payout record (id, method, reference) so a settlement can be quoted. `TestPayoutAliasesSettleTheSameBalance` is what keeps them the same operation — a duplicate is only acceptable while both spellings move the same balance. |
+| `POST /api/v1/staff/invoices/{id}/void-reason` vs `/void` | `/invoices/:id` voids through `/void` | **Not a duplicate.** `void-reason` also writes `invoices.void_reason`, so the reason travels with the document; `/void` is the older spelling and stores no reason. Retiring either drops a capability or breaks a caller — the honest follow-up is for the invoice screen to offer the reason, which is recorded below. |
+| `POST /api/v1/staff/tickets/{id}/attachments` vs `/api/v1/portal/tickets/{id}/attachments` | `views/tickets.ts` picks between them from the session (`ticketsBase`) | **Not a duplicate.** The portal route resolves **the caller's own** customer, so a staff login attaching to a customer's ticket must use the staff route (`ticket:write:all`). Posting a staff upload to the portal path was a real defect once: the portal handler found no customer for a staff login and answered 404. |
+
+A retired route is a breaking change; a documented alias is not. All four are recorded with the
+reason in `scripts/reachability.sh` (`RECORDED`), and the permissions are pinned by
+`TestReachableSurfaceGuards` in `internal/httpapi/reachable_surface_test.go`, so the decision is
+in the diff rather than in somebody's memory.
 
 **Genuine gaps, recorded because the screen belongs to another owner:**
 
-| Surface | What an operator cannot do |
-|---|---|
-| `GET /api/v1/staff/upgrades` | see the pending-upgrade queue. `/upgrades` edits the graph (`catalog:write`); a holder of `service:read:all` sees nothing. |
-| `GET /api/v1/portal/affiliate` | a customer who is an affiliate cannot see their referrals or commission |
-| `GET /api/v1/staff/affiliates/payouts` | see the all-affiliates payout report; `/affiliates` reads one affiliate at a time |
-| `GET /api/v1/staff/credit-notes/{id}/pdf` | download the credit note they just issued from `/invoices/:id` |
-| `GET /api/v1/portal/credit-notes/{id}/pdf` | download the credit note they were sent |
-| `POST /api/v1/portal/impersonation/stop` | — see the impersonation row below |
+None left. Every surface this report ever named in this class now has a screen — the
+pending-upgrade queue, the portal affiliate view and the all-affiliates payout report in the
+reachable-surface pass, the credit-note PDFs, the portal service screens, the invoice note and
+proforma, the catalog server CRUD and the social unlink before it. What remains in the sweep's
+"API surfaces with no screen" list is the deliberate set and the constructed-path set, both
+tabled above.
 
-One of these is worth naming as an *inert feature* rather than a missing screen:
-
-* **Impersonation is API-only.** `POST /api/v1/staff/users/{id}/impersonate` and
-  `POST /api/v1/portal/impersonation/stop` are audited and tested; no screen starts one and no
-  banner offers to end one. The customer overview explains why an impersonated session cannot
-  act, for a session nobody can enter.
-### Write endpoints with no UI affordance (17)
+**Write endpoints with no UI affordance:**
 
 | Surface | Verdict |
 |---|---|
-| `POST /api/v1/portal/cart/items` | **the headline gap** — see the purchase funnel above |
-| `POST /api/v1/portal/invoices/{id}/pay-with-credit` | a customer with credit cannot spend it on an invoice from the portal |
-| `POST /api/v1/staff/users/{id}/impersonate` | nothing starts an impersonation (audited, tested, unreachable) |
 | `POST /api/v1/portal/services/{id}/cancellation` | the portal cancels through the older `/cancel`; the newer request row the staff queue reads is API-only |
-| `POST /api/v1/portal/services/{id}/upgrade` | a customer cannot request an upgrade from the portal |
-| `PUT /api/v1/portal/services/{id}/config` | a customer cannot edit a service's config options |
-| `PUT /api/v1/portal/services/{id}/metadata` | a customer cannot edit the properties marked `customer_visible` |
 | `POST /api/v1/staff/services/{id}/hooks/{extension}/{action}` | an extension can contribute a service action; no screen renders it |
 | `POST /api/v1/portal/services/{id}/hooks/{extension}/{action}` | same, for the customer-facing action |
-| `PUT /api/v1/staff/invoices/{id}/client-note` | a client-visible note cannot be written from the panel |
-| `POST /api/v1/staff/invoices/{id}/proforma` | a proforma cannot be issued, although the document and its setting exist |
-| `PUT /api/v1/staff/catalog/servers/{id}` | a catalog server can be created and listed, not renamed |
-| `DELETE /api/v1/staff/catalog/servers/{id}` | a catalog server cannot be removed |
-| `DELETE /api/v1/portal/social-links/{id}` | a linked sign-in provider can be linked, not unlinked |
-| `POST /api/v1/staff/affiliates/{id}/payout` | duplicate of `/payouts` |
-| `POST /api/v1/staff/invoices/{id}/void-reason` | duplicate of `POST /void` |
-| `POST /api/v1/staff/tickets/{id}/attachments` | duplicate of the portal upload path |
+| `POST /api/v1/staff/affiliates/{id}/payout` | kept alias of `/payouts` — see *Duplicate routes* above |
+| `POST /api/v1/staff/invoices/{id}/void-reason` | kept, and not a duplicate: it stores the reason, `POST /void` does not |
+| `POST /api/v1/staff/tickets/{id}/attachments` | kept, and not a duplicate: the portal path is scoped to the caller's own ticket |
 
 ### Frontend calls with no served route (0)
 
@@ -252,6 +249,11 @@ holder is findable instead of mysterious.
 * **Static analysis cannot see every path.** A path assembled at runtime from server data
   (an attachment's `url`, an OAuth provider's `start_url`) is invisible to the diff; those are
   recorded above with the reason.
+* **A helper call is opaque.** `` `${ticketsBase(ctx)}/${id}/attachments` `` and the CSV export
+  helpers build a served path from a function the sweep cannot evaluate, so the route is reported
+  as having no screen even though a screen calls it. Those are recorded in `RECORDED` as such
+  rather than fixed in the sweep: teaching it to inline a helper is a larger change than the few
+  routes it would clear, and a wrong guess there would invent findings.
 * **Method resolution is best-effort.** A call through a helper or a variable may not resolve
   to a method; where the path literal exists the route is treated as covered. The
   `write-without-ui` list is therefore the routes with *no* evidence, which is why it stays

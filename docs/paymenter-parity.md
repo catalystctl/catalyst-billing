@@ -181,7 +181,7 @@ Source: `routes/web.php`, `app/Livewire/Home.php`, `Products/Index.php`, `Produc
 | SF-11 | Product `email_template` snippet used in the activation email | No per-product template | ❌ | P3 |
 | SF-12 | Product assigned to a `server` integration | No product→server assignment; provisioner is global | ❌ | P4 |
 | SF-13 | Plan types: `free`, `one-time`, `recurring` | `price_versions.interval` is `monthly/quarterly/semiannual/annual` only | 🟡 | P1 |
-| SF-14 | Billing period/unit: any `N day/week/month/year` | Fixed interval enum; no arbitrary period | 🟡 | P1 |
+| SF-14 | Billing period/unit: any `N day/week/month/year` | `every_<N>_days` (1..366) is a real period model in `internal/calendar`: counted in civil days from an explicit origin, so it renews on the right date across a month end, a leap day and a DST transition. A week is 7 days. An arbitrary N-*month* unit is still the fixed calendar set (monthly/quarterly/semiannual/annual): a month is not a day count | 🟡 | P1 |
 | SF-15 | Plan name, sort order | `price_versions.name` exists; no sort | 🟡 | P1 |
 | SF-16 | Price + setup fee per currency per plan | `price_versions` per currency, append-only | ✅ | — |
 | SF-17 | Unavailable price in the selected currency is shown as unavailable, never free | Storefront lists only currencies that have a price | ✅ | — |

@@ -1583,25 +1583,14 @@ func loadConfig(ctx context.Context, tx pgx.Tx, cl catalogLine, selected map[str
 
 // periodFor derives the first billing period from the price's own schedule, the same
 // way internal/orders does: deriving it from the anchor rather than adding a fixed
-// number of days is what makes month-end and leap-day behaviour correct.
+// number of days is what makes month-end and leap-day behaviour correct, and a
+// day-count price ("every 45 days") is counted from the anchor day by the same rule.
+// The rule itself lives in internal/calendar so no purchase path can invent its own.
 func periodFor(c catalogLine, now time.Time) (time.Time, time.Time, error) {
-	interval, err := calendar.ParseInterval(c.interval)
+	period, err := calendar.FirstPeriod(c.interval, c.anchorDay, c.timezone, now)
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("%w: %v", ErrInvalidSchedule, err)
 	}
-	loc, err := time.LoadLocation(c.timezone)
-	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("%w: unknown timezone %q", ErrInvalidSchedule, c.timezone)
-	}
-	anchor, err := calendar.NewAnchor(c.anchorDay, 0, 0)
-	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("%w: %v", ErrInvalidSchedule, err)
-	}
-	schedule, err := calendar.NewSchedule(interval, anchor, loc)
-	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("%w: %v", ErrInvalidSchedule, err)
-	}
-	period := schedule.PeriodAt(now)
 	return period.Start, period.End, nil
 }
 

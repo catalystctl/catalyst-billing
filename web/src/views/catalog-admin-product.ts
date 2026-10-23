@@ -115,8 +115,59 @@ const INTERVAL_LABEL: Record<string, string> = {
   free: "Free",
 };
 
-const intervalText = (price: Price): string =>
-  price.interval_label || INTERVAL_LABEL[price.interval] || price.interval;
+// dayIntervalDays reads the stored day-count interval ("every_45_days") and returns the
+// number of days, or 0 when the interval is a calendar one. It mirrors
+// calendar.ParseDayInterval on the server — one canonical spelling, 1..366 days — so the
+// screen cannot render a period the server would refuse.
+function dayIntervalDays(interval: string): number {
+  const match = /^every_([1-9][0-9]{0,2})_days$/.exec(interval);
+  if (!match) return 0;
+  const days = Number(match[1]);
+  return days >= 1 && days <= 366 ? days : 0;
+}
+
+const intervalText = (price: Price): string => {
+  if (price.interval_label) return price.interval_label;
+  const days = dayIntervalDays(price.interval);
+  if (days > 0) return `Every ${days} days`;
+  return INTERVAL_LABEL[price.interval] || price.interval;
+};
+
+// The options an interval picker offers, in one place, because two screens offer them: this one
+// and the catalog screen's "Add a price" dialog. Exported rather than copied so the two cannot
+// drift, and so the day-count form is not a value one screen knows about and the other does not.
+//
+// `every_days` is a UI-only sentinel: it is never sent to the API. The stored value is always
+// the canonical `every_<N>_days` produced by dayIntervalValue, which is the single spelling the
+// server and the database CHECK accept.
+export interface IntervalOption {
+  value: string;
+  label: string;
+}
+
+export const INTERVAL_OPTIONS: IntervalOption[] = [
+  { value: "monthly", label: "Monthly" },
+  { value: "quarterly", label: "Quarterly" },
+  { value: "semiannual", label: "Every six months" },
+  { value: "annual", label: "Annual" },
+  // A fixed number of days is a second kind of period, not a calendar one: it is counted in
+  // civil days from the first period, so it lands on the right date across a month end, a leap
+  // day and a daylight-saving change.
+  { value: "every_days", label: "Every N days" },
+];
+
+/** dayIntervalValue composes the stored interval for a day count, clamping to the range the
+ *  server accepts so the dialog cannot submit a period that would be refused with a 400. */
+export function dayIntervalValue(days: number): string {
+  const clamped = Math.min(366, Math.max(1, Math.trunc(Number.isFinite(days) ? days : 1)));
+  return `every_${clamped}_days`;
+}
+
+/** intervalValueFor turns a picker selection into the value to POST: the day-count sentinel is
+ *  composed from the number field, and every other choice is sent as itself. */
+export function intervalValueFor(selection: string, days: number): string {
+  return selection === "every_days" ? dayIntervalValue(days) : selection;
+}
 
 // plansInOrder is the display order: the operator's plan order, then the newest version within
 // one position. It mirrors catalog.Plans on the server, so the preview here and the storefront
@@ -578,7 +629,16 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
                     "div",
                     null,
                     kv("Setup fee", current.setup.minor > 0 ? money(current.setup) : "None"),
-                    kv("Anchor day", String(current.anchor_day)),
+                    kv("Billing period", billingPeriodDetail(current)),
+                    kv(
+                      "Anchor day",
+                      // A day-count period is counted from this day for its first
+                      // period only; after that the period is a fixed number of days
+                      // and the day-of-month drifts by design.
+                      dayIntervalDays(current.interval) > 0
+                        ? `${current.anchor_day} (first period only)`
+                        : String(current.anchor_day),
+                    ),
                     kv("Timezone", h("span", { class: "mono" }, current.anchor_timezone)),
                     kv("Provision plan", current.provision_plan || "—"),
                     kv("Provision region", current.provision_region || "—"),
@@ -602,6 +662,16 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
 
   void load();
   return host;
+}
+
+/** billingPeriodDetail shows what the price is actually sold as: the readable label and, for a
+ *  day-count plan, the stored interval beside it, because "every 45 days" and the row an invoice
+ *  priced from are not the same string and an operator checking a mistake needs both. */
+function billingPeriodDetail(price: Price): string {
+  const label = intervalText(price);
+  const days = dayIntervalDays(price.interval);
+  if (days === 0) return label;
+  return `${label} — ${days} civil days, stored as ${price.interval}`;
 }
 
 /** serverLabel renders a provisioner target the way an operator recognises it: the name, then

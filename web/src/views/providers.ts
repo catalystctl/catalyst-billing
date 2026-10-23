@@ -489,9 +489,46 @@ export default async function providersPage(ctx: Ctx): Promise<Node> {
 
   // ------------------------------------------------------------ own links --
 
+  // A link is the route in, so unlinking is the only way to take one away. Until now the card
+  // could only show them: a provider linked by mistake, or an identity a person no longer
+  // controls, had no way out except an API call.
   const ownLinksCard = (): HTMLElement => {
     const body = h("div", { class: "stack-sm" }, h("span", { class: "faint" }, "Loading…"));
-    void (async () => {
+
+    const unlink = async (link: SocialLink): Promise<void> => {
+      const name = link.provider_name || link.provider_slug;
+      const ok = await ctx.confirm({
+        title: `Unlink ${name}?`,
+        body: h(
+          "div",
+          { class: "stack-sm" },
+          h(
+            "p",
+            null,
+            "The provider stops signing you in to this account. Your password still works, and you can link it again from your security page.",
+          ),
+          h(
+            "p",
+            { class: "field-hint" },
+            link.email ? `The linked identity is ${link.email}.` : "The linked identity carries no email.",
+          ),
+        ),
+        confirmLabel: "Unlink",
+        danger: true,
+      });
+      if (!ok) return;
+      await withBusy(ctx, null, async () => {
+        try {
+          await ctx.api.del(`/api/v1/portal/social-links/${encodeURIComponent(link.id)}`);
+          ctx.toast("Provider unlinked", { tone: "success", detail: name });
+          await paint();
+        } catch (err) {
+          report(err, "The provider could not be unlinked");
+        }
+      });
+    };
+
+    const paint = async (): Promise<void> => {
       try {
         const page = await ctx.api.get<{ data: SocialLink[] }>("/api/v1/portal/social-links", {
           cache: false,
@@ -529,6 +566,13 @@ export default async function providersPage(ctx: Ctx): Promise<Node> {
                   { class: "spacer faint mono", title: "The provider's opaque subject id" },
                   link.subject,
                 ),
+                btn("Unlink", {
+                  size: "sm",
+                  variant: "danger",
+                  icon: "trash",
+                  title: `Stop signing in with ${link.provider_name || link.provider_slug}`,
+                  onclick: () => void unlink(link),
+                }),
               ),
             ),
           ),
@@ -545,7 +589,9 @@ export default async function providersPage(ctx: Ctx): Promise<Node> {
           ),
         );
       }
-    })();
+    };
+
+    void paint();
 
     return card({
       title: "Your own linked accounts",
@@ -557,7 +603,7 @@ export default async function providersPage(ctx: Ctx): Promise<Node> {
         h(
           "p",
           { class: "field-hint" },
-          "Links belong to an account: there is no endpoint that lists another person's, by design — a list of who signed in with what is a list of targets. This card shows yours so you can confirm a provider works end to end.",
+          "Links belong to an account: there is no endpoint that lists another person's, by design — a list of who signed in with what is a list of targets. This card shows yours so you can confirm a provider works end to end, and unlink one that should not be there.",
         ),
       ),
     });

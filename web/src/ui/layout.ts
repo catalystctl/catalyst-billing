@@ -39,7 +39,13 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
     groups.push({
       label: "Overview",
       items: [
-        { label: "Dashboard", href: "/", icon: "home", permission: "report:read", exact: true },
+        // `/dashboard`, not `/`. `/` is the storefront and is public, so pointing the panel's home
+        // entry at it meant a signed-in operator clicking "Dashboard" left the panel entirely.
+        { label: "Dashboard", href: "/dashboard", icon: "home", permission: "report:read", exact: true },
+        // The way back to the shop, from inside the panel. The storefront is where a price is
+        // checked and a product is previewed as the public sees it, so it belongs in the rail and
+        // not only in the catalog screen's toolbar.
+        { label: "Storefront", href: "/dashboard", icon: "globe", exact: true },
         { label: "Announcements", href: "/announcements", icon: "radio", permission: "announcement:write" },
       ],
     });
@@ -128,6 +134,12 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
       ],
     });
   } else {
+    // A customer's shop, first: the storefront is where they buy from, and it is the one screen in
+    // their rail that is not about an existing subscription.
+    groups.push({
+      label: "Shop",
+      items: [{ label: "Storefront", href: "/dashboard", icon: "box", exact: true }],
+    });
     groups.push({
       label: "Your account",
       items: [
@@ -386,7 +398,7 @@ export function createShell(options: ShellOptions): Shell {
       { class: "sidebar-head" },
       h(
         "a",
-        { class: "brand", href: options.session.user.is_staff ? "/" : "/portal" },
+        { class: "brand", href: options.session.user.is_staff ? "/dashboard" : "/portal" },
         h("span", { class: "brand-mark" }, brandMark(17)),
         h("span", { class: "brand-name" }, "Catalyst", h("small", null, "Billing")),
       ),

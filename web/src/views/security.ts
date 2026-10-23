@@ -92,7 +92,7 @@ export default async function securityPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot read the security screen",
         "Seeing every account's sessions is an administrative act: it needs the staff:manage permission, the same one that grants roles and starts an impersonation.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

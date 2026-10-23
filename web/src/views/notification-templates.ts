@@ -112,7 +112,7 @@ export default async function notificationTemplatesPage(ctx: Ctx): Promise<Node>
         "danger",
         "You cannot edit the notification templates",
         "This screen needs the notification:write permission. Support answers “why did I get this”; it does not decide what the mail says.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

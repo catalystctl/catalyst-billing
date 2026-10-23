@@ -75,7 +75,7 @@ const STATUS_OPTIONS = [
 
 export default async function invoicesPage(ctx: Ctx): Promise<Node> {
   if (!ctx.can("invoice:read:all")) {
-    ctx.navigate("/", { replace: true });
+    ctx.navigate("/dashboard", { replace: true });
     return h("div");
   }
 

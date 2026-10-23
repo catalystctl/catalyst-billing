@@ -112,6 +112,13 @@ export interface Ctx {
 
 export interface AuthCtx {
   readonly api: Api;
+  /** Who is looking, when a public page is rendered for a signed-in visitor.
+   *
+   *  The storefront is public, so it must not require a session — but it must not pretend an
+   *  operator or a customer is a stranger either. Without this the storefront offered a signed-in
+   *  administrator a "Sign in" button and no way back to the panel, which is how a shop becomes a
+   *  cul-de-sac. Null for a visitor. */
+  readonly viewer: Session | null;
   readonly query: URLSearchParams;
   /** Path parameters, so a public page like /products/:slug can read its slug. */
   readonly params: Record<string, string>;

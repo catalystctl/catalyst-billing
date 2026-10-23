@@ -94,7 +94,7 @@ export default async function announcementsPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot publish announcements",
         "This screen needs the announcement:write permission: a published announcement is visible to every visitor, including signed-out ones.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }
@@ -298,7 +298,7 @@ export default async function announcementsPage(ctx: Ctx): Promise<Node> {
           { class: "field-hint" },
           "The public feed the storefront reads is a separate route and is unaffected: any announcement already published continues to show.",
         ),
-        h("div", { class: "row" }, btn("Back to the dashboard", { href: "/", size: "sm", icon: "home" })),
+        h("div", { class: "row" }, btn("Back to the dashboard", { href: "/dashboard", size: "sm", icon: "home" })),
       ),
     });
 

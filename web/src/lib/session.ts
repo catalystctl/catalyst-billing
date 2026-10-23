@@ -52,6 +52,12 @@ export async function loadSession(api: Api): Promise<Session | null> {
   }
 }
 
+/** Where a session belongs after signing in, or when a screen sends it away.
+ *
+ *  Staff land on `/dashboard`, not `/`: `/` is the storefront and is public, so a signed-in
+ *  operator who is bounced to "home" was previously bounced to a page that had no URL of its
+ *  own for them. `/dashboard` is a real, linkable address, which also means the dashboard can be
+ *  bookmarked and pasted into a ticket like every other screen. */
 export function homeFor(session: Session): string {
-  return session.user.is_staff ? "/" : "/portal";
+  return session.user.is_staff ? "/dashboard" : "/portal";
 }

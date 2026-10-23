@@ -88,7 +88,7 @@ export default async function logsPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot read the logs",
         "The log viewers need the log:read permission. They carry customer addresses and request paths, so they are not part of the default operator surface.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }
@@ -181,7 +181,7 @@ export default async function logsPage(ctx: Ctx): Promise<Node> {
         h(
           "div",
           { class: "row" },
-          btn("Back to the dashboard", { href: "/", size: "sm", icon: "home" }),
+          btn("Back to the dashboard", { href: "/dashboard", size: "sm", icon: "home" }),
           btn("Audit log", { href: "/audit", size: "sm", variant: "ghost", icon: "shield" }),
         ),
       ),

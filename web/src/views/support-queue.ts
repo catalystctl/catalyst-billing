@@ -74,7 +74,7 @@ export default async function supportQueuePage(ctx: Ctx): Promise<Node> {
             "div",
             { class: "row-wrap" },
             btn("Your tickets", { href: "/tickets", size: "sm", icon: "message" }),
-            btn("Back to overview", { href: "/", size: "sm", icon: "home" }),
+            btn("Back to overview", { href: "/dashboard", size: "sm", icon: "home" }),
           ),
         }),
       }),
@@ -310,7 +310,7 @@ export default async function supportQueuePage(ctx: Ctx): Promise<Node> {
             icon: "x",
             onclick: () => apply({ status: "", priority: "", department: "", assignee: "", q: "" }),
           })
-        : btn("Back to overview", { href: "/", size: "sm", icon: "home" }),
+        : btn("Back to overview", { href: "/dashboard", size: "sm", icon: "home" }),
     }),
   });
 

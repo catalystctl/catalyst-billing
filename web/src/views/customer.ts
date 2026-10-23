@@ -187,7 +187,7 @@ function tabFrom(value: string | null): TabKey {
 
 export default async function customerPage(ctx: Ctx): Promise<Node> {
   if (!ctx.can("customer:read:all")) {
-    ctx.navigate("/", { replace: true });
+    ctx.navigate("/dashboard", { replace: true });
     return h("div");
   }
 

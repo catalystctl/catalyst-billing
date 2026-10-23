@@ -120,7 +120,7 @@ export default async function marketplacePage(ctx: Ctx): Promise<Node> {
         "You cannot install extensions",
         "This screen needs the extension:manage permission: an extension runs as a separate process with the " +
           "credentials it is given.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

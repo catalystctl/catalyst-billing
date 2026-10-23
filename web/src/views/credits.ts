@@ -153,7 +153,7 @@ export default async function creditsPage(ctx: Ctx): Promise<Node> {
   // Reading the ledger is credit:read:all. A screen that cannot read it would render an error for
   // a user who has no reason to be here, so it sends them home instead.
   if (!ctx.can("credit:read:all")) {
-    ctx.navigate("/", { replace: true });
+    ctx.navigate("/dashboard", { replace: true });
     return h("div");
   }
   // Both directions of a balance change need credit:write: a grant mints credit, a deduction
@@ -254,7 +254,7 @@ export default async function creditsPage(ctx: Ctx): Promise<Node> {
       action: h(
         "div",
         { class: "row-wrap" },
-        btn("Back to overview", { href: "/", icon: "home", size: "sm" }),
+        btn("Back to overview", { href: "/dashboard", icon: "home", size: "sm" }),
         btn("Customers", { href: "/customers", icon: "users", size: "sm", variant: "ghost" }),
       ),
     },

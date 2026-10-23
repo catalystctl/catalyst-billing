@@ -164,7 +164,7 @@ export default async function taxRatesPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot read the tax table",
         "The rate table needs the tax:write permission — it is configuration, not something a billing clerk needs in order to price an invoice.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

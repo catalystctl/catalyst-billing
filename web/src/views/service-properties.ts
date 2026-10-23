@@ -106,7 +106,7 @@ export default async function servicePropertiesPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot configure service properties",
         "This screen needs the service:write:all permission: a property definition decides what every service may carry and what prints on a customer's invoice.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

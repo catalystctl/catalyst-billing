@@ -103,7 +103,7 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot change the upgrade graph",
         "The graph is catalog configuration: adding or removing an edge needs the catalog:write permission.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

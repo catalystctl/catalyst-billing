@@ -68,6 +68,17 @@ function fromPrice(p: PublicProduct): PublicPrice | null {
 
 export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
   const host = h("div", { class: "store" }, skeletonPage());
+  // The identity, if there is one. The storefront is public for everyone — that is the whole
+  // point of moving it to `/` — so the header must offer the right door out of it: the panel for
+  // an operator, the portal for a customer, sign-in for a stranger. Captured once, at render
+  // time, because a session does not change under a page that has already painted.
+  const viewer = ctx.viewer;
+  const areaHref = viewer ? (viewer.user.is_staff ? "/dashboard" : "/portal") : "/login";
+  const areaLabel = viewer
+    ? viewer.user.is_staff
+      ? tx("storefront.nav.dashboard", "Dashboard")
+      : tx("storefront.nav.account", "My account")
+    : tx("storefront.nav.client_area", "Client area");
   const controller = new AbortController();
   let activeCategory = ctx.query.get("category") ?? "";
   // The last response, kept so a language switch is a re-render rather than a refetch: the
@@ -131,9 +142,11 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
         "nav",
         { class: "store-nav" },
         h("a", { href: "/products" }, tx("storefront.nav.products", "Products")),
-        h("a", { href: "/login" }, tx("storefront.nav.signin", "Sign in")),
+        // Sign-in is offered to visitors only. A signed-in visitor gets the way back to their own
+        // screens instead, because a shop with no exit is a shop an operator stops opening.
+        viewer ? null : h("a", { href: "/login" }, tx("storefront.nav.signin", "Sign in")),
         languageSelect(),
-        h("a", { class: "btn btn--primary btn--sm", href: "/login" }, tx("storefront.nav.client_area", "Client area")),
+        h("a", { class: "btn btn--primary btn--sm", href: areaHref }, areaLabel),
       ),
     );
 
@@ -154,7 +167,7 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
         "div",
         { class: "store-hero-actions" },
         btn(tx("storefront.hero.plans", "See the plans"), { href: "#plans", variant: "primary", size: "lg" }),
-        btn(tx("storefront.nav.client_area", "Client area"), { href: "/login", size: "lg" }),
+        btn(areaLabel, { href: areaHref, size: "lg" }),
       ),
     );
 
@@ -315,7 +328,7 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
       h(
         "span",
         { class: "store-foot-links" },
-        h("a", { href: "/login" }, tx("storefront.footer.client_area", "Client area")),
+        h("a", { href: areaHref }, tx("storefront.footer.client_area", "Client area")),
         h("a", { href: "/api/v1/catalog", "data-native": "true" }, tx("storefront.footer.catalog_api", "Catalog API")),
         h("a", { href: "/healthz", "data-native": "true" }, tx("storefront.footer.status", "Status")),
       ),

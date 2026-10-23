@@ -21,7 +21,7 @@ export default function notFoundPage(ctx: Ctx): Node {
         action: h(
           "div",
           { class: "row" },
-          btn("Back to dashboard", { href: ctx.session.user.is_staff ? "/" : "/portal", icon: "home" }),
+          btn("Back to dashboard", { href: ctx.session.user.is_staff ? "/dashboard" : "/portal", icon: "home" }),
           btn("Search", {
             icon: "search",
             onclick: () =>

@@ -84,7 +84,7 @@ function exportHref(term: string): string {
 
 export default async function customersPage(ctx: Ctx): Promise<Node> {
   if (!ctx.can("customer:read:all")) {
-    ctx.navigate("/", { replace: true });
+    ctx.navigate("/dashboard", { replace: true });
     return h("div");
   }
 
@@ -214,7 +214,7 @@ export default async function customersPage(ctx: Ctx): Promise<Node> {
           ? btn("New customer", { icon: "plus", size: "sm", variant: "primary", onclick: () => void createCustomer() })
           : null,
         btn("Read the audit log", { href: "/audit", icon: "shield", size: "sm" }),
-        btn("Back to overview", { href: "/", icon: "home", size: "sm" }),
+        btn("Back to overview", { href: "/dashboard", icon: "home", size: "sm" }),
       ),
     },
   });

@@ -83,7 +83,7 @@ export default async function cancellationsPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot read the cancellation queue",
         "The queue needs the service:read:all permission. Executing a request additionally needs service:terminate.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }
@@ -258,7 +258,7 @@ export default async function cancellationsPage(ctx: Ctx): Promise<Node> {
           "div",
           { class: "row" },
           btn("Services", { href: "/services", size: "sm", icon: "server" }),
-          btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost", icon: "home" }),
+          btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost", icon: "home" }),
         ),
       ),
     });

@@ -88,7 +88,7 @@ export default async function currenciesPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot configure currencies",
         "This screen needs the currency:write permission. It decides which currencies are offered and how every amount renders.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

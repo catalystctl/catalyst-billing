@@ -139,7 +139,7 @@ export default async function updatesPage(ctx: Ctx): Promise<Node> {
         "You cannot manage updates",
         "This screen needs the update:manage permission: approving a version is a decision about what the " +
           "whole installation runs.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

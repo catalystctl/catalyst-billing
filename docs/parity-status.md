@@ -124,9 +124,9 @@ package that built it. Three states, and no fourth:
 | E6.7 Updates/telemetry/marketplace | OPS-12…OPS-14, ADM-12, ADM-23 | **built** | Version reporting, a cached update check, an approved-target-version state, telemetry off by default with a payload asserted to carry no customer data, and a marketplace install that verifies SHA-256 **before** anything is executed. |
 | E6.8 Discord notifications | NTF-13, GRW-04 | **built** | Webhook configured through settings, selected events posted, tested. |
 | E6.9 Captcha | IDN-18 | **built** | One parameterised verifier for Turnstile/reCAPTCHA/hCaptcha; the panel's CSP is widened by exactly the configured provider's origins in `script-src`/`frame-src`/`connect-src` and by nothing when no provider is set. Per-source rate limiting stays as the backstop. |
-| E6.10 Marketplace breadth | PAY-05, INV-15 | **not started** | No additional gateways beyond Stripe (the protocol can host them; none are built), and no per-theme PDF template because there is no theme system. |
+| E6.10 Marketplace breadth | PAY-05, INV-15 | **partial** | Stripe is still the only gateway (PAY-05 not started). INV-15 is **built as a per-tenant brand overlay, not a theme registry**: a name, a logo and one accent per colour mode, configured from `/branding`, reaching the panel chrome and the invoice PDF. An unset brand emits no CSS custom property and no PDF operator, proven by a byte-hash test; a brand can only set the accent family, so it cannot break light or dark. A full theme registry (versioned documents, presets, per-scope inheritance, custom CSS) remains unbuilt and is designed in `docs/theming-system.md`. |
 
-**Tally:** 46 built, 1 partial, 2 not started, out of 49 epics.
+**Tally:** 47 built, 1 partial, 1 not started, out of 49 epics.
 
 What this round added, all browser-driven rather than asserted: a customer can **buy** a product
 end to end (the funnel was API-only — see below); an operator can set a customer's password, reset
@@ -148,20 +148,23 @@ class of defect three times — and `scripts/reachability.sh --check` makes it a
 report.
 
 Every epic that gates taking money, provisioning a server, or managing a person is built. What is
-left is three specific things, not three half-finished epics:
+left is two specific things, and neither is a half-finished epic:
 
 | Epic | Status | The one thing missing |
 |---|---|---|
-| E1.3 plan types | partial | An arbitrary N-day period. `one_time` and `free` work; `internal/calendar` has no period model for "every 45 days". |
 | E4.3 PayPal / Mollie | not started | Stripe is the only built gateway. The protocol can host more — `extensions/stripe` is the worked example — but no PayPal or Mollie adapter exists. |
-| E6.10 marketplace breadth | not started | No per-theme PDF, because there is no theme system. |
+| E6.10 marketplace breadth | partial | A per-tenant brand overlay (name, logo, one accent per colour mode) reaches the panel and the invoice PDF; a versioned theme registry — presets, per-scope inheritance, custom CSS — is designed in `docs/theming-system.md` and not built. PAY-05 (a second gateway) is untouched. |
 
 Closed this round, each with a test that can fail: **a paid config option now recurs on every
 renewal** (it was a live revenue leak — the renewal invoice carried only the base line, so a
 surcharge was charged once and never again while the resource kept running); **the i18n frontend**
 (a helper holding the merged catalogue, single-pass interpolation, and the sign-in, register,
-storefront and portal surfaces actually translated); and **nested categories** with the cycle and
-depth bounds enforced in the database, because two concurrent writes can each look safe.
+storefront and portal surfaces actually translated); **nested categories** with the cycle and
+depth bounds enforced in the database, because two concurrent writes can each look safe; and
+**an arbitrary N-day billing period**, which is a second period model rather than a number added
+to the first — the calendar intervals are proven byte-identical to their pre-change arithmetic by
+a differential test, so "every 45 days" could not move the renewal date of an existing
+subscription.
 
 ## Browser coverage
 

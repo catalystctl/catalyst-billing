@@ -725,7 +725,8 @@ func (s *Store) ApplyUpgrade(ctx context.Context, upgradeID string) error {
 // It is the integrator's hook: once the credits work package has credited the customer the
 // amount on the row, calling this moves the service to the cheaper price and enqueues the
 // resize. Until then the row stays pending, so an operator can see that the customer is still
-// owed something.
+// owed something — and this checks for the credit note itself rather than trusting the caller
+// to have posted it, because "only call this after crediting" is a comment, not a constraint.
 func (s *Store) ApplyDowngrade(ctx context.Context, upgradeID string) error {
 	return s.apply(ctx, upgradeID, true)
 }
@@ -741,14 +742,15 @@ func (s *Store) apply(ctx context.Context, upgradeID string, allowCredit bool) e
 			invoiceID   *string
 			invoicePaid bool
 			prorated    int64
+			credited    bool
 		)
 		err := tx.QueryRow(ctx, `
 			SELECT u.service_id, u.to_price_version_id, u.status, u.invoice_id,
 			       COALESCE((SELECT status = 'paid' FROM invoices WHERE id = u.invoice_id), false),
-			       u.prorated_minor
+			       u.prorated_minor, u.credit_note_id IS NOT NULL
 			FROM service_upgrades u WHERE u.id = $1
 			FOR UPDATE OF u`, upgradeID).
-			Scan(&serviceID, &toPrice, &status, &invoiceID, &invoicePaid, &prorated)
+			Scan(&serviceID, &toPrice, &status, &invoiceID, &invoicePaid, &prorated, &credited)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -761,9 +763,20 @@ func (s *Store) apply(ctx context.Context, upgradeID string, allowCredit bool) e
 		if invoiceID != nil && !invoicePaid {
 			return fmt.Errorf("%w: the upgrade invoice is not paid", ErrNoInvoice)
 		}
-		if invoiceID == nil && prorated < 0 && !allowCredit {
-			return fmt.Errorf("%w: a downgrade is applied once its credit is posted; "+
-				"the credits package calls ApplyDowngrade", ErrCreditNotPosted)
+		// A downgrade carries no invoice: its money is a credit note, and the note is the only
+		// evidence the customer was paid for the price they gave up. The check is on the row
+		// rather than on the caller, because "ApplyDowngrade is only called after crediting" is
+		// a promise a future caller can break without noticing; `credit_note_id` is written in
+		// the same transaction as the ledger posting, so it cannot be set without money moving.
+		if invoiceID == nil && prorated < 0 {
+			if !allowCredit {
+				return fmt.Errorf("%w: a downgrade is applied once its credit is posted; "+
+					"the credits package calls ApplyDowngrade", ErrCreditNotPosted)
+			}
+			if !credited {
+				return fmt.Errorf("%w: this downgrade has no credit note, so nobody has been paid "+
+					"for the difference", ErrCreditNotPosted)
+			}
 		}
 
 		var (

@@ -629,6 +629,38 @@ func TestApplyingADowngradeNeedsTheCreditPosted(t *testing.T) {
 		t.Fatal("a downgrade repriced the subscription before its credit was posted")
 	}
 
+	// The direct call is refused too. `ApplyDowngrade` is the credits package's hook, and it
+	// checks the row rather than trusting the caller: a caller that forgot to post gets the same
+	// refusal as one that never intended to.
+	err = f.store.ApplyDowngrade(ctx, res.UpgradeID)
+	if !errors.Is(err, service.ErrCreditNotPosted) {
+		t.Fatalf("ApplyDowngrade with no credit note: error = %v, want ErrCreditNotPosted", err)
+	}
+
+	if err := f.pool.QueryRow(ctx, `SELECT price_version_id FROM subscriptions WHERE id = $1`,
+		f.subID).Scan(&subPrice); err != nil {
+		t.Fatalf("read subscription: %v", err)
+	}
+	if subPrice != f.priceID {
+		t.Fatal("a downgrade repriced the subscription before its credit was posted")
+	}
+
+	// The credit note is the evidence the difference was paid. The credits package writes
+	// `credit_note_id` in the same transaction as the ledger posting, so the column cannot be set
+	// without money having moved; this test writes that one column to stand in for it.
+	var noteID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO credit_notes (customer_id, currency, total_minor, reason, status, issued_at)
+		VALUES ($1, 'USD', 500, 'downgrade', 'issued', now()) RETURNING id`,
+		f.customerID).Scan(&noteID); err != nil {
+		t.Fatalf("credit note: %v", err)
+	}
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE service_upgrades SET credit_note_id = $2 WHERE id = $1`,
+		res.UpgradeID, noteID); err != nil {
+		t.Fatalf("link credit note: %v", err)
+	}
+
 	// Once the credits package has posted the credit, ApplyDowngrade moves the service.
 	if err := f.store.ApplyDowngrade(ctx, res.UpgradeID); err != nil {
 		t.Fatalf("apply downgrade: %v", err)

@@ -91,7 +91,8 @@ func TestInitializeAdvertisesItsMethods(t *testing.T) {
 		t.Fatalf("name = %q", res.Name)
 	}
 	want := []string{"gateway.describe", "gateway.create_checkout", "gateway.query_payment",
-		"gateway.refund", "gateway.verify_webhook"}
+		"gateway.refund", "gateway.verify_webhook", "gateway.create_billing_agreement",
+		"gateway.query_billing_agreement", "gateway.cancel_billing_agreement", "gateway.charge"}
 	if len(res.Capabilities) != len(want) {
 		t.Fatalf("capabilities = %v, want %v", res.Capabilities, want)
 	}
@@ -482,3 +483,27 @@ func TestFreeTextRefundReasonTravelsInMetadata(t *testing.T) {
 
 // clockFor returns a fixed time so a signature test is deterministic.
 func clockFor(at time.Time) func() time.Time { return func() time.Time { return at } }
+
+// Querying a settled payment carries the provider's own fee in namespaced metadata
+// (PAY-13). The protocol has no fee field, so the adapter's convention is what makes the
+// webhook path able to record it; a test that only checked the charge result would miss it.
+func TestQueryPaymentReportsTheProviderFee(t *testing.T) {
+	s, f := newTestServer(t)
+	f.mu.Lock()
+	f.sessions["cs_fee_1"] = &fakeSession{
+		ID: "cs_fee_1", Status: "complete", PaymentStatus: "paid", Amount: 1200,
+		Currency: "usd", Created: time.Now().Unix(), IntentID: "pi_fee_1",
+		Fee: 59, FeeCurrency: "usd",
+	}
+	f.mu.Unlock()
+	raw := call(t, s, "gateway.query_payment", map[string]any{"payment_id": "cs_fee_1"})
+	var res struct {
+		Metadata map[string]string `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Metadata["catalyst_fee_minor"] != "59" || res.Metadata["catalyst_fee_currency"] != "USD" {
+		t.Fatalf("fee metadata = %v", res.Metadata)
+	}
+}

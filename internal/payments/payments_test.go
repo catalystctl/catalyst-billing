@@ -19,10 +19,12 @@ package payments_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/extproto"
+	"github.com/catalyst/billing/internal/fulfilment"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/store"
@@ -55,18 +57,25 @@ func stripeShapedBody(eventID, sessionID string) []byte {
 type fakeGateway struct {
 	invoiceID string
 	amount    extproto.Amount
-	queried   []string
+	// fee is the provider's own transaction fee, when the test wants one reported.
+	fee     *extproto.Amount
+	queried []string
 }
 
 func (f *fakeGateway) Name() string { return "stripe" }
 
 func (f *fakeGateway) QueryPayment(_ context.Context, paymentID string) (extproto.QueryPaymentResult, error) {
 	f.queried = append(f.queried, paymentID)
+	metadata := map[string]string{"invoice_id": f.invoiceID}
+	if f.fee != nil {
+		metadata[payments.MetadataFeeMinor] = strconv.FormatInt(f.fee.Minor, 10)
+		metadata[payments.MetadataFeeCurrency] = f.fee.Currency
+	}
 	return extproto.QueryPaymentResult{
 		PaymentID: paymentID,
 		Status:    extproto.PaymentSucceeded,
 		Amount:    f.amount,
-		Metadata:  map[string]string{"invoice_id": f.invoiceID},
+		Metadata:  metadata,
 	}, nil
 }
 
@@ -360,5 +369,42 @@ func TestNonSettlementEventIsSkipped(t *testing.T) {
 	}
 	if len(results) != 1 || !results[0].Skipped {
 		t.Fatalf("results = %+v, want one skipped event", results)
+	}
+}
+
+// The provider's own fee reaches the payment row through the webhook path too (PAY-13).
+// It is recorded for reconciliation and does not change the amount applied to the invoice.
+func TestSettledPaymentRecordsProviderFee(t *testing.T) {
+	f := newFixture(t)
+	fee := extproto.Amount{Minor: 59, Currency: "USD"}
+	f.gateway.fee = &fee
+
+	body := stripeShapedBody("evt_fee", "cs_test_1")
+	if _, err := f.inbox.Receive(context.Background(), "stripe", "acct_test", payments.VerifiedEvent{
+		EventID: "evt_fee", EventType: payments.EventPaymentSucceeded, PaymentID: "cs_test_1",
+	}, body); err != nil {
+		t.Fatalf("receive: %v", err)
+	}
+	processor := payments.NewProcessor(f.pool, f.inbox, f.gateway, "acct_test", fulfilment.NewApplier(f.pool)).
+		WithAttempts(attemptLookup(f.pool))
+	if _, err := processor.Process(context.Background(), 10); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+
+	var got int64
+	if err := f.pool.QueryRow(context.Background(), `
+		SELECT fee_minor FROM payments WHERE provider_payment_id = 'cs_test_1'`).Scan(&got); err != nil {
+		t.Fatalf("read fee: %v", err)
+	}
+	if got != 59 {
+		t.Fatalf("fee_minor = %d, want 59", got)
+	}
+	var paid int64
+	if err := f.pool.QueryRow(context.Background(), `
+		SELECT amount_paid_minor FROM invoices WHERE id = $1`, f.invoiceID).Scan(&paid); err != nil {
+		t.Fatalf("read invoice: %v", err)
+	}
+	if paid != 1200 {
+		t.Fatalf("invoice paid = %d, want the gross 1200", paid)
 	}
 }

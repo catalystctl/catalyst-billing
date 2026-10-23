@@ -50,7 +50,7 @@ const SERVER_PATHS = new Set(["/healthz", "/readyz", "/metrics", "/api/v1/catalo
 // has no `route(...)` line and never will. `billing-profile` and `refund` are rendered inside
 // other screens. Anything else in this set is suspicious: a view nobody routes to is either dead
 // code or a route somebody forgot to add, which is why the test exists.
-const SHARED_VIEW_MODULES = new Set(["billing-profile", "refund", "not-found"]);
+const SHARED_VIEW_MODULES = new Set(["billing-profile", "refund", "not-found", "payment-methods"]);
 
 /**
  * The module that declares the route table.
@@ -345,6 +345,28 @@ test("every navigation permission is one this build declares", () => {
     .filter((entry) => entry.permission && !catalogue.has(entry.permission))
     .map((entry) => `${entry.href} (${entry.permission})`);
   assert.deepEqual(unknown, [], `navigation entries filtered by undeclared permissions: ${unknown.join(", ")}`);
+});
+
+test("the customer invoice page polls settlement after a redirect", () => {
+  // PAY-19: a hosted checkout returns the customer before the webhook necessarily lands, so
+  // the invoice page has to ask the server whether the allocation exists. A static guard is
+  // enough here because the failure it prevents is the call being deleted, not a wrong
+  // timeout: the endpoint itself is proven by internal/httpapi.
+  const file = files.find((f) => f.path.endsWith("/views/portal-invoice.ts"));
+  assert.ok(file, "portal-invoice.ts not found");
+  assert.match(file.body, /payment-status/, "the invoice page no longer asks for payment status");
+  assert.match(file.body, /startPaymentPolling/, "the polling helper is gone");
+  assert.match(file.body, /onDispose/, "polling is not cleaned up when the page is replaced");
+});
+
+test("the pay dialog names the saved method and keeps the card form off our origin", () => {
+  // PAY-18: the dialog exists to state which card a renewal will use and that the number is
+  // entered at the provider. Both are product claims; deleting either should be a red test.
+  const file = files.find((f) => f.path.endsWith("/views/payment-methods.ts"));
+  assert.ok(file, "payment-methods.ts not found");
+  assert.match(file.body, /methodIcon/, "the pay dialog no longer draws the saved method's brand");
+  assert.match(file.body, /openDialog/, "the pay flow is no longer a dialog");
+  assert.match(file.body, /checkout/, "the dialog no longer starts the hosted checkout");
 });
 
 test("every declared route has a way in", () => {

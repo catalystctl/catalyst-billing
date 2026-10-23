@@ -59,6 +59,8 @@ type fakeSession struct {
 	Created       int64
 	Metadata      map[string]string
 	IntentID      string
+	Fee           int64
+	FeeCurrency   string
 }
 
 type fakeIntent struct {
@@ -69,6 +71,8 @@ type fakeIntent struct {
 	AmountRefunded int64
 	Currency       string
 	Metadata       map[string]string
+	Fee            int64
+	FeeCurrency    string
 }
 
 type fakeRefund struct {
@@ -107,6 +111,7 @@ func (f *fakeStripe) config() config {
 		currencies:    []string{"USD", "EUR"},
 		timeout:       5 * time.Second,
 		tolerance:     5 * time.Minute,
+		savedCards:    true,
 	}
 }
 
@@ -267,6 +272,16 @@ func (f *fakeStripe) getSession(w http.ResponseWriter, id string) {
 			"No such checkout.session: "+id)
 		return
 	}
+	intentValue := any(sess.IntentID)
+	if sess.Fee > 0 {
+		intentValue = map[string]any{
+			"id": sess.IntentID, "amount": sess.Amount, "currency": sess.Currency,
+			"amount_refunded": 0,
+			"latest_charge": map[string]any{
+				"balance_transaction": map[string]any{"fee": sess.Fee, "currency": sess.FeeCurrency},
+			},
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id":             sess.ID,
@@ -277,7 +292,7 @@ func (f *fakeStripe) getSession(w http.ResponseWriter, id string) {
 		"currency":       sess.Currency,
 		"created":        sess.Created,
 		"metadata":       sess.Metadata,
-		"payment_intent": sess.IntentID,
+		"payment_intent": intentValue,
 	})
 }
 
@@ -307,12 +322,18 @@ func (f *fakeStripe) getIntent(w http.ResponseWriter, id string) {
 			"No such payment_intent: "+id)
 		return
 	}
+	latest := any(nil)
+	if in.Fee > 0 {
+		latest = map[string]any{
+			"balance_transaction": map[string]any{"fee": in.Fee, "currency": in.FeeCurrency},
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id": in.ID, "object": "payment_intent", "status": in.Status,
 		"amount": in.Amount, "amount_received": in.AmountReceived,
 		"amount_refunded": in.AmountRefunded, "currency": in.Currency,
-		"metadata": in.Metadata,
+		"metadata": in.Metadata, "latest_charge": latest,
 	})
 }
 

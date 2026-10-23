@@ -140,6 +140,17 @@ type SaveMethodRequest struct {
 	// method a customer saves becomes the default regardless, because a customer with one
 	// card and no default is a renewal that silently stops.
 	MakeDefault bool
+	// ProviderAgreementID and ProviderCustomerID are the provider's mandate references,
+	// present when the method was created through the provider's hosted agreement flow.
+	// They are identifiers, never credentials; the token remains in Token.
+	ProviderAgreementID string
+	ProviderCustomerID  string
+	// ConsentAt, ConsentIP, ConsentUserAgent and TermsVersion are the evidence written
+	// beside the mandate in the same transaction. A charge without this record is refused.
+	ConsentAt        *time.Time
+	ConsentIP        string
+	ConsentUserAgent string
+	TermsVersion     string
 }
 
 // Agreements stores saved methods and charges them off-session.
@@ -226,6 +237,13 @@ func (a *Agreements) offSessionEnabled(ctx context.Context) (bool, error) {
 	return enabled, nil
 }
 
+// OffSessionEnabled reports the operator's switch without requiring a charger. It is what
+// the portal asks before promising an automatic charge on an installation whose adapter has
+// not been attached yet.
+func (a *Agreements) OffSessionEnabled(ctx context.Context) (bool, error) {
+	return a.offSessionEnabled(ctx)
+}
+
 // ------------------------------------------------------------------ storage --
 
 // methodColumns is the select list, in the order scanMethod expects.
@@ -266,6 +284,11 @@ func (r SaveMethodRequest) normalize() (SaveMethodRequest, error) {
 	r.Brand = strings.TrimSpace(r.Brand)
 	r.Last4 = strings.TrimSpace(r.Last4)
 	r.Label = strings.TrimSpace(r.Label)
+	r.ProviderAgreementID = strings.TrimSpace(r.ProviderAgreementID)
+	r.ProviderCustomerID = strings.TrimSpace(r.ProviderCustomerID)
+	r.ConsentIP = strings.TrimSpace(r.ConsentIP)
+	r.ConsentUserAgent = strings.TrimSpace(r.ConsentUserAgent)
+	r.TermsVersion = strings.TrimSpace(r.TermsVersion)
 
 	switch {
 	case r.CustomerID == "":
@@ -282,6 +305,16 @@ func (r SaveMethodRequest) normalize() (SaveMethodRequest, error) {
 		return r, fmt.Errorf("%w: the brand is too long", ErrInvalidMethod)
 	case len(r.Label) > 80:
 		return r, fmt.Errorf("%w: the label is too long", ErrInvalidMethod)
+	case len(r.ProviderAgreementID) > 512:
+		return r, fmt.Errorf("%w: the provider agreement reference is too long", ErrInvalidMethod)
+	case len(r.ProviderCustomerID) > 512:
+		return r, fmt.Errorf("%w: the provider customer reference is too long", ErrInvalidMethod)
+	case len(r.ConsentIP) > 64:
+		return r, fmt.Errorf("%w: the consent address is too long", ErrInvalidMethod)
+	case len(r.ConsentUserAgent) > 512:
+		return r, fmt.Errorf("%w: the consent user agent is too long", ErrInvalidMethod)
+	case len(r.TermsVersion) > 80:
+		return r, fmt.Errorf("%w: the terms version is too long", ErrInvalidMethod)
 	case r.Last4 != "" && (len(r.Last4) != 4 || !digits(r.Last4)):
 		return r, fmt.Errorf("%w: the last four must be four digits", ErrInvalidMethod)
 	case (r.ExpiryMonth == nil) != (r.ExpiryYear == nil):
@@ -325,12 +358,11 @@ func (a *Agreements) Save(ctx context.Context, req SaveMethodRequest) (Method, e
 
 	var out Method
 	err = a.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		// Lock the customer's methods so "is there already a default?" and "make this the
-		// default" cannot interleave with another save. The partial unique index is the
-		// backstop; this is what keeps the common path from tripping it.
-		if _, err := tx.Exec(ctx,
-			`SELECT 1 FROM payment_methods WHERE customer_id = $1 FOR UPDATE`, req.CustomerID); err != nil {
-			return fmt.Errorf("payments: lock saved methods: %w", err)
+		// Serialise saves for one customer on the customer row. Locking the methods
+		// themselves would lock nothing when the customer has none yet, so two first
+		// saves could both believe there is no default and race the partial unique index.
+		if err := lockCustomer(ctx, tx, req.CustomerID); err != nil {
+			return err
 		}
 
 		var hasDefault bool
@@ -375,6 +407,13 @@ func (a *Agreements) Save(ctx context.Context, req SaveMethodRequest) (Method, e
 			return fmt.Errorf("payments: save payment method: %w", err)
 		}
 		out = m
+
+		// The mandate is written in the same transaction as the method: a saved token
+		// without a record of when and how it was authorised is a charge nobody can
+		// explain later. recordAgreement upserts the pending hosted row when there is one.
+		if err := a.recordAgreement(ctx, tx, m, req); err != nil {
+			return err
+		}
 
 		// The audit row names the display metadata and the provider, never the token: an
 		// append-only table is the last place a credential should be readable.
@@ -441,6 +480,9 @@ func (a *Agreements) Get(ctx context.Context, customerID, id string) (Method, er
 func (a *Agreements) SetDefault(ctx context.Context, customerID, id string) (Method, error) {
 	var out Method
 	err := a.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := lockCustomer(ctx, tx, customerID); err != nil {
+			return err
+		}
 		var exists bool
 		if err := tx.QueryRow(ctx, `
 			SELECT EXISTS (SELECT 1 FROM payment_methods WHERE id = $1 AND customer_id = $2)`,
@@ -515,19 +557,42 @@ func (a *Agreements) Default(ctx context.Context, customerID, provider string) (
 	return m, nil
 }
 
-// record writes the audit row inside the caller's transaction.
+// lockCustomer serialises the operations that must agree about "the default".
+//
+// Two statements — clear the old default, set the new one — cannot be made atomic by a single
+// UPDATE because the partial unique index is checked row by row, so the operations that move
+// the default take a lock on the customer first. The index remains the backstop; this is what
+// keeps the ordinary path from ever reaching it. Locking the methods themselves would lock
+// nothing when the customer has none yet, which is the case that used to race.
+func lockCustomer(ctx context.Context, tx pgx.Tx, customerID string) error {
+	var id string
+	err := tx.QueryRow(ctx, `SELECT id FROM customers WHERE id = $1 FOR UPDATE`, customerID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: no customer %s", ErrMethodNotFound, customerID)
+	}
+	if err != nil {
+		return fmt.Errorf("payments: lock customer: %w", err)
+	}
+	return nil
+}
+
+// record writes a payment-method audit row inside the caller's transaction.
 //
 // Without an auditor the row is still written, attributed to the system: a change to a
 // stored payment credential must not be able to happen without a trace just because no
 // request caused it.
 func (a *Agreements) record(ctx context.Context, tx pgx.Tx, action, targetID string, changes map[string]any) error {
+	return a.recordFor(ctx, tx, action, "payment_method", targetID, changes)
+}
+
+func (a *Agreements) recordFor(ctx context.Context, tx pgx.Tx, action, targetType, targetID string, changes map[string]any) error {
 	if a.auditor != nil {
-		return a.auditor.RecordAction(ctx, tx, action, "payment_method", targetID, changes)
+		return a.auditor.RecordAction(ctx, tx, action, targetType, targetID, changes)
 	}
 	return audit.Record(ctx, tx, audit.Event{
 		Actor:      audit.Actor{Kind: audit.ActorSystem},
 		Action:     action,
-		TargetType: "payment_method",
+		TargetType: targetType,
 		TargetID:   targetID,
 		Outcome:    audit.OutcomeSuccess,
 		Changes:    changes,
@@ -544,6 +609,11 @@ type OffSessionCharge struct {
 	Provider   string
 	// ProviderToken is the saved token. It travels to the adapter and nowhere else.
 	ProviderToken string
+	// AgreementID is the mandate this charge relies on, and ProviderCustomerID is the
+	// provider's customer reference the mandate was issued to. A charge with no agreement
+	// is refused before this struct is built.
+	AgreementID        string
+	ProviderCustomerID string
 	// AmountMinor and Currency are what the invoice still owes, in integer minor units.
 	AmountMinor int64
 	Currency    string
@@ -566,6 +636,9 @@ type OffSessionResult struct {
 	// AmountMinor is what was actually charged, when the adapter reports it. A settled amount
 	// that differs from what the invoice owes is refused rather than absorbed.
 	AmountMinor int64
+	// FeeMinor is the provider's own transaction fee, when it reports one. It is recorded on
+	// the payment row for reconciliation and never posted to the ledger.
+	FeeMinor int64
 	// FailureCode is the provider's decline code, e.g. "card_declined".
 	FailureCode string
 	// FailureMessage is the provider's human explanation. It is shown to the customer.
@@ -705,6 +778,14 @@ func (a *Agreements) ChargeInvoice(ctx context.Context, invoiceID string) (Charg
 	out.MethodID = method.ID
 	out.Amount = &outstanding
 
+	// The mandate is read before the attempt is recorded. A token without an active
+	// agreement is not permission to charge it, and discovering that after a provider call
+	// would mean charging first and asking afterwards.
+	agreement, err := a.activeAgreementForMethod(ctx, method.ID)
+	if err != nil {
+		return out, err
+	}
+
 	opKey := "offsession:" + invoiceID + ":" + method.ID
 	attemptID, priorStatus, priorRef, err := a.attempt(ctx, opKey)
 	if err != nil {
@@ -719,23 +800,33 @@ func (a *Agreements) ChargeInvoice(ctx context.Context, invoiceID string) (Charg
 			return out, fmt.Errorf("%w: attempt %s is settled but has no provider reference",
 				ErrNotChargeable, attemptID)
 		}
-		if err := a.settle(ctx, invoiceID, method, priorRef, outstanding); err != nil {
+		if err := a.settle(ctx, invoiceID, method, priorRef, outstanding, 0); err != nil {
 			return out, err
 		}
 		out.Status = ChargeSettled
 		out.Detail = "already charged; the settlement was completed"
 		return out, nil
-	case "pending", "requires_action", "created":
+	case "pending", "requires_action":
 		out.Status = ChargePending
 		out.Detail = "a charge is already in progress"
 		return out, nil
+	case "created":
+		// A recorded attempt with no provider answer: the process died between the insert and
+		// the call, or the call failed in transport. Replaying is safe because the operation key
+		// is the same one, and the protocol requires a mutating call to return the first result
+		// for a repeated key rather than performing a second charge.
 	case "failed", "cancelled":
 		// A retry loop that re-charges a declined card every minute is how a customer's card
 		// gets blocked by their bank. A failed attempt is reported, not repeated; a new attempt
 		// needs a new decision (a different method, or a manual payment).
 		out.Status = ChargeDeclined
 		out.Detail = "a previous attempt for this invoice was declined"
-		return out, nil
+		return out, &DeclinedError{
+			InvoiceID: invoiceID,
+			MethodID:  method.ID,
+			Code:      "previous_decline",
+			Message:   "an earlier attempt for this invoice was declined; pay it manually or save a different method",
+		}
 	}
 
 	if attemptID == "" {
@@ -751,15 +842,17 @@ func (a *Agreements) ChargeInvoice(ctx context.Context, invoiceID string) (Charg
 	}
 
 	res, err := a.charger.ChargeOffSession(ctx, OffSessionCharge{
-		InvoiceID:     invoiceID,
-		CustomerID:    customerID,
-		MethodID:      method.ID,
-		Provider:      method.Provider,
-		ProviderToken: method.Token(),
-		AmountMinor:   outstanding.Minor(),
-		Currency:      cur.Code(),
-		OperationKey:  opKey,
-		Description:   "Invoice " + invoiceID,
+		InvoiceID:          invoiceID,
+		CustomerID:         customerID,
+		MethodID:           method.ID,
+		Provider:           method.Provider,
+		ProviderToken:      method.Token(),
+		AgreementID:        agreement.ID,
+		ProviderCustomerID: agreement.ProviderCustomerID,
+		AmountMinor:        outstanding.Minor(),
+		Currency:           cur.Code(),
+		OperationKey:       opKey,
+		Description:        "Invoice " + invoiceID,
 	})
 	if err != nil {
 		// A transport failure is not a decline: the charge may or may not have happened, so
@@ -781,7 +874,7 @@ func (a *Agreements) ChargeInvoice(ctx context.Context, invoiceID string) (Charg
 			return out, fmt.Errorf("%w: charged %d, owed %d",
 				ErrAmountMismatch, res.AmountMinor, outstanding.Minor())
 		}
-		if err := a.settle(ctx, invoiceID, method, res.ProviderPaymentID, outstanding); err != nil {
+		if err := a.settle(ctx, invoiceID, method, res.ProviderPaymentID, outstanding, res.FeeMinor); err != nil {
 			return out, err
 		}
 		out.Status = ChargeSettled
@@ -852,6 +945,15 @@ func (a *Agreements) ChargeDue(ctx context.Context, limit int) ([]ChargeOutcome,
 		  AND i.amount_paid_minor < i.total_minor
 		  AND i.due_at IS NOT NULL
 		  AND i.due_at <= $3
+		  -- A customer with a checkout session open is about to pay by hand. Skipping is
+		  -- the difference between one charge and two. This sweep's own attempts are
+		  -- excluded by their key prefix, so a crashed attempt is retried rather than
+		  -- blocking the invoice forever.
+		  AND NOT EXISTS (
+		      SELECT 1 FROM payment_attempts pa
+		      WHERE pa.invoice_id = i.id
+		        AND pa.status IN ('created', 'pending', 'requires_action')
+		        AND pa.operation_key NOT LIKE 'offsession:%')
 		ORDER BY i.due_at
 		LIMIT $1`, limit, a.charger.Name(), a.Now())
 	if err != nil {
@@ -872,16 +974,23 @@ func (a *Agreements) ChargeDue(ctx context.Context, limit int) ([]ChargeOutcome,
 	}
 
 	out := make([]ChargeOutcome, 0, len(ids))
+	var runErr error
 	for _, id := range ids {
 		res, err := a.ChargeInvoice(ctx, id)
 		out = append(out, res)
-		if err != nil {
-			// One declined card must not stop the run: the other customers still owe money and
-			// their charges are independent. The outcome records which invoice failed.
-			continue
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrDeclined):
+			// A decline is an outcome, not a failure of the run: it is recorded on the invoice,
+			// on the attempt and on the method, and dunning escalates it. Reporting it as an
+			// error here would make an operator's cron alert fire every time a card expired.
+		default:
+			// Anything else — a transport failure, a misconfigured account — must be visible, and
+			// one invoice's problem must not stop the rest of the run.
+			runErr = errors.Join(runErr, fmt.Errorf("invoice %s: %w", id, err))
 		}
 	}
-	return out, nil
+	return out, runErr
 }
 
 // settle applies a provider-confirmed charge through the ordinary settlement path.
@@ -889,7 +998,7 @@ func (a *Agreements) ChargeDue(ctx context.Context, limit int) ([]ChargeOutcome,
 // Everything in here is one transaction: the attempt's status, the payment row, its
 // allocation, the ledger postings, the invoice transition, the provisioning job and the
 // audit row. That is the same set the webhook path commits, because it is the same code.
-func (a *Agreements) settle(ctx context.Context, invoiceID string, m Method, providerPaymentID string, amount money.Amount) error {
+func (a *Agreements) settle(ctx context.Context, invoiceID string, m Method, providerPaymentID string, amount money.Amount, feeMinor int64) error {
 	return a.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
 			UPDATE payment_attempts
@@ -910,6 +1019,24 @@ func (a *Agreements) settle(ctx context.Context, invoiceID string, m Method, pro
 			return err
 		}
 
+		// The fee is the provider's cost of collecting the money, not revenue. It is
+		// written beside the payment for reconciliation; the ledger records the gross.
+		if feeMinor > 0 {
+			if _, err := tx.Exec(ctx, `
+				UPDATE payments SET fee_minor = $3, payment_method_id = $4
+				WHERE provider = $1 AND provider_payment_id = $2`,
+				a.charger.Name(), providerPaymentID, feeMinor, m.ID); err != nil {
+				return fmt.Errorf("payments: record provider fee: %w", err)
+			}
+		} else {
+			if _, err := tx.Exec(ctx, `
+				UPDATE payments SET payment_method_id = $3
+				WHERE provider = $1 AND provider_payment_id = $2`,
+				a.charger.Name(), providerPaymentID, m.ID); err != nil {
+				return fmt.Errorf("payments: record payment method: %w", err)
+			}
+		}
+
 		if _, err := tx.Exec(ctx, `
 			UPDATE payment_methods
 			SET last_used_at = now(), last_failure_at = NULL, last_failure_code = NULL,
@@ -923,6 +1050,7 @@ func (a *Agreements) settle(ctx context.Context, invoiceID string, m Method, pro
 			"provider_payment_id": providerPaymentID,
 			"amount_minor":        amount.Minor(),
 			"currency":            amount.Currency().Code(),
+			"fee_minor":           feeMinor,
 		})
 	})
 }

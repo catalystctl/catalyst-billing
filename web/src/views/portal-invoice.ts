@@ -30,7 +30,8 @@ import { dateOnly, dateTime, type Amount } from "../lib/format";
 import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import { banner, btn, card, moneyEl, pageHead, resource, skeletonPage, statusBadge, withBusy } from "../ui/kit";
-import { payButton, type PortalInvoice } from "./portal";
+import { type PortalInvoice } from "./portal";
+import { openPayDialog } from "./payment-methods";
 
 export const meta = { title: "Invoice", crumb: "Invoice" };
 
@@ -109,6 +110,7 @@ export default async function portalInvoicePage(ctx: Ctx): Promise<Node> {
     );
   };
   paint();
+  startPaymentPolling(ctx, id, paint);
   return host;
 }
 
@@ -190,7 +192,7 @@ function render(ctx: Ctx, view: InvoiceView, repaint: () => void): Node {
       actions: h(
         "div",
         { class: "row-wrap" },
-        inv.payable ? payButton(ctx, invoice, { size: "md" }) : null,
+        inv.payable ? payModalButton(ctx, invoice, repaint) : null,
         creditButton,
         // The document the invoice is about. It is only offered when the server confirms there
         // is one: a draft has no number and no PDF, and a button that leads to a 404 is worse
@@ -371,6 +373,73 @@ function totalRow(label: string, amount: Amount, grand = false): HTMLElement {
     h("span", null, label),
     moneyEl(amount),
   );
+}
+
+/** The pay action opens a dialog first.
+ *
+ *  It is the same hosted checkout underneath, but the dialog names the saved card that a
+ *  renewal will use and states plainly that the number is entered on the provider's page. A
+ *  button that jumps straight to a third party hides both facts at the moment they matter. */
+function payModalButton(ctx: Ctx, invoice: PortalInvoice, repaint: () => void): HTMLButtonElement {
+  const label = h("span", null, "Pay ", moneyEl(invoice.due));
+  const el = btn(label, {
+    variant: "primary",
+    size: "md",
+    icon: "card",
+    title: invoice.number ? `Pay invoice ${invoice.number}` : "Pay this invoice",
+  }) as HTMLButtonElement;
+  el.addEventListener("click", () => openPayDialog(ctx, invoice, repaint));
+  return el;
+}
+
+interface PaymentStatus {
+  invoice_id: string;
+  status: string;
+  settled: boolean;
+  remaining: Amount;
+  paid: Amount;
+  total: Amount;
+}
+
+/** Polls the local settlement state after a customer returns from the provider.
+ *
+ *  The redirect is not proof of payment: the webhook writes the allocation, and this endpoint
+ *  reports whether that allocation exists. Polling stops as soon as it does, so a settled
+ *  invoice costs one request, and gives up after two minutes rather than running forever. */
+function startPaymentPolling(ctx: Ctx, invoiceID: string, repaint: () => void): void {
+  let stopped = false;
+  let waited = 0;
+  let timer = 0;
+  const tick = async (): Promise<void> => {
+    if (stopped) return;
+    try {
+      const status = await ctx.api.get<PaymentStatus>(
+        `/api/v1/portal/invoices/${encodeURIComponent(invoiceID)}/payment-status`,
+        { cache: false },
+      );
+      if (status.settled) {
+        stopped = true;
+        ctx.api.invalidate("/api/v1/portal");
+        ctx.toast("Payment received", {
+          tone: "success",
+          detail: "The invoice has been paid. This page is now up to date.",
+        });
+        repaint();
+        return;
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      // A poll is a background courtesy, not a page load: a failure here must not replace a
+      // readable invoice with an error.
+    }
+    waited += 5000;
+    if (waited < 120_000) timer = window.setTimeout(() => void tick(), 5000);
+  };
+  timer = window.setTimeout(() => void tick(), 3000);
+  ctx.onDispose(() => {
+    stopped = true;
+    window.clearTimeout(timer);
+  });
 }
 
 function noticeFor(inv: InvoicePayload, doc: DocumentState | null): Node | null {

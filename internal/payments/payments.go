@@ -559,6 +559,18 @@ func (p *Processor) processOne(ctx context.Context, ev PendingEvent) (ProcessRes
 		return out, fmt.Errorf("payment %s amount: %w", paymentID, err)
 	}
 
+	// The provider's own fee is not revenue and is not posted. It is recorded beside the
+	// payment for reconciliation, and only when the provider reports it in the payment's
+	// own currency: a fee in another currency is an anomaly, not a number to add.
+	var feeMinor int64
+	if minor, currency, ok := metadataFee(payment.Metadata); ok {
+		if currency != "" && !strings.EqualFold(currency, amount.Currency().Code()) {
+			return out, fmt.Errorf("%w: payment %s fee is in %s, payment is %s",
+				ErrAmountMismatch, paymentID, currency, amount.Currency().Code())
+		}
+		feeMinor = minor
+	}
+
 	// The invoice is carried in the checkout metadata, which the core set when it
 	// created the session. It is not taken from the webhook body: that would let
 	// a provider payload (or a forged one) choose which invoice to settle.
@@ -601,7 +613,18 @@ func (p *Processor) processOne(ctx context.Context, ev PendingEvent) (ProcessRes
 			AmountMinor:       amount.Minor(),
 			Currency:          amount.Currency().Code(),
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		if feeMinor > 0 {
+			if _, err := tx.Exec(ctx, `
+				UPDATE payments SET fee_minor = $4
+				WHERE provider = $1 AND provider_account = $2 AND provider_payment_id = $3`,
+				ev.Provider, ev.ProviderAccount, paymentID, feeMinor); err != nil {
+				return fmt.Errorf("payments: record provider fee: %w", err)
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return out, err

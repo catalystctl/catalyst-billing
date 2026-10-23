@@ -63,6 +63,7 @@ func launch(t *testing.T, f *fakeStripe) *extproto.Client {
 			"STRIPE_WEBHOOK_SECRET=" + f.webhookKey,
 			"STRIPE_API_BASE=" + f.baseURL(),
 			"STRIPE_CURRENCIES=USD,EUR",
+			"STRIPE_SAVED_CARDS=true",
 		},
 		CoreVersion:      "test",
 		HandshakeTimeout: 10 * time.Second,

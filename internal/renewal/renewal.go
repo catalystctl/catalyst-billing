@@ -23,6 +23,7 @@ import (
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/calendar"
 	"github.com/catalyst/billing/internal/catalog"
+	"github.com/catalyst/billing/internal/credit"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
@@ -351,6 +352,16 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 		}
 		issued, err := e.issuer.Issue(ctx, tx, invoiceID, e.Series)
 		if err != nil {
+			return err
+		}
+
+		// A renewal is a new invoice, and `credits.auto_use` promises that a balance covering it
+		// settles it without the customer doing anything (CRD-03). The rule used to run only on
+		// the checkout path, so a customer who topped up and then let the renewal come round was
+		// invoiced and charged by the gateway while their balance sat untouched — the opposite of
+		// what the credit page says. It runs in this transaction, on the invoice's own id, so a
+		// retried period applies once and a rolled-back renewal spends nothing.
+		if _, err := credit.ApplyCreditToInvoice(ctx, tx, issued.InvoiceID); err != nil {
 			return err
 		}
 

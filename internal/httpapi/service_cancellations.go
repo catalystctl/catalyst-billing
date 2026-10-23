@@ -156,6 +156,10 @@ func (s *Server) handleRequestCancellation(w http.ResponseWriter, r *http.Reques
 	// whether the next invoice is coming. Best-effort — the request itself is already recorded,
 	// and failing the response because a mail could not be queued would be the wrong trade.
 	s.notifyCancellationReceived(r.Context(), id, out)
+	// And tell the staff who own the queue. The customer's mail says "we have your request";
+	// without this, nobody knows a decision is waiting, which is how an immediate cancellation
+	// sits pending until the customer chases it (CAN-04).
+	s.notifyStaffCancellationReceived(r.Context(), out)
 
 	body := cancellationJSON(out)
 	if out.Status == service.StatusScheduled && out.EffectiveAt != nil {
@@ -480,4 +484,94 @@ func (s *Server) notifyCancellationReceived(ctx context.Context, serviceID strin
 		_, err := notify.CancellationReceived(ctx, tx, s.notify, in)
 		return err
 	})
+}
+
+// notifyStaffCancellationReceived puts the request in the inbox of every operator who can act on
+// it (CAN-04).
+//
+// # Why the inbox rather than a mail
+//
+// A cancellation needs a *decision*, and the decision is the queue. There is no configured staff
+// mailbox in this product — `general.system_email_address` is the no-reply sender, and mailing a
+// queue to it would be mailing the operator's own outbox. An inbox row is where the panel already
+// tells a person "something is waiting for you", it is readable by any signed-in user (every role
+// holds the customer-facing permissions its own inbox needs), and it has a dedupe key, so the
+// same request cannot notify twice.
+//
+// # Why the recipients are resolved by permission and not by role name
+//
+// "Who can act on a cancellation" is `service:read:all`. Asking the permission means an operator
+// on a custom role gets the notification the day the role is given the permission, and stops
+// getting it the day it is taken away — a list of role names would be a copy of the matrix that
+// drifts from it.
+//
+// It is best-effort and post-commit, exactly like the customer's mail: the request is the durable
+// fact, and a notification is a courtesy that must not be able to refuse a cancellation.
+func (s *Server) notifyStaffCancellationReceived(ctx context.Context, out service.Cancellation) {
+	if s.pool == nil || out.ID == "" {
+		return
+	}
+
+	var (
+		product  string
+		customer string
+		email    string
+	)
+	if err := s.pool.QueryRow(ctx, `
+		SELECT p.name, c.name, c.email
+		FROM services s
+		JOIN products p ON p.id = s.product_id
+		JOIN customers c ON c.id = s.customer_id
+		WHERE s.id = $1`, out.ServiceID).Scan(&product, &customer, &email); err != nil {
+		return
+	}
+	if customer == "" {
+		customer = email
+	}
+
+	when := "at the end of the period"
+	if out.Type == service.CancelImmediate {
+		when = "immediately, which needs a decision"
+	}
+	body := customer + " asked to cancel " + product + " " + when + "."
+	if out.Reason != "" {
+		body += " Their reason: " + out.Reason
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT u.id::text
+		FROM users u
+		JOIN staff_roles sr ON sr.user_id = u.id
+		JOIN role_permissions rp ON rp.role_id = sr.role_id
+		WHERE rp.permission = $1 AND u.status = 'active'
+		ORDER BY 1`, string(authn.PermServiceReadAll))
+	if err != nil {
+		return
+	}
+	var recipients []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return
+		}
+		recipients = append(recipients, id)
+	}
+	rows.Close()
+
+	for _, userID := range recipients {
+		// One row per request per operator: a second request on the same service is a new row
+		// (new id), while a retried delivery of this one is the same row.
+		if _, err := notify.Create(ctx, s.pool, notify.Notification{
+			UserID:    userID,
+			EventKey:  notify.EventServiceCancellationReceived,
+			Title:     "Cancellation requested",
+			Body:      body,
+			URL:       "/cancellations",
+			DedupeKey: "service_cancellation:" + out.ID,
+		}); err != nil {
+			// A failed inbox write must not fail the request that already committed.
+			continue
+		}
+	}
 }

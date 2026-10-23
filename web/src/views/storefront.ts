@@ -416,40 +416,9 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
       ),
     );
 
-  /**
-   * The currency control (SF-18).
-   *
-   * It changes the URL rather than the rendered amounts, because there is no exchange rate:
-   * choosing EUR asks the server for the products that are sold in EUR. The control is absent
-   * when the operator switched it off or when there is nothing to switch between — a picker with
-   * one option is a control that cannot do anything.
-   */
-  const currencySelect = (data: CatalogResponse): HTMLElement | null => {
-    if (data.currency_switcher === false || currencies.length < 2) return null;
-    const selected = (currency || data.currency || "").toUpperCase();
-    return h(
-      "select",
-      {
-        class: "select",
-        id: "storefront-currency",
-        "aria-label": tx("storefront.currency.label", "Currency"),
-        onchange: (event: Event) => {
-          const next = (event.target as HTMLSelectElement).value;
-          if (!next) return;
-          const url = new URL(window.location.href);
-          url.searchParams.set("currency", next);
-          // A full navigation, not a query patch: the catalogue itself changes, and the server
-          // is what decides which products this visitor may see.
-          window.location.assign(url.pathname + url.search);
-        },
-      },
-      ...currencies.map((row) => {
-        const option = h("option", { value: row.code }, `${row.code} — ${row.name}`);
-        if (row.code.toUpperCase() === selected) option.selected = true;
-        return option;
-      }),
-    );
-  };
+  /** The currency control, built by the shared helper below. */
+  const currencySelect = (data: CatalogResponse): HTMLElement | null =>
+    storefrontCurrencySelect(currencies, currency || data.currency || "", data.currency_switcher !== false);
 
   /**
    * The storefront's own language control (SF-19).
@@ -482,6 +451,46 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
   void load();
   void loadFeed();
   return host;
+}
+
+/**
+ * The storefront currency control (SF-18), shared by the index and the category/product page so a
+ * visitor cannot be offered a switch on one screen and not the other.
+ *
+ * It changes the URL rather than the rendered amounts, because there is no exchange rate: choosing
+ * EUR asks the server for the products that are *sold* in EUR. It is absent when the operator
+ * switched it off or when there is nothing to switch between — a picker with one option is a
+ * control that cannot do anything.
+ */
+export function storefrontCurrencySelect(
+  rows: PublicCurrency[],
+  selected: string,
+  enabled: boolean,
+): HTMLElement | null {
+  if (!enabled || rows.length < 2) return null;
+  const current = selected.toUpperCase();
+  return h(
+    "select",
+    {
+      class: "select",
+      id: "storefront-currency",
+      "aria-label": tx("storefront.currency.label", "Currency"),
+      onchange: (event: Event) => {
+        const next = (event.target as HTMLSelectElement).value;
+        if (!next) return;
+        const url = new URL(window.location.href);
+        url.searchParams.set("currency", next);
+        // A full navigation, not a query patch: the catalogue itself changes, and the server is
+        // what decides which products this visitor may see.
+        window.location.assign(url.pathname + url.search);
+      },
+    },
+    ...rows.map((row) => {
+      const option = h("option", { value: row.code }, `${row.code} — ${row.name}`);
+      if (row.code.toUpperCase() === current) option.selected = true;
+      return option;
+    }),
+  );
 }
 
 /** Shared with the product page so the two cannot drift. */

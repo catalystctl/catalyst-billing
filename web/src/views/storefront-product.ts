@@ -41,7 +41,14 @@ import { descriptionBody } from "../lib/richtext";
 import { loadSession } from "../lib/session";
 import type { AuthCtx, Session } from "../lib/types";
 import { badge, btn, emptyState, errorState, field, select, skeletonPage } from "../ui/kit";
-import { intervalLabel, productGrid, type PublicCategory, type PublicProduct } from "./storefront";
+import { loadCurrencies, type PublicCurrency } from "./cart";
+import {
+  intervalLabel,
+  productGrid,
+  storefrontCurrencySelect,
+  type PublicCategory,
+  type PublicProduct,
+} from "./storefront";
 
 export const meta = { title: "Product" };
 
@@ -84,6 +91,7 @@ interface Product extends PublicProduct {
 interface CatalogResponse {
   kind?: "product" | "category";
   currency?: string;
+  currency_switcher?: boolean;
   // Product page.
   slug?: string;
   name?: string;
@@ -140,21 +148,30 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
   // A plan carried back from the sign-in page (`?add=<price version>`). Consumed once, after
   // the page has rendered, so a failure is reported on the page the customer was using.
   let pendingAdd: string | null = ctx.query.get("add");
+  // The offered currencies and whether the operator wants the switcher. A visitor who landed on a
+  // product page is one click from the rest of the shop, so the control has to be here too.
+  let currencies: PublicCurrency[] = [];
+  let switcherEnabled = true;
+  let servedCurrency = currency;
 
   const load = async () => {
     try {
       // The record and the identity, in parallel. `loadSession` also installs the CSRF token a
       // mutation needs, and it answers null for a visitor rather than throwing.
-      const [data, me] = await Promise.all([
+      const [data, me, rows] = await Promise.all([
         ctx.api.get<CatalogResponse>(`/api/v1/catalog/${encodeURIComponent(slug)}`, {
           cache: false,
           signal: controller.signal,
           query: { currency },
         }),
         loadSession(ctx.api).catch(() => null),
+        loadCurrencies(ctx.api, controller.signal).catch(() => [] as PublicCurrency[]),
       ]);
       latest = data;
       session = me;
+      currencies = rows;
+      servedCurrency = (data.currency ?? currency).toUpperCase();
+      switcherEnabled = data.currency_switcher !== false;
       swap(host, render(data));
       if (data.kind === "product" && pendingAdd) {
         const wanted = pendingAdd;
@@ -231,6 +248,7 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
         // funnel. A visitor who clicks it is asked to sign in and brought back to it.
         h("a", { href: "/cart" }, tx("storefront.nav.cart", "Cart")),
         session ? null : h("a", { href: "/login" }, tx("storefront.nav.signin", "Sign in")),
+        storefrontCurrencySelect(currencies, servedCurrency, switcherEnabled),
         languageSelect(),
         // The way back out. An operator gets the panel, a customer the portal, a visitor the
         // sign-in page — the storefront is public for all three, so it has to know which one it
@@ -260,8 +278,10 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
     );
 
   /** withCurrency keeps the visitor in the currency they chose across storefront links. */
-  const withCurrency = (path: string): string =>
-    currency ? `${path}${path.includes("?") ? "&" : "?"}currency=${encodeURIComponent(currency)}` : path;
+  const withCurrency = (path: string): string => {
+    const code = servedCurrency || currency;
+    return code ? `${path}${path.includes("?") ? "&" : "?"}currency=${encodeURIComponent(code)}` : path;
+  };
 
   /** The same control the index has, built by the same helper. */
   const languageSelect = (): HTMLElement | null =>
@@ -354,12 +374,27 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
         "section",
         { class: "store-section", id: "plans" },
         h("div", { class: "row" }, ...crumbs),
-        h(
-          "div",
-          { class: "store-section-head" },
-          h("h1", { class: "store-title store-title--sm" }, category.name),
-          category.description ? h("p", { class: "dim" }, category.description) : null,
-        ),
+        // The category's own logo (SF-06). It is the same stored image the panel uploads, served
+        // by the same media endpoint, so a category looks like the thing it sells rather than like
+        // a heading.
+        category.image_url
+          ? h(
+              "div",
+              { class: "store-product-head" },
+              h("div", { class: "store-product-logo" }, h("img", { src: category.image_url, alt: "", decoding: "async" })),
+              h(
+                "div",
+                { class: "store-section-head" },
+                h("h1", { class: "store-title store-title--sm" }, category.name),
+                category.description ? h("p", { class: "dim" }, category.description) : null,
+              ),
+            )
+          : h(
+              "div",
+              { class: "store-section-head" },
+              h("h1", { class: "store-title store-title--sm" }, category.name),
+              category.description ? h("p", { class: "dim" }, category.description) : null,
+            ),
         childGrid,
         products.length === 0
           ? emptyState({

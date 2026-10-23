@@ -2,6 +2,7 @@ package catalog_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/catalyst/billing/internal/catalog"
@@ -285,13 +286,18 @@ func TestHomeCategoriesListsTopLevelBranches(t *testing.T) {
 	}
 
 	// `all` is the escape hatch for a nested shop whose operator wants the children in the strip:
-	// every visible category, depth first, flat, in sort order.
+	// every visible category that has a product, depth first, flat, in sort order — and still no
+	// empty branch, because a tab that opens nothing is wrong in both shapes.
 	everything := catalog.HomeCategories(nodes, visible, "all")
-	if len(everything) != 7 {
-		t.Fatalf("mode=all returned %d entries, want all seven: %v", len(everything), flattenNames(everything))
+	if len(everything) != 4 {
+		t.Fatalf("mode=all returned %d entries, want the four with products: %v", len(everything), flattenNames(everything))
 	}
-	if everything[1].Slug != "minecraft" || everything[2].Slug != "modded" {
-		t.Fatalf("mode=all order = %v, want the tree's depth-first order", flattenNames(everything))
+	var order []string
+	for _, node := range everything {
+		order = append(order, node.Slug)
+	}
+	if want := []string{"game-servers", "minecraft", "modded", "hosting"}; strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("mode=all order = %v, want the tree's depth-first order %v", order, want)
 	}
 	for _, node := range everything {
 		if len(node.Children) != 0 {

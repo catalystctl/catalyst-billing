@@ -13617,6 +13617,63 @@ paths:
             x-permission: catalog:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/catalog/products/{id}/merchandising:
+        put:
+            operationId: PutStaffCatalogProductsByIdMerchandising
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: catalog:write
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/catalog/products/{id}/placement:
         get:
             description: The product's provisioner target and its place in the category tree, in one read. It is separate from the product shape because the product shape is also read by the storefront, and a visitor must never be handed a node name or a server id.

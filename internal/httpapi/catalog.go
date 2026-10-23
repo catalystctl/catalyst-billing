@@ -401,6 +401,11 @@ func (s *Server) handlePublicProduct(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=60")
 		body := s.publicProductJSON(p, s.storefrontSettings(ctx), options)
 		body["kind"] = "product"
+		// The currency the read used and whether the switcher is offered travel with the record
+		// too, so a visitor who lands on a product page can switch without going back to the
+		// index first — and so the page can tell "no price in this currency" from "no product".
+		body["currency"] = currency
+		body["currency_switcher"] = s.currencySwitcherEnabled(ctx)
 		writeJSON(w, http.StatusOK, body)
 		return
 	}

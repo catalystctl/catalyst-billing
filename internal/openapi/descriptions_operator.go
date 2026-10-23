@@ -107,7 +107,32 @@ func announcementSchema() map[string]any {
 			"updated_at": map[string]any{"type": "string", "format": "date-time"},
 			"live": map[string]any{
 				"type":        "boolean",
-				"description": "Published and not expired, derived at read time so it cannot drift from the clock.",
+				"description": "Published, not expired and past its publish instant, derived at read time so it cannot drift from the clock.",
+			},
+			"state": map[string]any{
+				"type": "string",
+				"enum": []string{"draft", "scheduled", "expired", "live"},
+				"description": "Why `live` is what it is, so a screen can name the state instead of inferring it from three timestamps. " +
+					"`draft` was never published; `scheduled` is published but its publish instant has not arrived; " +
+					"`expired` is published but its expiry has passed; `live` is what a customer sees now.",
+			},
+		},
+	}
+}
+
+// announcementListSchema is the envelope of both announcement lists.
+//
+// `enabled` is the `announcements.enabled` setting as the server read it. It is in the envelope, and
+// not left to the client to infer, because with the feed switched off every row may be live and still
+// be invisible to customers — the one fact a staff screen cannot recover from the rows alone.
+func announcementListSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"data": map[string]any{"type": "array", "items": announcementSchema()},
+			"enabled": map[string]any{
+				"type":        "boolean",
+				"description": "Whether the announcement feed is switched on for customers (`announcements.enabled`).",
 			},
 		},
 	}
@@ -332,8 +357,8 @@ func operatorOperations() map[string]Operation {
 		// ------------------------------------------------------- announcements --
 		"GET /api/v1/staff/announcements": {
 			Summary:     "List announcements, drafts included",
-			Description: "Every announcement, newest first, with `live` derived from `published` and `expires_at`.",
-			Responses:   []Response{{Status: 200, Description: "The announcements"}},
+			Description: "Every announcement, newest first, with `live` and `state` derived from the server's clock. The envelope's `enabled` is the `announcements.enabled` setting: with it off, every row is hidden from customers however live it is.",
+			Responses:   []Response{{Status: 200, Description: "The announcements", Schema: announcementListSchema()}},
 		},
 		"GET /api/v1/staff/announcements/{id}": {
 			Summary:   "One announcement",
@@ -371,11 +396,13 @@ func operatorOperations() map[string]Operation {
 		"GET /api/v1/announcements": {
 			Summary: "Published announcements for the storefront and dashboard",
 			Description: "Public, because the storefront is public: a visitor who cannot see \"we are closed for " +
-				"maintenance\" has no way to find out before registering. Returns only published, unexpired " +
-				"rows, and only the fields a customer may see — the creator and the draft state are operator " +
-				"information. `?placement=storefront|dashboard` narrows it; `both` matches either. A " +
-				"database failure yields an empty feed rather than a 500, because the storefront must render.",
-			Responses: []Response{{Status: 200, Description: "The live announcements"}},
+				"maintenance\" has no way to find out before registering. Returns only live rows, and only the " +
+				"fields a customer may see — the creator and the draft state are operator information. " +
+				"`?placement=storefront|dashboard` narrows it; `both` matches either. The envelope's `enabled` is " +
+				"the `announcements.enabled` setting, read on every request: switched off, the feed is empty and " +
+				"nothing is cached. A database failure yields an empty feed rather than a 500, because the " +
+				"storefront must render.",
+			Responses: []Response{{Status: 200, Description: "The live announcements", Schema: announcementListSchema()}},
 		},
 
 		// ---------------------------------------------------------------- logs --

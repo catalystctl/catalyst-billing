@@ -3,8 +3,19 @@
 // An announcement is four columns and a screen: a title, a body, where it shows and when it stops
 // showing. The screen's job is to make "is this live for a customer right now" obvious, because
 // the answer is not one column — it is `published` **and** a `published_at` in the past **and**
-// an `expires_at` in the future. The server computes that as `live` on every row
-// (`announcement.isLive`), and this page renders the server's answer rather than re-deriving it.
+// an `expires_at` in the future. The server computes that as `state` (and the older `live`) on
+// every row from its own clock, and this page renders the server's answer rather than re-deriving
+// it: a browser whose clock is a minute fast would otherwise label a notice live that a customer's
+// request is being told is not.
+//
+// The four states are named, not inferred. `live: false` alone cannot tell a draft from a notice
+// that stopped showing an hour ago from one scheduled for Sunday, and those are three different
+// things for the operator to do next.
+//
+// The list also carries `enabled`, which is the `announcements.enabled` setting. With it off every
+// row may be live and still be invisible to customers, so the page says so at the top: an operator
+// who publishes a maintenance notice and sees it listed as Live, while the storefront shows
+// nothing, has found the one bug this screen exists to prevent.
 //
 // The publish toggle is therefore a first-class action, not a form field buried in a dialog: a
 // typo published for a minute is the exact case the API allows a delete for, and a draft that
@@ -41,7 +52,8 @@ export const meta = { title: "Announcements", crumb: "Announcements" };
 // ---------------------------------------------------------------- payloads --
 
 /** One announcement, verbatim from the `announcement` struct in
- *  internal/httpapi/system_settings.go. `live` is derived server-side from the clock. */
+ *  internal/httpapi/announcements.go. `state` and `live` are derived server-side from the
+ *  server's clock. */
 interface Announcement {
   id: string;
   title: string;
@@ -54,10 +66,15 @@ interface Announcement {
   created_at: string;
   updated_at: string;
   live: boolean;
+  /** draft | scheduled | expired | live */
+  state: string;
 }
 
 interface AnnouncementList {
   data: Announcement[];
+  /** The `announcements.enabled` setting as the server read it. Absent means the server did not
+   *  say, which is treated as on: the rows are the stronger signal. */
+  enabled?: boolean;
 }
 
 /** The closed set the table's CHECK accepts, from `announcementPlacements`. */
@@ -102,7 +119,7 @@ export default async function announcementsPage(ctx: Ctx): Promise<Node> {
       resource(
         ctx,
         load,
-        (data) => (data === "unavailable" ? unavailableCard() : render(data.data ?? [])),
+        (data) => (data === "unavailable" ? unavailableCard() : render(data)),
         { skeleton: skeletonPage },
       ),
     );
@@ -287,17 +304,41 @@ export default async function announcementsPage(ctx: Ctx): Promise<Node> {
 
   // ---------------------------------------------------------------- render --
 
-  const render = (rows: Announcement[]): Node => {
-    const live = rows.filter((row) => row.live).length;
-    const drafts = rows.filter((row) => !row.published).length;
+  const render = (list: AnnouncementList): Node => {
+    const rows = list.data ?? [];
+    // `!== false` rather than `=== true`: a server that does not send the field is an older
+    // build, and the rows it did send are the stronger signal.
+    const enabled = list.enabled !== false;
+    const count = (state: string): number => rows.filter((row) => row.state === state).length;
+    const live = count("live");
+    const scheduled = count("scheduled");
+    const expired = count("expired");
+    const drafts = count("draft");
 
     return h(
       "div",
       { class: "stack" },
+      // The setting, stated where the operator will read it. With the feed switched off every
+      // live row below is invisible to customers, and the list alone would look healthy.
+      enabled
+        ? null
+        : banner(
+            "warning",
+            "The announcement feed is switched off",
+            h(
+              "span",
+              null,
+              "Every announcement below is hidden from customers, including the ones marked Live. Publishing changes nothing until the feed is switched back on in ",
+              h("a", { class: "linkish", href: "/settings/system" }, "system settings"),
+              ".",
+            ),
+          ),
       h(
         "div",
         { class: "row-wrap ann-summary" },
         badge(`${live} live`, live > 0 ? "success" : "neutral", { dot: true }),
+        scheduled > 0 ? badge(`${scheduled} scheduled`, "info", { dot: true }) : null,
+        expired > 0 ? badge(`${expired} expired`, "neutral") : null,
         h("span", { class: "dim" }, `${rows.length} total`),
         drafts > 0 ? badge(`${drafts} draft${drafts === 1 ? "" : "s"}`, "neutral") : null,
       ),
@@ -311,11 +352,11 @@ export default async function announcementsPage(ctx: Ctx): Promise<Node> {
               action: btn("Write the first announcement", { variant: "primary", icon: "plus", onclick: () => editDialog(null) }),
             }),
           })
-        : h("div", { class: "ann-list" }, ...rows.map((row) => rowCard(row))),
+        : h("div", { class: "ann-list" }, ...rows.map((row) => rowCard(row, enabled))),
     );
   };
 
-  const rowCard = (row: Announcement): HTMLElement => {
+  const rowCard = (row: Announcement, feedEnabled: boolean): HTMLElement => {
     const toggle = btn(row.published ? "Unpublish" : "Publish", {
       size: "sm",
       variant: row.published ? "ghost" : "primary",
@@ -325,7 +366,7 @@ export default async function announcementsPage(ctx: Ctx): Promise<Node> {
 
     return h(
       "article",
-      { class: `card ann-card${row.live ? " ann-card--live" : ""}` },
+      { class: `card ann-card${row.state === "live" ? " ann-card--live" : ""}` },
       h(
         "header",
         { class: "ann-head" },
@@ -336,11 +377,7 @@ export default async function announcementsPage(ctx: Ctx): Promise<Node> {
             "div",
             { class: "ann-title-row" },
             h("h2", { class: "ann-title" }, row.title || "Untitled"),
-            row.live
-              ? badge("Live", "success", { dot: true })
-              : row.published
-                ? badge("Published, not showing", "warning", { dot: true })
-                : badge("Draft", "neutral", { dot: true }),
+            stateBadge(row.state),
           ),
           h(
             "div",
@@ -354,7 +391,7 @@ export default async function announcementsPage(ctx: Ctx): Promise<Node> {
             row.expires_at
               ? h(
                   "span",
-                  { class: row.live ? "" : "portal-due--overdue", title: dateTime(row.expires_at) },
+                  { class: row.state === "expired" ? "portal-due--overdue" : "", title: dateTime(row.expires_at) },
                   `expires ${relative(row.expires_at)}`,
                 )
               : h("span", { class: "faint" }, "no expiry"),
@@ -372,15 +409,7 @@ export default async function announcementsPage(ctx: Ctx): Promise<Node> {
       h(
         "footer",
         { class: "ann-foot" },
-        h(
-          "span",
-          { class: "faint" },
-          row.published
-            ? row.live
-              ? "Customers can see this now."
-              : "Published but outside its window, so it is not shown."
-            : "Only staff can see this.",
-        ),
+        h("span", { class: feedEnabled ? "faint" : "faint portal-due--overdue" }, stateReason(row.state, feedEnabled)),
         h("span", { class: "spacer" }),
         btn("Edit", { size: "sm", variant: "ghost", icon: "edit", onclick: () => editDialog(row) }),
         btn("Delete", { size: "sm", variant: "ghost", icon: "trash", onclick: () => void remove(row) }),
@@ -403,6 +432,50 @@ export default async function announcementsPage(ctx: Ctx): Promise<Node> {
 }
 
 // ----------------------------------------------------------------- helpers --
+
+/** The badge for one of the four states.
+ *
+ *  The server names the state; this only picks a tone. A screen that re-derived the answer from
+ *  `published`, `published_at` and `expires_at` would be comparing them against the *browser's*
+ *  clock, which is how "Live" and "not showing" end up on the same row in two different tabs. */
+function stateBadge(state: string): HTMLElement {
+  switch (state) {
+    case "live":
+      return badge("Live", "success", { dot: true });
+    case "scheduled":
+      return badge("Scheduled", "info", { dot: true });
+    case "expired":
+      return badge("Expired", "neutral", { dot: true });
+    case "draft":
+      return badge("Draft", "neutral", { dot: true });
+    default:
+      // A state this build does not know is reported rather than guessed at: an unknown label is
+      // a fact about the deployment, and inventing "Live" for it would be a lie with a badge on.
+      return badge(state || "Unknown", "neutral");
+  }
+}
+
+/** Why a customer does or does not see this row, in the operator's words.
+ *
+ *  With the feed switched off, every row is invisible however live it is — and that is the one
+ *  answer the operator cannot get anywhere else on this page. */
+function stateReason(state: string, feedEnabled: boolean): string {
+  if (!feedEnabled) {
+    return "The feed is switched off, so no customer sees this whatever its state.";
+  }
+  switch (state) {
+    case "live":
+      return "Customers can see this now.";
+    case "scheduled":
+      return "Published, but the publish time has not arrived, so no customer sees it yet.";
+    case "expired":
+      return "Published, but its expiry has passed, so no customer sees it.";
+    case "draft":
+      return "Only staff can see this.";
+    default:
+      return "This build does not recognise the row's state; reload to ask the server again.";
+  }
+}
 
 function placementLabel(value: string): string {
   return PLACEMENTS.find((entry) => entry.value === value)?.label ?? value;

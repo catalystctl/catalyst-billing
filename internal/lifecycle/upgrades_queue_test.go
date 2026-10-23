@@ -199,3 +199,79 @@ func TestServiceUpgradesJobCreditsAndAppliesADowngrade(t *testing.T) {
 		t.Fatalf("subscription still bills %s, want the cheaper %s", priceVersion, cheapID)
 	}
 }
+
+// When the operator has turned downgrade crediting off, nothing is posted — and, crucially, the
+// row is not applied either. The guard that refuses to move a service on a downgrade whose credit
+// was never posted (`ErrCreditNotPosted`) is the thing that stops the system paying a customer in
+// plan changes it never recorded in money. Wiring a caller is not licence to relax it, so the job
+// must leave the row pending and the subscription billing the old price.
+func TestADowngradeIsNotAppliedWhenItsCreditWasNeverPosted(t *testing.T) {
+	q := newUpgradeQueue(t)
+	ctx := context.Background()
+
+	var cheapID string
+	if err := q.pool.QueryRow(ctx, `
+		INSERT INTO price_versions (product_id, version, name, currency, amount_minor, interval,
+			anchor_day, anchor_timezone, provision_plan, provision_region)
+		SELECT product_id, 2, 'Small (cheaper)', 'USD', 600, 'monthly', 1, 'UTC',
+		       'plan-small', 'eu-west'
+		FROM price_versions WHERE id = $1
+		RETURNING id`, q.priceID).Scan(&cheapID); err != nil {
+		t.Fatalf("cheap price version: %v", err)
+	}
+	id := q.addUpgrade(t, -400, time.Hour)
+	if _, err := q.pool.Exec(ctx,
+		`UPDATE service_upgrades SET to_price_version_id = $2 WHERE id = $1`, id, cheapID); err != nil {
+		t.Fatalf("retarget upgrade: %v", err)
+	}
+
+	// Crediting a downgrade is a policy an operator can switch off; the guard underneath is not.
+	if _, err := q.pool.Exec(ctx, `
+		INSERT INTO settings (group_key, key, value) VALUES ('credits', 'credit_on_downgrade', 'false')
+		ON CONFLICT (group_key, key) DO UPDATE SET value = 'false'`); err != nil {
+		t.Fatalf("disable downgrade credit: %v", err)
+	}
+
+	runServiceUpgrades(t, q.pool)
+
+	var status string
+	var noteID *string
+	if err := q.pool.QueryRow(ctx,
+		`SELECT status, credit_note_id::text FROM service_upgrades WHERE id = $1`, id).
+		Scan(&status, &noteID); err != nil {
+		t.Fatalf("read upgrade: %v", err)
+	}
+	if noteID != nil {
+		t.Fatalf("a credit note was issued while credits.credit_on_downgrade is off: %s", *noteID)
+	}
+	if status != "pending" {
+		t.Fatalf("status = %q, want pending; an uncredited downgrade was applied", status)
+	}
+
+	var priceVersion string
+	if err := q.pool.QueryRow(ctx,
+		`SELECT price_version_id FROM subscriptions WHERE id = $1`, q.subscription).
+		Scan(&priceVersion); err != nil {
+		t.Fatalf("read subscription: %v", err)
+	}
+	if priceVersion != q.priceID {
+		t.Fatalf("subscription moved to %s without the credit that pays for the move", priceVersion)
+	}
+}
+
+// The job is on the money path, so an operator must be able to stop it without a deploy, and the
+// stop must be visible: a disabled job is absent from the list rather than erroring every tick.
+func TestServiceUpgradesJobObeysItsKillSwitch(t *testing.T) {
+	pool := storetest.DB(t)
+	t.Setenv(lifecycle.ServiceUpgradesKillSwitch, "1")
+
+	if jobs := lifecycle.ServiceJobs(pool, nil); len(jobs) != 0 {
+		t.Fatalf("jobs = %v, want none: the kill switch did not stop the price-change queue", jobs)
+	}
+	t.Setenv(lifecycle.ServiceUpgradesKillSwitch, "")
+
+	jobs := lifecycle.ServiceJobs(pool, nil)
+	if len(jobs) != 1 || jobs[0].Name != lifecycle.ServiceUpgradesJob {
+		t.Fatalf("jobs = %v, want the %s job", jobs, lifecycle.ServiceUpgradesJob)
+	}
+}

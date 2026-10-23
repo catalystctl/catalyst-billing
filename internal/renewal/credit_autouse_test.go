@@ -2,6 +2,8 @@ package renewal_test
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -155,3 +157,143 @@ func (h *harness) amount() int64 {
 // USD. Keeping the assertion here means a future non-USD harness fails loudly rather than silently
 // comparing the wrong currency's sum.
 var _ = money.MustLookupCurrency("USD")
+
+// --------------------------------------------------------- the differential --
+
+// renewalDocument is everything about a renewal invoice a customer could observe: the money, the
+// wording, the line items and the frozen evidence. Ids, invoice numbers and the two "when we wrote
+// it" timestamps are excluded because two invoices written moments apart cannot share them.
+type renewalDocument struct {
+	Status     string
+	Currency   string
+	PeriodKey  string
+	Subtotal   int64
+	Tax        int64
+	Total      int64
+	AmountPaid int64
+	DueAt      time.Time
+	Lines      []string
+	Snapshot   string
+}
+
+// renewOne runs one engine tick for one fresh subscription and captures its invoice.
+func (h *harness) renewOne(t *testing.T, autoUse bool) (renewalDocument, string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := h.pool.Exec(ctx, `
+		INSERT INTO settings (group_key, key, value) VALUES ('credits', 'auto_use', $1)
+		ON CONFLICT (group_key, key) DO UPDATE SET value = EXCLUDED.value`,
+		map[bool]string{true: "true", false: "false"}[autoUse]); err != nil {
+		t.Fatalf("set auto_use: %v", err)
+	}
+
+	h.subscribe(t, h.now.AddDate(0, -1, 0), calendar.Monthly, 1, "UTC")
+	results := h.run(t)
+	if len(results) != 1 || results[0].Outcome != "invoiced" {
+		t.Fatalf("renewal results = %+v, want one invoiced period", results)
+	}
+	invoiceID := results[0].InvoiceID
+
+	var doc renewalDocument
+	if err := h.pool.QueryRow(ctx, `
+		SELECT status, currency, COALESCE(period_key, ''), subtotal_minor, tax_minor,
+		       total_minor, amount_paid_minor, due_at, snapshot::text
+		FROM invoices WHERE id = $1`, invoiceID).
+		Scan(&doc.Status, &doc.Currency, &doc.PeriodKey, &doc.Subtotal, &doc.Tax, &doc.Total,
+			&doc.AmountPaid, &doc.DueAt, &doc.Snapshot); err != nil {
+		t.Fatalf("read invoice: %v", err)
+	}
+
+	rows, err := h.pool.Query(ctx, `
+		SELECT position, description, quantity::text, unit_minor, net_minor, tax_rate,
+		       tax_minor, total_minor
+		FROM invoice_lines WHERE invoice_id = $1 ORDER BY position`, invoiceID)
+	if err != nil {
+		t.Fatalf("read lines: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			position int
+			line     string
+			qty      string
+			unit     int64
+			net      int64
+			rate     string
+			tax      int64
+			total    int64
+		)
+		var description string
+		if err := rows.Scan(&position, &description, &qty, &unit, &net, &rate, &tax, &total); err != nil {
+			t.Fatalf("scan line: %v", err)
+		}
+		line = fmt.Sprintf("%d|%s|q=%s|unit=%d|net=%d|rate=%s|tax=%d|total=%d",
+			position, description, qty, unit, net, rate, tax, total)
+		doc.Lines = append(doc.Lines, line)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read lines: %v", err)
+	}
+	rows.Close()
+
+	// The invoice's own posting: one journal transaction, referencing the invoice, and nothing
+	// credit-shaped. This is the part a customer with no balance must never see appear.
+	var (
+		postings           int
+		creditApplications int
+	)
+	if err := h.pool.QueryRow(ctx, `
+		SELECT count(*) FROM journal_transactions
+		WHERE reference_type = 'invoice' AND reference_id = $1`, invoiceID).Scan(&postings); err != nil {
+		t.Fatalf("count postings: %v", err)
+	}
+	if err := h.pool.QueryRow(ctx, `
+		SELECT count(*) FROM credit_applications WHERE invoice_id = $1`, invoiceID).
+		Scan(&creditApplications); err != nil {
+		t.Fatalf("count credit applications: %v", err)
+	}
+	if postings != 1 {
+		t.Fatalf("%d journal transactions for the invoice, want exactly 1", postings)
+	}
+	if creditApplications != 0 {
+		t.Fatalf("%d credit applications on an invoice nobody had credit for", creditApplications)
+	}
+
+	return doc, invoiceID
+}
+
+// TestRenewalIsUnchangedForACustomerWithNoCredit is the differential the money path needs.
+//
+// `renewal.go` bills every subscription in the system, so "the credit wiring is inert when there
+// is no credit" has to be a property, not a promise. Two identical subscriptions on one customer,
+// one renewed with `credits.auto_use` on and one with it off, produce the same document: same
+// money, same lines, same terms, same frozen snapshot, and the same single journal posting. If the
+// wiring ever writes anything — a zero-amount application, a settings-dependent line, a second
+// posting — the two documents diverge and this fails.
+//
+// It also pins the shape the orchestrator asked for: `auto_use` is the only thing that changes
+// between the two runs, and for a customer with a zero balance it changes nothing observable.
+func TestRenewalIsUnchangedForACustomerWithNoCredit(t *testing.T) {
+	now := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
+	h := newHarness(t, now)
+
+	withAutoUse, firstInvoice := h.renewOne(t, true)
+	withoutAutoUse, secondInvoice := h.renewOne(t, false)
+
+	if firstInvoice == secondInvoice {
+		t.Fatal("the two runs share an invoice, so the comparison proves nothing")
+	}
+	if !reflect.DeepEqual(withAutoUse, withoutAutoUse) {
+		t.Fatalf("the renewal document changed when auto-use credit was switched on:\n with: %+v\n  off: %+v",
+			withAutoUse, withoutAutoUse)
+	}
+
+	// And the balance is still zero: nothing was spent because there was nothing to spend.
+	balances, err := credit.BalanceFor(context.Background(), h.pool, h.customerID)
+	if err != nil {
+		t.Fatalf("balance: %v", err)
+	}
+	if len(balances) != 0 {
+		t.Fatalf("balances = %v, want none", balances)
+	}
+}

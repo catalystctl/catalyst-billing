@@ -9,6 +9,7 @@ import (
 
 	"github.com/catalyst/billing/internal/lifecycle"
 	"github.com/catalyst/billing/internal/operations"
+	"github.com/jackc/pgx/v5"
 )
 
 // The failed-job viewer, the cron statistics and the on-demand retry (OPS-09, OPS-13).
@@ -264,5 +265,137 @@ func TestCronRetryRefusesAWorkerOnlyJob(t *testing.T) {
 	}
 	if !strings.Contains(problem.Detail, "worker") {
 		t.Fatalf("detail = %q, want it to say where the job lives", problem.Detail)
+	}
+}
+
+// A lifecycle job that is switched off is refused by name, because the operator can fix that —
+// unlike a job that lives in the worker process, which no switch will make runnable from here.
+func TestCronRetryDistinguishesDisabledFromWorkerOnly(t *testing.T) {
+	env := newStaffEnv(t)
+	// A switch that is set *after* the environment was captured, so the job exists in the process
+	// but not in lifecycle.Jobs().
+	t.Setenv(lifecycle.OrderCancelKillSwitch, "1")
+
+	rec := env.postJSONWithKey(t, "/api/v1/staff/cron/"+lifecycle.OrderCancelJob+"/retry",
+		env.admin, env.adminCSRF, map[string]any{}, "retry-disabled")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body %s", rec.Code, rec.Body)
+	}
+	var problem struct {
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decode: %v\n%s", err, rec.Body)
+	}
+	if problem.Code != "job_disabled" {
+		t.Fatalf("code = %q, want job_disabled", problem.Code)
+	}
+	if !strings.Contains(problem.Detail, "kill switch") {
+		t.Fatalf("detail = %q, want it to name the switch", problem.Detail)
+	}
+}
+
+// The charge plan is a read that cannot charge (OPS-01).
+//
+// It exists because nobody enables an unattended charger without seeing what it would take. The
+// test asserts the three properties that make it safe to hand to an operator: it reports the same
+// invoices the sweep would offer, it answers even when the job is switched off, and it never
+// resolves a gateway — so asking the question cannot move money.
+func TestChargePlanNamesWhatTheSweepWouldTake(t *testing.T) {
+	env := newStaffEnv(t)
+	ctx := context.Background()
+	customerID, _ := env.seedCustomer(t, "plan@example.test", "Plan Customer")
+	var methodID, invoiceID string
+	if err := env.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO payment_methods (customer_id, provider, provider_token, brand, last4, is_default)
+			VALUES ($1, $2, 'pm_plan_TOKEN', 'visa', '4242', true) RETURNING id`,
+			customerID, "stripe").Scan(&methodID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO billing_agreements (customer_id, payment_method_id, provider, status, consent_at)
+			VALUES ($1, $2, 'stripe', 'active', now())`, customerID, methodID); err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `
+			INSERT INTO invoices (customer_id, number, status, currency, subtotal_minor, tax_minor,
+				total_minor, amount_paid_minor, issued_at, due_at, snapshot)
+			VALUES ($1, 'INV-PLAN-1', 'open', 'USD', 2500, 0, 2500, 0, now(), now() - interval '2 days',
+			        '{"schema_version":1}'::jsonb)
+			RETURNING id`, customerID).Scan(&invoiceID)
+	}); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+
+	// Charging is off, which is the state an operator is in when they are deciding.
+	rec := env.get(t, "/api/v1/staff/payments/charge-due", env.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body)
+	}
+	var plan struct {
+		Enabled    bool   `json:"enabled"`
+		Reason     string `json:"reason"`
+		Provider   string `json:"provider"`
+		Candidates []struct {
+			InvoiceID    string `json:"invoice_id"`
+			AmountMinor  int64  `json:"amount_minor"`
+			Amount       string `json:"amount"`
+			MethodLast4  string `json:"method_last4"`
+			AgreementID  string `json:"agreement_id"`
+			CustomerName string `json:"customer_name"`
+		} `json:"candidates"`
+		Totals []struct {
+			Currency string `json:"currency"`
+			Minor    int64  `json:"amount_minor"`
+			Invoices int    `json:"invoices"`
+		} `json:"totals"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &plan); err != nil {
+		t.Fatalf("decode: %v\n%s", err, rec.Body)
+	}
+	if plan.Enabled || plan.Reason != operations.ReasonDisabled {
+		t.Fatalf("enabled=%v reason=%q, want the disabled setting reported", plan.Enabled, plan.Reason)
+	}
+	if len(plan.Candidates) != 1 || plan.Candidates[0].InvoiceID != invoiceID {
+		t.Fatalf("candidates = %+v, want the overdue invoice", plan.Candidates)
+	}
+	row := plan.Candidates[0]
+	if row.AmountMinor != 2500 || row.Amount != "25.00 USD" {
+		t.Fatalf("amount = %d (%q), want 2500 (25.00 USD)", row.AmountMinor, row.Amount)
+	}
+	if row.MethodLast4 != "4242" || row.AgreementID == "" {
+		t.Fatalf("the plan does not name the card and its mandate: %+v", row)
+	}
+	if len(plan.Totals) != 1 || plan.Totals[0].Minor != 2500 || plan.Totals[0].Invoices != 1 {
+		t.Fatalf("totals = %+v, want one currency at 2500", plan.Totals)
+	}
+	// Nothing was charged by asking: the invoice is still open and no attempt was recorded.
+	var status string
+	var attempts int
+	if err := env.pool.QueryRow(ctx, `SELECT status FROM invoices WHERE id = $1`, invoiceID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM payment_attempts WHERE invoice_id = $1`, invoiceID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != "open" || attempts != 0 {
+		t.Fatalf("asking for the plan changed state: status=%s attempts=%d", status, attempts)
+	}
+}
+
+// A support agent cannot enumerate the cards the panel is about to charge.
+func TestChargePlanRequiresPaymentReconcile(t *testing.T) {
+	env := newStaffEnv(t)
+
+	rec := env.get(t, "/api/v1/staff/payments/charge-due", env.support)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for a support agent; body %s", rec.Code, rec.Body)
+	}
+	rec = env.get(t, "/api/v1/staff/payments/charge-due", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 without a session", rec.Code)
 	}
 }

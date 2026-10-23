@@ -1,9 +1,11 @@
 // Package importer migrates a billing history from another panel into this one.
 //
 // The input is a *set* of CSV documents — clients, invoices, invoice items, services and
-// transactions — exported from the old panel, and the output is a report saying, row by
-// row, what was created, what was updated, what was already there and what was refused and
-// why.
+// transactions, plus optional currencies, admins, products and tickets — exported from the old
+// panel, and the output is a report saying, row by row, what was created, what was updated, what
+// was already there and what was refused and why. Which of the optional documents this build reads,
+// and what it deliberately leaves behind (orders, cancellations, config options, ticket threads),
+// is stated at the top of whmcs_extended.go.
 //
 // The rules that shape it, and the reason each one is not negotiable:
 //

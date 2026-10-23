@@ -2227,6 +2227,14 @@ func (c *Client) GetStaffPaymentsById(ctx context.Context, id string, query url.
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffPaymentsChargedue calls GET /api/v1/staff/payments/charge-due.
+//
+// Permission: payment:reconcile. Staff only.
+func (c *Client) GetStaffPaymentsChargedue(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/payments/charge-due"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffPermissions calls GET /api/v1/staff/permissions.
 //
 // # The declared permission set and the current matrix

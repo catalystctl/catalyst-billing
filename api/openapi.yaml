@@ -27871,6 +27871,52 @@ paths:
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/payments/charge-due:
+        get:
+            operationId: GetStaffPaymentsChargedue
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-permission: payment:reconcile
+            x-rate-class: read
+            x-staff-only: true
         post:
             description: The batch form of the single charge, and the entry point a scheduled job uses. It reports a per-invoice outcome instead of failing as a whole, because one declined card must not prevent the other invoices from being collected. Every invoice it charges is charged through the same idempotent path as the single call.
             operationId: PostStaffPaymentsChargedue

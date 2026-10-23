@@ -48,6 +48,23 @@ type TelemetryState struct {
 	InstanceID string `json:"instance_id"`
 	// LastSend is the most recent delivery attempt, or null.
 	LastSend *LastSend `json:"last_send"`
+	// Schedule says when the worker will send next, and is null only when nothing schedules a
+	// delivery. The screen reads it instead of promising a frequency of its own.
+	Schedule *TelemetrySchedule `json:"schedule"`
+}
+
+// TelemetrySchedule is the job that keeps the "reported daily" promise.
+//
+// It is filled by the caller that also registers the job, so the interval shown to an operator is
+// the interval the worker uses. A number typed into a template would be a second copy of the
+// schedule, and the second copy is always the one that goes stale.
+type TelemetrySchedule struct {
+	// Job is the name the job is registered under, the same name cron_runs records.
+	Job string `json:"job"`
+	// IntervalHours is how often it runs.
+	IntervalHours int64 `json:"interval_hours"`
+	// KillSwitch is the environment variable an operator sets to stop it.
+	KillSwitch string `json:"kill_switch"`
 }
 
 // ApplyPlan is how an approved update is actually applied.

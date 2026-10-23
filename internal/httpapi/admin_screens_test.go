@@ -930,3 +930,28 @@ func TestServicePropertyCatalogueIsGuarded(t *testing.T) {
 	}
 	problemCode(t, rec)
 }
+
+// Every kill switch the screen lists is documented where an operator looks.
+//
+// A switch that exists only in code is a switch nobody can find at three in the morning, and the
+// automation screen is a read of a catalogue that no test compared against the deployment's own
+// documentation. `.env.example` is that documentation: it is the file an operator copies, and it
+// carries the comment explaining what each switch stops.
+func TestEveryKillSwitchIsDocumented(t *testing.T) {
+	env := newStaffEnv(t)
+	body := fetchAutomation(t, env)
+	documented := repoFile(t, ".env.example")
+
+	var missing []string
+	for _, row := range body.Data {
+		if row.KillSwitch == nil || *row.KillSwitch == "" {
+			continue
+		}
+		if !strings.Contains(documented, *row.KillSwitch) {
+			missing = append(missing, row.Name+" ("+*row.KillSwitch+")")
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("kill switch(es) not documented in .env.example: %s", strings.Join(missing, ", "))
+	}
+}

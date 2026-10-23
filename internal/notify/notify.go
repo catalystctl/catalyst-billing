@@ -357,9 +357,11 @@ func EmailVerificationMessage(to, link string, expires time.Duration) Message {
 
 // InvoiceIssuedMessage renders the "your invoice is ready" mail.
 //
-// Deprecated: notify.InvoiceIssued renders the editable `new_invoice_created` template. Two call
-// sites still use this one (register/checkout.go and httpapi/staff_write.go); moving them is a
-// separate change because it also decides whether those paths write an inbox row.
+// Deprecated: notify.InvoiceIssued renders the editable `new_invoice_created` template, and both
+// in-tree call sites (register/checkout.go and httpapi/staff_write.go) now go through it — which is
+// what makes the outbox kind, the inbox event key and the template row the same string. Kept only
+// so an out-of-tree caller still compiles; it should be deleted once nothing references it, because
+// a second renderer for an invoice mail is how the two get out of step.
 func InvoiceIssuedMessage(to, number, total, dueAt, invoiceID string) Message {
 	return Message{
 		Kind:    KindInvoiceIssued,

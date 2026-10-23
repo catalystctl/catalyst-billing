@@ -517,15 +517,21 @@ func (s *Server) handleDeleteTranslation(w http.ResponseWriter, r *http.Request)
 
 // withLocaleAudit runs a locale write and records it in the same transaction.
 //
-// The target id is the locale code because that is the primary key and the identifier an operator
-// will recognise in the audit log.
+// The locale code goes in `changes`, not in target_id: that column is a uuid, and a locale's
+// primary key is a BCP 47 tag ("pt-BR"). Passing the code as the id type-checks in Go and fails in
+// Postgres, which rolls the write back and reports a 500 — the audit trail silently made every
+// locale write impossible.
 func (s *Server) withLocaleAudit(r *http.Request, action, code string, changes map[string]any,
 	fn func(ctx context.Context, tx pgx.Tx) error) error {
+	if changes == nil {
+		changes = map[string]any{}
+	}
+	changes["code"] = code
 	return s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := fn(ctx, tx); err != nil {
 			return err
 		}
-		ev := s.auditEvent(r, action, "locale", code, audit.OutcomeSuccess).WithChanges(changes)
+		ev := s.auditEvent(r, action, "locale", "", audit.OutcomeSuccess).WithChanges(changes)
 		return audit.Record(ctx, tx, ev)
 	})
 }

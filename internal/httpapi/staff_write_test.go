@@ -466,14 +466,18 @@ func TestCreateAndIssueInvoice(t *testing.T) {
 
 	// The notification was queued in the same transaction, or suppressed because the customer
 	// has no verified address. Either way there is a delivery record, which is the point.
+	//
+	// The kind is the notification *event* key, not the legacy `invoice_issued` outbox kind: the
+	// message now comes from the editable new_invoice_created template, so the outbox row, the
+	// inbox row and the template all carry the same key.
 	var deliveries int
 	if err := env.pool.QueryRow(context.Background(), `
-		SELECT count(*) FROM notification_deliveries WHERE kind = 'invoice_issued'`).
+		SELECT count(*) FROM notification_deliveries WHERE kind = 'new_invoice_created'`).
 		Scan(&deliveries); err != nil {
 		t.Fatal(err)
 	}
 	if deliveries != 1 {
-		t.Fatalf("invoice_issued deliveries = %d, want 1", deliveries)
+		t.Fatalf("new_invoice_created deliveries = %d, want 1", deliveries)
 	}
 }
 

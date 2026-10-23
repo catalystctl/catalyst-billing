@@ -22,6 +22,8 @@
 
 import { ApiError } from "../lib/api";
 import { h, swap } from "../lib/dom";
+import { problemFieldText, problemFrom, problemText } from "../lib/i18n";
+import { openDialog } from "../ui/dialog";
 import { relative } from "../lib/format";
 import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
@@ -83,7 +85,21 @@ interface VariableList {
 interface PreviewResponse {
   event_key: string;
   force: boolean;
-  mail: { subject: string; body: string; cc_addresses: string[] | null; bcc_addresses: string[] | null };
+  mail: {
+    subject: string;
+    body: string;
+    cc_addresses: string[] | null;
+    bcc_addresses: string[] | null;
+    /** The branded multipart/alternative part, or "" when branding is switched off. */
+    html?: string;
+    brand?: {
+      html: boolean;
+      header: string;
+      footer: string;
+      accent: string;
+      logo_url: string;
+    };
+  };
   in_app: { title: string; body: string; url: string };
 }
 
@@ -131,6 +147,11 @@ export default async function notificationTemplatesPage(ctx: Ctx): Promise<Node>
     pageHead({
       title: "Notification templates",
       sub: "What each event's message says. The wording here is what a customer reads — in their inbox and in their mail.",
+      actions: btn("Send a test email", {
+        icon: "mail",
+        variant: "ghost",
+        onclick: () => openTestEmail(ctx),
+      }),
     }),
     resource(ctx, load, (data) => {
       if (data.templates.length === 0) {
@@ -302,8 +323,8 @@ function templateEditor(
           previewHost,
           banner(
             "danger",
-            "This event does not supply that placeholder",
-            err.detail || "Fix the placeholder before saving: a customer would read the braces as text.",
+            problemText(err.problem, "This event does not supply that placeholder"),
+            [err.detail, fieldSummary(err)].filter(Boolean).join(" "),
           ),
         );
         return;
@@ -483,6 +504,7 @@ function previewView(preview: PreviewResponse): HTMLElement {
       recipients.length > 0
         ? h("p", { class: "field-hint" }, `Also copied to ${recipients.join(", ")}.`)
         : null,
+      brandedPreview(preview.mail.brand, preview.mail.html),
     ),
     h(
       "div",
@@ -503,6 +525,163 @@ function previewView(preview: PreviewResponse): HTMLElement {
       "The sample values are the event's own examples, not a customer's data. The mail body carries absolute links; the inbox row keeps the panel path.",
     ),
   );
+}
+
+/**
+ * brandedPreview draws the shell the recipient's client will render.
+ *
+ * The frame is drawn from the brand facts rather than from the HTML itself: the panel's CSP forbids
+ * inline styles, so an iframe or an injected document would not render — and a preview that
+ * silently showed nothing would be worse than no preview. The HTML source is available behind the
+ * disclosure for the operator who wants to check the markup.
+ *
+ * Nothing here is sent: this is the same render the send path uses, so an operator cannot be shown
+ * a header the customer will not get.
+ */
+function brandedPreview(
+  brand: PreviewResponse["mail"]["brand"],
+  html: string | undefined,
+): HTMLElement | null {
+  if (!brand || !brand.html) {
+    return h(
+      "p",
+      { class: "field-hint" },
+      "The branded HTML part is switched off (mail.brand_html). Recipients receive the plain text above, unchanged.",
+    );
+  }
+  const accent = /^#[0-9a-f]{6}$/i.test(brand.accent) ? brand.accent : "#3b5bdb";
+  const frame = h(
+    "div",
+    {
+      class: "stack-sm",
+      style: `border:1px solid var(--line);border-top:3px solid ${accent};border-radius:8px;padding:16px;background:var(--surface);`,
+    },
+    h(
+      "div",
+      { class: "row" },
+      brand.logo_url
+        ? h("img", {
+            src: brand.logo_url,
+            alt: brand.header || "Brand logo",
+            height: "24",
+            style: "display:block;height:24px",
+          })
+        : null,
+      h("strong", { style: `color:${accent}` }, brand.header || "(company name)"),
+    ),
+    h("p", { class: "dim" }, previewBodyExcerpt(html)),
+    h(
+      "div",
+      { class: "field-hint", style: "border-top:1px solid var(--line);padding-top:8px" },
+      brand.footer ? `${brand.footer} · ` : "",
+      brand.header || "",
+    ),
+  );
+  return h(
+    "div",
+    { class: "stack-sm" },
+    h("span", { class: "field-label" }, "Branded mail"),
+    frame,
+    html
+      ? h(
+          "details",
+          null,
+          h("summary", { class: "field-hint" }, "HTML source"),
+          // A text node, never innerHTML: the preview shows the markup rather than executing it.
+          h("pre", { class: "mono", style: "white-space:pre-wrap;font-size:11px" }, html),
+        )
+      : null,
+  );
+}
+
+/** previewBodyExcerpt is the sentence the recipient reads, without the shell's markup. */
+function previewBodyExcerpt(html: string | undefined): string {
+  if (!html) return "(the HTML part is empty)";
+  // The mail body lives between the paragraphs the renderer writes; stripping the tags here is a
+  // preview convenience, not sanitisation — the server escapes the data inside them.
+  const text = html
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > 280 ? `${text.slice(0, 280)}…` : text || "(empty)";
+}
+
+// ------------------------------------------------------------- test email --
+
+/**
+ * openTestEmail sends a real message through the real delivery path (NTF-09).
+ *
+ * The point is not the SMTP credentials — any mail client can test those — but that this message is
+ * claimed, rendered, delivered and recorded by the same code every invoice takes. It answers 202
+ * because nothing has been delivered yet; the operator watches it move from queued to sent in the
+ * email log, which is the outcome that actually proves the path works.
+ */
+function openTestEmail(ctx: Ctx): void {
+  const to = input({
+    type: "email",
+    id: "test-email-to",
+    placeholder: "Leave empty to mail yourself",
+    spellcheck: "false",
+  }) as HTMLInputElement;
+
+  const cancel = btn("Cancel", { variant: "ghost" });
+  const send = btn("Send test email", { variant: "primary" });
+  const handle = openDialog({
+    title: "Send a test email",
+    body: h(
+      "div",
+      { class: "stack-sm" },
+      field({
+        label: "Recipient",
+        control: to,
+        id: "test-email-to",
+        hint: "Empty sends it to your own address. The message uses your email branding and is queued like any other.",
+      }),
+      h(
+        "p",
+        { class: "field-hint" },
+        "The result is in the email log (Operations → Logs → Email): queued, sent, or the relay's error.",
+      ),
+    ),
+    footer: h("div", { class: "row spacer" }, cancel, send),
+    locked: () => send instanceof HTMLButtonElement && send.disabled,
+  });
+  cancel.addEventListener("click", () => handle.close());
+
+  const submit = async (): Promise<void> => {
+    await withBusy(ctx, send, async () => {
+      try {
+        const res = await ctx.api.post<{ id: string; to: string; status: string }>(
+          "/api/v1/staff/notifications/test-email",
+          { to: to.value.trim() },
+        );
+        ctx.toast("Test email queued", {
+          tone: "success",
+          detail: `To ${res.to}. Watch the email log for the delivery result.`,
+        });
+        handle.close();
+      } catch (err) {
+        // The dialog stays open: the fix is a corrected address, and closing would make the
+        // operator start again.
+        const problem = problemFrom(err);
+        const fields = problem?.fields?.length
+          ? " " + problem.fields.map((field) => problemFieldText(field)).join(" ")
+          : "";
+        ctx.toast(problemText(problem, "The test email was not queued") + fields, {
+          tone: "danger",
+          detail: problem?.code,
+        });
+      }
+    });
+  };
+  send.addEventListener("click", () => void submit());
+  to.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void submit();
+    }
+  });
 }
 
 // ----------------------------------------------------------------- errors --
@@ -530,7 +709,32 @@ function saveError(row: TemplateRow, err: unknown): HTMLElement {
         "Run the seed (the worker does it on boot) and try again.",
       );
     default:
-      return banner("danger", "The template was not saved", err.detail || `The server refused it (${err.code}).`);
+      // The catalogue's `error.<code>` sentence when it exists, the server's English detail
+      // otherwise: the code is the translatable unit, the sentence is the fallback.
+      return banner(
+        "danger",
+        problemText(err.problem, "The template was not saved"),
+        [err.detail, fieldSummary(err)].filter(Boolean).join(" ") || `The server refused it (${err.code}).`,
+      );
   }
+}
+
+/**
+ * fieldSummary names the fields a refusal is about, the way the response names them.
+ *
+ * This is what makes the refusal actionable in any language: the sentence is English, but "body:
+ * total_amount" points at the textarea wherever the operator is reading from. A placeholder is
+ * shown with its braces so it is greppable in the editor.
+ */
+function fieldSummary(err: unknown): string {
+  const problem = problemFrom(err);
+  if (!problem?.fields?.length) return "";
+  return problem.fields
+    .map((field) => {
+      const label = field.field;
+      const value = field.value ? `{{${field.value}}}` : "";
+      return problemFieldText({ ...field, value: field.value }, label) + (value ? ` (${value})` : "");
+    })
+    .join(" ");
 }
 

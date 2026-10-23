@@ -21,6 +21,7 @@
 //    it does not remove the key from the installation. The screen says so where it matters.
 
 import { ApiError } from "../lib/api";
+import { problemFieldText, problemFrom, problemText } from "../lib/i18n";
 import { h, swap } from "../lib/dom";
 import { dateTime } from "../lib/format";
 import { icon } from "../lib/icons";
@@ -65,6 +66,18 @@ interface LocalesResponse {
   default: string;
 }
 
+/** One language this build knows how to name but the installation has not added yet. */
+interface ShippedLocale {
+  code: string;
+  name: string;
+  native_name: string;
+}
+
+interface AvailableResponse {
+  data: ShippedLocale[];
+  shipped: number;
+}
+
 /** One key across every locale, from `i18n.Key`. */
 interface CatalogKey {
   key: string;
@@ -83,8 +96,13 @@ export default async function localesPage(ctx: Ctx): Promise<Node> {
   const load = async (): Promise<void> => {
     try {
       const res = await ctx.api.get<LocalesResponse>(ENDPOINT, { cache: false, signal: controller.signal });
+      // The shipped menu is a convenience, not a requirement: a build without the route still
+      // renders the languages it has, and "Add a locale" remains the way in.
+      const available = await ctx.api
+        .get<AvailableResponse>(`${ENDPOINT}/available`, { cache: false, signal: controller.signal })
+        .catch(() => ({ data: [], shipped: 0 }) as AvailableResponse);
       if (controller.signal.aborted) return;
-      swap(host, render(ctx, res, load));
+      swap(host, render(ctx, res, available.data ?? [], load));
     } catch (err) {
       if (controller.signal.aborted) return;
       swap(host, errorState(err, () => {
@@ -97,7 +115,7 @@ export default async function localesPage(ctx: Ctx): Promise<Node> {
   return host;
 }
 
-function render(ctx: Ctx, res: LocalesResponse, reload: () => Promise<void>): Node {
+function render(ctx: Ctx, res: LocalesResponse, available: ShippedLocale[], reload: () => Promise<void>): Node {
   const rows = res.data ?? [];
   // The default is the fallback text every other locale leans on, so the editor starts there
   // rather than on whichever row happened to be first.
@@ -167,8 +185,54 @@ function render(ctx: Ctx, res: LocalesResponse, reload: () => Promise<void>): No
           ),
         }),
 
+    availableCard(ctx, available, reload),
+
     editing,
   );
+}
+
+/**
+ * availableCard is the shipped menu (I18N-01).
+ *
+ * Paymenter ships its languages, so an operator picks from a list. This is the same thing without
+ * shipping the translations: one click adds a language with its English name, its native name and
+ * its BCP-47 tag already correct, and the coverage column then shows the work that remains. A
+ * language not in the menu is still addable by hand — the button above opens that form.
+ */
+function availableCard(ctx: Ctx, available: ShippedLocale[], reload: () => Promise<void>): Node | null {
+  if (available.length === 0) return null;
+  const chips: Node[] = available.map((locale) => {
+    const button = btn(`${locale.name} · ${locale.native_name}`, { variant: "ghost", size: "sm" });
+    button.addEventListener("click", () => {
+      void withBusy(ctx, button, async () => {
+        try {
+          await ctx.api.post(`${ENDPOINT}/${encodeURIComponent(locale.code)}/install`, {});
+          ctx.toast(`${locale.name} added`, {
+            tone: "success",
+            detail: "It is offered now and falls back to the default until you translate it.",
+          });
+          await reload();
+        } catch (err) {
+          ctx.toast("That language was not added", { tone: "danger", detail: describe(err) });
+        }
+      });
+    });
+    return button;
+  });
+  return card({
+    title: "Add a language",
+    sub: `${available.length} of the shipped languages could be offered here. The names are already filled in.`,
+    body: h(
+      "div",
+      { class: "stack-sm" },
+      h("div", { class: "row row-wrap" }, ...chips),
+      h(
+        "p",
+        { class: "field-hint" },
+        "Adding one starts it at 0% translated: every sentence falls back to the default language until it is translated, which is readable but not translated.",
+      ),
+    ),
+  });
 }
 
 function localeRow(ctx: Ctx, row: LocaleRow, reload: () => Promise<void>, editing: HTMLElement): Node {
@@ -523,19 +587,27 @@ function openAddLocale(ctx: Ctx, reload: () => Promise<void>): void {
 
 // ---------------------------------------------------------------- failure --
 
+/**
+ * describe turns a refusal into a sentence for a toast.
+ *
+ * The catalogue's `error.<code>` sentence wins when it exists, and the server's English detail is
+ * the fallback — the code is the translatable unit (see lib/i18n.ts). The field the refusal names
+ * is included, because "that code already exists" without saying which field is a sentence the
+ * operator has to translate back into a form.
+ */
 function describe(err: unknown): string {
   if (err instanceof ApiError) {
+    const problem = problemFrom(err) ?? { code: err.code, detail: err.detail };
+    const fields = problem.fields?.length
+      ? " " + problem.fields.map((field) => problemFieldText(field)).join(" ")
+      : "";
     switch (err.code) {
-      case "default_locale":
-        return err.message;
       case "duplicate_locale":
-        return "That language code already exists.";
-      case "invalid_input":
-        return err.message;
+        return problemText(problem, "That language code already exists.") + fields;
       case "not_found":
-        return "That locale or key no longer exists. Reload the page.";
+        return problemText(problem, "That locale or key no longer exists. Reload the page.");
       default:
-        return err.message || "The operation could not be completed.";
+        return problemText(problem, "The operation could not be completed.") + fields;
     }
   }
   return err instanceof Error ? err.message : "The operation could not be completed.";

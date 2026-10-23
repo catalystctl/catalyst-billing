@@ -19,6 +19,7 @@ const result = await build({
     "lib/brand": join(root, "src/lib/brand.ts"),
     "lib/format": join(root, "src/lib/format.ts"),
     "lib/i18n": join(root, "src/lib/i18n.ts"),
+    "lib/mail-brand": join(root, "src/lib/mail-brand.ts"),
     "lib/qr": join(root, "src/lib/qr.ts"),
     "lib/router": join(root, "src/lib/router.ts"),
     // The route table and the "where does this session belong" rule are bundled too, so the

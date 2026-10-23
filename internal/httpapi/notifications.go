@@ -646,9 +646,14 @@ type testEmailBody struct {
 // proves the relay works. A synchronous 200 would prove the SMTP credentials and say nothing about
 // the path every invoice takes.
 func (s *Server) handleSendTestEmail(w http.ResponseWriter, r *http.Request) {
+	// An empty body is "mail me", which is the case the button offers: the recipient field is the
+	// only input and it defaults to the caller. Requiring `{}` would make the simplest request the
+	// one a client has to know a detail to make.
 	var in testEmailBody
-	if !s.decodeJSON(w, r, &in, 8<<10) {
-		return
+	if r.ContentLength != 0 {
+		if !s.decodeJSON(w, r, &in, 8<<10) {
+			return
+		}
 	}
 	user, ok := userFrom(r.Context())
 	if !ok {

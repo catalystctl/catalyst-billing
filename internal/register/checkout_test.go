@@ -210,10 +210,12 @@ func TestCheckoutCreatesOrderInvoiceAndSubscriptions(t *testing.T) {
 
 	// The invoice notification was queued, since registration created an unverified
 	// address — so it is recorded as suppressed rather than sent.
+	// The kind is the notification event key: the invoice notice comes from the editable
+	// new_invoice_created template now, not the legacy hardcoded invoice_issued message.
 	var suppressed int
 	if err := f.pool.QueryRow(ctx, `
 		SELECT count(*) FROM notification_deliveries
-		WHERE kind = 'invoice_issued' AND status = 'suppressed'`).Scan(&suppressed); err != nil {
+		WHERE kind = 'new_invoice_created' AND status = 'suppressed'`).Scan(&suppressed); err != nil {
 		t.Fatal(err)
 	}
 	if suppressed != 1 {

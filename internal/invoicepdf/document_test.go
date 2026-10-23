@@ -2,11 +2,18 @@ package invoicepdf
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/brand"
 	"github.com/catalyst/billing/internal/money"
 )
 
@@ -586,4 +593,247 @@ func TestRenderDiscountLine(t *testing.T) {
 	if snap.Totals.Subtotal.Minor() != snap.Lines[0].Net.Minor()+snap.Lines[1].Net.Minor() {
 		t.Fatal("the test fixture's subtotal is not the sum of its line nets")
 	}
+}
+
+// ---------------------------------------------------------------- branding --
+
+// The bytes an unbranded document produced before branding existed.
+//
+// These are hashes, not descriptions, and that is the point: "an unset brand falls back to
+// the current appearance" is a claim about *every* byte, including the cross-reference
+// offsets and the resource dictionary. A test that asserted "no colour operators appear"
+// would pass while a stray `q`/`Q` pair or an unused XObject shifted every offset in the
+// file. The hash was recorded from the renderer with no brand support at all, so it cannot
+// be made to agree with a changed layout.
+const (
+	goldenUnbrandedInvoice    = "07a2e2b875912c04df1c0f7da6a9bc1ccebe60fd604d1bb97e6dec7bcdf27e1f"
+	goldenUnbrandedCreditNote = "2d883d81e9d25c543079afb8ced9217574d850ab6b1984abb61cc0d0612e7c38"
+)
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// sampleCreditNote is the credit note the golden hash covers.
+func sampleCreditNote(t *testing.T) Document {
+	t.Helper()
+	issued := time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)
+	return FromCreditNote(sampleSnapshot(t), CreditNoteData{
+		Number:        "CN-000007",
+		InvoiceNumber: "INV-000042",
+		IssuedAt:      &issued,
+		Currency:      "USD",
+		TotalMinor:    357,
+		TaxMinor:      57,
+		Reason:        "Service credit",
+		Status:        "issued",
+	})
+}
+
+// An unset brand must be a no-op, byte for byte.
+//
+// This is the test the acceptance criterion names. It is a hash rather than a structural
+// assertion because the requirement is byte identity, and because a structural assertion
+// would keep passing through exactly the changes that break it — a reserved object number,
+// an extra graphics-state pair, a resource added to the page dictionary.
+func TestUnsetBrandIsByteIdentical(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		doc   Document
+		goldn string
+	}{
+		{"invoice", FromInvoice(sampleSnapshot(t), issuedMeta()), goldenUnbrandedInvoice},
+		{"credit note", sampleCreditNote(t), goldenUnbrandedCreditNote},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.doc.Brand.IsZero() {
+				t.Fatal("the fixture carries a brand, so it cannot prove the unbranded fallback")
+			}
+			out, err := Render(tc.doc)
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			if got := sha256Hex(out); got != tc.goldn {
+				t.Fatalf("an unset brand changed the document:\n got %s\nwant %s", got, tc.goldn)
+			}
+			// And no brand operator may appear: a colour would mean the fallback took a
+			// branch that a hash collision could otherwise hide.
+			for _, op := range []string{" rg ", "/XObject", " Do\n", " RG "} {
+				if strings.Contains(string(out), op) {
+					t.Fatalf("an unbranded document contains %q", op)
+				}
+			}
+		})
+	}
+}
+
+// A configured brand must reach the document: the accent, the name and the logo.
+func TestBrandReachesTheDocument(t *testing.T) {
+	accent, err := brand.ParseHex("#c0392b")
+	if err != nil {
+		t.Fatalf("parse accent: %v", err)
+	}
+	logo := mustLogo(t, logoPNG(t, 40, 20, 0x1e, 0x88, 0xe5))
+
+	doc := FromInvoice(sampleSnapshot(t), issuedMeta())
+	doc.Brand = Brand{Name: "Acme Hosting", Accent: accent, Logo: logo}
+
+	out, renderErr := Render(doc)
+	if renderErr != nil {
+		t.Fatalf("render: %v", renderErr)
+	}
+	text := string(out)
+
+	// The name replaces the merchant name in the letterhead and the footer.
+	if !strings.Contains(text, "Acme Hosting") {
+		t.Fatal("the brand name is not on the document")
+	}
+	if strings.Contains(text, "Catalyst Hosting GmbH") {
+		t.Fatal("the merchant name was printed even though a brand name was configured")
+	}
+	// The accent is drawn: a filled band and a coloured rule, in the stored colour.
+	if !strings.Contains(text, "0.753 0.224 0.169 rg") {
+		t.Fatal("the accent colour does not appear in the content stream")
+	}
+	// The logo is embedded once and referenced by every page.
+	if !strings.Contains(text, "/Subtype /Image") {
+		t.Fatal("the logo is not embedded as an image")
+	}
+	if !strings.Contains(text, "/XObject << /Im1") {
+		t.Fatal("the page resources do not reference the logo")
+	}
+	if strings.Count(text, "/Subtype /Image") != 1 {
+		t.Fatal("the logo is embedded more than once")
+	}
+	// The document is still a valid PDF: branding must not corrupt the structure.
+	if !bytes.HasPrefix(out, []byte("%PDF-")) || !bytes.HasSuffix(bytes.TrimSpace(out), []byte("%%EOF")) {
+		t.Fatal("a branded document is not a well-formed PDF")
+	}
+	// The content stream must still escape its literals. The check walks text, so it runs on
+	// the colour-and-name document: the image stream is compressed binary and would be read
+	// as operators, which is a property of the checker rather than of the document.
+	textOnly := doc
+	textOnly.Brand.Logo = nil
+	textOut, textErr := Render(textOnly)
+	if textErr != nil {
+		t.Fatalf("render without logo: %v", textErr)
+	}
+	if err := checkLiteralsBalanced(textOut); err != nil {
+		t.Fatalf("a branded document has unbalanced string literals: %v", err)
+	}
+	// The facts of the document are untouched.
+	for _, want := range []string{"INV-000042", "17.85 USD", "Ada Lovelace", "DE 19%"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("%q disappeared from the branded document", want)
+		}
+	}
+}
+
+// A pale accent is a legitimate brand colour and an illegible heading, so the title is
+// darkened until it reads on paper. This is the case a real tenant produces by picking
+// yellow.
+func TestPaleAccentIsDarkenedForTheTitle(t *testing.T) {
+	pale, err := brand.ParseHex("#f1e05a")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if ratio := brand.Contrast(pale, brand.Colour{R: 0xff, G: 0xff, B: 0xff}); ratio >= brand.MinTextContrast {
+		t.Fatalf("the fixture is not pale: contrast %.2f already passes", ratio)
+	}
+
+	doc := FromInvoice(sampleSnapshot(t), issuedMeta())
+	doc.Brand = Brand{Accent: pale}
+	out, renderErr := Render(doc)
+	if renderErr != nil {
+		t.Fatalf("render: %v", renderErr)
+	}
+
+	// The title is drawn in the readable relative, not the stored colour.
+	readable := brand.Readable(pale, brand.Colour{R: 0xff, G: 0xff, B: 0xff})
+	if ratio := brand.Contrast(readable, brand.Colour{R: 0xff, G: 0xff, B: 0xff}); ratio < brand.MinTextContrast {
+		t.Fatalf("the title colour still fails contrast: %.2f", ratio)
+	}
+	titleOp := fmt.Sprintf("q %.3f %.3f %.3f rg BT /F2 18.00 Tf",
+		float64(readable.R)/255, float64(readable.G)/255, float64(readable.B)/255)
+	if !strings.Contains(string(out), titleOp) {
+		t.Fatal("the document title is not drawn in a readable version of the accent")
+	}
+	// The band still uses the accent exactly as stored: it is a shape, not text, so it needs
+	// no contrast adjustment and the brand colour is honoured where it is safe.
+	bandOp := fmt.Sprintf("q %.3f %.3f %.3f rg",
+		float64(pale.R)/255, float64(pale.G)/255, float64(pale.B)/255)
+	if !strings.Contains(string(out), bandOp) {
+		t.Fatal("the accent band does not use the stored colour")
+	}
+}
+
+// A logo that cannot be decoded must not stop the invoice. A document is owed to a customer
+// whether or not the file behind its letterhead is still readable.
+func TestUndecodableLogoFallsBackToNoLogo(t *testing.T) {
+	accent, _ := brand.ParseHex("#3b5bdb")
+	doc := FromInvoice(sampleSnapshot(t), issuedMeta())
+	doc.Brand = Brand{
+		Name:   "Acme Hosting",
+		Accent: accent,
+		Logo:   &Logo{ContentType: "image/png", Bytes: []byte("not an image")},
+	}
+	out, err := Render(doc)
+	if err != nil {
+		t.Fatalf("a corrupt logo failed the document: %v", err)
+	}
+	text := string(out)
+	if strings.Contains(text, "/Subtype /Image") {
+		t.Fatal("a corrupt logo was embedded")
+	}
+	// The rest of the brand still applies: one broken field is not a broken brand.
+	if !strings.Contains(text, "Acme Hosting") {
+		t.Fatal("the brand name was dropped along with the logo")
+	}
+	if !bytes.HasPrefix(out, []byte("%PDF-")) {
+		t.Fatal("the document is not a PDF")
+	}
+}
+
+// An SVG logo is a document that can carry a script. The renderer cannot draw one, so it
+// must be treated as absent rather than embedded as bytes.
+func TestSVGLogoIsNotEmbedded(t *testing.T) {
+	doc := FromInvoice(sampleSnapshot(t), issuedMeta())
+	doc.Brand = Brand{Logo: &Logo{
+		ContentType: "image/svg+xml",
+		Bytes:       []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`),
+	}}
+	out, err := Render(doc)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(string(out), "alert(1)") || strings.Contains(string(out), "image/svg") {
+		t.Fatal("an SVG logo reached the document")
+	}
+}
+
+// mustLogo wraps encoded bytes as a stored logo.
+func mustLogo(t *testing.T, b []byte) *Logo {
+	t.Helper()
+	if len(b) == 0 {
+		t.Fatal("the fixture encoder produced no bytes")
+	}
+	return &Logo{ContentType: "image/png", Bytes: b}
+}
+
+// logoPNG encodes a solid-colour PNG of the given size. It is generated rather than checked
+// in so the test carries no binary fixture and the size is visible at the call site.
+func logoPNG(t *testing.T, w, h int, r, g, b uint8) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: r, G: g, B: b, A: 0xff})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode logo: %v", err)
+	}
+	return buf.Bytes()
 }

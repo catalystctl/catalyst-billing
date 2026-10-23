@@ -311,6 +311,18 @@ func (c *Client) DeleteStaffApikeysById(ctx context.Context, id string, query ur
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffBrandingLogo calls DELETE /api/v1/staff/branding/logo.
+//
+// # Remove the brand logo
+//
+// Permission: settings:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) DeleteStaffBrandingLogo(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/branding/logo"
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffCatalogCategoriesById calls DELETE /api/v1/staff/catalog/categories/{id}.
 //
 // # Delete a category
@@ -674,6 +686,14 @@ func (c *Client) GetAuthProviders(ctx context.Context, query url.Values, body an
 // Verify an address with a token
 func (c *Client) GetAuthVerify(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/auth/verify"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetBranding calls GET /api/v1/branding.
+//
+// The tenant's brand, resolved
+func (c *Client) GetBranding(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/branding"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -1294,6 +1314,16 @@ func (c *Client) GetStaffAudit(ctx context.Context, query url.Values, body any) 
 // Permission: settings:write. Staff only.
 func (c *Client) GetStaffAutomation(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/automation"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffBranding calls GET /api/v1/staff/branding.
+//
+// # The branding settings group, with the resolved brand beside it
+//
+// Permission: settings:write. Staff only.
+func (c *Client) GetStaffBranding(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/branding"
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -2913,6 +2943,18 @@ func (c *Client) PostStaffApprovalsByIdReject(ctx context.Context, id string, qu
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffBrandingLogo calls POST /api/v1/staff/branding/logo.
+//
+// # Upload the brand logo
+//
+// Permission: settings:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffBrandingLogo(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/branding/logo"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffCancellationsByIdExecute calls POST /api/v1/staff/cancellations/{id}/execute.
 //
 // # Execute a pending immediate cancellation
@@ -3843,6 +3885,18 @@ func (c *Client) PutStaffAnnouncementsById(ctx context.Context, id string, query
 func (c *Client) PutStaffApikeysByIdIpallowlist(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/api-keys/{id}/ip-allowlist"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffBranding calls PUT /api/v1/staff/branding.
+//
+// # Write the branding group
+//
+// Permission: settings:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PutStaffBranding(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/branding"
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }
 

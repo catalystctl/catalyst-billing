@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/brand"
 )
 
 // Kind is which document is being printed. It decides the title, and for a
@@ -91,6 +92,10 @@ type Document struct {
 	// TaxEvidence is printed next to the tax total so the rate and the
 	// jurisdiction that produced it are on the document itself.
 	TaxEvidence billing.TaxEvidence
+	// Brand is the tenant's overlay: a name, a logo and an accent. The zero value is the
+	// unbranded document, and it renders byte-identically to a document printed before
+	// branding existed — which is what makes "unset" a fallback rather than a lookalike.
+	Brand Brand
 }
 
 // FromInvoice builds a Document from an issued invoice's snapshot and its
@@ -243,12 +248,38 @@ type renderer struct {
 	pages []*canvas
 	cur   *canvas
 	y     float64
+	// logo is the decoded brand logo, or nil. It is decoded once, at construction, so the
+	// header and the object writer cannot disagree about whether there is one.
+	logo *logoImage
 }
 
 func newRenderer(doc Document) *renderer {
 	r := &renderer{doc: doc}
+	if img, ok := decodeLogo(doc.Brand.Logo); ok {
+		r.logo = &img
+	}
 	r.newPage()
 	return r
+}
+
+// accent returns the document accent, and whether one is configured.
+func (r *renderer) accent() (brand.Colour, bool) {
+	if r.doc.Brand.Accent.IsZero() {
+		return brand.Colour{}, false
+	}
+	return r.doc.Brand.Accent, true
+}
+
+// brandName is the name printed above the merchant's address: the tenant's trading name when
+// one is configured, otherwise the merchant name the snapshot froze.
+func (r *renderer) brandName() string {
+	if name := strings.TrimSpace(r.doc.Brand.Name); name != "" {
+		return name
+	}
+	if name := strings.TrimSpace(r.doc.Merchant.Name); name != "" {
+		return name
+	}
+	return "—"
 }
 
 // newPage starts a page and resets the cursor to the top margin.
@@ -269,19 +300,31 @@ func (r *renderer) need(h float64) {
 }
 
 // drawHeader prints the merchant block on the left and the document identity on
-// the right.
+// right.
 func (r *renderer) drawHeader() {
 	const (
 		leftWidth  = 300.0
 		rightRight = contentRight
 	)
 
-	y := r.y
-	// Merchant.
-	name := r.doc.Merchant.Name
-	if name == "" {
-		name = "—"
+	// The brand band sits in the top margin, so it costs the letterhead no vertical space.
+	if accent, ok := r.accent(); ok {
+		bandTop := pageHeight - accentBandTop
+		r.cur.fillRectIn(contentLeft, bandTop-accentBandHeight, contentWidth, accentBandHeight, accent)
 	}
+
+	y := r.y
+	// The logo is the only brand element that moves anything: the merchant block starts below
+	// it. With no logo, y is unchanged and the layout is the pre-brand one exactly.
+	if r.logo != nil {
+		if w, h := drawnLogoSize(*r.logo); w > 0 && h > 0 {
+			r.cur.drawImage(contentLeft, y-h, w, h, logoResourceName)
+			y -= h + 10
+		}
+	}
+
+	// Merchant.
+	name := r.brandName()
 	r.cur.text(contentLeft, y, truncate(HelveticaBold, 16, name, leftWidth), HelveticaBold, 16)
 	y -= 20
 
@@ -305,7 +348,15 @@ func (r *renderer) drawHeader() {
 	// Document identity, right-aligned.
 	ty := r.y
 	title := r.title()
-	r.cur.textRight(rightRight, ty, title, HelveticaBold, 18)
+	if accent, ok := r.accent(); ok {
+		// The accent as stored is chosen to read on the panel's background, not on paper.
+		// A pale accent therefore prints a heading nobody can read, so the title uses the
+		// nearest readable relative of the same hue.
+		ink := brand.Readable(accent, paperWhite)
+		r.cur.textIn(rightRight-TextWidth(HelveticaBold, 18, title), ty, title, HelveticaBold, 18, ink)
+	} else {
+		r.cur.textRight(rightRight, ty, title, HelveticaBold, 18)
+	}
 	ty -= 24
 
 	rows := [][2]string{}
@@ -343,8 +394,13 @@ func (r *renderer) drawHeader() {
 	}
 	r.y = merchantBottom - 10
 
-	// A rule separates the letterhead from the parties.
-	r.cur.line(contentLeft, r.y, contentRight, r.y, 0.8)
+	// A rule separates the letterhead from the parties. With a brand it is the brand's
+	// colour, thicker, because that rule is the one line every document carries.
+	if accent, ok := r.accent(); ok {
+		r.cur.lineIn(contentLeft, r.y, contentRight, r.y, accentRuleWidth, accent)
+	} else {
+		r.cur.line(contentLeft, r.y, contentRight, r.y, 0.8)
+	}
 	r.y -= 18
 
 	if r.doc.Meta.Proforma {
@@ -478,7 +534,14 @@ func (r *renderer) drawTable() {
 func (r *renderer) tableHeader() {
 	// A header that would be the last thing on a page is pointless.
 	r.need(60)
-	r.cur.fillRect(contentLeft, r.y-4, contentWidth, 16, 0.92)
+	// The band takes a tint of the accent rather than the accent itself: the header labels are
+	// black, and a saturated fill would make them unreadable. 86% white is enough to see the
+	// brand and not enough to fight the text.
+	if accent, ok := r.accent(); ok {
+		r.cur.fillRectIn(contentLeft, r.y-4, contentWidth, 16, brand.Mix(accent, paperWhite, 0.86))
+	} else {
+		r.cur.fillRect(contentLeft, r.y-4, contentWidth, 16, 0.92)
+	}
 	y := r.y
 	r.cur.text(colDescLeft, y, "Description", HelveticaBold, smallSize)
 	r.cur.textRight(colQtyRight, y, "Qty", HelveticaBold, smallSize)
@@ -646,6 +709,18 @@ func (r *renderer) finish() ([]byte, error) {
 			f.baseFont())))
 	}
 
+	// The logo is one object shared by every page: the pages differ only in their content
+	// stream, so embedding the image per page would duplicate its bytes for no gain. When
+	// there is no logo, no object is reserved and the page dictionary below is the exact
+	// pre-brand string — which is what keeps an unbranded document byte-identical.
+	logoNum := 0
+	if r.logo != nil {
+		if body, err := logoObject(*r.logo); err == nil {
+			logoNum = w.reserve()
+			w.set(logoNum, body)
+		}
+	}
+
 	pageNums := make([]int, 0, len(r.pages))
 	contentNums := make([]int, 0, len(r.pages))
 	for range r.pages {
@@ -659,11 +734,16 @@ func (r *renderer) finish() ([]byte, error) {
 		// known once every page exists.
 		r.drawFooter(page, i+1, total)
 		w.set(contentNums[i], page.contentStream())
+		resources := fmt.Sprintf("/Resources << /Font << /F1 %d 0 R /F2 %d 0 R >> >>",
+			fontNums[Helvetica], fontNums[HelveticaBold])
+		if logoNum > 0 {
+			resources = fmt.Sprintf("/Resources << /Font << /F1 %d 0 R /F2 %d 0 R >> /XObject << /%s %d 0 R >> >>",
+				fontNums[Helvetica], fontNums[HelveticaBold], logoResourceName, logoNum)
+		}
 		w.set(pageNums[i], []byte(fmt.Sprintf(
 			"<< /Type /Page /Parent %d 0 R /MediaBox [0 0 %.0f %.0f] "+
-				"/Resources << /Font << /F1 %d 0 R /F2 %d 0 R >> >> /Contents %d 0 R >>",
-			pagesNum, pageWidth, pageHeight,
-			fontNums[Helvetica], fontNums[HelveticaBold], contentNums[i])))
+				"%s /Contents %d 0 R >>",
+			pagesNum, pageWidth, pageHeight, resources, contentNums[i])))
 	}
 
 	var kids strings.Builder
@@ -701,7 +781,7 @@ func (r *renderer) footerText() string {
 		parts = append(parts, r.doc.Meta.Number)
 	}
 	if r.doc.Merchant.Name != "" {
-		parts = append(parts, r.doc.Merchant.Name)
+		parts = append(parts, r.brandName())
 	}
 	return strings.Join(parts, " · ")
 }

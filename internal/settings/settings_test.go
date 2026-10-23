@@ -397,3 +397,132 @@ func createStaffUser(ctx context.Context, pool interface {
 		VALUES ('operator@example.test', 'x', now()) RETURNING id`).Scan(&id)
 	return id, err
 }
+
+// ------------------------------------------------------------------ branding --
+
+// The brand group is declared, so a settings page renders it and a typo is an error rather
+// than a silent empty value.
+func TestBrandingGroupIsDeclared(t *testing.T) {
+	want := map[string]bool{"name": false, "logo_id": false, "accent_light": false, "accent_dark": false}
+	found := 0
+	for _, d := range settings.Definitions() {
+		if d.Group != "branding" {
+			continue
+		}
+		if _, ok := want[d.Key]; !ok {
+			t.Fatalf("the branding group declares an unexpected key %q", d.Key)
+		}
+		want[d.Key] = true
+		found++
+	}
+	if found != len(want) {
+		t.Fatalf("the branding group declares %d keys, want %d", found, len(want))
+	}
+	for key, seen := range want {
+		if !seen {
+			t.Fatalf("branding.%s is not declared", key)
+		}
+	}
+	// And every default is empty: a default that repeated the built-in appearance would
+	// make "unset" indistinguishable from "set to the default", and the byte-identical
+	// fallback could not be tested.
+	for _, d := range settings.Definitions() {
+		if d.Group == "branding" && d.Default != "" {
+			t.Fatalf("branding.%s defaults to %q, want the empty string", d.Key, d.Default)
+		}
+	}
+}
+
+// A brand write is validated before anything is stored: a form that sends a valid name and
+// an invalid colour must not leave the name applied.
+func TestBrandingAcceptsHexColoursAndRefusesTheRest(t *testing.T) {
+	pool := storetest.DB(t)
+	s := settings.New(pool)
+	ctx := context.Background()
+
+	accepted := []string{"", "#3b5bdb", "3b5bdb", "#ABC", "#000000"}
+	for _, value := range accepted {
+		if _, err := s.Update(ctx, "branding", map[string]string{"accent_light": value}, "", nil); err != nil {
+			t.Fatalf("accent_light %q was refused: %v", value, err)
+		}
+	}
+
+	for _, value := range []string{"chartreuse", "#12345", "rgb(1,2,3)", "#3b5bdb; drop table settings"} {
+		_, err := s.Update(ctx, "branding", map[string]string{"accent_light": value}, "", nil)
+		if err == nil {
+			t.Fatalf("accent_light %q was accepted", value)
+		}
+		if !strings.Contains(err.Error(), "branding.accent_light") {
+			t.Fatalf("the error does not name the key: %v", err)
+		}
+	}
+
+	// The logo is an identifier: a value that is not one is refused rather than stored as a
+	// reference that names nothing.
+	if _, err := s.Update(ctx, "branding", map[string]string{"logo_id": "not-a-uuid"}, "", nil); err == nil {
+		t.Fatal("a non-uuid logo_id was accepted")
+	}
+	validID := "8c8d0f5a-0000-0000-0000-000000000001"
+	if _, err := s.Update(ctx, "branding", map[string]string{"logo_id": validID}, "", nil); err != nil {
+		t.Fatalf("a valid logo_id was refused: %v", err)
+	}
+}
+
+// A name is printed in the sidebar and on every invoice, so it is bounded and carries no
+// control characters.
+func TestBrandingNameIsBounded(t *testing.T) {
+	pool := storetest.DB(t)
+	s := settings.New(pool)
+	ctx := context.Background()
+
+	if _, err := s.Update(ctx, "branding", map[string]string{"name": strings.Repeat("a", settings.MaxBrandName)}, "", nil); err != nil {
+		t.Fatalf("a name at the limit was refused: %v", err)
+	}
+	if _, err := s.Update(ctx, "branding", map[string]string{"name": strings.Repeat("a", settings.MaxBrandName+1)}, "", nil); err == nil {
+		t.Fatal("a name over the limit was accepted")
+	}
+	if _, err := s.Update(ctx, "branding", map[string]string{"name": "Acme\nHosting"}, "", nil); err == nil {
+		t.Fatal("a name containing a newline was accepted")
+	}
+}
+
+// The database carries the same rule as the code, so a row written by hand through psql
+// cannot create a value the renderers cannot draw.
+func TestBrandingConstraintsExistInTheSchema(t *testing.T) {
+	pool := storetest.DB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO settings (group_key, key, value) VALUES ('branding', 'accent_light', 'chartreuse')`,
+	); err == nil {
+		t.Fatal("the schema accepted a colour that is not a colour")
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO settings (group_key, key, value) VALUES ('branding', 'logo_id', 'not-a-uuid')`,
+	); err == nil {
+		t.Fatal("the schema accepted a logo id that is not an id")
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO settings (group_key, key, value) VALUES ('branding', 'name', repeat('a', 81))`,
+	); err == nil {
+		t.Fatal("the schema accepted a name longer than the panel can render")
+	}
+	// The three-digit form is expanded and lower-cased on write, so there is exactly one
+	// spelling of a colour in the database and the panel's comparison against its own token
+	// cannot be fooled by case.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO settings (group_key, key, value) VALUES ('branding', 'accent_dark', '#ABC')
+		ON CONFLICT (group_key, key) DO UPDATE SET value = EXCLUDED.value`,
+	); err != nil {
+		t.Fatalf("insert a short hex colour: %v", err)
+	}
+	var stored string
+	if err := pool.QueryRow(ctx, `
+		SELECT value FROM settings WHERE group_key = 'branding' AND key = 'accent_dark'`,
+	).Scan(&stored); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if stored != "#aabbcc" {
+		t.Fatalf("the stored accent is %q, want #aabbcc", stored)
+	}
+}

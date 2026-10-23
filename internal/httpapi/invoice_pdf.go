@@ -192,7 +192,14 @@ func (s *Server) serveInvoiceDocument(w http.ResponseWriter, r *http.Request, do
 		VoidReason: doc.VoidReason,
 		BillToText: doc.BillToText,
 	}
-	pdf, err := invoicepdf.Render(invoicepdf.FromInvoice(doc.Snapshot, meta))
+	// The tenant's brand is an overlay on the layout, never a change to it: the columns, the
+	// totals and the tax evidence are the product of a frozen snapshot, and a theme must not
+	// be able to move a fact on a document a customer is asked to pay. An unset brand leaves
+	// the bytes identical, so a branded installation and an unbranded one differ only in the
+	// colour, the name and the mark.
+	document := invoicepdf.FromInvoice(doc.Snapshot, meta)
+	document.Brand = s.invoiceBrand(r.Context())
+	pdf, err := invoicepdf.Render(document)
 	if err != nil {
 		s.cfg.Logger.ErrorContext(r.Context(), "render invoice pdf", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "render_failed",
@@ -347,7 +354,7 @@ func (s *Server) serveCreditNoteDocument(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	pdf, err := invoicepdf.Render(invoicepdf.FromCreditNote(base, invoicepdf.CreditNoteData{
+	pdf, err := invoicepdf.Render(withBrand(invoicepdf.FromCreditNote(base, invoicepdf.CreditNoteData{
 		Number:        cn.Number,
 		InvoiceNumber: invoiceNumber,
 		IssuedAt:      cn.IssuedAt,
@@ -356,7 +363,7 @@ func (s *Server) serveCreditNoteDocument(w http.ResponseWriter, r *http.Request,
 		TaxMinor:      cn.TaxMinor,
 		Reason:        cn.Reason,
 		Status:        cn.Status,
-	}))
+	}), s.invoiceBrand(r.Context())))
 	if err != nil {
 		s.cfg.Logger.ErrorContext(r.Context(), "render credit note pdf", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "render_failed",
@@ -366,8 +373,17 @@ func (s *Server) serveCreditNoteDocument(w http.ResponseWriter, r *http.Request,
 	writePDF(w, invoicepdf.SafeFilename(cn.Number)+".pdf", pdf)
 }
 
-// writePDF writes the bytes as a download.
+// withBrand attaches the tenant's brand to a document.
 //
+// It is a helper rather than two lines inline because the credit-note path builds its
+// document inside a function call, and a brand that reached the invoice but not the credit
+// note would be a document a customer receives unbranded and cannot explain.
+func withBrand(doc invoicepdf.Document, b invoicepdf.Brand) invoicepdf.Document {
+	doc.Brand = b
+	return doc
+}
+
+// writePDF writes the bytes as a download.//
 // The content type is exactly "application/pdf": a browser that receives
 // "text/html" for a PDF renders nothing and offers no download, and a proxy that
 // sniffs could serve the file as something executable. X-Content-Type-Options and

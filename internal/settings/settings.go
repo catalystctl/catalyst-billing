@@ -38,6 +38,8 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/audit"
+	"github.com/catalyst/billing/internal/brand"
+	"github.com/catalyst/billing/internal/portal"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
 )
@@ -89,6 +91,15 @@ type Definition struct {
 	// Choices, when non-empty, closes the set of accepted strings. An enum in code is
 	// cheaper than a lookup table and cannot drift from the parser that reads it.
 	Choices []string
+	// Check is an extra predicate for a key whose values are open-ended but not arbitrary:
+	// a colour, an identifier. It runs after the kind check, so a value that is not even
+	// of the right type is refused with the type's own message.
+	//
+	// It exists because `Choices` cannot express "any hex colour" and a bare string would
+	// let a hand-written value through to a renderer that has no way to draw it. The check
+	// is declared here, next to the default, so there is one place that says what a key
+	// accepts; the SQL migration carries the same rule for writes made outside this code.
+	Check func(d Definition, value string) error
 }
 
 // Name renders "group.key", which is what an error message and a CLI argument use.
@@ -99,6 +110,17 @@ func (d Definition) Validate(value string) error {
 	if len(value) > maxValueBytes {
 		return fmt.Errorf("%w: %s is longer than %d bytes", ErrInvalidValue, d.Name(), maxValueBytes)
 	}
+	if err := d.validateKind(value); err != nil {
+		return err
+	}
+	if d.Check != nil {
+		return d.Check(d, value)
+	}
+	return nil
+}
+
+// validateKind applies the rule implied by Kind (and by Choices, when a closed set exists).
+func (d Definition) validateKind(value string) error {
 	switch d.Kind {
 	case KindInt:
 		if _, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err != nil {
@@ -260,6 +282,77 @@ var definitions = []Definition{
 		Choices: []string{"stable", "beta"}},
 	{Group: "updates", Key: "check_url", Kind: KindString, Default: ""},
 	{Group: "updates", Key: "telemetry", Kind: KindBool, Default: "false"},
+
+	// ------------------------------------------------------------------ branding --
+	//
+	// The tenant's brand overlay: a display name, a logo and one accent per colour mode.
+	// Every key defaults to the empty string, and empty means "not configured" — the panel
+	// keeps its built-in name, mark and accent. That is what makes an installation which
+	// never opened the branding screen byte-identical to one built before it existed, and
+	// it is why the defaults here are deliberately not the current appearance: a default
+	// that repeated the built-in colour would make "unset" indistinguishable from "set to
+	// the default", and the fallback could never be tested.
+	//
+	// Two accents rather than one because the two themes need different luminances for the
+	// same hue: a mid-tone blue that reads on white is too dark on near-black, and the pale
+	// version of it is invisible on white. A single stored accent would be legible in one
+	// theme and washed out in the other.
+	{Group: "branding", Key: "name", Kind: KindString, Default: "", Check: checkBrandName},
+	{Group: "branding", Key: "logo_id", Kind: KindString, Default: "", Check: checkUUIDOrEmpty},
+	{Group: "branding", Key: "accent_light", Kind: KindString, Default: "", Check: checkHexColourOrEmpty},
+	{Group: "branding", Key: "accent_dark", Kind: KindString, Default: "", Check: checkHexColourOrEmpty},
+}
+
+// MaxBrandName bounds the display name. It is the width of the panel's brand line, not an
+// arbitrary number: a name longer than this wraps the sidebar and pushes the navigation off
+// the screen, which is a worse outcome than being told the name is too long.
+const MaxBrandName = 80
+
+// checkBrandName bounds the display name and refuses control characters.
+//
+// A name is printed in the panel and on every invoice, so a newline or a NUL in it is not a
+// cosmetic problem: the PDF writer replaces control bytes with spaces, and the panel would
+// render a name that is half invisible with no explanation.
+func checkBrandName(d Definition, value string) error {
+	if len([]rune(value)) > MaxBrandName {
+		return fmt.Errorf("%w: %s is longer than %d characters", ErrInvalidValue, d.Name(), MaxBrandName)
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%w: %s contains a control character", ErrInvalidValue, d.Name())
+		}
+	}
+	return nil
+}
+
+// checkHexColourOrEmpty accepts a hex colour or the empty string ("not configured").
+//
+// The empty string is accepted because clearing a brand value is how an operator removes a
+// brand, and a rule that refused "" would make the only way back to the built-in look a
+// database write.
+func checkHexColourOrEmpty(d Definition, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	if _, err := brand.ParseHex(value); err != nil {
+		return fmt.Errorf("%w: %s must be a hex colour such as #3b5bdb, or empty", ErrInvalidValue, d.Name())
+	}
+	return nil
+}
+
+// checkUUIDOrEmpty accepts a uuid or the empty string.
+//
+// The logo is a reference to a stored image, so the value is an identifier: a typo would
+// otherwise read as "no logo" and the operator would be told their upload vanished.
+func checkUUIDOrEmpty(d Definition, value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	if !portal.ValidID(trimmed) {
+		return fmt.Errorf("%w: %s must be a stored image id, or empty", ErrInvalidValue, d.Name())
+	}
+	return nil
 }
 
 // index maps "group.key" to its definition.
@@ -587,13 +680,46 @@ func (s *Store) Set(ctx context.Context, group, key, value, actorID string, audi
 // credential with the literal string "[redacted]" — a bug that would be found by the mail
 // server refusing to authenticate weeks later.
 func (s *Store) Update(ctx context.Context, group string, values map[string]string, actorID string, auditor audit.Auditor) ([]Value, error) {
-	defs := groupDefinitions(group)
-	if len(defs) == 0 {
-		return nil, fmt.Errorf("%w: %s", ErrUnknownGroup, group)
+	defs, keys, err := prepareUpdate(group, values)
+	if err != nil {
+		return nil, err
 	}
 
-	// Validate everything before writing anything: a bulk update that fails on its last
-	// key must not leave the first nine applied.
+	var out []Value
+	err = s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		out, err = writeValues(ctx, s, tx, group, defs, keys, values, actorID, auditor)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// UpdateTx writes several values of one group inside a transaction the caller owns.
+//
+// It exists for a write that has to be one fact with something else: uploading a brand logo
+// stores the image and points the `branding.logo_id` setting at it, and a failure between
+// those two writes would leave a screen showing a logo id that names nothing. The validation
+// is the same validation — it runs before the caller's transaction is touched, so a bad
+// value cannot abort a transaction that is already doing other work.
+func (s *Store) UpdateTx(ctx context.Context, tx pgx.Tx, group string, values map[string]string, actorID string, auditor audit.Auditor) ([]Value, error) {
+	defs, keys, err := prepareUpdate(group, values)
+	if err != nil {
+		return nil, err
+	}
+	return writeValues(ctx, s, tx, group, defs, keys, values, actorID, auditor)
+}
+
+// prepareUpdate validates a group write and returns the definitions and the keys to write,
+// in deterministic order. Nothing is written here: a bulk update that fails on its last key
+// must not leave the first nine applied.
+func prepareUpdate(group string, values map[string]string) (map[string]Definition, []string, error) {
+	defs := groupDefinitions(group)
+	if len(defs) == 0 {
+		return nil, nil, fmt.Errorf("%w: %s", ErrUnknownGroup, group)
+	}
 	byKey := make(map[string]Definition, len(defs))
 	for _, d := range defs {
 		byKey[d.Key] = d
@@ -602,68 +728,66 @@ func (s *Store) Update(ctx context.Context, group string, values map[string]stri
 	for key, value := range values {
 		def, ok := byKey[key]
 		if !ok {
-			return nil, fmt.Errorf("%w: %s.%s", ErrUnknownKey, group, key)
+			return nil, nil, fmt.Errorf("%w: %s.%s", ErrUnknownKey, group, key)
 		}
 		if def.Secret && value == RedactedMarker {
 			continue
 		}
 		if err := def.Validate(value); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		keys = append(keys, key)
 	}
 	// Deterministic write order keeps the audit trail readable and makes a concurrent
 	// pair of updates deadlock in one predictable direction rather than randomly.
 	sort.Strings(keys)
+	return byKey, keys, nil
+}
 
-	var out []Value
-	err := s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		for _, key := range keys {
-			def := byKey[key]
-			value := values[key]
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO settings (group_key, key, value, is_secret, updated_by, updated_at)
-				VALUES ($1, $2, $3, $4, $5, now())
-				ON CONFLICT (group_key, key) DO UPDATE
-					SET value = EXCLUDED.value,
-					    is_secret = EXCLUDED.is_secret,
-					    updated_by = EXCLUDED.updated_by,
-					    updated_at = now()`,
-				group, key, value, def.Secret, nullableID(actorID)); err != nil {
-				return fmt.Errorf("settings: write %s: %w", def.Name(), err)
-			}
-
-			if auditor == nil {
-				continue
-			}
-			// The audit row names the key and, for a non-secret, the new value. A secret's
-			// new value is never written anywhere it can be read back.
-			logged := value
-			if def.Secret {
-				logged = RedactedMarker
-			}
-			changes := map[string]any{
-				"group":     group,
-				"key":       key,
-				"value":     logged,
-				"is_secret": def.Secret,
-			}
-			if err := auditor.RecordAction(ctx, tx, "setting.update", "setting", "", changes); err != nil {
-				return err
-			}
+// writeValues performs the upserts, the audit rows and the read-back inside tx.
+func writeValues(ctx context.Context, s *Store, tx pgx.Tx, group string, byKey map[string]Definition,
+	keys []string, values map[string]string, actorID string, auditor audit.Auditor) ([]Value, error) {
+	defs := groupDefinitions(group)
+	for _, key := range keys {
+		def := byKey[key]
+		value := values[key]
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO settings (group_key, key, value, is_secret, updated_by, updated_at)
+			VALUES ($1, $2, $3, $4, $5, now())
+			ON CONFLICT (group_key, key) DO UPDATE
+				SET value = EXCLUDED.value,
+				    is_secret = EXCLUDED.is_secret,
+				    updated_by = EXCLUDED.updated_by,
+				    updated_at = now()`,
+			group, key, value, def.Secret, nullableID(actorID)); err != nil {
+			return nil, fmt.Errorf("settings: write %s: %w", def.Name(), err)
 		}
 
-		rows, err := s.readGroup(ctx, tx, group)
-		if err != nil {
-			return err
+		if auditor == nil {
+			continue
 		}
-		out = mergeValues(defs, rows)
-		return nil
-	})
+		// The audit row names the key and, for a non-secret, the new value. A secret's
+		// new value is never written anywhere it can be read back.
+		logged := value
+		if def.Secret {
+			logged = RedactedMarker
+		}
+		changes := map[string]any{
+			"group":     group,
+			"key":       key,
+			"value":     logged,
+			"is_secret": def.Secret,
+		}
+		if err := auditor.RecordAction(ctx, tx, "setting.update", "setting", "", changes); err != nil {
+			return nil, err
+		}
+	}
+
+	rows, err := s.readGroup(ctx, tx, group)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return mergeValues(defs, rows), nil
 }
 
 // nullableID renders an empty actor id as SQL NULL, because settings.updated_by is a uuid

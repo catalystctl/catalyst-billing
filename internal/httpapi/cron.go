@@ -25,12 +25,14 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/catalyst/billing/internal/authn"
+	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/paginate"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
@@ -263,6 +265,9 @@ func RecordRun(ctx context.Context, pool *store.Pool, job, outcome, detail strin
 	if err != nil {
 		return "", err
 	}
+	if outcome == "failed" {
+		alertCronFailure(ctx, pool, id, job, detail)
+	}
 	return id, nil
 }
 
@@ -291,12 +296,54 @@ func FinishRun(ctx context.Context, pool *store.Pool, id, outcome, detail string
 	if outcome == "running" {
 		outcome = "ok"
 	}
-	_, err := pool.Exec(ctx, `
+	tag, err := pool.Exec(ctx, `
 		UPDATE cron_runs
 		SET outcome = $2, detail = $3, items = $4, finished_at = now()
 		WHERE id = $1 AND outcome = 'running'`,
 		id, outcome, truncate(redactLogText(detail), 4000), items)
+	if err != nil {
+		return err
+	}
+	// Only when the update actually closed the run: a second close is a no-op there, and alerting
+	// on a row this call did not change would mail about a failure that was already reported.
+	if outcome == "failed" && tag.RowsAffected() > 0 {
+		alertCronFailure(ctx, pool, id, "", detail)
+	}
 	return err
+}
+
+// alertCronFailure queues the operator's "a scheduled job failed" mail (NTF-09).
+//
+// It runs after the run row is written, in its own transaction, and never returns an error to the
+// caller: a failure to record the run must not be compounded by a failure to announce it, and a
+// job runner that dies because its alert could not be queued is a worse outage than the one being
+// reported. The dedupe key is the run id, so RecordRun and FinishRun reporting the same failure
+// produce one message.
+func alertCronFailure(ctx context.Context, pool *store.Pool, runID, job, detail string) {
+	if pool == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	queue := notify.NewQueue(pool)
+	err := pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		in := notify.CronFailureInput{
+			Job:      job,
+			RunID:    runID,
+			Detail:   detail,
+			FailedAt: time.Now().UTC(),
+		}
+		if in.Job == "" {
+			// FinishRun knows only the row, so the job name is read from it rather than left
+			// blank: a subject that says "Scheduled job failed: unknown job" is not actionable.
+			_ = tx.QueryRow(ctx, `SELECT job FROM cron_runs WHERE id = $1`, runID).Scan(&in.Job)
+		}
+		_, err := notify.SendCronFailure(ctx, tx, queue, in)
+		return err
+	})
+	if err != nil {
+		// Best-effort, like the Discord mirror: the run row is the durable record, and the alert is
+		// the convenience. It is logged so an operator who did not receive it can see why.
+		slog.Default().Warn("cron failure alert was not queued", "run", runID, "error", err)
+	}
 }
 
 // normalizeOutcome folds an unknown outcome to "failed".

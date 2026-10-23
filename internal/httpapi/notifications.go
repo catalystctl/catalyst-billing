@@ -21,6 +21,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -63,6 +64,12 @@ func (s *Server) registerNotificationRoutes(r *router) {
 	// always has wording, and "deleted" would mean an event that cannot be sent at all.
 	r.staffMutation(http.MethodPost, "/api/v1/staff/notification-templates/{event_key}/reset",
 		authn.PermNotificationWrite, s.handleResetTemplate)
+
+	// The test mail (NTF-09). It is a mutation because it sends something, and it takes an
+	// Idempotency-Key for the same reason a payment does: a retried request must not produce a
+	// second mail in the operator's inbox.
+	r.staffMutation(http.MethodPost, "/api/v1/staff/notifications/test-email",
+		authn.PermNotificationWrite, s.handleSendTestEmail)
 }
 
 // ------------------------------------------------------------- customer read --
@@ -558,8 +565,14 @@ func (s *Server) writeNotifyError(w http.ResponseWriter, r *http.Request, err er
 	case errors.Is(err, notify.ErrUnknownPlaceholder):
 		// A template that uses a word its event does not supply would reach a customer with the
 		// plumbing showing, so the save is refused rather than stored. The detail names the
-		// placeholders: the operator's next action is to fix the spelling.
-		writeProblem(w, http.StatusUnprocessableEntity, "unknown_placeholder", err.Error())
+		// placeholders: the operator's next action is to fix the spelling. The field list is what
+		// makes the refusal renderable in another language, and what lets the editor point at the
+		// textarea the bad word is in.
+		fields := make([]fieldProblem, 0, 4)
+		for _, f := range notify.UnknownPlaceholderFields(err) {
+			fields = append(fields, fieldProblem{Field: f.Field, Code: "unknown_placeholder", Value: f.Name})
+		}
+		writeFieldProblem(w, http.StatusUnprocessableEntity, "unknown_placeholder", err.Error(), fields)
 	case errors.Is(err, paginate.ErrInvalidCursor):
 		writeProblem(w, http.StatusBadRequest, "invalid_cursor", "the cursor is invalid")
 	default:
@@ -568,4 +581,125 @@ func (s *Server) writeNotifyError(w http.ResponseWriter, r *http.Request, err er
 		writeProblem(w, http.StatusInternalServerError, "internal_error",
 			"the request could not be completed")
 	}
+}
+
+// ------------------------------------------------------------- problem fields --
+
+// fieldProblem is one machine-readable field failure inside a problem document.
+//
+// It is deliberately not part of the generic `problem` struct in server.go: a field list belongs
+// only to the refusals that have fields, and adding a nullable array to every error response in
+// the product would make every client handle a shape that is almost always empty.
+type fieldProblem struct {
+	// Field is the input the failure is about, named the way the editor labels it.
+	Field string `json:"field"`
+	// Code is a stable identifier the client translates: required, invalid, duplicate, unknown,
+	// unknown_placeholder.
+	Code string `json:"code"`
+	// Value is the offending value when there is one worth naming (a placeholder name), never a
+	// secret.
+	Value string `json:"value,omitempty"`
+}
+
+// writeFieldProblem writes a problem document that also carries a field list.
+//
+// The document is the same RFC 9457 shape as every other refusal — same `type`, `title`, `status`
+// and `code` — so a client that already branches on problems needs no special case; `fields` is
+// the addition. Splitting the envelope would mean two error parsers in the client, which is
+// exactly the kind of duplication that lets one of them fall behind.
+func writeFieldProblem(w http.ResponseWriter, status int, code, detail string, fields []fieldProblem) {
+	body := map[string]any{
+		"type":   "about:blank",
+		"title":  http.StatusText(status),
+		"status": status,
+		"code":   code,
+	}
+	if detail != "" {
+		body["detail"] = detail
+	}
+	// An empty list is omitted rather than sent as []: "this refusal has no fields" and "this
+	// refusal is about no particular field" are the same fact, and a client that has to tell an
+	// empty array from a missing key will get it wrong once.
+	if len(fields) > 0 {
+		body["fields"] = fields
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+	// After the response, never before: a log write must not be able to change the answer.
+	recordProblem(w, status, code, detail)
+}
+
+// --------------------------------------------------------------- test email --
+
+// testEmailBody is the request shape for a test mail.
+type testEmailBody struct {
+	// To is optional: an empty value mails the caller, which is the case the button offers.
+	To string `json:"to"`
+}
+
+// handleSendTestEmail queues a test message through the real delivery path (NTF-09).
+//
+// It answers 202 rather than 200 because nothing has been delivered yet: the message is in the
+// outbox and the worker will claim it. That is the honest status — and it is also the useful one,
+// because "queued" means an operator can watch the email log go from queued to sent, which is what
+// proves the relay works. A synchronous 200 would prove the SMTP credentials and say nothing about
+// the path every invoice takes.
+func (s *Server) handleSendTestEmail(w http.ResponseWriter, r *http.Request) {
+	var in testEmailBody
+	if !s.decodeJSON(w, r, &in, 8<<10) {
+		return
+	}
+	user, ok := userFrom(r.Context())
+	if !ok {
+		writeProblem(w, http.StatusUnauthorized, "authentication_required", "sign in to continue")
+		return
+	}
+	if s.notify == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "notifications_unavailable",
+			"the notification queue is not configured")
+		return
+	}
+
+	to := strings.TrimSpace(in.To)
+	if to == "" {
+		to = user.Email
+	}
+	var fields []fieldProblem
+	if to == "" {
+		fields = append(fields, fieldProblem{Field: "to", Code: "required"})
+	} else if !strings.Contains(to, "@") || strings.ContainsAny(to, " \t\r\n") {
+		// The address lands in a mail header. A space or a newline in it is not a formatting
+		// preference, it is how one message becomes two, and the SMTP sender would refuse the
+		// whole delivery later — where the operator would see a failed row and no reason.
+		fields = append(fields, fieldProblem{Field: "to", Code: "invalid"})
+	}
+	if len(fields) > 0 {
+		writeFieldProblem(w, http.StatusUnprocessableEntity, "invalid_input",
+			"the recipient address is not usable", fields)
+		return
+	}
+
+	var id string
+	err := s.pool.InTx(r.Context(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		id, err = notify.SendTestEmail(ctx, tx, s.notify, notify.TestEmailInput{
+			To: to, RequestedBy: user.Email,
+		})
+		if err != nil {
+			return err
+		}
+		ev := s.auditEvent(r, "notification.test_email", "notification", "",
+			audit.OutcomeSuccess).WithChanges(map[string]any{"to": to})
+		return audit.Record(ctx, tx, ev)
+	})
+	if err != nil {
+		s.writeNotifyError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"id":     id,
+		"to":     to,
+		"status": "queued",
+	})
 }

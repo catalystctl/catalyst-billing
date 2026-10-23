@@ -263,7 +263,8 @@ func (s *Store) CreateTx(ctx context.Context, q querier, in LocaleInput) (Locale
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
-		return Locale{}, invalid("an English name is required, so an operator can find it in the list")
+		return Locale{}, invalidField("name", FieldRequired,
+			"an English name is required, so an operator can find it in the list")
 	}
 	native := strings.TrimSpace(in.NativeName)
 	if native == "" {
@@ -281,7 +282,8 @@ func (s *Store) CreateTx(ctx context.Context, q querier, in LocaleInput) (Locale
 		sortOrder = *in.SortOrder
 	}
 	if isDefault && !enabled {
-		return Locale{}, invalid("the default locale must be enabled: a request with no preference resolves to it")
+		return Locale{}, invalidField("is_default", FieldInvalid,
+			"the default locale must be enabled: a request with no preference resolves to it")
 	}
 
 	var exists bool
@@ -309,7 +311,8 @@ func (s *Store) CreateTx(ctx context.Context, q querier, in LocaleInput) (Locale
 			return Locale{}, ErrCodeTaken
 		}
 		if isCheckViolation(err) {
-			return Locale{}, invalid("the locale violates a constraint (code shape, or a default that is not enabled)")
+			return Locale{}, invalidField("code", FieldInvalid,
+				"the locale violates a constraint (code shape, or a default that is not enabled)")
 		}
 		return Locale{}, fmt.Errorf("i18n: create locale: %w", err)
 	}
@@ -363,7 +366,8 @@ func (s *Store) UpdateTx(ctx context.Context, q querier, code string, in LocaleI
 		return Locale{}, ErrDefaultLocale
 	}
 	if isDefault && !enabled {
-		return Locale{}, invalid("the default locale must be enabled: a request with no preference resolves to it")
+		return Locale{}, invalidField("is_default", FieldInvalid,
+			"the default locale must be enabled: a request with no preference resolves to it")
 	}
 	if isDefault && !current.IsDefault {
 		if _, err := q.Exec(ctx,
@@ -410,7 +414,8 @@ func (s *Store) SetDefaultTx(ctx context.Context, q querier, code string) (Local
 		return target, nil
 	}
 	if !target.Enabled {
-		return Locale{}, invalid("enable %s before making it the default", normalized)
+		return Locale{}, invalidField("is_default", FieldInvalid,
+			"enable %s before making it the default", normalized)
 	}
 	if _, err := q.Exec(ctx,
 		`UPDATE locales SET is_default = false, updated_at = now() WHERE is_default`); err != nil {
@@ -523,7 +528,8 @@ func (s *Store) LocaleForEmail(ctx context.Context, email string) (string, error
 // while their account claims otherwise.
 func (s *Store) SetUserLocale(ctx context.Context, userID, code string) (string, error) {
 	if strings.TrimSpace(userID) == "" {
-		return "", invalid("a session is required to store a language preference")
+		return "", invalidField("user", FieldRequired,
+			"a session is required to store a language preference")
 	}
 	normalized := ""
 	if strings.TrimSpace(code) != "" {
@@ -569,25 +575,26 @@ func (s *Store) SetUserLocale(ctx context.Context, userID, code string) (string,
 func NormalizeCode(raw string) (string, error) {
 	code := strings.TrimSpace(raw)
 	if code == "" {
-		return "", invalid("a locale code is required")
+		return "", invalidField("code", FieldRequired, "a locale code is required")
 	}
 	if len(code) > 35 {
-		return "", invalid("a locale code is at most 35 characters")
+		return "", invalidField("code", FieldInvalid, "a locale code is at most 35 characters")
 	}
 	parts := strings.Split(code, "-")
 	for i, part := range parts {
 		if part == "" {
-			return "", invalid("a locale code has no empty subtag")
+			return "", invalidField("code", FieldInvalid, "a locale code has no empty subtag")
 		}
 		if i == 0 {
 			if len(part) < 2 || len(part) > 3 || !allLetters(part) {
-				return "", invalid("a locale starts with a 2 or 3 letter language, e.g. en, de or fil")
+				return "", invalidField("code", FieldInvalid,
+					"a locale starts with a 2 or 3 letter language, e.g. en, de or fil")
 			}
 			parts[i] = strings.ToLower(part)
 			continue
 		}
 		if len(part) < 2 || len(part) > 8 || !allAlphanumeric(part) {
-			return "", invalid("a locale subtag is 2 to 8 letters or digits")
+			return "", invalidField("code", FieldInvalid, "a locale subtag is 2 to 8 letters or digits")
 		}
 		switch {
 		case len(part) == 2 && allLetters(part):

@@ -60,6 +60,14 @@ func registerI18nRoutes(r *router) {
 	r.staffMutation(http.MethodDelete, "/api/v1/staff/locales/{code}", authn.PermI18nWrite,
 		r.s.handleDeleteLocale)
 
+	// The shipped languages this installation has not added yet, and the one-click install that
+	// turns one of them on (I18N-01). A read and a mutation, registered here rather than as part
+	// of the create form: the point of the list is that an operator picks from names this build
+	// already knows instead of typing a language's English and native names by hand.
+	r.staffGet("/api/v1/staff/locales/available", authn.PermI18nWrite, r.s.handleAvailableLocales)
+	r.staffMutation(http.MethodPost, "/api/v1/staff/locales/{code}/install", authn.PermI18nWrite,
+		r.s.handleInstallLocale)
+
 	// Translations. The search is a read; the write is a mutation with an Idempotency-Key.
 	r.staffGet("/api/v1/staff/locales/keys", authn.PermI18nWrite, r.s.handleListKeys)
 	r.staffMutation(http.MethodPut, "/api/v1/staff/locales/{code}/keys/{key}", authn.PermI18nWrite,
@@ -306,6 +314,63 @@ func percentOf(part, whole int) int {
 	return (part*100 + whole/2) / whole
 }
 
+// handleAvailableLocales lists the shipped languages that are not configured yet.
+//
+// It answers a question the create form could not: "what else can this installation speak without
+// someone typing a language's names and tag correctly". The list is code, not data — see
+// internal/i18n/shipped.go for why it is not seeded into the locales table — and it shrinks as
+// languages are installed, so the screen can show an empty state rather than a row that fails on
+// submit.
+func (s *Server) handleAvailableLocales(w http.ResponseWriter, r *http.Request) {
+	if s.pool == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "storage_unavailable", "locales need a database")
+		return
+	}
+	store := s.i18nStore()
+	locales, err := store.Locales(r.Context())
+	if err != nil {
+		s.i18nError(w, r, err)
+		return
+	}
+	available := i18n.AvailableShipped(locales)
+	out := make([]map[string]any, 0, len(available))
+	for _, l := range available {
+		out = append(out, map[string]any{
+			"code":        l.Code,
+			"name":        l.Name,
+			"native_name": l.NativeName,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": out,
+		// The total is the size of the shipped menu, which is what "how many more are there"
+		// means. It is not a promise about translations: an installed language starts at 0%.
+		"shipped": len(i18n.ShippedLocales()),
+	})
+}
+
+// handleInstallLocale adds one shipped language, enabled, with its names filled in.
+//
+// It is a separate endpoint from create because it is a separate act: create is "a language this
+// build has never heard of, defined by hand"; install is "one of ours, switched on". The audit
+// action differs too, so the log distinguishes an operator picking from a menu from an operator
+// authoring a language row.
+func (s *Server) handleInstallLocale(w http.ResponseWriter, r *http.Request) {
+	code := strings.TrimSpace(r.PathValue("code"))
+	var out i18n.Locale
+	err := s.withLocaleAudit(r, "i18n.locale.install", code, nil,
+		func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			out, err = s.i18nStore().InstallShippedTx(ctx, tx, code)
+			return err
+		})
+	if err != nil {
+		s.i18nError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, localeJSON(out, 0, 0))
+}
+
 func (s *Server) handleCreateLocale(w http.ResponseWriter, r *http.Request) {
 	var in i18n.LocaleInput
 	if !s.decodeJSON(w, r, &in, 8<<10) {
@@ -489,7 +554,9 @@ func (s *Server) i18nError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, i18n.ErrNotFound):
 		writeProblem(w, http.StatusNotFound, "not_found", "no such locale or translation")
 	case errors.Is(err, i18n.ErrCodeTaken):
-		writeProblem(w, http.StatusConflict, "duplicate_locale", err.Error())
+		// A duplicate is about one field and the client can say so without parsing a sentence.
+		writeFieldProblem(w, http.StatusConflict, "duplicate_locale", err.Error(),
+			[]fieldProblem{{Field: "code", Code: "duplicate"}})
 	case errors.Is(err, i18n.ErrLocaleNotEnabled):
 		// A stable code rather than a validation sentence: the switcher branches on it, and the
 		// honest reading is "pick another language", not "your request was malformed".
@@ -500,7 +567,14 @@ func (s *Server) i18nError(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, http.StatusConflict, "default_locale",
 			"the default locale cannot be removed or left untranslated: make another locale the default first")
 	case errors.Is(err, i18n.ErrInvalidInput):
-		writeProblem(w, http.StatusUnprocessableEntity, "invalid_input", err.Error())
+		// The package names the field when it can (see internal/i18n/problems.go). The field list
+		// is the translatable half of the refusal: the sentence is English by construction, the
+		// field and its code are not.
+		fields := make([]fieldProblem, 0, 2)
+		for _, p := range i18n.FieldProblems(err) {
+			fields = append(fields, fieldProblem{Field: p.Field, Code: p.Code})
+		}
+		writeFieldProblem(w, http.StatusUnprocessableEntity, "invalid_input", err.Error(), fields)
 	default:
 		s.cfg.Logger.ErrorContext(r.Context(), "locale operation failed",
 			"path", r.URL.Path, "error", err)

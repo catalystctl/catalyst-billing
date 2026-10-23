@@ -771,26 +771,43 @@ func (s *Server) queueInvoiceNotification(ctx context.Context, tx pgx.Tx, invoic
 	var (
 		email    string
 		verified bool
+		name     string
+		userID   *string
 	)
 	if err := tx.QueryRow(ctx, `
 		SELECT c.email, EXISTS (
 			SELECT 1 FROM customer_accounts ca
 			JOIN users u ON u.id = ca.user_id
-			WHERE ca.customer_id = c.id AND u.email_verified_at IS NOT NULL)
+			WHERE ca.customer_id = c.id AND u.email_verified_at IS NOT NULL),
+		       c.name,
+		       (SELECT ca.user_id::text FROM customer_accounts ca
+		         WHERE ca.customer_id = c.id
+		         ORDER BY (ca.role = 'owner') DESC, ca.created_at
+		         LIMIT 1)
 		FROM invoices i JOIN customers c ON c.id = i.customer_id
-		WHERE i.id = $1`, invoiceID).Scan(&email, &verified); err != nil {
+		WHERE i.id = $1`, invoiceID).Scan(&email, &verified, &name, &userID); err != nil {
 		return fmt.Errorf("staff: read invoice customer: %w", err)
 	}
 
-	msg := notify.InvoiceIssuedMessage(email, number, total.String(),
-		dueAt.UTC().Format("2006-01-02"), invoiceID)
+	in := notify.InvoiceIssuedInput{
+		Email:        email,
+		InvoiceID:    invoiceID,
+		Number:       number,
+		CustomerName: name,
+		Total:        total.String(),
+		DueAt:        dueAt,
+	}
+	if userID != nil {
+		in.UserID = *userID
+	}
 	if !verified {
-		return s.notify.Suppress(ctx, tx, msg, "the customer has no verified address")
+		// Suppressed, not skipped: the record says what we would have said and why we held it.
+		in.HoldMailReason = "the customer has no verified address"
 	}
-	if _, _, err := s.notify.Enqueue(ctx, tx, msg); err != nil {
-		return err
-	}
-	return nil
+	// The editable new_invoice_created template replaces the hardcoded message, so staff-issued
+	// and checkout-issued invoices now produce the same mail.
+	_, err := notify.InvoiceIssued(ctx, tx, s.notify, in)
+	return err
 }
 
 func (s *Server) handleIssueInvoice(w http.ResponseWriter, r *http.Request) {

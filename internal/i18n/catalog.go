@@ -316,10 +316,12 @@ func (s *Store) PutTx(ctx context.Context, q querier, locale, key, text, actorID
 	}
 	body := strings.TrimSpace(text)
 	if body == "" {
-		return Entry{}, invalid("a translation cannot be empty: delete the row to fall back to the default locale")
+		return Entry{}, invalidField("text", FieldRequired,
+			"a translation cannot be empty: delete the row to fall back to the default locale")
 	}
 	if len(body) > maxTextLength {
-		return Entry{}, invalid("the translation is too long (limit %d bytes)", maxTextLength)
+		return Entry{}, invalidField("text", FieldInvalid,
+			"the translation is too long (limit %d bytes)", maxTextLength)
 	}
 	if _, err := s.localeWith(ctx, q, normalized); err != nil {
 		return Entry{}, err
@@ -451,20 +453,21 @@ func (s *Store) Coverage(ctx context.Context) (map[string]int, error) {
 // is a 422 with a sentence rather than a 500 from a constraint violation.
 func ValidateKey(key string) error {
 	if key == "" {
-		return invalid("a key is required, e.g. storefront.hero.title")
+		return invalidField("key", FieldRequired, "a key is required, e.g. storefront.hero.title")
 	}
 	if len(key) > maxKeyLength {
-		return invalid("a key is at most %d characters", maxKeyLength)
+		return invalidField("key", FieldInvalid, "a key is at most %d characters", maxKeyLength)
 	}
 	for i, r := range key {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 		case r == '.' || r == '_' || r == ':' || r == '-':
 			if i == 0 {
-				return invalid("a key cannot start with %q", string(r))
+				return invalidField("key", FieldInvalid, "a key cannot start with %q", string(r))
 			}
 		default:
-			return invalid("a key is lower-case letters, digits, dot, underscore, colon or dash (found %q)", string(r))
+			return invalidField("key", FieldInvalid,
+				"a key is lower-case letters, digits, dot, underscore, colon or dash (found %q)", string(r))
 		}
 	}
 	return nil

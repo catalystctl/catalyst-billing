@@ -34,6 +34,7 @@ import (
 	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
+	"strings"
 )
 
 var (
@@ -644,6 +645,18 @@ func (o Operation) targetSubscription() string {
 	return o.ExternalSubscription
 }
 
+// suspensionReason is what the customer is told about a suspension.
+//
+// The operator's stated reason when there is one, and a sentence that names the usual cause
+// otherwise: "the service was suspended" with no explanation is the message that produces a
+// support ticket, and an empty reason renders as a hole in the template.
+func suspensionReason(o Operation) string {
+	if r := strings.TrimSpace(o.reason()); r != "" {
+		return r
+	}
+	return "the service was suspended, usually because an invoice is overdue"
+}
+
 // reason is the operator's stated reason, for the adapter and the audit trail.
 func (o Operation) reason() string {
 	if v, ok := o.Payload["reason"].(string); ok {
@@ -741,6 +754,16 @@ func (w *Worker) finish(ctx context.Context, op Operation, res Result) error {
 				UPDATE services SET status = 'suspended', updated_at = now() WHERE id = $1`,
 				op.ServiceID); err != nil {
 				return fmt.Errorf("provisioning: mark service suspended: %w", err)
+			}
+			// Tell the customer, in the same transaction as the status change: a suspension that
+			// committed without its notice is a customer who finds out when their site goes
+			// down. The dedupe key includes the suspension time, so a suspension, a resume and a
+			// second suspension are two messages rather than one suppressed as a duplicate.
+			if w.notify != nil {
+				if _, err := notify.ServiceSuspended(ctx, tx, w.notify, op.ServiceID,
+					suspensionReason(op), w.Now()); err != nil {
+					return fmt.Errorf("provisioning: notify suspension: %w", err)
+				}
 			}
 		case "resume":
 			if _, err := tx.Exec(ctx, `

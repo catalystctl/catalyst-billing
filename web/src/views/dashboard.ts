@@ -159,7 +159,9 @@ export default async function dashboardPage(ctx: Ctx): Promise<Node> {
   // change replaces the widgets and leaves the exception list — which is a current state, not
   // a period figure — alone.
   const widgetHost = h("div", { class: "stack" });
-  const periodHost = h("div", { class: "row-wrap" });
+  // The bar is the `.filter-bar` primitive: it aligns its children on the bottom edge, which is
+  // the only line a preset button and a labelled date input can share.
+  const periodHost = h("div", { class: "filter-bar period-bar" });
 
   const load = async () => {
     try {
@@ -230,71 +232,78 @@ export default async function dashboardPage(ctx: Ctx): Promise<Node> {
     void loadWidgets();
   };
 
-  /** Renders the period selector. */
+  /** Renders the period selector.
+   *
+   *  Two shapes share this bar: the preset run (one line of buttons under one label) and the
+   *  custom range (two labelled date inputs and the button that applies them). A labelled
+   *  control is a column, a button is a line, so the bar aligns on the bottom edge — labels
+   *  above, every control's bottom edge on one line, Apply on that same line. The date fields
+   *  are only in the tree when Custom is picked: `hidden` on a `display: flex` element does
+   *  nothing, which is why the empty range used to sit under the presets all the time. */
   const renderPeriodBar = (): void => {
-    const customInputs = h(
+    const presets = h(
       "div",
-      { class: "row-wrap", hidden: period !== "custom" },
-      h(
-        "label",
-        { class: "row-wrap" },
-        h("span", { class: "field-label" }, "From"),
-        h("input", {
-          class: "input input--sm",
-          type: "date",
-          value: customFrom,
-          "aria-label": "Period start",
-          onchange: (event: Event) => {
-            customFrom = (event.target as HTMLInputElement).value;
-          },
-        }),
-      ),
-      h(
-        "label",
-        { class: "row-wrap" },
-        h("span", { class: "field-label" }, "To"),
-        h("input", {
-          class: "input input--sm",
-          type: "date",
-          value: customTo,
-          "aria-label": "Period end",
-          onchange: (event: Event) => {
-            customTo = (event.target as HTMLInputElement).value;
-          },
-        }),
-      ),
-      btn("Apply", {
-        size: "sm",
-        variant: "primary",
-        icon: "check",
-        onclick: () => {
-          if (!customFrom || !customTo) {
-            ctx.toast("Pick both dates", { tone: "danger", detail: "A range needs a start and an end." });
-            return;
-          }
-          ctx.replaceQuery({ period: "custom", from: customFrom, to: customTo });
-          void loadWidgets();
-        },
-      }),
-    );
-
-    const buttons = PERIODS.map((option) =>
-      btn(option.label, {
-        size: "sm",
-        variant: option.key === period ? "primary" : "ghost",
-        onclick: () => choosePeriod(option.key),
-      }),
-    );
-
-    periodHost.replaceChildren(
+      { class: "field period-presets" },
+      h("span", { class: "field-label" }, icon("calendar", 12), "Period"),
       h(
         "div",
-        { class: "row-wrap" },
-        h("span", { class: "field-label" }, icon("calendar", 12), "Period"),
-        ...buttons,
+        { class: "preset-group" },
+        ...PERIODS.map((option) =>
+          btn(option.label, {
+            size: "sm",
+            variant: option.key === period ? "primary" : "ghost",
+            onclick: () => choosePeriod(option.key),
+          }),
+        ),
       ),
-      customInputs,
     );
+
+    const dateField = (label: string, id: string, value: string, assign: (next: string) => void): HTMLElement =>
+      h(
+        "div",
+        { class: "field" },
+        h("label", { class: "field-label", for: id }, label),
+        h("input", {
+          class: "input input--sm",
+          id,
+          type: "date",
+          value,
+          onchange: (event: Event) => assign((event.target as HTMLInputElement).value),
+        }),
+      );
+
+    const children: HTMLElement[] = [presets];
+    if (period === "custom") {
+      // The range is one group, so it either sits beside the presets or moves under them as a
+      // whole — never half a range on each line, with Apply left behind.
+      children.push(
+        h(
+          "div",
+          { class: "period-range" },
+          dateField("From", "period-from", customFrom, (next) => {
+            customFrom = next;
+          }),
+          dateField("To", "period-to", customTo, (next) => {
+            customTo = next;
+          }),
+          btn("Apply", {
+            size: "sm",
+            variant: "primary",
+            icon: "check",
+            onclick: () => {
+              if (!customFrom || !customTo) {
+                ctx.toast("Pick both dates", { tone: "danger", detail: "A range needs a start and an end." });
+                return;
+              }
+              ctx.replaceQuery({ period: "custom", from: customFrom, to: customTo });
+              void loadWidgets();
+            },
+          }),
+        ),
+      );
+    }
+
+    periodHost.replaceChildren(...children);
   };
 
   /** Renders the widget set: revenue, the counts, the overdue position and the queue. */
@@ -711,11 +720,19 @@ function exceptionQueueCard(widgets: DashboardWidgets): HTMLElement {
     return card({
       title: "Paid, but not running",
       actions: badge("Clear", "success", { dot: true }),
-      body: emptyState({
-        title: "Nothing is paid for nothing",
-        body: "Every settled order has a service that is running. This card fills itself from the invoices whose order bought nothing that is up.",
-        icon: "checkCircle",
-      }),
+      // A short card for a short answer. The card fills itself from an invoice list, so its
+      // empty state is the common case; a 335px card of whitespace for one sentence pushed the
+      // two-column split below the fold. `.dash-empty` is the compact shape of `.empty`.
+      tight: true,
+      body: h(
+        "div",
+        { class: "dash-empty" },
+        emptyState({
+          title: "Nothing is paid for nothing",
+          body: "Every settled order has a service that is running. This card fills itself from the invoices whose order bought nothing that is up.",
+          icon: "checkCircle",
+        }),
+      ),
     });
   }
 

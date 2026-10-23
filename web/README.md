@@ -33,9 +33,17 @@ before the binary is rebuilt.
 ## Testing
 
 ```sh
-cd web && npm test        # money, parsing, status tones, routing (node --test)
+cd web && npm test        # money, parsing, status tones, routing, stylesheet invariants
 make e2e-ui               # every screen, in headless Chromium, against a seeded database
 ```
+
+`npm test` includes `test/styles.test.mjs`, which asserts the handful of CSS properties whose
+absence does not throw, does not fail a typecheck and does not show up in any other test, but
+does make a screen look broken: `.truncate` must not stay inline (an inline box cannot clip its
+own overflow), table cells must not use `overflow-wrap: anywhere` (it collapses every column to
+one character), display-size amounts must not be set in the monospace face (a monospaced period
+reads as `14 . 40`), and every class used in markup must have a rule or a documented reason not
+to. It also fails on a stale exemption, so the allowlist cannot rot into a blanket ignore.
 
 `make e2e-ui` is the one that matters. It signs in through the form, clicks the rail,
 opens a record, opens the palette and a dialog, switches the theme, shrinks to 390px, then

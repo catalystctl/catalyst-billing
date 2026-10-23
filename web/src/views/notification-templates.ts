@@ -322,6 +322,11 @@ function templateEditor(
   for (const control of [subject, body, inAppTitle, inAppBody, inAppURL]) {
     control.addEventListener("input", schedule);
   }
+  // The preview is the point of this page, and it is not an answer to a keystroke: the stored
+  // wording deserves to be rendered the moment the event is selected. Without this the card
+  // keeps the "Rendering…" placeholder it was built with until the operator happens to type,
+  // which reads as a preview that never arrives.
+  void renderPreview();
 
   /** Inserts a placeholder at the caret of the mail body, which is where an operator writes
    *  prose. The subject and the inbox fields take the same word, so it is offered once. */

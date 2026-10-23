@@ -344,3 +344,65 @@
 .money-prose + .money-prose {
   margin-top: var(--s-2);
 }
+
+/* ------------------------------------------------------------ period bar -- */
+
+/* The period selector on the dashboard and on the affiliates report. `.filter-bar` does the
+ * aligning (see components.css): labels above, every control's bottom edge on one line, Apply
+ * on that line. What it cannot know is that the custom range is one thing, and how the bar
+ * should wrap on a phone. */
+
+/* The range is a single group of three controls, so a bar too narrow to hold it beside the
+ * presets moves all three down together: From and To always sit side by side with Apply at the
+ * end of their line, never half a range above and the button stranded below. */
+.period-range {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-3);
+}
+
+.period-range > .field {
+  min-width: 0;
+}
+
+.period-range > .btn {
+  flex: 0 0 auto;
+}
+
+/* At a narrow width the preset run takes a line of its own and the range gets the next one. */
+@media (max-width: 560px) {
+  .period-bar > .field.period-presets,
+  .period-range {
+    flex: 1 1 100%;
+  }
+
+  .period-range > .field {
+    flex: 1 1 6.5rem;
+  }
+
+  .period-range .input--sm {
+    width: 100%;
+  }
+}
+
+/* ------------------------------------------------------- dashboard density -- */
+
+/* The compact empty state of the dashboard's queue cards. `.empty` is sized for a whole screen
+ * ("no invoices yet"); a card that fills itself from a list is usually empty, and 96px of
+ * padding plus a 64px glyph for one sentence pushed the two-column split below the fold. */
+.dash-empty .empty {
+  padding: var(--s-3) var(--s-4);
+  gap: var(--s-1);
+}
+
+.dash-empty .empty-art {
+  width: 30px;
+  height: 30px;
+  margin-bottom: 0;
+}
+
+.dash-empty .empty-art svg {
+  width: 30px;
+  height: 30px;
+}

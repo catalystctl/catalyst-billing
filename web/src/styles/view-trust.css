@@ -206,6 +206,137 @@
   color: var(--text);
 }
 
+/* -------------------------------------------------- users: the row actions -- */
+
+/* The Person cell is a name and an address, each one line. Both are unbreakable tokens, and
+   `overflow-wrap: anywhere` on the secondary line (tables.css, panel-wide) lets the address
+   break mid-word and makes its column collapse — so at 1024 the address wrapped and those
+   rows were 73px while their neighbours were 56px. `min-width: 0` on the flex item is what
+   lets the column shrink; the ellipsis is what keeps it honest when it does. */
+.users-table .cell-main > .primary .truncate,
+.users-table .cell-main > .secondary .truncate {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Four actions in one table cell. As labelled buttons they wrapped inside the cell, so every
+   record was four rows tall and the list was a wall of buttons. They are icon buttons on one
+   line now: `nowrap` because wrapping is exactly the defect, and `flex-end` so the group
+   stays under the column header on the right. */
+.row-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.row-action {
+  flex: none;
+}
+
+/* Delete keeps the danger colour at rest. An icon-only button has no label to say what it
+   does, so the glyph is the whole signal: the one that cannot be undone must not be the same
+   grey as the one that opens a dialog. */
+.row-action--danger {
+  color: var(--danger);
+}
+
+.row-action--danger:hover,
+.row-action--danger:focus-visible {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* --------------------------------------------------- roles: the grant cell -- */
+
+/* The Grants cell is one line: the chevron, a couple of chips, and how many are left. The run
+   does not wrap while collapsed — the whole point is that every role row is the same height —
+   and the full set is a `.chip-row` under the summary, where wrapping is correct. */
+.roles-grants > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  /* The marker is the chevron in the markup, so the user-agent triangle is dropped; keeping
+     both would draw two arrows that rotate differently. */
+  list-style: none;
+}
+
+.roles-grants > summary::-webkit-details-marker {
+  display: none;
+}
+
+.roles-grants > summary > svg {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform var(--dur-1) var(--ease);
+}
+
+.roles-grants[open] > summary > svg {
+  transform: rotate(90deg);
+}
+
+/* The run is a `.chip-row`, so it wraps as a group rather than mid-chip: at a normal width the
+   two chips and the count sit on one line, and on a narrow screen the count drops to a second
+   line instead of a chip being cut in half. */
+.roles-grants > summary .chip-row {
+  min-width: 0;
+}
+
+.roles-grants-more {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* Only the wide layout's count is shown by default; the swap is at the bottom of this file,
+   where the breakpoint lives with the rest of the narrow-screen rules. */
+.roles-grants-more--narrow {
+  display: none;
+}
+
+/* The full set is indented under the summary so the two lines read as one block rather than
+   as two rows of the table. */
+.roles-grants-all {
+  margin-top: var(--s-2);
+  padding-left: 17px;
+}
+
+/* An open cell wants to be as wide as all 39 chips on one line, and a table hands a cell its
+   preferred width by taking it from its neighbours — which squeezed the Role column until
+   "administrator" broke after the eighth letter. The cap keeps the expansion inside the
+   Grants column and the chips wrap there instead. */
+@media (min-width: 781px) {
+  .roles-grants-cell {
+    max-width: 46%;
+  }
+}
+
+/* Between the card breakpoint and a comfortable desktop width the Grants column is too
+   narrow for two chips *and* the count on one line, so it shows one chip and the count that
+   goes with it. The point of the collapsed cell is one line per row: a wrapped one reads as
+   the ragged blob this replaced, only smaller. */
+@media (min-width: 781px) and (max-width: 1180px) {
+  .roles-grants > summary .roles-grants-chip2,
+  .roles-grants-more:not(.roles-grants-more--narrow) {
+    display: none;
+  }
+
+  .roles-grants-more--narrow {
+    display: inline;
+  }
+
+  /* With one chip the cell's min-content drops and the table hands the slack to its
+     neighbours, which re-wraps the line this breakpoint exists to keep whole. A floor on the
+     column is what makes the choice stick. */
+  .roles-grants-cell {
+    min-width: 244px;
+  }
+}
+
 /* The one-time key. It is selectable as a whole, wraps rather than scrolling, and never
    shrinks into a tooltip: this is the only time the value exists in a browser. */
 .trust-key-box {
@@ -265,6 +396,30 @@
 
   .trust-perm .mono {
     grid-column: 1 / -1;
+  }
+
+  /* In the card layout a cell is a flex row of "label, value"; the action group is the value
+     and belongs on the right, where every other cell's value already is. */
+  .table-wrap--cards .table tbody td.cell-actions .row-actions {
+    margin-left: auto;
+  }
+
+  /* The Grants cell is the card's body rather than a label/value pair: the chips need the
+     whole width to stay on one line, and the label goes above them like the other labels. */
+  .table-wrap--cards .table tbody td.roles-grants-cell {
+    display: block;
+    text-align: left;
+  }
+
+  .table-wrap--cards .table tbody td.roles-grants-cell::before {
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  /* A system role has nothing to do in the actions column; its card does not keep a row for
+     the dash that says so. */
+  .table-wrap--cards .table tbody td.roles-no-actions {
+    display: none;
   }
 }
 

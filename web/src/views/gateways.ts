@@ -66,17 +66,24 @@ interface ConfigValue {
   hint?: string;
   is_secret: boolean;
   is_set: boolean;
-  /** `store`, `env` or `default`. */
+  /** `environment`, `panel`, `default` or `unset`, from `gatewayconfig.Source*`. */
   source: string;
   editable: boolean;
 }
+
+/** A value the deployment supplies, which this panel cannot override. The string is the server's
+ *  own (`gatewayconfig.SourceEnvironment`); comparing against `"env"` matched nothing, so an
+ *  environment-supplied credential rendered as an empty, editable box that the server would then
+ *  refuse to write. */
+const SOURCE_ENVIRONMENT = "environment";
 
 /** A provider this build can launch, from `Provider`. */
 interface ProviderChoice {
   id: string;
   name: string;
   extension: string;
-  fields: Array<{ key: string; label: string; env: string; is_secret: boolean; hint?: string }>;
+  /** A provider that needs no credentials reports `null`, not an empty list. */
+  fields: Array<{ key: string; label: string; env: string; is_secret: boolean; hint?: string }> | null;
   env_only?: Array<{ key: string; env: string; hint?: string }>;
   note?: string;
 }
@@ -187,9 +194,9 @@ function render(ctx: Ctx, cfg: IntegrationConfig, reload: () => Promise<void>): 
     // that was configured before.
     const stored = new Map((cfg.values ?? []).map((v) => [v.key, v]));
 
-    const rows: Node[] = provider.fields.map((f) => {
+    const rows: Node[] = (provider.fields ?? []).map((f) => {
       const current = stored.get(f.key);
-      const fromEnv = current?.source === "env";
+      const fromEnv = current?.source === SOURCE_ENVIRONMENT;
       const editable = current ? current.editable : true;
 
       const el = input({
@@ -222,7 +229,13 @@ function render(ctx: Ctx, cfg: IntegrationConfig, reload: () => Promise<void>): 
       if (fromEnv) marks.push(badge("from environment", "info"));
       return field({
         label: f.label,
-        control: marks.length > 0 ? h("div", { class: "inline-row" }, el, ...marks) : el,
+        // The marks travel together: beside the input while there is room, and as one group
+        // under it when there is not. Wrapped individually, "set" stays on the line and "from
+        // environment" drops below it, which reads as two unrelated states.
+        control:
+          marks.length > 0
+            ? h("div", { class: "inline-row" }, el, h("span", { class: "chip-row" }, ...marks))
+            : el,
         id: `gw-${f.key}`,
         hint: f.hint ?? (fromEnv ? `Supplied by ${f.env}; change it in the deployment, not here.` : undefined),
       });
@@ -257,6 +270,11 @@ function render(ctx: Ctx, cfg: IntegrationConfig, reload: () => Promise<void>): 
   };
 
   providerSelect.addEventListener("change", paintFields);
+  // The card is titled "Provider" and says the provider decides which credentials are needed;
+  // without this first paint the configured provider's fields — the publishable key, the secret,
+  // the "from environment" badges — are simply absent until the operator re-picks the provider
+  // that is already selected.
+  paintFields();
 
   // ---- the switch, the off-session switch, and the webhook URL --------------------------
 
@@ -368,7 +386,7 @@ function render(ctx: Ctx, cfg: IntegrationConfig, reload: () => Promise<void>): 
           label: "Provider",
           control: providerSelect,
           id: "gw-provider",
-          hint: cfg.provider_source === "env" ? "Supplied by the environment." : undefined,
+          hint: cfg.provider_source === SOURCE_ENVIRONMENT ? "Supplied by the environment." : undefined,
         }),
         fieldHost,
       ),

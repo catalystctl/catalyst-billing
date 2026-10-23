@@ -37,6 +37,12 @@ type Event struct {
 	// staff member may see it (still staff-only when CustomerID is empty).
 	Permission string
 	// Data is the JSON payload.
+	//
+	// The map is shared, not copied: Publish hands the same reference to every subscriber,
+	// and each subscriber renders it on its own goroutine. Neither side may write to it
+	// after Publish returns — a write there races the other subscribers' encoding, and the
+	// runtime kills the process rather than recovering. A reader that needs to decorate the
+	// payload must copy it first.
 	Data map[string]any
 	// At is when the change happened.
 	At time.Time

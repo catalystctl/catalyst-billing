@@ -17,7 +17,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
-const dist = join(root, "dist");
+// DIST lets a second checkout-less harness build into its own directory, so two people (or two
+// agents) can iterate on the frontend at once without overwriting each other's bundle.
+const dist = process.env.DIST ? process.env.DIST : join(root, "dist");
 const watch = process.argv.includes("--watch");
 
 const hash = (buf) => createHash("sha256").update(buf).digest("hex").slice(0, 12);

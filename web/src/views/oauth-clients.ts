@@ -120,7 +120,9 @@ export default async function oauthClientsPage(ctx: Ctx): Promise<Node> {
       render: (row) =>
         h(
           "div",
-          { class: "trust-scopes" },
+          // `code-chips` lets a chip narrower than its row wrap instead of running past the
+          // edge of a 390px card: a redirect URI has no spaces in it, so it cannot break.
+          { class: "trust-scopes code-chips" },
           ...row.redirect_uris.map((uri) => h("span", { class: "chip mono", title: uri }, shorten(uri))),
         ),
     },
@@ -130,7 +132,7 @@ export default async function oauthClientsPage(ctx: Ctx): Promise<Node> {
       render: (row) =>
         h(
           "div",
-          { class: "trust-scopes" },
+          { class: "trust-scopes code-chips" },
           ...row.allowed_scopes.map((scope) => h("span", { class: "chip mono" }, scope)),
         ),
     },
@@ -146,7 +148,11 @@ export default async function oauthClientsPage(ctx: Ctx): Promise<Node> {
       key: "created",
       label: "Created",
       align: "right",
-      hideSmall: true,
+      // Six columns do not fit the card between 780px and 1100px, where the table is still a
+      // table (the card layout starts below 780). Without this the table is wider than its card
+      // and the actions column is pushed out of sight with no scrollbar to say it is there —
+      // "when was this registered" is the least important thing on the row, so it goes first.
+      hideMedium: true,
       render: (row) =>
         h("span", { class: "dim nowrap", title: dateTime(row.created_at) }, relative(row.created_at)),
     },
@@ -190,6 +196,9 @@ export default async function oauthClientsPage(ctx: Ctx): Promise<Node> {
     empty: clientsEmpty,
     rowKey: (row) => row.id,
     footNote: "A client's secret is shown once, when it is created or rotated.",
+    // `clients-table` (pages.css) gives the name column a floor, so a long redirect URI wraps
+    // instead of pushing the actions column out of the card at 1024px.
+    class: "clients-table",
   });
   clientsHost.appendChild(clientTable.el);
 
@@ -434,7 +443,10 @@ export default async function oauthClientsPage(ctx: Ctx): Promise<Node> {
     {
       key: "issuer",
       label: "Issuer",
-      render: (row) => h("span", { class: "dim mono", title: row.issuer_url }, shorten(row.issuer_url)),
+      // A shortened issuer URL is still one unbreakable token: in the card layout below 780px it is
+      // wider than the value column and its right end was clipped at the card's edge. `issuer-url`
+      // (pages.css) lets it break there, and nowhere else.
+      render: (row) => h("span", { class: "dim mono issuer-url", title: row.issuer_url }, shorten(row.issuer_url)),
     },
     {
       key: "claims",
@@ -443,7 +455,9 @@ export default async function oauthClientsPage(ctx: Ctx): Promise<Node> {
       render: (row) =>
         h(
           "div",
-          { class: "trust-scopes" },
+          // Each claim chip is one unbroken `subject: sub`; `code-chips` lets them wrap inside
+          // the column instead of widening it past the card at 1024px.
+          { class: "trust-scopes code-chips" },
           h("span", { class: "chip mono" }, `subject: ${row.subject_claim}`),
           h("span", { class: "chip mono" }, `email: ${row.email_claim}`),
           row.email_verified_claim

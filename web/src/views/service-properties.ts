@@ -167,8 +167,12 @@ export default async function servicePropertiesPage(ctx: Ctx): Promise<Node> {
       sub: `${definitions.length} defined`,
       flush: true,
       body: h(
+        // A row is five cells wide — the property, where it appears, how many services use it, its
+        // order and its actions — and at 390px the actions column sat past the right edge of the
+        // viewport, reachable only by scrolling the table sideways. `table-wrap--cards` rebuilds
+        // the row as a card below 780px (tables.css) and `data-label` keeps each column's name.
         "div",
-        { class: "table-wrap" },
+        { class: "table-wrap table-wrap--cards" },
         h(
           "table",
           { class: "table" },
@@ -302,7 +306,9 @@ function definitionRow(
     ),
     h(
       "td",
-      null,
+      // Two badges and a sentence: beside a column label the sentence would be a column two words
+      // wide. `cell-block` stacks the label above the value in card mode (pages.css).
+      { class: "cell-block", "data-label": "Where it appears" },
       h(
         "div",
         { class: "stack-sm" },
@@ -317,14 +323,14 @@ function definitionRow(
     ),
     h(
       "td",
-      null,
+      { "data-label": "Used by" },
       services > 0
         ? h("span", { class: "nowrap" }, `${services} ${services === 1 ? "service" : "services"}`)
         : h("span", { class: "faint nowrap" }, "none"),
     ),
     h(
       "td",
-      null,
+      { "data-label": "Order" },
       h(
         "div",
         { class: "row" },
@@ -335,7 +341,9 @@ function definitionRow(
     ),
     h(
       "td",
-      { class: "num" },
+      // The row's actions: in card mode this is a block under the facts, right aligned, with no
+      // column label (tables.css already styles `td.cell-actions` that way).
+      { class: "num cell-actions" },
       h(
         "div",
         { class: "row" },

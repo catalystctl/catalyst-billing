@@ -171,7 +171,9 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
   let loaded: Affiliate[] = [];
 
   const reportHost = h("div", { class: "stack" }, skeletonLines(3));
-  const periodHost = h("div", { class: "row-wrap" });
+  // `.filter-bar` aligns on the bottom edge, so the preset run, the custom dates and Apply
+  // share one line whatever their heights (see the same bar in dashboard.ts).
+  const periodHost = h("div", { class: "filter-bar period-bar" });
   const noticeHost = h("div", { hidden: true });
 
   // ---------------------------------------------------------------- the list --
@@ -871,57 +873,13 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
   // ------------------------------------------------------------ period bar --
 
   const renderPeriodBar = (): void => {
-    const customInputs = h(
+    const presets = h(
       "div",
-      { class: "row-wrap", hidden: period !== "custom" },
-      h(
-        "label",
-        { class: "row-wrap" },
-        h("span", { class: "field-label" }, "From"),
-        h("input", {
-          class: "input input--sm",
-          type: "date",
-          value: customFrom,
-          "aria-label": "Period start",
-          onchange: (event: Event) => {
-            customFrom = (event.target as HTMLInputElement).value;
-          },
-        }),
-      ),
-      h(
-        "label",
-        { class: "row-wrap" },
-        h("span", { class: "field-label" }, "To"),
-        h("input", {
-          class: "input input--sm",
-          type: "date",
-          value: customTo,
-          "aria-label": "Period end",
-          onchange: (event: Event) => {
-            customTo = (event.target as HTMLInputElement).value;
-          },
-        }),
-      ),
-      btn("Apply", {
-        size: "sm",
-        variant: "primary",
-        icon: "check",
-        onclick: () => {
-          if (!customFrom || !customTo) {
-            ctx.toast("Pick both dates", { tone: "danger", detail: "A range needs a start and an end." });
-            return;
-          }
-          ctx.replaceQuery({ period: "custom", from: customFrom, to: customTo });
-          void loadReport();
-        },
-      }),
-    );
-
-    periodHost.replaceChildren(
+      { class: "field period-presets" },
+      h("span", { class: "field-label" }, icon("calendar", 12), "Period"),
       h(
         "div",
-        { class: "row-wrap" },
-        h("span", { class: "field-label" }, icon("calendar", 12), "Period"),
+        { class: "preset-group" },
         ...PERIODS.map((option) =>
           btn(option.label, {
             size: "sm",
@@ -939,8 +897,56 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
           }),
         ),
       ),
-      customInputs,
     );
+
+    const dateField = (label: string, id: string, value: string, assign: (next: string) => void): HTMLElement =>
+      h(
+        "div",
+        { class: "field" },
+        h("label", { class: "field-label", for: id }, label),
+        h("input", {
+          class: "input input--sm",
+          id,
+          type: "date",
+          value,
+          onchange: (event: Event) => assign((event.target as HTMLInputElement).value),
+        }),
+      );
+
+    // The range is only in the tree when Custom is picked: `hidden` does nothing on a
+    // `display: flex` element, so the empty From/To row used to sit under the presets always.
+    const children: HTMLElement[] = [presets];
+    if (period === "custom") {
+      // The range is one group, so it either sits beside the presets or moves under them as a
+      // whole — never half a range on each line, with Apply left behind.
+      children.push(
+        h(
+          "div",
+          { class: "period-range" },
+          dateField("From", "affiliate-period-from", customFrom, (next) => {
+            customFrom = next;
+          }),
+          dateField("To", "affiliate-period-to", customTo, (next) => {
+            customTo = next;
+          }),
+          btn("Apply", {
+            size: "sm",
+            variant: "primary",
+            icon: "check",
+            onclick: () => {
+              if (!customFrom || !customTo) {
+                ctx.toast("Pick both dates", { tone: "danger", detail: "A range needs a start and an end." });
+                return;
+              }
+              ctx.replaceQuery({ period: "custom", from: customFrom, to: customTo });
+              void loadReport();
+            },
+          }),
+        ),
+      );
+    }
+
+    periodHost.replaceChildren(...children);
   };
 
   renderPeriodBar();

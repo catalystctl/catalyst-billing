@@ -455,19 +455,17 @@ export default async function securityPage(ctx: Ctx): Promise<Node> {
       h(
         "div",
         { class: "stack" },
-        sectionTitle(
-          "Sign-in history",
-          h(
-            "div",
-            { class: "log-filters log-filters--inline" },
-            field({ label: "Show", control: outcomePicker, id: "sign-in-outcome" }),
-          ),
-        ),
+        sectionTitle("Sign-in history"),
         h(
           "p",
           { class: "field-hint" },
           "A failure is not proof of an attack: it is also a forgotten password. What makes it an attack is the count against one account or one address in a short window, which is what the summary below shows.",
         ),
+        // The outcome filter is a control, so it belongs in the bar under the heading — not
+        // inside it. A labelled field in a `.section-title` makes the heading as tall as a
+        // form row and draws the heading's rule across the middle of the select, which is
+        // what this screen used to look like.
+        h("div", { class: "filter-bar" }, field({ label: "Show", control: outcomePicker, id: "sign-in-outcome" })),
         signInSummaryHost,
         signIns.el,
       ),

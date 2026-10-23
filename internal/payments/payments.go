@@ -60,7 +60,30 @@ var (
 	// rather than treated as a partial payment: a mismatch is an anomaly, and
 	// applying it would launder a wrong charge into legitimate revenue.
 	ErrAmountMismatch = errors.New("payments: settled amount does not match the checkout")
+	// ErrMissingPaymentID is returned when neither the verifier nor the stored body
+	// names the provider payment an event is about. Nothing can be queried or applied
+	// without it, so the event stays pending for an operator to look at.
+	ErrMissingPaymentID = errors.New("payments: event carries no payment id")
 )
+
+// The core's own vocabulary for "this event settled a payment".
+//
+// It is deliberately provider-free: an extension normalises its provider's names into one of
+// these, because the core has no provider knowledge and must not grow any. A delivery reported
+// under any other kind is recorded and not acted on.
+const (
+	// EventPaymentSucceeded means a payment settled. It is the kind every gateway uses.
+	EventPaymentSucceeded = "payment.succeeded"
+	// EventPaymentIntentSucceeded is the older spelling some gateways report. It is
+	// accepted because it is already stored in inbox rows and in the fixture gateway's
+	// contract; new adapters should report EventPaymentSucceeded.
+	EventPaymentIntentSucceeded = "payment_intent.succeeded"
+)
+
+// IsSettlementKind reports whether an event type means "a payment settled".
+func IsSettlementKind(kind string) bool {
+	return kind == EventPaymentSucceeded || kind == EventPaymentIntentSucceeded
+}
 
 // VerifiedEvent is a normalised, authenticated webhook.
 type VerifiedEvent struct {
@@ -267,6 +290,12 @@ func NewInbox(pool *store.Pool) *Inbox { return &Inbox{pool: pool} }
 //
 // A duplicate is not an error from the provider's point of view: it is
 // acknowledged so the provider stops retrying.
+//
+// Two things are persisted, and they are not the same thing: the verifier's normalisation
+// (event type and provider payment id) and the provider's raw body. The normalisation is what
+// the processor acts on — the core cannot parse a provider's payload shape, and by the time the
+// processor runs the signature headers are long gone — while the raw body stays as the audit
+// record of what the provider actually sent.
 func (i *Inbox) Receive(ctx context.Context, provider, account string, ev VerifiedEvent, raw []byte) (newEvent bool, err error) {
 	if provider == "" || account == "" || ev.EventID == "" {
 		return false, fmt.Errorf("payments: incomplete event identity")
@@ -278,13 +307,29 @@ func (i *Inbox) Receive(ctx context.Context, provider, account string, ev Verifi
 	var id string
 	err = i.pool.QueryRow(ctx, `
 		INSERT INTO gateway_events
-			(provider, provider_account, event_id, event_type, payload, signature_valid)
-		VALUES ($1, $2, $3, $4, $5, true)
+			(provider, provider_account, event_id, event_type, payload, signature_valid, payment_id)
+		VALUES ($1, $2, $3, $4, $5, true, NULLIF($6, ''))
 		ON CONFLICT (provider, provider_account, event_id) DO NOTHING
 		RETURNING id`,
-		provider, account, ev.EventID, ev.EventType, raw,
+		provider, account, ev.EventID, ev.EventType, raw, ev.PaymentID,
 	).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// Already ingested. A redelivery still carries the normalisation the first delivery
+		// may have lacked: rows written before gateway_events.payment_id existed, or by a
+		// verifier that reported a provider-shaped event type. Filling it in is what makes a
+		// provider's "resend" a repair rather than a no-op — the row is still unprocessed, so
+		// the next processor run applies it. Nothing is re-processed here, and a processed
+		// row is never rewritten: it is the audit record of what was applied.
+		if _, rerr := i.pool.Exec(ctx, `
+			UPDATE gateway_events
+			   SET payment_id = COALESCE(NULLIF($4, ''), payment_id),
+			       event_type = COALESCE(NULLIF($5, ''), event_type)
+			 WHERE provider = $1 AND provider_account = $2 AND event_id = $3
+			   AND processed_at IS NULL`,
+			provider, account, ev.EventID, ev.PaymentID, ev.EventType,
+		); rerr != nil {
+			return false, fmt.Errorf("payments: repair webhook event: %w", rerr)
+		}
 		return false, nil
 	}
 	if err != nil {
@@ -302,8 +347,12 @@ type PendingEvent struct {
 	ProviderAccount string
 	EventID         string
 	EventType       string
-	Raw             []byte
-	Attempts        int
+	// PaymentID is the provider payment id the verifier normalised at ingest time. It is
+	// empty for rows written before it was persisted, which is why the processor still has a
+	// body fallback.
+	PaymentID string
+	Raw       []byte
+	Attempts  int
 }
 
 // ClaimPending selects unprocessed events, oldest first.
@@ -316,7 +365,8 @@ func (i *Inbox) ClaimPending(ctx context.Context, limit int) ([]PendingEvent, er
 		limit = 50
 	}
 	rows, err := i.pool.Query(ctx, `
-		SELECT id, provider, provider_account, event_id, event_type, payload, attempts
+		SELECT id, provider, provider_account, event_id, event_type,
+		       COALESCE(payment_id, ''), payload, attempts
 		FROM gateway_events
 		WHERE processed_at IS NULL
 		ORDER BY received_at
@@ -330,7 +380,7 @@ func (i *Inbox) ClaimPending(ctx context.Context, limit int) ([]PendingEvent, er
 	for rows.Next() {
 		var e PendingEvent
 		if err := rows.Scan(&e.ID, &e.Provider, &e.ProviderAccount, &e.EventID,
-			&e.EventType, &e.Raw, &e.Attempts); err != nil {
+			&e.EventType, &e.PaymentID, &e.Raw, &e.Attempts); err != nil {
 			return nil, fmt.Errorf("payments: scan pending event: %w", err)
 		}
 		out = append(out, e)
@@ -473,9 +523,19 @@ func (p *Processor) processOne(ctx context.Context, ev PendingEvent) (ProcessRes
 
 	// Only payment-settled events require action. A provider emits many other
 	// events; treating them as errors would fill the retry queue with noise.
-	switch ev.EventType {
-	case "payment.succeeded", "payment_intent.succeeded":
-	default:
+	//
+	// The kinds are the core's own vocabulary, not a provider's: an extension normalises
+	// "checkout.session.completed" into EventPaymentSucceeded, because the core has no
+	// provider knowledge and must not grow any.
+	if !IsSettlementKind(ev.EventType) {
+		if ev.PaymentID != "" {
+			// The verifier named a settled payment under a kind the core does not recognise.
+			// Skipping would mark the event processed and leave the invoice unpaid with no
+			// signal anywhere; keeping it pending makes the mismatch visible in the inbox,
+			// where an operator (or the extension's own fix) can act on it.
+			return out, fmt.Errorf("%w: event %s names payment %s but type %q is not a settlement kind",
+				ErrUnsupportedEvent, ev.EventID, ev.PaymentID, ev.EventType)
+		}
 		out.Skipped = true
 		return out, nil
 	}
@@ -550,8 +610,19 @@ func (p *Processor) processOne(ctx context.Context, ev PendingEvent) (ProcessRes
 	return out, nil
 }
 
-// paymentIDOf reads the payment id from the stored body.
+// paymentIDOf resolves the provider payment id an event is about.
+//
+// The normalised id stored at ingest time is authoritative. The body is only a fallback, for
+// rows written before that column existed (and for verifiers whose normalisation is the body
+// itself). Parsing the body is not a substitute: a real provider nests its payment several
+// levels deep under its own key names, and re-deriving it here would put provider knowledge
+// back in the core — the thing the extension boundary exists to prevent. That mistake is what
+// made the first real checkout fail with "event … carries no payment id" after the delivery
+// had already been acknowledged.
 func (p *Processor) paymentIDOf(_ context.Context, ev PendingEvent) (string, error) {
+	if ev.PaymentID != "" {
+		return ev.PaymentID, nil
+	}
 	var body struct {
 		PaymentID string `json:"payment_id"`
 	}
@@ -559,7 +630,8 @@ func (p *Processor) paymentIDOf(_ context.Context, ev PendingEvent) (string, err
 		return "", fmt.Errorf("payments: event %s body is not JSON: %w", ev.EventID, err)
 	}
 	if body.PaymentID == "" {
-		return "", fmt.Errorf("payments: event %s carries no payment id", ev.EventID)
+		return "", fmt.Errorf("%w: event %s (neither the verifier nor the stored body named one; a provider resend repairs the row)",
+			ErrMissingPaymentID, ev.EventID)
 	}
 	return body.PaymentID, nil
 }

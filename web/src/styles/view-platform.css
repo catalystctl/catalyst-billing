@@ -1,0 +1,160 @@
+/* View-specific styles: the platform and integration screens.
+ *
+ * Shared components live in components.css and pages.css; this file exists so a screen can
+ * have a shape of its own without editing a file another screen also owns.
+ *
+ * The screens here are the operator's half of the integration surface — gateways, compute
+ * nodes, imports, locales, notification templates, the marketplace and the update screen.
+ * They share one shape: a card per configured thing, a key/value block that describes it,
+ * and a row of actions that has to survive a narrow window.
+ */
+
+/* ------------------------------------------------------------ table rows -- */
+
+/* A record's actions, in the last cell of its row. They share one line while the table has
+ * room; inside a card at 390px four ghost buttons are wider than the card, and the ones that do
+ * not fit are not merely clipped — they are pushed past the viewport, so the "Remove" on a
+ * locale is unreachable. The wrap itself happens in the card layout, below. */
+.table-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+/* The coverage column: a bar with its exact figure under it. The figure does not wrap — "43 of"
+ * over "43" under a bar is the same information read as a broken number — so the column is as
+ * wide as its text. */
+.locale-coverage {
+  min-width: 84px;
+}
+
+.locale-coverage .meter {
+  width: 100%;
+}
+
+.locale-coverage .field-hint {
+  white-space: nowrap;
+}
+
+/* Two state chips are one word each. Left to wrap they stack in a State column squeezed by the
+ * bar beside them, which reads as a taller row rather than as two states. */
+.locale-state {
+  flex-wrap: nowrap;
+}
+
+@media (max-width: 780px) {
+  /* In a card the actions have no column header above them and the whole width to themselves,
+   * so they start at the card's left edge and wrap there. Right-aligning them leaves the last
+   * button alone on its own line. */
+  .table-wrap--cards .table-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  /* The card's cell is a label/value pair; the coverage value is the one that wants the whole
+   * remaining width, because a bar of 84px says less than a bar of 220px. */
+  .table-wrap--cards .table tbody td .locale-coverage {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+/* ------------------------------------------------------------- inline row -- */
+
+/* A code block is `white-space: pre` because a JSON payload must keep its shape. A webhook URL
+ * is not a payload: it is one token the operator has to read and paste in full, so in an inline
+ * row it wraps inside its own box rather than hiding half of itself behind a scrollbar that a
+ * phone cannot show. */
+.inline-row > .code-block {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A labelled control in an inline row takes the slack, and the button beside it keeps its
+ * width — the editor's search box and its "show only untranslated" toggle. */
+.inline-row > .field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A credential field carries up to two marks ("set", "from environment") beside its input. On a
+ * phone the marks leave the input 150px wide, which clips its own placeholder — "Stored — leave
+ * blank to ke". The marks drop below the input there instead, and the input keeps the line.
+ *
+ * Scoped to `.field >` on purpose: the webhook block and the save/test row are inline rows too,
+ * and those must stay on one line. */
+.field > .inline-row {
+  flex-wrap: wrap;
+}
+
+.field > .inline-row > .input {
+  /* 240px is what "Stored — leave blank to keep it" needs. Below that the marks wrap under the
+   * input instead of squeezing it, so the placeholder stays readable rather than being cut. */
+  flex: 1 1 240px;
+}
+
+/* A small button beside a text input is 26px against the input's 32px: the row reads as two
+ * controls at different sizes, and the button sits a couple of pixels high. In an inline row the
+ * button is an action on the control beside it, so it takes that control's height. */
+.inline-row > .btn--sm {
+  height: 32px;
+}
+
+/* --------------------------------------------------- extension self-report -- */
+
+/* What an extension says about itself: a run of chips for currencies and methods, and single
+ * codes for capabilities. None of these have spaces in them, so without a break opportunity a
+ * long one widens the row and the card with it. */
+.chip-row code {
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+/* A capability is a bare `<code>`, which is monospace text and nothing else: a run of eight of
+ * them with 6px between reads as one sentence — "create destroy suspend". They are separate
+ * facts, so they get the same quiet box a badge has and stay separate at a glance. */
+.chip-row > code {
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-inset);
+  line-height: 1.5;
+}
+
+.kv-row {
+  flex-wrap: wrap;
+}
+
+.kv-row .kv-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* An environment variable named in a note is one long token too. */
+.plain-list li code {
+  overflow-wrap: anywhere;
+}
+
+/* The notes list is a list of sentences whose order carries meaning, and the shared `.plain-list`
+ * is documented as keeping its markers — but `base.css` removes the marker from every `ul`, and
+ * the shared class only restores the indent. A refusal and the warning after it therefore read as
+ * one paragraph. The marker is put back for these screens. */
+.plain-list {
+  list-style: disc outside;
+}
+
+.plain-list li::marker {
+  color: var(--text-faint);
+}
+
+/* "These can only be set in the deployment's environment" is a list of variable names, each with
+ * a sentence about it. Run together on one line the name disappears into the sentence; the name
+ * gets its own line and the sentence follows it. It also keeps the two inline boxes from wrapping
+ * over each other, which is what a wrapped `<code>` followed by a wrapped `<span>` does. */
+.plain-list li .field-hint {
+  display: block;
+  margin-top: 2px;
+}

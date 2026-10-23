@@ -52,6 +52,21 @@
   vertical-align: bottom;
 }
 
+/* A product or option description as the customer will see it. Unstyled it inherited the
+ * paragraph's browser margins, so it sat further from its heading than every other block on
+ * the page, and it ran to whatever the card's full width happened to be — a 90-character
+ * measure that is hard to read. */
+.svc-meta-description {
+  margin: 0;
+  max-width: 62ch;
+  color: var(--text-dim);
+  line-height: var(--leading-normal);
+}
+
+.svc-meta-description:empty {
+  display: none;
+}
+
 /* ----------------------------------------------------------------- holds -- */
 
 .svc-holds {
@@ -129,5 +144,31 @@
 
   .svc-truncate {
     max-width: 100%;
+  }
+}
+
+/* The holds filter bar. The select and the button are small controls, so the search box beside
+ * them is small too: a 32px input next to a 28px button reads as a stepped row even when the
+ * bottom edges line up. `.filter-bar__grow` gives the search the slack and keeps Refresh on the
+ * right end of the line. */
+.holds-filters .search-input .input {
+  height: 28px;
+}
+
+@media (max-width: 560px) {
+  .holds-filters > .field,
+  .holds-filters .filter-bar__grow {
+    flex: 1 1 100%;
+  }
+
+  .holds-filters .search-input {
+    min-width: 0;
+  }
+
+  /* Refresh is the last thing in the bar and has nothing left to sit beside; full width reads
+   * as the action for the filters above it rather than a button stranded on its own line. */
+  .holds-filters > .btn {
+    flex: 1 1 100%;
+    justify-content: center;
   }
 }

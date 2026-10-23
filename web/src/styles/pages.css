@@ -899,6 +899,27 @@
   color: var(--text-dim);
 }
 
+/* One setting in the system-settings grid: the label head, the control and its hint, stacked.
+ * The grid item is `.settings-field`; `--wide` (view-commerce.css) spans it across both columns,
+ * and `.settings-control` is the inner stack. Without this rule the wrapper is an unstyled div,
+ * which happens to lay out correctly only because every child is block-level and full-width —
+ * an input with `width: auto` inside it does not get the grid cell's width reliably. */
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+/* The two-factor state block: a row of label/badge/detail and, under it, the note about a
+ * support reset. It is a column so the note cannot sit flush against the row above it. */
+.settings-status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
 /* --------------------------------------------------------------- ops queue -- */
 
 .op-status {
@@ -1137,4 +1158,157 @@
   overflow-wrap: anywhere;
   max-height: 160px;
   overflow: auto;
+}
+
+/* --------------------------------------------------------- narrow screens -- */
+
+/* A card head is a title and a run of actions on one line, which is the right shape while there
+ * is room for it. At 390px two buttons are wider than the card, and a `nowrap` flex row does not
+ * shrink below its own content: it pushes the second button out of the card and past the right
+ * edge of the viewport, where it is clipped and cannot be clicked. Both levels wrap instead — the
+ * actions drop under the title, and a run of buttons takes a second line inside the actions.
+ * This only takes effect when the content does not fit, so a wide window is unchanged. */
+.card-head {
+  flex-wrap: wrap;
+}
+
+.card-head > .card-title {
+  min-width: 0;
+}
+
+.card-actions {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.card-actions > .row {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* A banner whose body is prose rather than one sentence: paragraphs, not a run-on. The banner's
+ * default leading is `--leading-snug` (1.35), which is right for a single line of explanation and
+ * too tight for a paragraph of three lines — the inline boxes of two bold phrases on consecutive
+ * lines then overlap. Normal leading, and a gap between the paragraphs, so each claim reads as
+ * its own sentence. Scoped to the body that asks for it: every other banner keeps its rhythm. */
+.banner-prose {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  line-height: var(--leading-normal);
+}
+
+.banner-prose p {
+  margin: 0;
+}
+
+/* A formula set inline is read, not skimmed, so it gets the full text size rather than the 0.9em
+ * the code style uses inside a table. */
+.banner-prose .inline-code {
+  font-size: 1em;
+}
+
+/* Inline code inside the smallest text: `--text-xs` (11px) times the code style's 0.9em is 9.9px,
+ * and a permission name or an API path at that size is a grey smudge. One em keeps the code the
+ * same size as the sentence it sits in, which is what it is — a word of the sentence. */
+.field-hint .inline-code {
+  font-size: 1em;
+}
+
+/* A run of chips holding a scope name or a redirect URL. `.chip` keeps itself on one line
+ * (`white-space: nowrap`) and its row does not shrink it, so a redirect URI is wider than the
+ * card at 390px — and, in the clients table, wider than the space the column can spare at 1024.
+ * Here a chip may shrink to the width of its row and wrap inside itself, which it only does when
+ * it has to: a one-line chip is still 24px tall because of the `min-height`. */
+.code-chips {
+  min-width: 0;
+}
+
+.code-chips > .chip {
+  max-width: 100%;
+  height: auto;
+  min-height: 24px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+/* The OAuth client table: six columns, and a client name and id that must not be broken
+ * mid-word. With the chips able to shrink, the table's auto layout would otherwise take the
+ * slack out of this column ("Custo/mer portal"); the floor makes it take it out of the URLs and
+ * scopes instead, which are the only cells where a wrap is unremarkable. */
+.clients-table td.cell-primary {
+  min-width: 150px;
+}
+
+/* A redirect URI that is allowed to shrink will use every pixel it is not given: at 1024 the
+ * column came out 115px wide and the URL sat in four short lines. A floor of 132px gives it a
+ * readable two or three lines without taking the width the actions column needs. */
+.clients-table td .code-chips {
+  min-width: 132px;
+}
+
+/* The row's three buttons are 184px wide together, and at 1024 that is the difference between
+ * the table fitting its card and the Delete button being clipped at the card's edge. Allowed to
+ * wrap, the actions column is only as wide as its widest button and the table fits. */
+.clients-table td.num .row {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* An environment variable name: one unbreakable token, and the longest in the automation table is
+ * thirty characters. Held on one line it widens the kill-switch column until the state column is
+ * pushed out of the card at 1024px. The view puts a `<wbr>` after each underscore, so the name
+ * takes a second line between its words; `break-word` is only the fallback for a single segment
+ * longer than the column, which no name in this build has. */
+.kill-switch {
+  overflow-wrap: break-word;
+}
+
+/* A URL is one unbreakable token too. An issuer URL shortened to 42 characters is wider than the
+ * value column of a card at 390px and wider than the issuer column at 1024px, where it is the
+ * reason the actions column no longer fits the card. It may break anywhere, in both layouts; the
+ * full value is in the element's `title`. */
+.issuer-url {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* The job table at 1024px: five columns whose natural widths add up to more than the card. Once
+ * the kill switch may wrap, the table's auto layout has all the slack it needs and it takes that
+ * slack out of the job name instead, breaking it mid-word ("paymen/ts"). A floor on the two
+ * columns that hold words — rather than tokens — keeps the names whole and leaves the wrapping to
+ * the environment variable, which is the one column where a break is unremarkable. */
+.jobs-table td.cell-primary {
+  min-width: 108px;
+}
+
+.jobs-table td.cell-block {
+  min-width: 190px;
+}
+
+.jobs-table .kill-switch {
+  min-width: 0;
+}
+
+/* A table cell rebuilt as a card puts the column name beside the value, which is right for a
+ * word or a date and wrong for a sentence: the value is squeezed into the width the label leaves
+ * and wraps one word per line while the rest of the card is empty. A cell that says so gets the
+ * label above its value instead, left aligned, so prose reads across the full width. */
+@media (max-width: 780px) {
+  .table-wrap--cards .table tbody td.cell-block {
+    display: block;
+    text-align: left;
+  }
+
+  .table-wrap--cards .table tbody td.cell-block::before {
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  .table-wrap--cards .table tbody td.cell-block .row-wrap {
+    justify-content: flex-start;
+  }
 }

@@ -324,43 +324,49 @@ function render(ctx: Ctx, runs: RunRecord[], reload: () => Promise<void>): Node 
           title: "Previous runs",
           sub: "Newest first. A run's report is kept so an operator can answer 'what did that import actually do' months later.",
           body: h(
-            "table",
-            { class: "table" },
-            h("thead", null, h("tr", null,
-              h("th", null, "When"),
-              h("th", null, "Source"),
-              h("th", null, "Created"),
-              h("th", null, "Unchanged"),
-              h("th", null, "Rejected"),
-              h("th", null, ""),
-            )),
+            "div",
+            { class: "table-wrap table-wrap--cards" },
             h(
-              "tbody",
-              null,
-              ...runs.map((r) =>
-                h(
-                  "tr",
-                  null,
-                  h("td", null, dateTime(r.created_at)),
-                  h("td", null, badge(r.source, "neutral")),
-                  h("td", null, String(r.created)),
-                  h("td", null, String(r.unchanged)),
-                  h("td", null, r.rejected > 0 ? badge(String(r.rejected), "warning") : "0"),
+              "table",
+              { class: "table" },
+              h("thead", null, h("tr", null,
+                h("th", { scope: "col" }, "When"),
+                h("th", { scope: "col" }, "Source"),
+                h("th", { scope: "col", class: "num" }, "Created"),
+                h("th", { scope: "col", class: "num" }, "Unchanged"),
+                h("th", { scope: "col", class: "num" }, "Rejected"),
+                h("th", { scope: "col", "aria-label": "Report" }),
+              )),
+              h(
+                "tbody",
+                null,
+                ...runs.map((r) =>
                   h(
-                    "td",
+                    "tr",
                     null,
-                    btn("Report", {
-                      variant: "ghost",
-                      size: "sm",
-                      onclick: () => {
-                        if (r.report) {
-                          swap(reportHost, renderReport(ctx, r.report, () => {}));
-                          reportHost.scrollIntoView({ block: "nearest", behavior: "smooth" });
-                        } else {
-                          ctx.toast("That run's report was not retained", { tone: "info" });
-                        }
-                      },
-                    }),
+                    h("td", { class: "cell-primary" }, dateTime(r.created_at)),
+                    h("td", { "data-label": "Source" }, badge(r.source, "neutral")),
+                    h("td", { "data-label": "Created", class: "num" }, String(r.created)),
+                    h("td", { "data-label": "Unchanged", class: "num" }, String(r.unchanged)),
+                    h("td", { "data-label": "Rejected", class: "num" }, r.rejected > 0 ? badge(String(r.rejected), "warning") : "0"),
+                    h(
+                      "td",
+                      { class: "cell-actions" },
+                      h("div", { class: "table-actions" },
+                        btn("Report", {
+                          variant: "ghost",
+                          size: "sm",
+                          onclick: () => {
+                            if (r.report) {
+                              swap(reportHost, renderReport(ctx, r.report, () => {}));
+                              reportHost.scrollIntoView({ block: "nearest", behavior: "smooth" });
+                            } else {
+                              ctx.toast("That run's report was not retained", { tone: "info" });
+                            }
+                          },
+                        }),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -447,29 +453,33 @@ function renderReport(ctx: Ctx, report: ImportReport, onCommitted: () => void): 
             "Row is the n-th data row of the document; line is where to look in the file. Nothing was written for a refused row — fix it and run the dump again.",
           ),
           h(
-            "table",
-            { class: "table" },
-            h("thead", null, h("tr", null,
-              h("th", null, "Document"),
-              h("th", null, "Row"),
-              h("th", null, "Line"),
-              h("th", null, "Entity"),
-              h("th", null, "Reason"),
-              h("th", null, "Detail"),
-            )),
+            "div",
+            { class: "table-wrap table-wrap--cards" },
             h(
-              "tbody",
-              null,
-              ...rejections.slice(0, 200).map((r) =>
-                h(
-                  "tr",
-                  null,
-                  h("td", null, r.file),
-                  h("td", null, String(r.row)),
-                  h("td", null, String(r.line)),
-                  h("td", null, r.entity),
-                  h("td", null, h("code", null, r.code)),
-                  h("td", null, r.detail),
+              "table",
+              { class: "table" },
+              h("thead", null, h("tr", null,
+                h("th", { scope: "col" }, "Document"),
+                h("th", { scope: "col", class: "num" }, "Row"),
+                h("th", { scope: "col", class: "num" }, "Line"),
+                h("th", { scope: "col" }, "Entity"),
+                h("th", { scope: "col" }, "Reason"),
+                h("th", { scope: "col" }, "Detail"),
+              )),
+              h(
+                "tbody",
+                null,
+                ...rejections.slice(0, 200).map((r) =>
+                  h(
+                    "tr",
+                    null,
+                    h("td", { class: "cell-primary" }, h("code", null, r.file)),
+                    h("td", { "data-label": "Row", class: "num" }, String(r.row)),
+                    h("td", { "data-label": "Line", class: "num" }, String(r.line)),
+                    h("td", { "data-label": "Entity" }, r.entity),
+                    h("td", { "data-label": "Reason" }, h("code", null, r.code)),
+                    h("td", { "data-label": "Detail" }, r.detail),
+                  ),
                 ),
               ),
             ),
@@ -486,27 +496,31 @@ function renderReport(ctx: Ctx, report: ImportReport, onCommitted: () => void): 
           { class: "stack-sm" },
           h("h3", { class: "section-title" }, "By entity"),
           h(
-            "table",
-            { class: "table" },
-            h("thead", null, h("tr", null,
-              h("th", null, "Entity"),
-              h("th", null, "Created"),
-              h("th", null, "Updated"),
-              h("th", null, "Unchanged"),
-              h("th", null, "Rejected"),
-            )),
+            "div",
+            { class: "table-wrap table-wrap--cards" },
             h(
-              "tbody",
-              null,
-              ...tables.map((row) =>
-                h(
-                  "tr",
-                  null,
-                  h("td", null, titleCase(row.entity)),
-                  h("td", null, String(row.created)),
-                  h("td", null, String(row.updated)),
-                  h("td", null, String(row.unchanged)),
-                  h("td", null, row.rejected > 0 ? badge(String(row.rejected), "warning") : "0"),
+              "table",
+              { class: "table" },
+              h("thead", null, h("tr", null,
+                h("th", { scope: "col" }, "Entity"),
+                h("th", { scope: "col", class: "num" }, "Created"),
+                h("th", { scope: "col", class: "num" }, "Updated"),
+                h("th", { scope: "col", class: "num" }, "Unchanged"),
+                h("th", { scope: "col", class: "num" }, "Rejected"),
+              )),
+              h(
+                "tbody",
+                null,
+                ...tables.map((row) =>
+                  h(
+                    "tr",
+                    null,
+                    h("td", { class: "cell-primary" }, titleCase(row.entity)),
+                    h("td", { "data-label": "Created", class: "num" }, String(row.created)),
+                    h("td", { "data-label": "Updated", class: "num" }, String(row.updated)),
+                    h("td", { "data-label": "Unchanged", class: "num" }, String(row.unchanged)),
+                    h("td", { "data-label": "Rejected", class: "num" }, row.rejected > 0 ? badge(String(row.rejected), "warning") : "0"),
+                  ),
                 ),
               ),
             ),

@@ -139,21 +139,31 @@ function render(ctx: Ctx, res: LocalesResponse, reload: () => Promise<void>): No
       : card({
           title: "Languages",
           sub: `${res.total_keys} key${res.total_keys === 1 ? "" : "s"} in the default catalogue.`,
+          // A row is a record with five cells, so below 780px it becomes a card: a language
+          // with a code, a coverage bar, two state chips and four actions does not fit a phone
+          // as a table, and horizontal scrolling would hide the state and the actions.
           body: h(
-            "table",
-            { class: "table" },
+            "div",
+            { class: "table-wrap table-wrap--cards" },
             h(
-              "thead",
-              null,
-              h("tr", null,
-                h("th", null, "Language"),
-                h("th", null, "Code"),
-                h("th", null, "Coverage"),
-                h("th", null, "State"),
-                h("th", null, ""),
+              "table",
+              { class: "table" },
+              h(
+                "thead",
+                null,
+                h("tr", null,
+                  h("th", { scope: "col" }, "Language"),
+                  h("th", { scope: "col" }, "Code"),
+                  h("th", { scope: "col" }, "Coverage"),
+                  h("th", { scope: "col" }, "State"),
+                  // The actions column has no visible heading; the label is for a screen reader
+                  // only, and as an attribute rather than a `.sr-only` span it adds no clipped
+                  // one-pixel box to the row.
+                  h("th", { scope: "col", "aria-label": "Actions" }),
+                ),
               ),
+              h("tbody", null, ...rows.map((row) => localeRow(ctx, row, reload, editing))),
             ),
-            h("tbody", null, ...rows.map((row) => localeRow(ctx, row, reload, editing))),
           ),
         }),
 
@@ -239,33 +249,40 @@ function localeRow(ctx: Ctx, row: LocaleRow, reload: () => Promise<void>, editin
     );
   }
 
+  const coverage = Math.min(100, Math.max(0, Math.round(row.coverage)));
+
   return h(
     "tr",
     null,
     h(
       "td",
-      null,
-      h("div", { class: "stack-xs" }, h("strong", null, row.native_name || row.name), row.native_name && row.native_name !== row.name ? h("span", { class: "field-hint" }, row.name) : null),
-    ),
-    h("td", null, h("code", null, row.code)),
-    h(
-      "td",
-      null,
+      { class: "cell-primary" },
       h(
         "div",
         { class: "stack-xs" },
+        h("strong", null, row.native_name || row.name),
+        row.native_name && row.native_name !== row.name ? h("span", { class: "field-hint" }, row.name) : null,
+      ),
+    ),
+    h("td", { "data-label": "Code" }, h("code", null, row.code)),
+    h(
+      "td",
+      { "data-label": "Coverage" },
+      h(
+        "div",
+        { class: "stack-xs locale-coverage" },
         // A bar, because "37 of 240" is arithmetic an operator should not have to do. The number
         // stays beside it for anyone who wants the exact figure.
         h(
           "div",
           { class: "meter", title: `${row.translated} of ${row.total_keys} keys` },
-          h("div", { class: "meter-fill", style: `width:${Math.min(100, Math.max(0, row.coverage))}%` }),
+          h("div", { class: "meter-fill", style: `width:${coverage}%` }),
         ),
-        h("span", { class: "field-hint" }, `${row.coverage}% — ${row.translated} of ${row.total_keys}`),
+        h("span", { class: "field-hint" }, `${coverage}% — ${row.translated} of ${row.total_keys}`),
       ),
     ),
-    h("td", null, h("span", { class: "chip-row" }, ...state)),
-    h("td", null, h("div", { class: "inline-row" }, ...actions)),
+    h("td", { "data-label": "State" }, h("span", { class: "chip-row locale-state" }, ...state)),
+    h("td", { class: "cell-actions" }, h("div", { class: "table-actions" }, ...actions)),
   );
 }
 

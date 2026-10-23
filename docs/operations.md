@@ -85,6 +85,28 @@ replaying create, so the customer does not get a second server.
 next tick processes it; the payment is idempotent on the provider payment id, so
 reprocessing cannot double-credit.
 
+Read `last_error` before doing anything else, because the three shapes it takes need
+different answers:
+
+- *"carries no payment id"* — the row was ingested before the normalised payment id
+  was stored (`gateway_events.payment_id` is NULL, migration 0058). The core cannot
+  re-derive it: it does not parse provider payloads, and the signature headers are
+  gone. Resend the event from the provider's dashboard. The redelivery is reported as
+  a duplicate and nothing is re-processed, but it fills in `payment_id` and
+  `event_type` on the unprocessed row, and the next tick applies the payment. A resend
+  cannot repair a row that is already processed; those need
+  `UPDATE gateway_events SET processed_at = NULL WHERE event_id = '…'` first, which is
+  only correct when no payment was applied for it (check `payments`).
+- *"names payment … but type … is not a settlement kind"* — the extension reported a
+  settled payment under an event kind the core does not know. This is an extension
+  bug, not an operator problem: a gateway must report `payment.succeeded` for a
+  settlement (see `VerifyWebhookResult.EventType`). The event stays pending so it is
+  visible rather than silently skipped; fixing the adapter and re-queueing the row
+  settles it.
+- anything else — the provider call failed (`query payment …`), the amount did not
+  match the recorded checkout, or the payment has no invoice reference. Each is
+  recorded verbatim; the invoice is deliberately left alone until the cause is known.
+
 **The ledger does not balance.** This is always a defect. Every posting is
 append-only, so the cause is findable: compare `journal_transactions` against the
 documents they reference. Do not "fix" it with an adjustment until you know what

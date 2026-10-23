@@ -78,6 +78,38 @@ func TestWebhookAcceptsAnAuthenticDelivery(t *testing.T) {
 	if res.Amount == nil || res.Amount.Minor != 1999 || res.Amount.Currency != "USD" {
 		t.Fatalf("amount = %+v", res.Amount)
 	}
+	// The core acts on its own settlement vocabulary. Reporting Stripe's own event type here
+	// left the core with a kind it did not recognise, so it skipped the event and the invoice
+	// stayed unpaid — silently. This is the assertion that keeps the mapping honest.
+	if res.EventType != "payment.succeeded" {
+		t.Fatalf("event type = %q, want the core's settlement kind payment.succeeded", res.EventType)
+	}
+}
+
+// A delivery that is valid but says nothing about a settled payment keeps the provider's own
+// event type: the core records it and skips it, and the inbox row is more useful naming what
+// Stripe actually sent.
+func TestWebhookKeepsTheProviderTypeForNonPayments(t *testing.T) {
+	s, f := newTestServer(t)
+	now := time.Now()
+	s.now = clockFor(now)
+	body := []byte(fmt.Sprintf(`{
+		"id": "evt_expired",
+		"type": "checkout.session.expired",
+		"created": %d,
+		"data": {"object": {"id": "cs_test_1", "object": "checkout.session"}}
+	}`, now.Unix()))
+
+	res := verify(t, s, signedDelivery(t, s, f, body, now), body)
+	if !res.Valid {
+		t.Fatalf("an authentic delivery was refused: %s", res.Reason)
+	}
+	if res.PaymentID != "" {
+		t.Fatalf("a non-payment delivery named payment %q", res.PaymentID)
+	}
+	if res.EventType != "checkout.session.expired" {
+		t.Fatalf("event type = %q, want the provider's own type", res.EventType)
+	}
 }
 
 // A body that does not match its signature is a forgery attempt. It must be

@@ -30,6 +30,12 @@ export interface Column<T> {
   className?: string;
   /** Hide the column below 780px (it is still available in the card's other cells). */
   hideSmall?: boolean;
+  /**
+   * Hide the column between 780px and 1100px, where the card is too narrow for every column
+   * but too wide for the card layout. Without it the table keeps its full width and its last
+   * column is pushed out of sight with nothing to say it is there.
+   */
+  hideMedium?: boolean;
   render: (row: T) => Child;
 }
 
@@ -83,7 +89,7 @@ export function createTable<T>(ctx: Ctx, options: TableOptions<T>): Table<T> {
         h(
           "th",
           {
-            class: [col.align === "right" ? "num" : "", col.hideSmall ? "hide-sm" : ""].filter(Boolean).join(" "),
+            class: [col.align === "right" ? "num" : "", col.hideSmall ? "hide-sm" : "", col.hideMedium ? "hide-md" : ""].filter(Boolean).join(" "),
             scope: "col",
             width: col.width,
           },
@@ -183,6 +189,7 @@ export function createTable<T>(ctx: Ctx, options: TableOptions<T>): Table<T> {
               col.align === "right" ? "num" : "",
               col.primary ? "cell-primary" : "",
               col.hideSmall ? "hide-sm" : "",
+              col.hideMedium ? "hide-md" : "",
               col.className ?? "",
             ]
               .filter(Boolean)

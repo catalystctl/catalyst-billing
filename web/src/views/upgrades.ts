@@ -136,9 +136,12 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
       banner(
         "info",
         "What moving costs, exactly",
+        // Prose, not a one-line explanation: each claim is its own paragraph so the two bold
+        // phrases do not run into each other as a block of emphasis. `banner-prose` (pages.css)
+        // gives the body normal leading and a gap between the paragraphs.
         h(
           "div",
-          { class: "stack-sm" },
+          { class: "banner-prose" },
           h(
             "p",
             null,
@@ -149,11 +152,16 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
           h(
             "p",
             null,
-            h("strong", null, "An upgrade issues an invoice "),
-            "for that difference, and the service keeps its old price until the invoice is paid. ",
-            h("strong", null, "A downgrade records a credit "),
-            "the customer is owed; the service moves down only once that credit is posted. Neither happens when the edge is created — an edge is permission to move, not a move.",
+            h("strong", null, "An upgrade issues an invoice"),
+            " for that difference, and the service keeps its old price until the invoice is paid.",
           ),
+          h(
+            "p",
+            null,
+            h("strong", null, "A downgrade records a credit"),
+            " the customer is owed; the service moves down only once that credit is posted.",
+          ),
+          h("p", null, "Neither happens when the edge is created — an edge is permission to move, not a move."),
         ),
       ),
 
@@ -288,11 +296,11 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
         errorHost,
         h(
           "div",
-          { class: "row" },
-          field({ label: "From", control: from, id: "edge-from" }),
-          h("span", { class: "faint" }, icon("arrowRight", 14)),
-          field({ label: "May move to", control: to, id: "edge-to" }),
-          h("div", { class: "spacer" }, submit),
+          { class: "filter-bar" },
+          field({ label: "From", control: from, id: "edge-from", class: "filter-bar__grow filter-bar__grow--capped" }),
+          h("span", { class: "faint filter-bar__arrow", "aria-hidden": "true" }, icon("arrowRight", 14)),
+          field({ label: "May move to", control: to, id: "edge-to", class: "filter-bar__grow filter-bar__grow--capped" }),
+          submit,
         ),
         h(
           "p",

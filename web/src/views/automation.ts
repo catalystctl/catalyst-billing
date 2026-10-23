@@ -259,11 +259,16 @@ function jobsCard(jobs: AutomationJob[]): HTMLElement {
     sub: `${jobs.length} registered`,
     flush: true,
     body: h(
+      // A job row carries five cells — name, period, purpose, kill switch and state — which is
+      // more than a phone can show side by side. `table-wrap--cards` rebuilds the row as a card
+      // below 780px (tables.css), and each cell keeps its column name through `data-label`.
+      // Without it the table scrolls sideways and the copy button beside the kill switch sits
+      // outside the viewport, where a phone cannot reach it.
       "div",
-      { class: "table-wrap" },
+      { class: "table-wrap table-wrap--cards" },
       h(
         "table",
-        { class: "table" },
+        { class: "table jobs-table" },
         h(
           "thead",
           null,
@@ -294,17 +299,22 @@ function jobRow(job: AutomationJob): HTMLElement {
         "div",
         { class: "cell-main" },
         h("div", { class: "primary mono" }, job.name),
-        h("div", { class: "secondary faint" }, job.source),
+        // The Go source is a path, and a path has no spaces in it: without a break opportunity at
+        // the slashes it is cut mid-word ("jobs.g" / "o") in the narrow job column.
+        h("div", { class: "secondary faint mono" }, ...wrappablePath(job.source)),
       ),
     ),
     h(
       "td",
-      { title: `${job.interval_seconds} seconds` },
+      { "data-label": "Every", title: `${job.interval_seconds} seconds` },
       h("span", { class: "mono nowrap" }, job.interval),
     ),
     h(
       "td",
-      null,
+      // The purpose of a job is a sentence, and in card mode a table cell puts its value beside
+      // the column label — a sentence beside a label is a column two words wide. `cell-block`
+      // stacks the label above the value (pages.css) so the sentence gets the whole card.
+      { class: "cell-block", "data-label": "What it does" },
       h("span", null, job.summary),
       job.settings && job.settings.length > 0
         ? h(
@@ -317,7 +327,7 @@ function jobRow(job: AutomationJob): HTMLElement {
     ),
     h(
       "td",
-      null,
+      { "data-label": "Kill switch" },
       job.kill_switch
         ? h(
             "div",
@@ -325,7 +335,11 @@ function jobRow(job: AutomationJob): HTMLElement {
             h(
               "div",
               { class: "row" },
-              h("span", { class: "mono" }, job.kill_switch),
+              // The variable name is one unbreakable token and the longest is 30 characters, so
+              // as a single token it widens this column until the State column no longer fits
+              // the card at 1024. It may wrap — but at its underscores, not mid-word, so the
+              // pieces still read as the name (see `wrappableVariable`).
+              h("span", { class: "mono kill-switch" }, ...wrappableVariable(job.kill_switch)),
               copyButtonText(job.kill_switch),
             ),
             h(
@@ -338,12 +352,44 @@ function jobRow(job: AutomationJob): HTMLElement {
     ),
     h(
       "td",
-      null,
+      { "data-label": "State" },
       job.disabled
         ? badge("Switched off", "danger", { dot: true })
         : badge("Running", "success", { dot: true }),
     ),
   );
+}
+
+/** wrappablePath splits a file path at its slashes and puts a `<wbr>` in each gap, so a long
+ *  source path (`internal/lifecycle/lifecycle.go`) breaks at a slash instead of mid-word when the
+ *  job column is narrow. The text is unchanged; only break opportunities are added. */
+function wrappablePath(path: string): Node[] {
+  const parts = path.split("/");
+  const nodes: Node[] = [];
+  parts.forEach((part, index) => {
+    const last = index === parts.length - 1;
+    nodes.push(document.createTextNode(last ? part : `${part}/`));
+    if (!last) nodes.push(h("wbr"));
+  });
+  return nodes;
+}
+
+/** wrappableVariable splits an environment variable name at its underscores and puts a `<wbr>`
+ *  in each gap, so the name can take a second line between words instead of running out of a
+ *  narrow column. The name is unchanged for a reader (and for a copy: it is text, not markup), and
+ *  a name short enough to fit is still on one line.
+ *
+ *  The underscores stay attached to the piece before them, so a break reads as a complete word
+ *  (`BILLING_DISABLE_` / `PAYMENTS`) rather than a fragment. */
+function wrappableVariable(variable: string): Node[] {
+  const parts = variable.split("_");
+  const nodes: Node[] = [];
+  parts.forEach((part, index) => {
+    const last = index === parts.length - 1;
+    nodes.push(document.createTextNode(last ? part : `${part}_`));
+    if (!last) nodes.push(h("wbr"));
+  });
+  return nodes;
 }
 
 /** copyButtonText copies the environment assignment an operator would paste.

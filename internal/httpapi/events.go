@@ -152,13 +152,21 @@ func visibleTo(ev events.Event, customerID string, staff bool, perms map[string]
 }
 
 // writeSSE renders one event frame.
+//
+// It never writes into ev.Data. The broker hands the *same* map to every subscriber of an
+// event, and every subscriber is served by its own goroutine, so adding the envelope to it
+// is a map write racing a json.Marshal iteration in another goroutine. The runtime does not
+// recover from that: it aborts the whole process with "concurrent map iteration and map
+// write", taking every other request with it. Two subscribers of one event was enough to
+// reproduce it. Mutating the shared map is also wrong even without the crash, because the
+// first subscriber's event_id would be baked into the frame the second one receives.
 func writeSSE(w http.ResponseWriter, ev events.Event) error {
-	payload := ev.Data
-	if payload == nil {
-		payload = map[string]any{}
-	}
 	// The envelope fields travel with the payload so a client does not have to correlate
-	// the SSE id with the body.
+	// the SSE id with the body. They go into a copy, per frame.
+	payload := make(map[string]any, len(ev.Data)+3)
+	for k, v := range ev.Data {
+		payload[k] = v
+	}
 	payload["event_id"] = ev.ID
 	payload["kind"] = ev.Kind
 	if !ev.At.IsZero() {

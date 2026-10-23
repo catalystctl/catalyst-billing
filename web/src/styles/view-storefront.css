@@ -427,6 +427,18 @@
   background: var(--surface-2);
 }
 
+/* The plan picker. A bare radio paints in the browser's own blue, which is the one colour in
+ * the storefront that does not belong to the palette, and it sits off-centre against the plan
+ * name. Accent-coloured and aligned with the first line of text. */
+.store-plan-radio {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .store-plan-main {
   display: flex;
   flex-direction: column;

@@ -22,6 +22,7 @@
 import { ApiError } from "../lib/api";
 import { h } from "../lib/dom";
 import { dateTime, relative } from "../lib/format";
+import { icon, type IconName } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import {
   badge,
@@ -38,6 +39,10 @@ import {
 } from "../ui/kit";
 
 export const meta = { title: "Roles", crumb: "Roles" };
+
+/** How many permission chips a collapsed Grants cell shows before the "+N more" count. Two
+ *  is what fits beside the count at the panel's normal width without the run wrapping. */
+const GRANT_CHIPS = 2;
 
 /** The role shape from `roleJSON` in internal/httpapi/roles_ext.go. */
 interface RoleRow {
@@ -150,8 +155,12 @@ export default async function rolesPage(ctx: Ctx): Promise<Node> {
   /** One table for both sections: a system role differs only in having no actions. */
   function roleTable(rows: RoleRow[], editable: boolean): HTMLElement {
     return h(
+      // `table-wrap--cards` is the panel's narrow-screen shape (the same one the Users list
+      // uses): below 780px each role becomes a card and every cell is labelled from
+      // `data-label`. Without it this six-column table is a horizontal scroll on a phone and
+      // the Grants cell — the column the screen is about — is half of it off the edge.
       "div",
-      { class: "table-wrap" },
+      { class: "table-wrap table-wrap--cards" },
       h(
         "table",
         { class: "table" },
@@ -187,15 +196,15 @@ export default async function rolesPage(ctx: Ctx): Promise<Node> {
                 ),
                 h("div", { class: "secondary" }, role.description || "No description"),
               ),
-              h("td", null, grantSummary(role)),
+              h("td", { class: "roles-grants-cell", "data-label": "Grants" }, grantSummary(role)),
               h(
                 "td",
-                { class: "num" },
+                { class: "num", "data-label": "Holders" },
                 h("span", { class: role.holders > 0 ? "mono" : "mono faint" }, String(role.holders)),
               ),
               h(
                 "td",
-                { class: "num" },
+                { class: "num", "data-label": "Active" },
                 h(
                   "span",
                   { class: role.active_holders > 0 ? "mono" : "mono faint" },
@@ -204,33 +213,23 @@ export default async function rolesPage(ctx: Ctx): Promise<Node> {
               ),
               h(
                 "td",
-                null,
+                { "data-label": "Created" },
                 h("span", { class: "faint nowrap", title: dateTime(role.created_at) }, relative(role.created_at)),
               ),
               h(
                 "td",
-                { class: "num" },
+                { class: `num cell-actions${editable ? "" : " roles-no-actions"}` },
                 editable
                   ? h(
                       "div",
-                      { class: "row-wrap" },
-                      btn("Permissions", {
-                        size: "sm",
-                        icon: "shieldCheck",
-                        onclick: () => void openPermissions(role),
-                      }),
-                      btn("Rename", {
-                        size: "sm",
-                        variant: "ghost",
-                        icon: "edit",
-                        onclick: () => void openRename(role),
-                      }),
-                      btn("Delete", {
-                        size: "sm",
-                        variant: "ghost",
-                        icon: "trash",
-                        onclick: () => void deleteRole(role),
-                      }),
+                      { class: "row-actions", role: "group", "aria-label": `Actions for the ${role.name} role` },
+                      // The same one-line group the Users list uses: three labelled buttons in a
+                      // 1%-wide column stack into three lines and make this row twice the height
+                      // of the one above it. The label moves into `title`/`aria-label`, and
+                      // delete keeps its danger colour.
+                      rowAction("shieldCheck", `Edit the permissions of ${role.name}`, () => void openPermissions(role)),
+                      rowAction("edit", `Rename ${role.name}`, () => void openRename(role)),
+                      rowAction("trash", `Delete the role ${role.name}`, () => void deleteRole(role), true),
                     )
                   : h("span", { class: "faint", title: "A system role cannot be edited or deleted" }, "—"),
               ),
@@ -449,6 +448,23 @@ export default async function rolesPage(ctx: Ctx): Promise<Node> {
 
 // ---------------------------------------------------------------- helpers --
 
+/** One row action, as an icon button — the same shape the Users list uses, so the two screens
+ *  that share this stylesheet act alike. The visible label is traded for a `title` and an
+ *  `aria-label`; the destructive one keeps its danger colour at rest. */
+function rowAction(name: IconName, label: string, onclick: () => void, danger = false): HTMLButtonElement {
+  return h(
+    "button",
+    {
+      class: `btn btn--ghost btn--icon btn--sm row-action${danger ? " row-action--danger" : ""}`,
+      type: "button",
+      title: label,
+      "aria-label": label,
+      onclick,
+    },
+    icon(name, 14),
+  );
+}
+
 /** A grouped permission matrix. Returns the element and a reader for the checked values. */
 function permissionMatrix(
   available: string[],
@@ -496,31 +512,48 @@ function permissionMatrix(
   };
 }
 
-/** A compact "what it grants" cell: the count plus the first few names, expandable. */
+/** A compact "what it grants" cell: one line of the first few permissions and how many more
+ *  there are, and the existing expander to see the whole set.
+ *
+ *  The collapsed form is deliberately *one line*: a role's grants are the same size in every
+ *  row, so a cell that wrapped to seven lines made one row three times the height of the one
+ *  below it and the table stopped reading as a table. The chips are a `.chip-row` (so they
+ *  never touch), the run does not wrap while it is a summary, and the whole line is the
+ *  `<summary>` of the disclosure the screen already used — the "+N more" *is* the control
+ *  rather than a label sitting above a second one. */
 function grantSummary(role: RoleRow): HTMLElement {
-  if (role.permissions.length === 0) return h("span", { class: "faint" }, "Nothing");
-  const shown = role.permissions.slice(0, 2);
+  const permissions = role.permissions;
+  if (permissions.length === 0) return h("span", { class: "faint" }, "Nothing");
+
+  const shown = permissions.slice(0, GRANT_CHIPS);
+  const hidden = permissions.length - shown.length;
+  const chip = (permission: string): HTMLElement => h("span", { class: "chip mono" }, permission);
+
+  // Nothing is hidden: the cell is just the list, with no expander to open.
+  if (hidden === 0) return h("div", { class: "chip-row" }, ...permissions.map(chip));
+
   return h(
-    "div",
-    { class: "stack-sm" },
+    "details",
+    { class: "trust-help roles-grants" },
     h(
-      "div",
-      { class: "row-wrap" },
-      ...shown.map((permission) => h("span", { class: "chip mono" }, permission)),
-      role.permissions.length > shown.length
-        ? h("span", { class: "faint" }, `+${role.permissions.length - shown.length} more`)
-        : null,
-    ),
-    h(
-      "details",
-      { class: "trust-help" },
-      h("summary", null, `All ${role.permissions.length} permission${role.permissions.length === 1 ? "" : "s"}`),
+      "summary",
+      { title: `Show all ${permissions.length} permissions` },
+      icon("chevronRight", 11),
       h(
-        "div",
-        { class: "row-wrap" },
-        ...role.permissions.map((permission) => h("span", { class: "chip mono" }, permission)),
+        "span",
+        { class: "chip-row" },
+        ...shown.map((permission, index) =>
+          index === 0 ? chip(permission) : h("span", { class: "roles-grants-chip2" }, chip(permission)),
+        ),
+        // The count has to match the chips actually on screen, and a narrow column fits one
+        // chip where a wide one fits two. Both counts are rendered and the stylesheet shows
+        // the true one — `display: none` is also what keeps the other out of the accessibility
+        // tree, so a screen reader never hears "+37 more" beside one chip.
+        h("span", { class: "faint roles-grants-more" }, `+${hidden} more`),
+        h("span", { class: "faint roles-grants-more roles-grants-more--narrow" }, `+${hidden + 1} more`),
       ),
     ),
+    h("div", { class: "chip-row roles-grants-all" }, ...permissions.map(chip)),
   );
 }
 

@@ -219,7 +219,9 @@ export default async function providersPage(ctx: Ctx): Promise<Node> {
               (provider.scopes ?? []).length > 0
                 ? h(
                     "div",
-                    { class: "trust-scopes" },
+                    // A scope is one unbroken word; `code-chips` lets the chip wrap inside its
+                    // row rather than run past the edge of the card at 390px.
+                    { class: "trust-scopes code-chips" },
                     ...(provider.scopes ?? []).map((scope) => h("span", { class: "chip mono" }, scope)),
                   )
                 : h("span", { class: "faint" }, "openid, email"),

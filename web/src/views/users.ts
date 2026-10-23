@@ -31,6 +31,7 @@
 import { ApiError } from "../lib/api";
 import { h } from "../lib/dom";
 import { dateTime, humanStatus, relative, type Tone } from "../lib/format";
+import { icon, type IconName } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import {
   badge,
@@ -117,12 +118,28 @@ export default async function usersPage(ctx: Ctx): Promise<Node> {
       key: "person",
       label: "Person",
       primary: true,
+      // Both lines are single unbreakable tokens (a name, an address), and a token that may
+      // wrap at any character sets the column's minimum width to almost nothing — so on a
+      // 1024 screen the address wrapped onto a second line and those rows grew to 73px while
+      // their neighbours stayed at 56px. One line with an ellipsis keeps every row the same
+      // height; the full value stays in `title`, and at the panel's normal width there is
+      // room for all of it.
       render: (row) =>
         h(
           "div",
           { class: "cell-main" },
-          h("div", { class: "primary" }, row.display_name || row.email),
-          h("div", { class: "secondary" }, row.display_name ? row.email : "No display name"),
+          h(
+            "div",
+            { class: "primary" },
+            h("span", { class: "truncate", title: row.display_name || row.email }, row.display_name || row.email),
+          ),
+          h(
+            "div",
+            { class: "secondary" },
+            row.display_name
+              ? h("span", { class: "truncate", title: row.email }, row.email)
+              : "No display name",
+          ),
         ),
     },
     {
@@ -183,45 +200,23 @@ export default async function usersPage(ctx: Ctx): Promise<Node> {
       label: "",
       align: "right",
       width: "1%",
+      // The four actions are icon buttons on one line. As labelled buttons they wrapped
+      // inside this cell and every record became four rows tall — the actions column was
+      // the tallest thing in the table. The label lives in `title` and `aria-label` instead
+      // of on the button, and delete keeps its danger colour so it is still the one that
+      // looks destructive. `cell-actions` is what stops the column being squeezed: it is
+      // `nowrap` and 1% wide, so the group sets the column width rather than the reverse.
+      className: "cell-actions",
       render: (row) =>
         h(
           "div",
-          { class: "row-wrap" },
-          btn("Edit", {
-            size: "sm",
-            icon: "edit",
-            title: `Edit ${row.email}`,
-            onclick: () => void openEdit(row),
-          }),
-          btn("Password", {
-            size: "sm",
-            variant: "ghost",
-            icon: "key",
-            title: `Set a password for ${row.email}`,
-            onclick: () => void openPassword(row),
-          }),
+          { class: "row-actions", role: "group", "aria-label": `Actions for ${row.email}` },
+          rowAction("edit", `Edit ${row.email}`, () => void openEdit(row)),
+          rowAction("key", `Set a password for ${row.email}`, () => void openPassword(row)),
           row.status === "active"
-            ? btn("Disable", {
-                size: "sm",
-                variant: "ghost",
-                icon: "lock",
-                title: `Disable ${row.email}`,
-                onclick: () => void setStatus(row, "disabled"),
-              })
-            : btn("Enable", {
-                size: "sm",
-                variant: "ghost",
-                icon: "checkCircle",
-                title: `Enable ${row.email}`,
-                onclick: () => void setStatus(row, "active"),
-              }),
-          btn("Delete", {
-            size: "sm",
-            variant: "ghost",
-            icon: "trash",
-            title: `Delete ${row.email}`,
-            onclick: () => void deleteUser(row),
-          }),
+            ? rowAction("lock", `Disable ${row.email}`, () => void setStatus(row, "disabled"))
+            : rowAction("checkCircle", `Enable ${row.email}`, () => void setStatus(row, "active")),
+          rowAction("trash", `Delete ${row.email}`, () => void deleteUser(row), true),
         ),
     },
   ];
@@ -231,6 +226,9 @@ export default async function usersPage(ctx: Ctx): Promise<Node> {
   const table = createTable<UserRow>(ctx, {
     path: "/api/v1/staff/users",
     columns,
+    // A hook for this screen's own rules: the Person cell's two lines are one line each
+    // (see view-trust.css) and the row actions are a group of icon buttons.
+    class: "users-table",
     query: queryOf(),
     limit: 25,
     empty,
@@ -640,6 +638,28 @@ export default async function usersPage(ctx: Ctx): Promise<Node> {
 }
 
 // ---------------------------------------------------------------- helpers --
+
+/** One row action, as an icon button.
+ *
+ *  Icon-only is a deliberate trade: four labelled buttons do not fit one line in a table
+ *  cell, and stacking them made the list unreadable. The meaning therefore has to survive
+ *  without the visible label, so every button carries both a `title` (for the pointer) and
+ *  an `aria-label` (for the keyboard and the screen reader), and the destructive one is
+ *  tinted at rest — see `.row-action--danger`. Nothing about what the action *does* changes:
+ *  the same handlers are attached. */
+function rowAction(name: IconName, label: string, onclick: () => void, danger = false): HTMLButtonElement {
+  return h(
+    "button",
+    {
+      class: `btn btn--ghost btn--icon btn--sm row-action${danger ? " row-action--danger" : ""}`,
+      type: "button",
+      title: label,
+      "aria-label": label,
+      onclick,
+    },
+    icon(name, 14),
+  );
+}
 
 /** "infrastructure" → "Infrastructure", "support-lead" → "Support lead". */
 function roleLabel(role: string): string {

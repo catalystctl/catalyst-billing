@@ -23,6 +23,17 @@
   font-size: var(--text-sm);
 }
 
+/* A table cell may hold a single long unbreakable token — a provider's payment reference, a
+ * uuid, a URL. `break-word` lets such a token break rather than push the table past its
+ * container, and unlike `anywhere` it leaves the cell's min-content width at the longest word,
+ * so the table's auto layout still sizes its columns normally. (`anywhere` drops min-content to
+ * a single character, and every column in a tight table then collapses to one character per
+ * line — which is what the Holds table did at 1024px.) */
+.table td,
+.table th {
+  overflow-wrap: break-word;
+}
+
 .table thead th {
   position: sticky;
   top: 0;
@@ -87,6 +98,19 @@
 
 .table tbody tr:hover {
   background: var(--surface-hover);
+}
+
+/* The row that carries an empty state. It is not a record, so it must not hover, must not
+ * draw a divider, and its cell must not be padded like a data cell — the empty state brings
+ * its own spacing. */
+.table tbody tr.empty-row:hover {
+  background: transparent;
+}
+
+.table tbody tr.empty-row > td {
+  height: auto;
+  padding: 0;
+  border-bottom: 0;
 }
 
 .table tbody tr.is-clickable {
@@ -155,6 +179,13 @@
   align-items: center;
   gap: 5px;
   min-width: 0;
+  /* A secondary line is supporting detail: a provider's payment reference, an email, a
+   * slug. Those are single unbreakable tokens, and an unbreakable token sets the minimum
+   * width of the whole column — a 70-character Stripe reference made a six-column table
+   * overflow a 640px card and hid its last column. Wrapping the token inside the cell keeps
+   * every column visible and keeps the reference readable; the row grows by a line instead
+   * of the table growing past its container. */
+  overflow-wrap: anywhere;
 }
 
 .cell-stack {

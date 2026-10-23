@@ -339,10 +339,20 @@ type VerifyWebhookParams struct {
 // VerifyWebhookResult is the verified event. Valid=false means the signature did
 // not check out and Reason says why; that is not a transport error.
 type VerifyWebhookResult struct {
-	Valid     bool    `json:"valid"`
-	Reason    string  `json:"reason,omitempty"`
-	EventID   string  `json:"event_id,omitempty"`
-	EventType string  `json:"event_type,omitempty"`
+	Valid   bool   `json:"valid"`
+	Reason  string `json:"reason,omitempty"`
+	EventID string `json:"event_id,omitempty"`
+	// EventType is the core's own kind, not the provider's. A delivery that settled a
+	// payment must be reported as "payment.succeeded"; the core acts only on the kinds it
+	// declares (see payments.IsSettlementKind) and has no provider knowledge with which to
+	// recognise "checkout.session.completed". Any other event may report the provider's own
+	// type — the core records it and does not act on it. The raw body is stored alongside, so
+	// the provider's own type is never lost from the audit trail.
+	EventType string `json:"event_type,omitempty"`
+	// PaymentID is the provider's payment id, which is the key the core re-queries to get the
+	// authoritative state. Report it only when this delivery really does name a settled
+	// payment: the core treats a payment id under an unrecognised kind as a contract error
+	// rather than skipping it silently.
 	PaymentID string  `json:"payment_id,omitempty"`
 	Amount    *Amount `json:"amount,omitempty"`
 	// OccurredAt is the gateway's timestamp for the event.

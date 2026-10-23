@@ -322,7 +322,7 @@ Two things that were on this list and are now decisions rather than gaps:
 - **Order editing.** Deliberately absent. An order is the record of what was agreed; corrections
   go through credit notes and cancellations, which is what keeps an issued invoice immutable.
 
-## The never-regress list, checked## The never-regress list, checked
+## The never-regress list, checked
 
 | Rule | Evidence |
 |---|---|

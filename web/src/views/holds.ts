@@ -163,6 +163,7 @@ export default async function holdsPage(ctx: Ctx): Promise<Node> {
         key: "placed",
         label: "Placed",
         hideSmall: true,
+        hideMedium: true,
         render: (row) =>
           h("span", { class: "dim nowrap", title: dateTime(row.created_at) }, relative(row.created_at)),
       },
@@ -170,6 +171,7 @@ export default async function holdsPage(ctx: Ctx): Promise<Node> {
         key: "by",
         label: "By",
         hideSmall: true,
+        hideMedium: true,
         render: (row) =>
           row.placed_by
             ? h(
@@ -460,6 +462,7 @@ export default async function holdsPage(ctx: Ctx): Promise<Node> {
 
   const statusPicker = select(STATUS_OPTIONS, {
     id: "hold-status",
+    class: "select--sm",
     value: status,
     onchange: () => {
       status = statusPicker.value;
@@ -506,14 +509,10 @@ export default async function holdsPage(ctx: Ctx): Promise<Node> {
     countsHost,
     h(
       "div",
-      { class: "toolbar" },
-      h("div", { class: "log-filters log-filters--inline" }, field({ label: "Show", control: statusPicker, id: "hold-status" })),
-      h("div", { class: "log-filters log-filters--inline" }, searchBox),
-      h(
-        "div",
-        { class: "toolbar-end" },
-        btn("Refresh", { size: "sm", variant: "ghost", icon: "refresh", onclick: () => void table.reload() }),
-      ),
+      { class: "filter-bar holds-filters" },
+      field({ label: "Show", control: statusPicker, id: "hold-status" }),
+      h("div", { class: "filter-bar__grow" }, searchBox),
+      btn("Refresh", { size: "sm", variant: "ghost", icon: "refresh", onclick: () => void table.reload() }),
     ),
     table.el,
   );

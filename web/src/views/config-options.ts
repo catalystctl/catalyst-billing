@@ -324,9 +324,12 @@ export default async function configOptionsPage(ctx: Ctx): Promise<Node> {
     // by an empty choice. Showing it as a single row keeps the matrix honest rather than empty.
     const rows = choices.length > 0 ? choices : [""];
 
+    // The matrix is choices across and price versions down: it keeps its table shape at every
+    // width (a card per row would break the reading across) and scrolls inside the card when
+    // there are more versions than fit.
     const table = h(
       "div",
-      { class: "config-matrix" },
+      { class: "config-matrix table-wrap" },
       h(
         "table",
         { class: "table config-table" },
@@ -376,8 +379,17 @@ export default async function configOptionsPage(ctx: Ctx): Promise<Node> {
                             amountDialog(product, option, version, choice, hit ?? null),
                         },
                         hit ? moneyElMinor(hit.amount_minor, version.currency) : "+ Set",
+                        // `moneyElMinor` returns an element, not a string: interpolating it into a
+                        // template literal renders "+ [object HTMLSpanElement] setup". The pieces
+                        // are children of the setup line instead.
                         hit && hit.setup_minor > 0
-                          ? h("span", { class: "config-amount-setup" }, `+ ${moneyElMinor(hit.setup_minor, version.currency)} setup`)
+                          ? h(
+                              "span",
+                              { class: "config-amount-setup" },
+                              "+ ",
+                              moneyElMinor(hit.setup_minor, version.currency),
+                              " setup",
+                            )
                           : null,
                       )
                     : hit

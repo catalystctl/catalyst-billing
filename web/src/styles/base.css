@@ -268,6 +268,13 @@ hr {
 }
 
 .truncate {
+  /* A span is `display: inline` by default, and an inline box cannot be a scroll container:
+   * `overflow: hidden` has no effect on it, so the text simply overflowed and
+   * `text-overflow: ellipsis` never applied. Every `.truncate` in the panel is a span meant to
+   * hold one line inside a table cell, so it is a block that clips. `max-width: 100%` keeps it
+   * inside its container when that container is not a flex parent. */
+  display: block;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -326,6 +333,14 @@ hr {
   /* no display here on purpose; see above */
 }
 
+/* The same idea one breakpoint up. A table with six columns fits the card at 1440 and not at
+ * 1024, where the last column was simply pushed out of sight with no scrollbar to say so.
+ * Dropping the two least essential columns at that width keeps the rest readable instead of
+ * hiding one column and squeezing the others. */
+.hide-md {
+  /* no display here on purpose; see above */
+}
+
 .only-sm {
   display: none;
 }
@@ -334,8 +349,15 @@ hr {
   .hide-sm {
     display: none !important;
   }
+
   .only-sm {
     display: revert;
+  }
+}
+
+@media (max-width: 1100px) {
+  .hide-md {
+    display: none !important;
   }
 }
 

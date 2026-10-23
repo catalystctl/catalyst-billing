@@ -50,15 +50,23 @@ interface ConfigValue {
   hint?: string;
   is_secret: boolean;
   is_set: boolean;
+  /** `environment`, `panel`, `default` or `unset`, from `gatewayconfig.Source*`. */
   source: string;
   editable: boolean;
 }
+
+/** A value the deployment supplies, which this panel cannot override. The string is the server's
+ *  own (`gatewayconfig.SourceEnvironment`); comparing against `"env"` matched nothing, so an
+ *  environment-supplied credential rendered as an empty, editable box that the server would then
+ *  refuse to write. */
+const SOURCE_ENVIRONMENT = "environment";
 
 interface ProviderChoice {
   id: string;
   name: string;
   extension: string;
-  fields: Array<{ key: string; label: string; env: string; is_secret: boolean; hint?: string }>;
+  /** A provider that needs no credentials reports `null`, not an empty list. */
+  fields: Array<{ key: string; label: string; env: string; is_secret: boolean; hint?: string }> | null;
   env_only?: Array<{ key: string; env: string; hint?: string }>;
   note?: string;
 }
@@ -156,9 +164,9 @@ function render(ctx: Ctx, cfg: IntegrationConfig, reload: () => Promise<void>): 
     }
     const stored = new Map((cfg.values ?? []).map((v) => [v.key, v]));
 
-    const rows: Node[] = provider.fields.map((f) => {
+    const rows: Node[] = (provider.fields ?? []).map((f) => {
       const current = stored.get(f.key);
-      const fromEnv = current?.source === "env";
+      const fromEnv = current?.source === SOURCE_ENVIRONMENT;
       const editable = current ? current.editable : true;
 
       const el = input({
@@ -187,7 +195,13 @@ function render(ctx: Ctx, cfg: IntegrationConfig, reload: () => Promise<void>): 
       if (fromEnv) marks.push(badge("from environment", "info"));
       return field({
         label: f.label,
-        control: marks.length > 0 ? h("div", { class: "inline-row" }, el, ...marks) : el,
+        // The marks travel together: beside the input while there is room, and as one group
+        // under it when there is not. Wrapped individually, "set" stays on the line and "from
+        // environment" drops below it, which reads as two unrelated states.
+        control:
+          marks.length > 0
+            ? h("div", { class: "inline-row" }, el, h("span", { class: "chip-row" }, ...marks))
+            : el,
         id: `srv-${f.key}`,
         hint: f.hint ?? (fromEnv ? `Supplied by ${f.env}; change it in the deployment, not here.` : undefined),
       });
@@ -214,6 +228,10 @@ function render(ctx: Ctx, cfg: IntegrationConfig, reload: () => Promise<void>): 
     swap(fieldHost, h("div", { class: "stack-sm" }, ...rows));
   };
   providerSelect.addEventListener("change", paintFields);
+  // The card is titled "Provisioner" and says it is where the credentials live; without this
+  // first paint the configured provisioner's fields are absent until the operator re-picks the
+  // provisioner that is already selected.
+  paintFields();
 
   const save = async (): Promise<void> => {
     const values: Record<string, string> = {};
@@ -265,7 +283,7 @@ function render(ctx: Ctx, cfg: IntegrationConfig, reload: () => Promise<void>): 
           label: "Provisioner",
           control: providerSelect,
           id: "srv-provider",
-          hint: cfg.provider_source === "env" ? "Supplied by the environment." : undefined,
+          hint: cfg.provider_source === SOURCE_ENVIRONMENT ? "Supplied by the environment." : undefined,
         }),
         fieldHost,
       ),
@@ -388,23 +406,31 @@ function renderTestResult(result: TestResult): Node {
           { class: "stack-sm" },
           h("h3", { class: "section-title" }, "Plans this provisioner will build"),
           h(
-            "table",
-            { class: "table" },
+            "div",
+            { class: "table-wrap table-wrap--cards" },
             h(
-              "thead",
-              null,
-              h("tr", null, h("th", null, "Plan id"), h("th", null, "Name"), h("th", null, "Period")),
-            ),
-            h(
-              "tbody",
-              null,
-              ...plans.map((p) =>
-                h(
-                  "tr",
-                  null,
-                  h("td", null, h("code", null, p.id)),
-                  h("td", null, p.name || p.id),
-                  h("td", null, p.period ?? "—"),
+              "table",
+              { class: "table" },
+              h(
+                "thead",
+                null,
+                h("tr", null,
+                  h("th", { scope: "col" }, "Plan id"),
+                  h("th", { scope: "col" }, "Name"),
+                  h("th", { scope: "col" }, "Period"),
+                ),
+              ),
+              h(
+                "tbody",
+                null,
+                ...plans.map((p) =>
+                  h(
+                    "tr",
+                    null,
+                    h("td", { class: "cell-primary" }, h("code", null, p.id)),
+                    h("td", { "data-label": "Name" }, p.name || p.id),
+                    h("td", { "data-label": "Period" }, p.period ?? "—"),
+                  ),
                 ),
               ),
             ),

@@ -252,6 +252,13 @@ func (s *server) verifyWebhook(req *request) reply {
 			Valid: false, Reason: "event carries no payment identifier",
 		}}
 	}
+	// The core acts on its own settlement vocabulary, not on provider event names: it has no
+	// provider knowledge and must not grow any, so mapping "checkout.session.completed" is
+	// this adapter's job. Reporting Stripe's own type here left the core with an event it did
+	// not recognise, which it skipped — the invoice stayed unpaid and nothing said so. The raw
+	// delivery is stored alongside the normalised event, so Stripe's own type is still there
+	// for an operator reading the inbox.
+	out.EventType = "payment.succeeded"
 	return reply{result: out}
 }
 

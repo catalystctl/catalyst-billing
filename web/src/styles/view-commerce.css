@@ -603,6 +603,15 @@
   color: var(--text-dim);
 }
 
+/* At medium widths the card cannot hold a 22rem reason beside five other columns, and the
+ * table ended up 75px wider than its card — enough to hide the last column. The reason is
+ * ellipsised either way, so the cap tightens before anything else gives way. */
+@media (max-width: 1100px) {
+  .cancel-reason {
+    max-width: 12rem;
+  }
+}
+
 .cancel-actions {
   justify-content: flex-end;
   flex-wrap: wrap;

@@ -12,7 +12,7 @@
 
 import { h } from "../lib/dom";
 import type { Amount } from "../lib/format";
-import { dateTime, humanStatus, isoDate, relative, shortId, titleCase } from "../lib/format";
+import { dateTime, humanStatus, isoDate, relative, shortId, titleCase, truncate } from "../lib/format";
 import type { Ctx } from "../lib/types";
 import { badge, btn, card, cellMain, emptyState, field, input, moneyEl, pageHead, select, statusBadge } from "../ui/kit";
 import { createTable, type Column, type Table } from "../ui/table";
@@ -96,7 +96,15 @@ export default async function paymentsPage(ctx: Ctx): Promise<Node> {
       primary: true,
       render: (row) =>
         cellMain(
-          h("a", { class: "row-title mono", href: `/payments/${row.id}` }, row.provider_payment_id),
+          // A provider reference is 60+ characters of unbreakable text. Shown whole it either
+          // sets the column's width (pushing the table past its card) or, with a looser wrap
+          // rule, breaks into a vertical ribbon. It is an identifier, so it is shown short with
+          // the full value in the title and on the payment's own page.
+          h(
+            "a",
+            { class: "row-title mono", href: `/payments/${row.id}`, title: row.provider_payment_id },
+            truncate(row.provider_payment_id ?? "—", 22),
+          ),
           h("span", { class: "faint mono" }, shortId(row.id)),
         ),
     },

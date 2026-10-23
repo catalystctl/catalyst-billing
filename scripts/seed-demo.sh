@@ -66,9 +66,14 @@ SQL
 
 if [[ "$(psql_t -c "select count(*) from customers where email like '%@$DOMAIN'")" != "0" ]]; then
   say "removing the previous demo dataset"
-  ./bin/billing admin purge-test-data --pattern "%@$DOMAIN" --yes --force >/dev/null 2>&1 ||
-    ./bin/billing admin purge-test-data --pattern "%@$DOMAIN" --yes >/dev/null 2>&1 ||
-    echo "seed-demo: purge failed; continuing (rows may collide)" >&2
+  # A failed purge must stop the run. Swallowing it was a bug: the seed then re-created accounts
+  # on top of the leftovers and failed much later with a confusing duplicate-key error, instead of
+  # saying what had actually gone wrong.
+  if ! purge_out="$(./bin/billing admin purge-test-data --pattern "%@$DOMAIN" --yes --force 2>&1)"; then
+    echo "seed-demo: could not remove the previous demo dataset:" >&2
+    printf '%s\n' "$purge_out" >&2
+    exit 1
+  fi
 fi
 psql_q <<'SQL'
 delete from coupon_products where coupon_id in (select id from coupons where code like 'DEMO-%');
@@ -100,8 +105,17 @@ make_user() { # email name staff-role
   local id
   id="$(sed -n 's/^created user \([0-9a-f-]*\).*/\1/p' <<<"$out")"
   if [[ -z "$id" ]]; then
-    echo "seed-demo: could not create $email: $out" >&2
-    exit 1
+    # An account that survived a previous run is reused rather than treated as a failure. The
+    # seed has to be re-runnable from any state, including one left by an interrupted run — that
+    # is the whole point of it being a `make` target.
+    id="$(psql_t -c "select id from users where email = '$email'")"
+    if [[ -z "$id" ]]; then
+      echo "seed-demo: could not create $email: $out" >&2
+      exit 1
+    fi
+    # A reused account keeps its own password, so the banner at the end would be a lie. Say so
+    # rather than leaving someone to discover it at the sign-in form.
+    echo "  note: $email already existed; its password was left unchanged" >&2
   fi
   printf '%s' "$id"
 }
@@ -111,8 +125,11 @@ make_customer() { # email name
   out="$(./bin/billing admin create-customer --email "$1" --name "$2" 2>&1)"
   id="$(sed -n 's/^created customer \([0-9a-f-]*\).*/\1/p' <<<"$out")"
   if [[ -z "$id" ]]; then
-    echo "seed-demo: could not create customer $1: $out" >&2
-    exit 1
+    id="$(psql_t -c "select id from customers where email = '$1'")"
+    if [[ -z "$id" ]]; then
+      echo "seed-demo: could not create customer $1: $out" >&2
+      exit 1
+    fi
   fi
   printf '%s' "$id"
 }
@@ -144,9 +161,15 @@ U4="$(make_user "jonas@$DOMAIN"     "Jonas Weber" )"
 U5="$(make_user "sakura@$DOMAIN"    "Saki Tanaka" )"
 U6="$(make_user "fixture@$DOMAIN"   "Test Fixture" )"
 psql_q <<SQL
+-- The link is normally already here: create-user calls authn.EnsureBillingIdentity, which adopts
+-- the customer with the same address and writes the row itself. Inserting it again is what
+-- produced "duplicate key value violates unique constraint customer_accounts_unique". So this is
+-- a no-op on the normal path and only fills in a customer whose login was created some other way.
+-- (No backticks in this heredoc: it is unquoted, so a backtick would be command-substituted.)
 insert into customer_accounts (user_id, customer_id, role) values
   ('$U1','$C1','owner'), ('$U2','$C2','owner'), ('$U3','$C3','owner'),
-  ('$U4','$C4','owner'), ('$U5','$C5','owner'), ('$U6','$C6','owner');
+  ('$U4','$C4','owner'), ('$U5','$C5','owner'), ('$U6','$C6','owner')
+on conflict (user_id, customer_id) do nothing;
 SQL
 
 # ---------------------------------------------------------------- catalog --

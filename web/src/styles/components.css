@@ -1549,10 +1549,21 @@
 }
 
 .money-code {
-  font-size: 0.78em;
+  /* Relative to the amount, so a large figure gets a large code. The floor matters: at the
+   * body size 0.78em is 9.4px, which is below the smallest size this panel uses anywhere
+   * else and reads as a smudge rather than as a currency. */
+  font-size: max(10px, 0.78em);
   color: var(--text-faint);
   margin-right: 3px;
   letter-spacing: 0.02em;
+}
+
+/* Beside a display amount the code is set apart by size and colour alone, so the optical
+ * gap the mono face needed (where letters and digits share one advance) is not needed here. */
+.money--xl .money-code,
+.money--lg .money-code {
+  margin-right: 0.32em;
+  letter-spacing: 0;
 }
 
 .money--neg {
@@ -1564,14 +1575,218 @@
 }
 
 .money--lg {
+  /* A display amount switches to the proportional face. Monospace is right for a column of
+   * figures that must line up, but at 24-48px a monospaced period occupies a whole character
+   * cell, so "14.40" renders as "14 . 40" with visible gaps either side of the decimal — the
+   * first thing anyone reads on the customer's own overview screen. A single figure does not
+   * need to align with anything, so it does not need tabular figures. */
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--text-2xl);
   font-weight: 500;
+  letter-spacing: -0.02em;
 }
 
 .money--xl {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: var(--text-3xl);
   font-weight: 500;
   letter-spacing: -0.035em;
+}
+
+/* ------------------------------------------------------------ filter bar --
+ *
+ * The bar above a list: a labelled set of controls that window or filter what the list
+ * shows, and the button that applies a chosen range. Two shapes have to coexist in it — a
+ * preset group of buttons, and labelled inputs — and they used to disagree about where
+ * their baseline was: a labelled control is a column (label above, input below) while a
+ * button is a single line, so centring the row put Apply halfway up the input beside it.
+ *
+ * The bar therefore aligns on the *bottom* edge. Every control ends on the same line as the
+ * button that applies it, and the labels form a row of their own above.
+ */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s-2) var(--s-3);
+}
+
+.filter-bar > .field {
+  min-width: 0;
+}
+
+/* The presets are one control under one label, so the buttons sit in a row of their own. */
+.filter-bar .preset-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  min-height: 28px;
+}
+
+/* A filter is not a form field: it is sized to its content, because stretching a date or a
+ * status across the bar hides the shape of the choice. */
+.filter-bar .input--sm,
+.filter-bar .select--sm {
+  width: auto;
+  min-width: 8.5rem;
+}
+
+.filter-bar .filter-bar__grow {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+/* A pair of selects that name one thing each (From → To) do not need half the card each: past
+ * a comfortable measure the row reads as two empty boxes with words at one end. They take the
+ * slack up to a point and then stop. */
+.filter-bar .filter-bar__grow--capped {
+  flex: 1 1 14rem;
+  max-width: 22rem;
+}
+
+/* The arrow between them is a separator, not a control: it keeps its intrinsic width and does
+ * not wrap onto a line of its own, where it would look like a stray character at the edge of
+ * the card. Below the wrapping width the two selects are stacked, so the arrow goes too. */
+.filter-bar .filter-bar__arrow {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding-bottom: 8px;
+}
+
+@media (max-width: 560px) {
+  .filter-bar .filter-bar__arrow {
+    display: none;
+  }
+}
+
+.filter-bar .filter-bar__grow .input,
+.filter-bar .filter-bar__grow .search-input {
+  width: 100%;
+}
+
+/* A small button matches the height of a small input, so the row shares one baseline
+ * instead of stepping by two pixels. */
+.filter-bar .btn--sm {
+  height: 28px;
+}
+
+/* -------------------------------------------------------- small layout -- */
+
+/* A control with an annotation beside it — an input and the badge that says where its value
+ * came from. One control, not a row of unrelated things: the input keeps the width and the
+ * mark sits after it. */
+.inline-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.inline-row > .input,
+.inline-row > .select,
+.inline-row > .search-input,
+.inline-row > .code-block {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.inline-row > .btn,
+.inline-row > .badge,
+.inline-row > .copy {
+  flex: 0 0 auto;
+}
+
+/* Two lines that belong together — a name and the language it translates — with the gap of
+ * one line rather than of a field. */
+.stack-xs {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+/* A run of badges or codes: they wrap as a group and never touch. */
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* A list of sentences rather than of items — the notes an extension reports. It keeps its
+ * markers because the order carries meaning, and drops the browser's default indent so it
+ * lines up with the paragraph above it. */
+.plain-list {
+  margin: 0;
+  padding-left: 1.1em;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+}
+
+.plain-list li {
+  line-height: var(--leading-snug);
+}
+
+/* A checkbox and its sentence on one line. */
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-base);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+/* A coverage bar. The fill's width is set through the CSSOM by the view: an inline style
+ * attribute would be refused by the page's `style-src 'self'`. */
+.meter {
+  position: relative;
+  width: 100%;
+  min-width: 72px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--dur-2) var(--ease);
+}
+
+/* The key/value block a self-describing extension is rendered as. */
+.kv-grid {
+  display: flex;
+  flex-direction: column;
+}
+
+.kv-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-sm);
+}
+
+.kv-row:last-child {
+  border-bottom: 0;
+}
+
+/* A popover's anchor. */
+.popover-host {
+  position: relative;
 }
 
 /* ------------------------------------------------------------------ misc -- */

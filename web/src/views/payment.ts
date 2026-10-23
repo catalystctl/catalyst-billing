@@ -12,7 +12,7 @@
 import { h } from "../lib/dom";
 import type { Child } from "../lib/dom";
 import type { Amount } from "../lib/format";
-import { dateTime, formatMinor, humanStatus, relative, shortId } from "../lib/format";
+import { dateTime, formatMinor, humanStatus, relative, shortId, truncate } from "../lib/format";
 import type { Ctx } from "../lib/types";
 import {
   banner,
@@ -296,7 +296,12 @@ function journalBlock(payment: Payment, tx: JournalTransaction): HTMLElement {
           render: (row) =>
             row.credit === 0 ? h("span", { class: "faint" }, "—") : moneyEl(amountOf(row.credit), { code: false }),
         },
-        { label: "Memo", render: (row) => h("span", { class: "dim" }, row.memo || "—") },
+        {
+          label: "Memo",
+          // A memo repeats a provider reference, so it is the same unbreakable 60-character
+          // token as the payments table: shown short here, whole in the title.
+          render: (row) => h("span", { class: "dim", title: row.memo || undefined }, truncate(row.memo || "—", 40)),
+        },
       ],
       tx.entries,
     ),

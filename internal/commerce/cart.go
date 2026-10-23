@@ -312,7 +312,7 @@ func (s *Store) AddItemTx(ctx context.Context, q querier, customerID, currency s
 	if !strings.EqualFold(price.Currency, cart.Currency) {
 		// The cart is empty: adopt the price's currency rather than refusing. This is the
 		// "switch currency, then add" flow, and it is unambiguous because nothing is lost.
-		if _, err := q.Exec(ctx, `UPDATE carts SET currency = $2, updated_at = now() WHERE id = $1`,
+		if _, err := q.Exec(ctx, `UPDATE carts SET currency = $2, updated_at = now(), abandoned_at = NULL WHERE id = $1`,
 			cart.ID, price.Currency); err != nil {
 			return Cart{}, fmt.Errorf("commerce: set cart currency: %w", err)
 		}
@@ -388,7 +388,7 @@ func (s *Store) AddItemTx(ctx context.Context, q querier, customerID, currency s
 		}
 		return Cart{}, fmt.Errorf("commerce: add cart item: %w", err)
 	}
-	if _, err := q.Exec(ctx, `UPDATE carts SET updated_at = now() WHERE id = $1`, cart.ID); err != nil {
+	if _, err := q.Exec(ctx, `UPDATE carts SET updated_at = now(), abandoned_at = NULL WHERE id = $1`, cart.ID); err != nil {
 		return Cart{}, fmt.Errorf("commerce: touch cart: %w", err)
 	}
 	return s.cartWith(ctx, q, cart.ID, customerID)
@@ -434,7 +434,7 @@ func (s *Store) UpdateQuantityTx(ctx context.Context, q querier, customerID, ite
 	if tag.RowsAffected() == 0 {
 		return Cart{}, ErrNotFound
 	}
-	if _, err := q.Exec(ctx, `UPDATE carts SET updated_at = now() WHERE id = $1`, cart.ID); err != nil {
+	if _, err := q.Exec(ctx, `UPDATE carts SET updated_at = now(), abandoned_at = NULL WHERE id = $1`, cart.ID); err != nil {
 		return Cart{}, fmt.Errorf("commerce: touch cart: %w", err)
 	}
 	return s.cartWith(ctx, q, cart.ID, customerID)
@@ -464,7 +464,7 @@ func (s *Store) RemoveItemTx(ctx context.Context, q querier, customerID, itemID 
 	if tag.RowsAffected() == 0 {
 		return Cart{}, ErrNotFound
 	}
-	if _, err := q.Exec(ctx, `UPDATE carts SET updated_at = now() WHERE id = $1`, cart.ID); err != nil {
+	if _, err := q.Exec(ctx, `UPDATE carts SET updated_at = now(), abandoned_at = NULL WHERE id = $1`, cart.ID); err != nil {
 		return Cart{}, fmt.Errorf("commerce: touch cart: %w", err)
 	}
 	return s.cartWith(ctx, q, cart.ID, customerID)
@@ -495,7 +495,7 @@ func (s *Store) ClearTx(ctx context.Context, q querier, customerID string) (Cart
 	// checkout would have to explain, and "add a product, the coupon comes back" is not
 	// what a customer expects.
 	if _, err := q.Exec(ctx,
-		`UPDATE carts SET coupon_id = NULL, tos_accepted_at = NULL, updated_at = now() WHERE id = $1`,
+		`UPDATE carts SET coupon_id = NULL, tos_accepted_at = NULL, updated_at = now(), abandoned_at = NULL WHERE id = $1`,
 		cart.ID); err != nil {
 		return Cart{}, fmt.Errorf("commerce: reset cart: %w", err)
 	}
@@ -605,7 +605,7 @@ func (s *Store) ApplyCouponTx(ctx context.Context, q querier, customerID, code s
 		return Cart{}, err
 	}
 	if _, err := q.Exec(ctx,
-		`UPDATE carts SET coupon_id = $2, updated_at = now() WHERE id = $1`,
+		`UPDATE carts SET coupon_id = $2, updated_at = now(), abandoned_at = NULL WHERE id = $1`,
 		cart.ID, coupon.ID); err != nil {
 		return Cart{}, fmt.Errorf("commerce: apply coupon: %w", err)
 	}
@@ -631,7 +631,7 @@ func (s *Store) RemoveCouponTx(ctx context.Context, q querier, customerID string
 		return Cart{}, err
 	}
 	if _, err := q.Exec(ctx,
-		`UPDATE carts SET coupon_id = NULL, updated_at = now() WHERE id = $1`, cart.ID); err != nil {
+		`UPDATE carts SET coupon_id = NULL, updated_at = now(), abandoned_at = NULL WHERE id = $1`, cart.ID); err != nil {
 		return Cart{}, fmt.Errorf("commerce: remove coupon: %w", err)
 	}
 	return s.cartWith(ctx, q, cart.ID, customerID)
@@ -747,6 +747,9 @@ func (s *Store) totalsFor(ctx context.Context, q querier, cart Cart, pricer bill
 			// The coupon was deleted out from under the cart. Clear the reference so the
 			// cart is not permanently unpriceable.
 			if _, uerr := q.Exec(ctx,
+				// Deliberately does NOT clear abandoned_at: this is a read path clearing a
+				// dead reference, and a merchant opening the cart is not the customer coming
+				// back. Only a customer's own mutation revives an abandoned cart.
 				`UPDATE carts SET coupon_id = NULL, updated_at = now() WHERE id = $1`, cart.ID); uerr != nil {
 				return Totals{}, fmt.Errorf("commerce: clear missing coupon: %w", uerr)
 			}

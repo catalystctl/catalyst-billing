@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/audit"
+	"github.com/catalyst/billing/internal/events"
+	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/ledger"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/service"
@@ -383,6 +385,21 @@ func (r *Runner) cancelOrder(ctx context.Context, orderID string, before time.Ti
 		if tag.RowsAffected() != 1 {
 			return fmt.Errorf("lifecycle: order %s changed while it was locked", orderID)
 		}
+
+		// CT-13: the order.cancelled event is deferred to this transaction, so it is announced
+		// only if the commit below succeeds. An event published from here directly would let an
+		// extension email a customer about an order that was never actually cancelled.
+		events.Defer(ctx, events.Event{
+			Kind:       extproto.EventOrderCancelled,
+			CustomerID: customerID,
+			Data: map[string]any{
+				"order_id":        orderID,
+				"customer_id":     customerID,
+				"total_minor":     totalMinor,
+				"invoices_voided": out.InvoiceIDs,
+				"reason":          "unpaid order cancelled by the order_cancel_days rule",
+			},
+		})
 
 		// The audit row is written inside the same transaction as the change, which is the
 		// only version of the trail that cannot lie.

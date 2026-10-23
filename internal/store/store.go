@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/catalyst/billing/internal/events"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -125,6 +126,12 @@ func (p *Pool) InTxWithTimeout(ctx context.Context, timeout time.Duration, fn fu
 }
 
 func (p *Pool) inTx(ctx context.Context, timeout time.Duration, fn func(ctx context.Context, tx pgx.Tx) error) (err error) {
+	// A transaction is where a change becomes a fact, so it is also where an event has to wait
+	// until the fact is true. The buffer is attached here, and announced only after Commit
+	// returned nil — never in a defer, which runs on the rollback path too. A caller that does
+	// not defer an event is unaffected: the buffer stays empty and flush is a loop over nothing.
+	ctx, flush := events.WithPending(ctx, events.Default())
+
 	tx, err := p.Pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("store: begin transaction: %w", err)
@@ -152,6 +159,8 @@ func (p *Pool) inTx(ctx context.Context, timeout time.Duration, fn func(ctx cont
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("store: commit transaction: %w", err)
 	}
+	// After the commit, and only then: these events describe rows that now exist.
+	flush()
 	return nil
 }
 

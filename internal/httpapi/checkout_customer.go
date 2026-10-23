@@ -7,6 +7,7 @@ import (
 
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/events"
+	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/register"
 	"github.com/jackc/pgx/v5"
@@ -286,6 +287,20 @@ func (s *Server) publishOrderEvents(res register.CheckoutResult) {
 		CustomerID: res.CustomerID,
 		Permission: string(authn.PermInvoiceReadAll),
 		Data:       data,
+	})
+	// CT-13: the cart stopped being a draft. It is a separate kind from order.created because
+	// an extension that runs cart recovery has to stop counting this customer, and it can only
+	// do that if "the cart was bought" is its own fact.
+	s.publish(events.Event{
+		Kind:       extproto.EventCartChecked,
+		CustomerID: res.CustomerID,
+		Permission: string(authn.PermCustomerReadSelf),
+		Data: map[string]any{
+			"order_id":    res.OrderID,
+			"customer_id": res.CustomerID,
+			"total_minor": res.Total.Minor(),
+			"currency":    res.Currency,
+		},
 	})
 }
 

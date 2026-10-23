@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/events"
+	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/growth"
 	"github.com/catalyst/billing/internal/invoicepdf"
 	"github.com/catalyst/billing/internal/money"
@@ -131,8 +133,59 @@ func (a *Applier) ApplySettledPayment(ctx context.Context, tx pgx.Tx, p payments
 		if err := a.enqueueProvisioning(ctx, tx, p.InvoiceID); err != nil {
 			return payments.ApplyResult{}, err
 		}
+
+		// CT-13: order.paid, for the order this invoice belongs to. It is *deferred* rather
+		// than published: this function runs inside a transaction the caller commits, so
+		// publishing here would announce a payment that can still roll back. The buffer is
+		// flushed by store.Pool.inTx after the commit, which is the one place that knows the
+		// transaction succeeded. A renewal invoice with no order behind it emits nothing:
+		// "this order was paid" is a statement about an order, and inventing one would give an
+		// extension an id it cannot look up.
+		if err := deferOrderPaid(ctx, tx, p.InvoiceID, res.Duplicate); err != nil {
+			return payments.ApplyResult{}, err
+		}
 	}
 	return out, nil
+}
+
+// deferOrderPaid records an order.paid event for the order a settled invoice belongs to.
+//
+// A duplicate payment is skipped: the first settlement already announced the order, and an
+// extension that provisions on order.paid must not be told twice for one payment.
+func deferOrderPaid(ctx context.Context, tx pgx.Tx, invoiceID string, duplicate bool) error {
+	if duplicate {
+		return nil
+	}
+	var (
+		orderID    string
+		customerID string
+		totalMinor int64
+		currency   string
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT o.id::text, o.customer_id::text, o.total_minor, o.currency
+		FROM invoices i
+		JOIN orders o ON o.id = i.order_id
+		WHERE i.id = $1`, invoiceID).Scan(&orderID, &customerID, &totalMinor, &currency)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A renewal or a manually issued invoice has no order. Nothing to announce.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read order for invoice: %w", err)
+	}
+	events.Defer(ctx, events.Event{
+		Kind:       extproto.EventOrderPaid,
+		CustomerID: customerID,
+		Data: map[string]any{
+			"order_id":    orderID,
+			"invoice_id":  invoiceID,
+			"customer_id": customerID,
+			"total_minor": totalMinor,
+			"currency":    currency,
+		},
+	})
+	return nil
 }
 
 // activateSubscription starts the renewal schedule of a subscription that a paid

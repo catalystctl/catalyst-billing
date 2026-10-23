@@ -27872,8 +27872,14 @@ paths:
             x-staff-only: true
     /api/v1/staff/payments/charge-due:
         get:
+            description: |-
+                The dry run for `charge-agreements`: the invoices the next tick would charge, the amount per currency, and the invoices it would skip with the reason (`retry_window`, `checkout_open`, `no_mandate`). It resolves no gateway at all — it takes the provider *name* — so asking it cannot move money, which is what makes it safe to open before turning the job back on.
+
+                The three refusal states are reported separately rather than collapsed into an empty list: `enabled` is the setting, `kill_switch_set` is the process-level switch, and `reason` says why the sweep would do nothing. An empty candidate list for four different causes is the answer that sends an operator to the wrong screen.
             operationId: GetStaffPaymentsChargedue
             responses:
+                2XX:
+                    description: 'The plan: candidates, skips with reasons, per-currency totals, and refusal state.'
                 "400":
                     content:
                         application/json:
@@ -27913,7 +27919,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: ""
+            summary: What the unattended charger would take, without charging anything
             x-permission: payment:reconcile
             x-rate-class: read
             x-staff-only: true

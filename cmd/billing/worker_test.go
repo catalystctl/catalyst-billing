@@ -80,6 +80,21 @@ type runSummary struct {
 	finished bool
 }
 
+// openRuns counts runs that were started and never closed.
+//
+// Counting all of them rather than inspecting the newest row per job is what makes the shutdown
+// assertion meaningful: a job that abandons a run and carries on to the next tick looks healthy
+// from the newest row alone, and abandoning runs is the failure being guarded.
+func openRuns(t *testing.T, pool *store.Pool) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM cron_runs WHERE finished_at IS NULL`).Scan(&n); err != nil {
+		t.Fatalf("count open runs: %v", err)
+	}
+	return n
+}
+
 // latestRun reads the newest run recorded for a job.
 func latestRun(t *testing.T, pool *store.Pool, job string) (runSummary, bool) {
 	t.Helper()
@@ -144,6 +159,19 @@ func TestTheWorkerRecordsEveryRunWithItsOutcome(t *testing.T) {
 	})
 	// Stop first: a `running` row is only evidence of a defect once nothing is in flight.
 	stop()
+
+	// And then wait for every run to be closed — not just the newest one.
+	//
+	// `stop()` cancels and waits, but the drain is *bounded*: it gives up after
+	// `workerDrainTimeout` rather than blocking shutdown forever, so a run opened by the tick that
+	// fired just before cancellation can still be closing when this returns. Asserting immediately
+	// that nothing is open tested the scheduler's timing instead of the property that matters.
+	//
+	// The count is over ALL runs, deliberately. An earlier version of this wait looked only at the
+	// newest row per job, and a mutation check proved that vacuous: leaving an older run open
+	// forever still passed, because the next tick opened and closed a newer one and "latest" looked
+	// healthy. A job that abandons a run and carries on is precisely the failure this guards.
+	waitFor(t, "every run to close after shutdown", func() bool { return openRuns(t, pool) == 0 })
 
 	for _, want := range []struct{ job, outcome, detail string }{
 		{"test-ok", "ok", ""},

@@ -2229,6 +2229,8 @@ func (c *Client) GetStaffPaymentsById(ctx context.Context, id string, query url.
 
 // GetStaffPaymentsChargedue calls GET /api/v1/staff/payments/charge-due.
 //
+// # What the unattended charger would take, without charging anything
+//
 // Permission: payment:reconcile. Staff only.
 func (c *Client) GetStaffPaymentsChargedue(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/payments/charge-due"

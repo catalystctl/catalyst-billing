@@ -9,6 +9,9 @@ node_modules/
 .env
 coverage.out
 
+# Built by the extension tests into the working directory; never committed.
+/example-hooks
+
 # Written by scripts/browser-e2e.sh during a run; never committed.
 web/dist/e2e-driver.js
 web/dist/e2e.html

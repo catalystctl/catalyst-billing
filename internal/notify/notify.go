@@ -381,24 +381,14 @@ func EmailVerificationMessage(to, link string, expires time.Duration) Message {
 	}
 }
 
-// InvoiceIssuedMessage renders the "your invoice is ready" mail.
+// There is deliberately no InvoiceIssuedMessage constructor.
 //
-// Deprecated: notify.InvoiceIssued renders the editable `new_invoice_created` template. Two call
-// sites still use this one (register/checkout.go and httpapi/staff_write.go); moving them is a
-// separate change because it also decides whether those paths write an inbox row.
-func InvoiceIssuedMessage(to, number, total, dueAt, invoiceID string) Message {
-	return Message{
-		Kind:    KindInvoiceIssued,
-		To:      to,
-		Subject: "Invoice " + number,
-		Body: strings.Join([]string{
-			"Invoice " + number + " has been issued.",
-			"",
-			"Amount due: " + total,
-			"Due: " + dueAt,
-			"",
-			"Invoice reference: " + invoiceID,
-		}, "\n"),
-		DedupeKey: "invoice_issued:" + invoiceID,
-	}
-}
+// It rendered a hardcoded "your invoice is ready" body with the retired `invoice_issued` kind, and
+// when invoice mail moved onto the editable `new_invoice_created` template both remaining callers
+// (checkout and staff issuance) moved with it — leaving the constructor called by nothing but its
+// own test. It was deleted rather than deprecated because the two paths must agree on the kind: a
+// suppression written under one name and a send under another are invisible to each other, which
+// is precisely the bug that made "did we mail this customer?" unanswerable.
+//
+// Invoice mail is built by notify.InvoiceIssued, which takes InvoiceIssuedInput and derives its
+// kind and dedupe key from the event key.

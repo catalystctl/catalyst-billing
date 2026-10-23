@@ -210,14 +210,18 @@ func TestCheckoutCreatesOrderInvoiceAndSubscriptions(t *testing.T) {
 
 	// The invoice notification was queued, since registration created an unverified
 	// address — so it is recorded as suppressed rather than sent.
+	//
+	// The kind is the EVENT KEY: checkout renders the editable `new_invoice_created` template, so
+	// filtering on the retired `invoice_issued` literal counted nothing while the hold worked
+	// exactly as intended. Using the constant makes the next rename a compile error.
 	var suppressed int
 	if err := f.pool.QueryRow(ctx, `
 		SELECT count(*) FROM notification_deliveries
-		WHERE kind = 'invoice_issued' AND status = 'suppressed'`).Scan(&suppressed); err != nil {
+		WHERE kind = $1 AND status = 'suppressed'`, notify.EventNewInvoiceCreated).Scan(&suppressed); err != nil {
 		t.Fatal(err)
 	}
 	if suppressed != 1 {
-		t.Fatalf("suppressed invoice messages = %d, want 1", suppressed)
+		t.Fatalf("suppressed %s messages = %d, want 1", notify.EventNewInvoiceCreated, suppressed)
 	}
 }
 

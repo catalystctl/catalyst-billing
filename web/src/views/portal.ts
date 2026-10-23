@@ -22,6 +22,7 @@ import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import { dashboardAnnouncements, loadAnnouncementFeed } from "../ui/announcement-feed";
 import { badge, btn, card, emptyState, moneyEl, resource, statusBadge, withBusy } from "../ui/kit";
+import { ticketHref, ticketStatusBadge, type TicketRow } from "./tickets";
 
 export const meta = { title: "Overview", crumb: "Overview" };
 
@@ -377,6 +378,12 @@ function renderOverview(ctx: Ctx, data: PortalOverview): Node {
         : h("div", null, ...services.map((svc) => serviceRow(svc))),
   });
 
+  // The support widget (TKT-14). It is a slot rather than a card built here because its data
+  // is a second request: a customer whose tickets cannot be read must still see what they owe,
+  // and an empty card would tell them they have no tickets when the truth is that we could not
+  // ask. The slot removes itself when there is nothing to show.
+  const ticketsSlot = h("div", { class: "portal-tickets-slot" });
+
   const recentCard = card({
     title: tx("portal.recent.title", "Recent invoices"),
     sub: recent.length > 0 ? tx("portal.recent.sub", "Newest first") : undefined,
@@ -395,7 +402,109 @@ function renderOverview(ctx: Ctx, data: PortalOverview): Node {
         : h("div", { class: "portal-list" }, ...recent.map((inv) => recentInvoiceRow(inv))),
   });
 
-  return h("div", { class: "stack" }, hero, openCard, servicesCard, recentCard);
+  const stack = h("div", { class: "stack" }, hero, openCard, servicesCard, ticketsSlot, recentCard);
+  fillTicketWidget(ctx, ticketsSlot);
+  return stack;
+}
+
+/** The customer's own tickets on the dashboard (TKT-14).
+ *
+ *  Three decisions:
+ *
+ *  - **It asks for a page of tickets, not for a count.** The portal list endpoint is the only
+ *    customer-scoped ticket read that exists, and inventing a second one to return a number
+ *    would be a route whose only caller is a widget. The card therefore shows the newest few
+ *    and links to the full list, which is what the customer wants from a dashboard anyway.
+ *  - **A customer with no billing record sees nothing.** `403`/`404` here means "this login has
+ *    no customer", which is the same state the overview reports; the widget is removed rather
+ *    than showing an error for something that is not broken.
+ *  - **The ticket that needs the customer's eye comes first.** A staff reply moves a ticket to
+ *    `replied`, so sorting those to the top is the difference between a widget and a decoration.
+ */
+function fillTicketWidget(ctx: Ctx, slot: HTMLElement): void {
+  const controller = new AbortController();
+  ctx.onDispose(() => controller.abort());
+  void (async () => {
+    let rows: TicketRow[];
+    try {
+      const body = await ctx.api.get<{ tickets: TicketRow[] }>("/api/v1/portal/tickets?limit=6", {
+        cache: false,
+        signal: controller.signal,
+      });
+      rows = body.tickets ?? [];
+    } catch {
+      slot.remove();
+      return;
+    }
+    if (controller.signal.aborted) return;
+    if (rows.length === 0) {
+      slot.remove();
+      return;
+    }
+
+    const waiting = rows.filter((row) => row.status === "replied").length;
+    const ordered = [...rows].sort((a, b) => Number(b.status === "replied") - Number(a.status === "replied"));
+
+    slot.replaceChildren(
+      card({
+        title: tx("portal.tickets.title", "Support"),
+        sub:
+          waiting > 0
+            ? waiting === 1
+              ? tx("portal.tickets.waiting_one", "One reply is waiting for you")
+              : tx("portal.tickets.waiting_many", "{{count}} replies are waiting for you", { count: waiting })
+            : tx("portal.tickets.sub", "Your recent conversations"),
+        actions: h(
+          "div",
+          { class: "row-wrap" },
+          btn(tx("portal.tickets.new", "New ticket"), { href: "/tickets/new", size: "sm", icon: "plus" }),
+          h(
+            "a",
+            { class: "linkish", href: "/tickets" },
+            tx("portal.tickets.all", "All tickets"),
+            icon("chevronRight", 12),
+          ),
+        ),
+        flush: true,
+        body: h(
+          "div",
+          { class: "portal-list" },
+          ...ordered.map((row) => ticketRow(row)),
+        ),
+      }),
+    );
+  })();
+}
+
+/** One ticket in the dashboard widget: what it is, where it stands, and when it moved. */
+function ticketRow(row: TicketRow): HTMLElement {
+  return h(
+    "div",
+    { class: "portal-row" },
+    h(
+      "div",
+      { class: "portal-row-main" },
+      h(
+        "div",
+        { class: "portal-row-title" },
+        h("a", { class: "row-title", href: ticketHref(row.id) }, row.subject || row.number || "Ticket"),
+        ticketStatusBadge(row.status),
+      ),
+      h(
+        "div",
+        { class: "portal-row-meta" },
+        h("span", null, row.number || ""),
+        row.last_reply_at
+          ? h("span", null, tx("portal.tickets.last_reply", "last reply {{date}}", { date: dateOnly(row.last_reply_at) }))
+          : h("span", null, tx("portal.tickets.opened", "opened {{date}}", { date: dateOnly(row.created_at) })),
+      ),
+    ),
+    h(
+      "div",
+      { class: "portal-row-side" },
+      btn(tx("portal.tickets.open", "Open"), { href: ticketHref(row.id), size: "sm", variant: "ghost", iconAfter: "chevronRight" }),
+    ),
+  );
 }
 
 function openInvoiceRow(ctx: Ctx, inv: PortalInvoice): HTMLElement {

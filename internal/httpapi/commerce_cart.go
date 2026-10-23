@@ -21,6 +21,8 @@ import (
 
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/commerce"
+	"github.com/catalyst/billing/internal/events"
+	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/portal"
 	"github.com/catalyst/billing/internal/tax"
 )
@@ -139,6 +141,41 @@ func cartJSON(c commerce.Cart) map[string]any {
 		out["tos_accepted_at"] = c.TosAcceptedAt.UTC()
 	}
 	return out
+}
+
+// publishCartEvent announces one committed cart change (CT-13).
+//
+// Three properties, and they are the same three the rest of this server's events have:
+//
+//   - It is called after the store returned, which is after its transaction committed. An
+//     event announced from inside would describe a cart that can still roll back, and an
+//     extension that reacted to it would have reacted to nothing.
+//   - It cannot fail the request. `Server.publish` is a non-blocking hand-off to the broker,
+//     which drops a slow subscriber and closes its stream rather than blocking the customer's
+//     add-to-cart. The event is best-effort; the cart write is not.
+//   - It carries the customer id, so the same event reaches that customer's own browser and
+//     the staff permission that may watch carts — the filter in events.go does the scoping, not
+//     this call.
+//
+// The kind is decided by the caller rather than derived here: only the add-to-cart path knows
+// whether the line it just added was the first one, and "created" and "updated" mean different
+// things to an extension that counts abandoned carts.
+func (s *Server) publishCartEvent(kind, customerID string, cart commerce.Cart, extra map[string]any) {
+	data := map[string]any{
+		"cart_id":     cart.ID,
+		"customer_id": customerID,
+		"item_count":  len(cart.Items),
+		"currency":    cart.Currency,
+	}
+	for key, value := range extra {
+		data[key] = value
+	}
+	s.publish(events.Event{
+		Kind:       kind,
+		CustomerID: customerID,
+		Permission: string(authn.PermCustomerReadSelf),
+		Data:       data,
+	})
 }
 
 // totalsJSON is the wire shape of a priced cart. Money is always the minor/currency/scale
@@ -291,6 +328,17 @@ func (s *Server) handleAddCartItem(w http.ResponseWriter, r *http.Request) {
 		s.cartError(w, r, err)
 		return
 	}
+	// The first line is a cart being created; a later one is a cart being changed. An
+	// extension that runs an abandoned-cart campaign cares about the difference, and only this
+	// path can tell them apart.
+	kind := extproto.EventCartUpdated
+	if len(cart.Items) == 1 {
+		kind = extproto.EventCartCreated
+	}
+	s.publishCartEvent(kind, customerID, cart, map[string]any{
+		"price_version_id": body.PriceVersionID,
+		"quantity":         body.Quantity,
+	})
 	writeJSON(w, http.StatusCreated, cartJSON(cart))
 }
 
@@ -319,6 +367,10 @@ func (s *Server) handleUpdateCartItem(w http.ResponseWriter, r *http.Request) {
 		s.cartError(w, r, err)
 		return
 	}
+	s.publishCartEvent(extproto.EventCartUpdated, customerID, cart, map[string]any{
+		"item_id":  id,
+		"quantity": body.Quantity,
+	})
 	writeJSON(w, http.StatusOK, cartJSON(cart))
 }
 
@@ -338,6 +390,7 @@ func (s *Server) handleRemoveCartItem(w http.ResponseWriter, r *http.Request) {
 		s.cartError(w, r, err)
 		return
 	}
+	s.publishCartEvent(extproto.EventCartUpdated, customerID, cart, map[string]any{"item_id": id})
 	writeJSON(w, http.StatusOK, cartJSON(cart))
 }
 
@@ -352,6 +405,10 @@ func (s *Server) handleClearCart(w http.ResponseWriter, r *http.Request) {
 		s.cartError(w, r, err)
 		return
 	}
+	// An emptied cart is still an update, not an abandonment: the customer is standing in
+	// front of the screen. Abandonment is a fact about time, and it is emitted by the job that
+	// can see time passing.
+	s.publishCartEvent(extproto.EventCartUpdated, customerID, cart, map[string]any{"cleared": true})
 	writeJSON(w, http.StatusOK, cartJSON(cart))
 }
 
@@ -375,6 +432,7 @@ func (s *Server) handleApplyCoupon(w http.ResponseWriter, r *http.Request) {
 		s.cartError(w, r, err)
 		return
 	}
+	s.publishCartEvent(extproto.EventCartUpdated, customerID, cart, map[string]any{"coupon_code": body.Code})
 	// The response carries both the cart and the live total, because "apply a coupon" is
 	// only useful to a UI if it can show the new number without a second request.
 	totals, err := s.cartTotals(r, customerID)
@@ -399,6 +457,7 @@ func (s *Server) handleRemoveCoupon(w http.ResponseWriter, r *http.Request) {
 		s.cartError(w, r, err)
 		return
 	}
+	s.publishCartEvent(extproto.EventCartUpdated, customerID, cart, map[string]any{"coupon_removed": true})
 	totals, err := s.cartTotals(r, customerID)
 	if err != nil {
 		s.cartError(w, r, err)

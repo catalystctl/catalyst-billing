@@ -262,11 +262,9 @@ func TestTemplatesArePlainText(t *testing.T) {
 		t.Fatalf("body contains markup: %s", m.Body)
 	}
 
-	invoice := notify.InvoiceIssuedMessage("a@example.test", "INV-000001", "12.00 USD",
-		"2024-02-01", "inv_1")
-	if invoice.DedupeKey != "invoice_issued:inv_1" {
-		t.Fatalf("dedupe key = %q", invoice.DedupeKey)
-	}
+	// Invoice mail has no hardcoded constructor to assert on any more: it is rendered from the
+	// editable `new_invoice_created` template, and the dedupe key that makes a retried issue
+	// idempotent is asserted in events_test.go against the path that actually builds it.
 
 	verify := notify.EmailVerificationMessage("a@example.test", "https://panel.example/v?t=x", time.Hour)
 	if verify.Kind != notify.KindEmailVerification {

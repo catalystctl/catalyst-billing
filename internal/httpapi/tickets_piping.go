@@ -56,8 +56,15 @@ func registerTicketPipingRoutes(r *router) {
 //
 // The fields mirror the headers the attribution core reads, so a provider with an HTTP API
 // can hand over what it parsed without the panel having to parse MIME again. `headers` is
-// where the loop check finds the panel's own marker and `Auto-Submitted`; `attachments` is
-// accepted only to be counted as refused.
+// where the loop check finds the panel's own marker and `Auto-Submitted`.
+//
+// `attachments` is accepted only to be counted as refused, and that is a deliberate
+// asymmetry with the IMAP path (which imports files, TKT-11): this envelope carries a
+// provider's *parsed* view of a message, and the bytes of a 10 MB screenshot base64'd into a
+// JSON body is a contract this endpoint has not promised and cannot bound the same way the
+// poller bounds a partial fetch. A deployment that wants attachments pipes the mailbox, which
+// is what the poller is for. The count still reaches the mail log, so the refusal is visible
+// rather than silent.
 type pipingMessageRequest struct {
 	MessageID string   `json:"message_id"`
 	From      string   `json:"from"`

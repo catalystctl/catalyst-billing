@@ -526,3 +526,65 @@ func TestBrandingConstraintsExistInTheSchema(t *testing.T) {
 		t.Fatalf("the stored accent is %q, want #aabbcc", stored)
 	}
 }
+
+// A group contributed from another file is indistinguishable from one declared in the base table.
+//
+// This exists because `Register` is the seam five unrelated features add their settings through, and
+// a seam that silently does nothing is worse than no seam: the keys would be absent from the panel,
+// absent from validation, and every read would fall through to a default nobody chose. The test
+// registers a group, then asserts it appears in every table that is built from `definitions` —
+// lookup, the group order, and the full definition list.
+func TestRegisterAddsAGroupEverywhere(t *testing.T) {
+	const group = "zz_registration_probe"
+	if _, ok := settings.Lookup(group, "probe"); ok {
+		t.Fatal("the probe group was already present; the test cannot prove registration added it")
+	}
+
+	settings.Register(
+		settings.Definition{Group: group, Key: "probe", Kind: settings.KindString, Default: "x"},
+		settings.Definition{Group: group, Key: "other", Kind: settings.KindBool, Default: "true"},
+	)
+
+	d, ok := settings.Lookup(group, "probe")
+	if !ok {
+		t.Fatal("a registered setting is not found by Lookup")
+	}
+	if d.Group != group || d.Key != "probe" {
+		t.Fatalf("Lookup returned %s.%s", d.Group, d.Key)
+	}
+
+	found := false
+	for _, g := range settings.Groups() {
+		if g == group {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("a registered group is missing from Groups(), so the panel would never render it")
+	}
+
+	count := 0
+	for _, def := range settings.Definitions() {
+		if def.Group == group {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("Definitions() carries %d settings for the probe group, want 2", count)
+	}
+}
+
+// A duplicate key is a startup panic, not a silently-ignored second declaration.
+func TestRegisterPanicsOnADuplicate(t *testing.T) {
+	// A key that exists in the base table, so the collision is real rather than a race with the
+	// probe group above.
+	existing := settings.Definitions()[0]
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Register accepted a duplicate setting; the value would depend on declaration order")
+		}
+	}()
+	settings.Register(existing)
+}

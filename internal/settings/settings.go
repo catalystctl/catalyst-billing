@@ -35,6 +35,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/catalyst/billing/internal/audit"
@@ -355,31 +356,72 @@ func checkUUIDOrEmpty(d Definition, value string) error {
 	return nil
 }
 
-// index maps "group.key" to its definition.
-var index = func() map[string]Definition {
-	out := make(map[string]Definition, len(definitions))
-	for _, d := range definitions {
-		if _, dup := out[d.Name()]; dup {
+// Register adds settings definitions contributed by another file in this package.
+//
+// It exists so a group does not have to be declared in the one eight-hundred-line slice above.
+// That slice is a merge hotspot: five unrelated features each needing one group means five edits to
+// the same region, and an adjacency conflict in a settings table is resolved by hand, which is how a
+// setting quietly disappears.
+//
+// A contributing file calls Register from its own init() and the group appears everywhere the others
+// do. Register panics on a duplicate name, at startup, because a settings key that exists twice is a
+// key whose value depends on which declaration won.
+func Register(ds ...Definition) {
+	// Validate the whole batch BEFORE mutating anything.
+	//
+	// A registration that panics halfway through would leave half a group in the table, and a
+	// half-registered group is worse than a refused one: some keys present, others silently
+	// falling through to a default. Checking first means a bad batch changes nothing.
+	tables()
+	pending := make(map[string]struct{}, len(ds))
+	for _, d := range ds {
+		if _, dup := index[d.Name()]; dup {
 			panic("settings: duplicate definition for " + d.Name())
 		}
-		out[d.Name()] = d
+		if _, dup := pending[d.Name()]; dup {
+			panic("settings: duplicate definition for " + d.Name() + " in one batch")
+		}
+		pending[d.Name()] = struct{}{}
 	}
-	return out
-}()
+	definitions = append(definitions, ds...)
+	// The tables are built lazily, on first use, so they see everything registered by every init().
+	// Building them in a package-level initialiser would race the registration order.
+	rebuild()
+}
 
-// groupOrder is the declaration order of the groups.
-var groupOrder = func() []string {
-	seen := make(map[string]struct{}, 8)
-	var out []string
+var (
+	tablesOnce sync.Once
+	index      map[string]Definition
+	groupOrder []string
+)
+
+// rebuild discards the derived tables so the next lookup rebuilds them.
+func rebuild() {
+	tablesOnce = sync.Once{}
+	index = nil
+	groupOrder = nil
+}
+
+func buildTables() {
+	index = make(map[string]Definition, len(definitions))
+	groupOrder = make([]string, 0, 16)
+	seen := make(map[string]struct{}, 16)
 	for _, d := range definitions {
+		if _, dup := index[d.Name()]; dup {
+			panic("settings: duplicate definition for " + d.Name())
+		}
+		index[d.Name()] = d
 		if _, ok := seen[d.Group]; ok {
 			continue
 		}
 		seen[d.Group] = struct{}{}
-		out = append(out, d.Group)
+		groupOrder = append(groupOrder, d.Group)
 	}
-	return out
-}()
+}
+
+func tables() {
+	tablesOnce.Do(buildTables)
+}
 
 // Definitions returns every declared setting, in render order.
 func Definitions() []Definition {
@@ -390,6 +432,7 @@ func Definitions() []Definition {
 
 // Groups returns the declared group names, in render order.
 func Groups() []string {
+	tables()
 	out := make([]string, len(groupOrder))
 	copy(out, groupOrder)
 	return out
@@ -397,6 +440,7 @@ func Groups() []string {
 
 // Lookup returns the definition for a (group, key).
 func Lookup(group, key string) (Definition, bool) {
+	tables()
 	d, ok := index[group+"."+key]
 	return d, ok
 }

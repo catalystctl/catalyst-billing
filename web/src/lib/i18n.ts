@@ -475,3 +475,121 @@ function applyDocumentLang(): void {
   // offers to translate. Leaving it at "en" on a German page is a translation nobody hears.
   document.documentElement.lang = currentLocale();
 }
+
+// ------------------------------------------------------- translating refusals --
+
+/**
+ * One field failure from an `application/problem+json` body.
+ *
+ * `field` is the input the refusal is about, `code` is a stable per-field identifier
+ * (`required`, `invalid`, `duplicate`, `unknown`, `unknown_placeholder`). Neither is a sentence:
+ * the sentence is composed here, from the catalogue, in the reader's language.
+ */
+export interface ProblemField {
+  field: string;
+  code: string;
+  value?: string;
+}
+
+/** The subset of a problem document this module renders. */
+export interface ProblemLike {
+  status?: number;
+  title?: string;
+  code?: string;
+  detail?: string;
+  fields?: ProblemField[];
+}
+
+/**
+ * The sentence to show for a refusal, in the reader's locale.
+ *
+ * # The boundary this implements
+ *
+ * The server's `detail` is English by construction: it is written by Go, next to the check that
+ * refused the request, and translating every Go format string would be a second source of truth
+ * for the same sentence. So the *code* is the translatable unit. This function looks up
+ * `error.<code>` in the catalogue — the same catalogue an operator edits on /locales — and falls
+ * back to the server's English detail, then to the caller's sentence, then to a generic one.
+ *
+ * Every tier produces words. A refusal that rendered a blank box would look like the request
+ * succeeded and the screen failed to draw the result, which is the worst of both.
+ */
+export function problemText(problem: ProblemLike | null | undefined, fallbackText?: string): string {
+  if (!problem) return fallbackText ?? tx("error.internal_error", "The request could not be completed.");
+  const code = (problem.code || "").trim();
+  if (code) {
+    const translated = t(problemKey(code));
+    // `t` returns the key itself when the catalogue has nothing; a key is not a sentence, so that
+    // answer must not win over the server's English detail.
+    if (translated && translated !== problemKey(code)) return translated;
+  }
+  if (problem.detail) return problem.detail;
+  if (fallbackText) return fallbackText;
+  return tx("error.internal_error", "The request could not be completed.");
+}
+
+/**
+ * The sentence for one field failure.
+ *
+ * A per-field key (`error.field.<code>`) is tried first because "this field is required" is a
+ * different sentence per language and sometimes per field type; the generic problem code is the
+ * next tier, and the problem's own English detail the last. `label` is the field name as the
+ * screen shows it, substituted into the sentence, so the message can say *which* box is wrong.
+ */
+export function problemFieldText(field: ProblemField, label?: string): string {
+  const params = { field: label ?? field.field, value: field.value ?? "" };
+  const key = `error.field.${field.code}`;
+  const own = t(key, params);
+  if (own && own !== key) return own;
+  const generic = t(problemKey(field.code), params);
+  if (generic && generic !== problemKey(field.code)) return generic;
+  return tx(
+    key,
+    field.value
+      ? `The value ${field.value} in ${label ?? field.field} is not valid.`
+      : `${label ?? field.field} is not valid.`,
+    params,
+  );
+}
+
+/**
+ * The catalogue key that translates one problem code.
+ *
+ * It mirrors `i18n.ProblemKey` in Go: the prefix is a namespace so "translate the error messages"
+ * is a prefix query on /locales, and so a code cannot collide with a screen's own key.
+ */
+export function problemKey(code: string): string {
+  return `error.${code}`;
+}
+
+/**
+ * Extracts the problem document from anything a request threw.
+ *
+ * `ApiError` carries `.problem`; a plain object that is already problem-shaped is accepted too, so
+ * a caller that built one by hand (a client-side validation refusal) uses the same renderer.
+ */
+export function problemFrom(err: unknown): ProblemLike | null {
+  if (!err || typeof err !== "object") return null;
+  const candidate = err as { problem?: unknown; code?: unknown; detail?: unknown; fields?: unknown };
+  const source = (candidate.problem ?? err) as Record<string, unknown>;
+  if (!source || typeof source !== "object") return null;
+  const fields = Array.isArray(source.fields)
+    ? (source.fields as unknown[]).filter((f): f is ProblemField => {
+        if (!f || typeof f !== "object") return false;
+        const field = f as ProblemField;
+        return typeof field.field === "string" && typeof field.code === "string";
+      })
+    : undefined;
+  const problem: ProblemLike = {
+    status: typeof source.status === "number" ? source.status : undefined,
+    title: typeof source.title === "string" ? source.title : undefined,
+    code: typeof source.code === "string" ? source.code : undefined,
+    detail: typeof source.detail === "string" ? source.detail : undefined,
+    fields: fields && fields.length > 0 ? fields : undefined,
+  };
+  // Anything a request threw is an Error, and an Error has none of these fields. Returning an
+  // empty problem for one would let a caller render "the request could not be completed" for a
+  // failure that was not a refusal at all — a network error would look like a 422.
+  if (!problem.code && !problem.detail && !problem.title && !problem.status) return null;
+  return problem;
+}

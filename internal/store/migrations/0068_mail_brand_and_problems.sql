@@ -66,8 +66,13 @@ INSERT INTO message_catalog (locale_code, key, text) VALUES
     ('en', 'error.not_found', 'That record was not found.'),
     ('en', 'error.invalid_cursor', 'The page cursor is not valid. Start from the first page.'),
     ('en', 'error.invalid_input', 'One or more fields are not valid.'),
-    ('en', 'error.field_required', 'This field is required.'),
-    ('en', 'error.field_invalid', 'This field is not valid.'),
+    -- The per-field sentences the client composes a validation refusal from. The key mirrors
+    -- `error.field.<code>` in web/src/lib/i18n.ts: the field NAME is substituted into `{{field}}`,
+    -- so one row covers every input rather than one row per input.
+    ('en', 'error.field.required', '{{field}} is required.'),
+    ('en', 'error.field.invalid', '{{field}} is not valid.'),
+    ('en', 'error.field.duplicate', '{{field}} is already in use.'),
+    ('en', 'error.field.unknown', '{{field}} is not one this installation recognises.'),
     ('en', 'error.internal_error', 'The request could not be completed. Try again.'),
     ('en', 'error.authentication_required', 'Sign in to continue.'),
     ('en', 'error.forbidden', 'You do not have permission to do that.'),
@@ -76,7 +81,11 @@ INSERT INTO message_catalog (locale_code, key, text) VALUES
     ('en', 'error.default_locale', 'Make another language the default first.'),
     ('en', 'error.storage_unavailable', 'That needs a database, and none is configured.'),
     ('en', 'error.database_not_configured', 'That needs a database, and none is configured.'),
-    ('en', 'error.rate_limited', 'Too many requests. Wait a moment and try again.')
+    ('en', 'error.rate_limited', 'Too many requests. Wait a moment and try again.'),
+    ('en', 'error.notifications_unavailable', 'The notification queue is not configured on this installation.'),
+    ('en', 'error.unknown_setting', 'That setting does not exist.'),
+    ('en', 'error.invalid_value', 'One of the values is not valid.'),
+    ('en', 'error.invalid_body', 'The request body is not valid JSON.')
 ON CONFLICT (locale_code, key) DO NOTHING;
 
 COMMIT;

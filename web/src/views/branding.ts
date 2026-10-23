@@ -28,11 +28,22 @@
 
 import { ApiError } from "../lib/api";
 import { derivedFor, NO_BRAND, paintFor, type Brand } from "../lib/brand";
+import {
+  ACCENT_PRESETS,
+  mailBrandFromSettings,
+  mailBrandToSettings,
+  presetAccents,
+  presetMatches,
+  safeAccent,
+  type MailBrandSettings,
+  type SettingsKey,
+} from "../lib/mail-brand";
+import { problemFieldText, problemFrom, problemText } from "../lib/i18n";
 import { fill, h, swap } from "../lib/dom";
 import { icon } from "../lib/icons";
 import { tx } from "../lib/i18n";
 import type { Ctx } from "../lib/types";
-import { badge, banner, btn, card, field, input, pageHead, resource, skeletonPage, withBusy } from "../ui/kit";
+import { badge, banner, btn, card, field, input, pageHead, resource, skeletonPage, spinner, withBusy } from "../ui/kit";
 
 export const meta = { title: "Branding", crumb: "Branding" };
 
@@ -144,6 +155,8 @@ function renderEditor(ctx: Ctx, data: BrandingResponse, reload: () => void): Nod
   };
 
   const previewHost = h("div", { class: "brand-preview-host" });
+  // The preset row is rebuilt after a click so "active" follows the draft, not the stored brand.
+  const presetRow = h("div");
   const statusHost = h("div", { class: "stack-sm" });
 
   const repaint = (): void => {
@@ -172,6 +185,31 @@ function renderEditor(ctx: Ctx, data: BrandingResponse, reload: () => void): Nod
     draft.accent_dark = value;
     repaint();
   });
+
+  /** The preset buttons, rebuilt after a click so "active" follows the draft. */
+  const presetButtons = (): HTMLElement =>
+    h(
+      "div",
+      { class: "row row-wrap" },
+      ...ACCENT_PRESETS.map((preset) => {
+        const accents = presetAccents(preset);
+        return btn(preset.name, {
+          variant: presetMatches(preset, draft) ? "primary" : "ghost",
+          size: "sm",
+          onclick: () => {
+            // A preset fills the two accent fields and nothing else: it is a designed pair, not a
+            // theme, so surfaces, text colours and layout stay the theme's own.
+            draft.accent_light = accents.light;
+            draft.accent_dark = accents.dark;
+            lightInput.set(accents.light);
+            darkInput.set(accents.dark);
+            repaint();
+            swap(presetRow, presetButtons());
+          },
+        });
+      }),
+    );
+  fill(presetRow, presetButtons());
 
   const save = btn(tx("branding.save", "Save brand"), {
     variant: "primary",
@@ -243,13 +281,27 @@ function renderEditor(ctx: Ctx, data: BrandingResponse, reload: () => void): Nod
         "brand-accent-light",
         tx("branding.accent_light", "Accent — light mode"),
         tx("branding.accent_hint", "Used for buttons, links and the focus ring while the light theme is active."),
-        lightInput,
+        lightInput.element,
       ),
       colourField(
         "brand-accent-dark",
         tx("branding.accent_dark", "Accent — dark mode"),
         tx("branding.accent_hint_dark", "Used while the dark theme is active. A mid-tone that reads on white is too dark on near-black, which is why there are two."),
-        darkInput,
+        darkInput.element,
+      ),
+    ),
+    h(
+      "div",
+      { class: "stack-sm" },
+      h("span", { class: "field-label" }, tx("branding.presets", "Presets")),
+      presetRow,
+      h(
+        "p",
+        { class: "field-hint" },
+        tx(
+          "branding.presets_hint",
+          "A preset is a pair of accents chosen to read in both themes. It changes no token other than the accent family, so it cannot make the panel unreadable in one mode.",
+        ),
       ),
     ),
     statusHost,
@@ -281,7 +333,13 @@ function renderEditor(ctx: Ctx, data: BrandingResponse, reload: () => void): Nod
     h(
       "div",
       { class: "split" },
-      h("div", { class: "stack" }, card({ title: tx("branding.card_brand", "Brand"), body: form }), logoCard(ctx, brand, limits, reload)),
+      h(
+        "div",
+        { class: "stack" },
+        card({ title: tx("branding.card_brand", "Brand"), body: form }),
+        logoCard(ctx, brand, limits, reload),
+        mailBrandCard(ctx, draft.name || brand.name),
+      ),
       h("div", { class: "stack" }, previewHost),
     ),
   );
@@ -292,7 +350,10 @@ function renderEditor(ctx: Ctx, data: BrandingResponse, reload: () => void): Nod
  *  Both are needed. The picker is what most operators want; the text box is what makes a value
  *  copied from a brand guide usable, and what makes "empty" expressible — a colour input can
  *  never be cleared. */
-function colourInput(id: string, value: string, onChange: (value: string) => void): HTMLElement {
+function colourInput(id: string, value: string, onChange: (value: string) => void): {
+  element: HTMLElement;
+  set: (next: string) => void;
+} {
   const picker = h("input", {
     class: "input input--color",
     type: "color",
@@ -320,7 +381,15 @@ function colourInput(id: string, value: string, onChange: (value: string) => voi
       onChange(next);
     },
   });
-  return h("div", { class: "colour-field" }, picker, text);
+  return {
+    element: h("div", { class: "colour-field" }, picker, text),
+    // A preset writes both fields at once; the operator must see the value they just applied,
+    // including in the picker, or the form and the preview disagree.
+    set: (next: string) => {
+      text.value = next;
+      if (/^#[0-9a-fA-F]{6}$/.test(next)) picker.value = next;
+    },
+  };
 }
 
 function colourField(id: string, label: string, hint: string, control: HTMLElement): HTMLElement {
@@ -586,6 +655,187 @@ function logoCard(ctx: Ctx, brand: Brand, limits: BrandingResponse["limits"] & o
   });
 }
 
+// ------------------------------------------------------------- mail branding --
+
+/**
+ * mailBrandCard is the overlay applied to transactional mail (NTF-11, I18N-06).
+ *
+ * It lives on this screen because it is the same brand: the panel, the invoice PDF and the mail are
+ * three surfaces of one identity, and an operator who has just set a name and an accent should not
+ * have to find a second page to make their email match. The values are the `mail.brand_*` settings
+ * group, so the mail the outbox renders and the mail this card previews are the same thing.
+ *
+ * The body here is a sample sentence, not a real message: the point of the preview is the frame —
+ * header, accent and footer — because that is what branding adds. The full render, with the
+ * operator's own words, is on the notification templates screen.
+ */
+function mailBrandCard(ctx: Ctx, companyName: string): HTMLElement {
+  const host = h("div", { class: "stack-sm" }, h("div", { class: "row" }, spinner(), h("span", { class: "field-hint" }, tx("branding.mail_loading", "Reading the mail settings…"))));
+
+  const load = async (signal?: AbortSignal): Promise<void> => {
+    try {
+      const res = await ctx.api.get<{ group: string; keys: SettingsKey[] }>("/api/v1/staff/settings", {
+        query: { group: "mail" },
+        cache: false,
+        signal,
+      });
+      swap(host, mailBrandForm(ctx, mailBrandFromSettings(res?.keys), companyName, () => void load()));
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      swap(host, h("p", { class: "field-hint" }, problemText(problemFrom(err), "The mail settings could not be read.")));
+    }
+  };
+  void load();
+
+  return card({
+    title: tx("branding.mail_card", "Email"),
+    sub: tx(
+      "branding.mail_card_sub",
+      "The header, accent and footer every transactional mail carries. The plain-text part is always sent unchanged.",
+    ),
+    body: host,
+  });
+}
+
+/** mailBrandForm renders the five mail keys with a live frame. */
+function mailBrandForm(
+  ctx: Ctx,
+  stored: MailBrandSettings,
+  companyName: string,
+  reload: () => void,
+): HTMLElement {
+  const draft = { ...stored };
+  const preview = h("div");
+
+  const repaint = (): void => {
+    const accent = safeAccent(draft.accent) || "#3b5bdb";
+    const header = draft.header || companyName || tx("branding.mail_header_fallback", "Your company");
+    swap(
+      preview,
+      h(
+        "div",
+        {
+          class: "stack-sm",
+          style: `border:1px solid var(--line);border-top:3px solid ${accent};border-radius:8px;padding:12px;background:var(--surface);`,
+        },
+        draft.logo_url
+          ? h("img", { src: draft.logo_url, alt: header, height: "20", style: "display:block;height:20px" })
+          : null,
+        h("strong", { style: `color:${accent}` }, header),
+        h("p", { class: "field-hint" }, tx("branding.mail_sample", "The message body is the template's text, escaped and unchanged.")),
+        h(
+          "div",
+          { class: "field-hint", style: "border-top:1px solid var(--line);padding-top:6px" },
+          draft.footer ? `${draft.footer} · ` : "",
+          companyName || header,
+        ),
+      ),
+    );
+  };
+
+  const htmlToggle = h("input", {
+    type: "checkbox",
+    id: "mail-brand-html",
+    checked: draft.html,
+    onchange: (event: Event) => {
+      draft.html = (event.target as HTMLInputElement).checked;
+      repaint();
+    },
+  }) as HTMLInputElement;
+
+  const headerInput = input({
+    id: "mail-brand-header",
+    value: draft.header,
+    maxlength: 80,
+    placeholder: companyName,
+    oninput: (event: Event) => {
+      draft.header = (event.target as HTMLInputElement).value;
+      repaint();
+    },
+  });
+
+  const footerInput = input({
+    id: "mail-brand-footer",
+    value: draft.footer,
+    placeholder: tx("branding.mail_footer_placeholder", "Northwind Hosting · 12 Harbour Road"),
+    oninput: (event: Event) => {
+      draft.footer = (event.target as HTMLInputElement).value;
+      repaint();
+    },
+  });
+
+  const accentInput = colourInput("mail-brand-accent", draft.accent, (value) => {
+    draft.accent = value;
+    repaint();
+  });
+
+  const logoInput = input({
+    id: "mail-brand-logo",
+    type: "url",
+    value: draft.logo_url,
+    placeholder: "https://cdn.example.test/logo.png",
+    spellcheck: false,
+    oninput: (event: Event) => {
+      draft.logo_url = (event.target as HTMLInputElement).value;
+      repaint();
+    },
+  });
+
+  const save = btn(tx("branding.mail_save", "Save email branding"), {
+    variant: "primary",
+    icon: "check",
+    onclick: (event: MouseEvent) =>
+      void withBusy(ctx, event.currentTarget as HTMLButtonElement, async () => {
+        try {
+          await ctx.api.put("/api/v1/staff/settings", {
+            group: "mail",
+            values: mailBrandToSettings(draft),
+          });
+          ctx.toast(tx("branding.mail_saved", "Email branding saved"), {
+            tone: "success",
+            detail: tx("branding.mail_saved_detail", "The next message the outbox renders will use it."),
+          });
+          reload();
+        } catch (err) {
+          reportError(ctx, err);
+        }
+      }),
+  });
+
+  repaint();
+
+  return h(
+    "form",
+    {
+      class: "stack-sm",
+      onsubmit: (event: Event) => {
+        event.preventDefault();
+        (save as HTMLButtonElement).click();
+      },
+    },
+    h("label", { class: "switch-row" }, htmlToggle, h("span", null, tx("branding.mail_html", "Send a branded HTML part alongside the plain text"))),
+    h(
+      "p",
+      { class: "field-hint" },
+      tx(
+        "branding.mail_html_hint",
+        "The plain-text part is always sent and is never changed by this. Turning this off removes the decoration only — some operators prefer a mail that renders identically in every client.",
+      ),
+    ),
+    field({ label: tx("branding.mail_header", "Header line"), control: headerInput, id: "mail-brand-header", hint: tx("branding.mail_header_hint", "An email has no sidebar to show the wordmark, so this line is the brand. Empty uses the company name.") }),
+    field({ label: tx("branding.mail_footer", "Footer"), control: footerInput, id: "mail-brand-footer", hint: tx("branding.mail_footer_hint", "A postal address, a registration number, a sentence. The company name is always shown beneath it.") }),
+    colourField(
+      "mail-brand-accent",
+      tx("branding.mail_accent", "Accent"),
+      tx("branding.mail_accent_hint", "The rule above the header and the colour of the shop's own links. Empty uses the panel's light-mode accent."),
+      accentInput.element,
+    ),
+    field({ label: tx("branding.mail_logo", "Logo URL"), control: logoInput, id: "mail-brand-logo", hint: tx("branding.mail_logo_hint", "An absolute https URL: a mail client fetches the image from the recipient's machine, so a path on this server would arrive broken.") }),
+    h("div", { class: "stack-sm" }, h("span", { class: "field-label" }, tx("branding.mail_preview", "Preview")), preview),
+    h("div", { class: "row" }, save),
+  );
+}
+
 // ----------------------------------------------------------------- helpers --
 
 /**
@@ -608,7 +858,17 @@ function currentMode(): "light" | "dark" {
 /** Reports a failed save as the server described it. */
 function reportError(ctx: Ctx, err: unknown): void {
   if (err instanceof ApiError) {
-    ctx.toast(err.detail || tx("branding.failed", "That did not work"), { tone: "danger", detail: err.code });
+    // The catalogue's `error.<code>` sentence when it exists, the server's English detail
+    // otherwise, and the field the refusal names — a settings save that failed on one key should
+    // say which key, in whatever language the operator is reading.
+    const problem = problemFrom(err) ?? { code: err.code, detail: err.detail };
+    const fields = problem.fields?.length
+      ? " " + problem.fields.map((field) => problemFieldText(field)).join(" ")
+      : "";
+    ctx.toast(problemText(problem, tx("branding.failed", "That did not work")) + fields, {
+      tone: "danger",
+      detail: problem.code,
+    });
     return;
   }
   ctx.toast(tx("branding.failed", "That did not work"), { tone: "danger", detail: String(err) });

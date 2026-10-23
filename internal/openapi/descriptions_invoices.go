@@ -65,6 +65,20 @@ func invoiceDocumentOperations() map[string]Operation {
 		},
 
 		// ------------------------------------------------------- client note --
+		"GET /api/v1/portal/invoices/{id}/document": {
+			Summary: "The customer's view of a document's lifecycle facts",
+			Description: "What a customer needs to read and download the documents attached to their invoice: the " +
+				"client-visible note (present only while `invoices.notes_client_visible` is on), whether the document is a " +
+				"proforma rather than a numbered invoice, the recorded void reason, and the credit notes issued against " +
+				"it — each with the id its PDF is served under. Without this read a customer is sent a credit note they " +
+				"cannot open: the download exists, but nothing tells them it does. The ownership predicate is " +
+				"`customer_accounts.user_id` in the SQL, so another customer's invoice selects no row and answers 404, " +
+				"byte-identical to an id that never existed. A draft is not a document and is also 404.",
+			Responses: []Response{
+				{Status: 200, Description: "The document state and its credit notes"},
+				{Status: 404, Description: "No such document, or it is not the caller's", Schema: ProblemRef()},
+			},
+		},
 		"PUT /api/v1/staff/invoices/{id}/client-note": {
 			Summary: "Set or clear the client-visible note on an invoice",
 			Description: "The note is printed on the customer's PDF when `invoices.notes_client_visible` is on. It is " +

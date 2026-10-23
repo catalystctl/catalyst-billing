@@ -69,6 +69,15 @@ interface InvoiceHead {
   overdue: boolean;
   issued_at: string | null;
   due_at: string | null;
+  /** True while the document is a provisional, unnumbered invoice (INV-04). The number is
+   *  allocated exactly once, when it is paid. */
+  proforma?: boolean;
+  /** The operator's note for the customer, printed on their copy when notes are enabled. */
+  client_note?: string;
+  /** Why the document was voided, carried onto the page the customer reads. */
+  void_reason?: string;
+  /** Whether `invoices.notes_client_visible` is on. A note is stored either way. */
+  notes_client_visible?: boolean;
   customer: { id: string; email: string; name: string };
   snapshot: unknown;
   lines: InvoiceLine[];
@@ -219,15 +228,22 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
   /** Wraps a raw minor-unit integer in the invoice's own currency and scale. */
   const amt = (minor: number, code = currency): Amount => ({ minor, currency: code, scale });
 
-  ctx.setTitle(inv.number ? `Invoice ${inv.number}` : "Draft invoice");
-  ctx.setCrumbs([{ label: "Invoices", href: "/invoices" }, { label: inv.number || "Draft" }]);
-
   const canWrite = ctx.can("invoice:write:all");
   const canVoid = ctx.can("invoice:void");
   const canRefund = ctx.can("payment:refund");
   // Asserting that money arrived is a reconciliation authority, not an editing one, so the
   // record-payment action follows payment:reconcile — the same permission the server checks.
   const canRecordPayment = ctx.can("payment:reconcile");
+
+  // A draft has no number and no posting, so it has no PDF: the staff document route answers
+  // 409 for one. Offering the download anyway would be a button whose only outcome is an error.
+  const issued = inv.status !== "draft";
+  const proforma = inv.proforma === true;
+  const clientNote = (inv.client_note ?? "").trim();
+  const notesVisible = inv.notes_client_visible !== false;
+
+  ctx.setTitle(inv.number ? `Invoice ${inv.number}` : proforma ? "Proforma" : "Draft invoice");
+  ctx.setCrumbs([{ label: "Invoices", href: "/invoices" }, { label: inv.number || (proforma ? "Proforma" : "Draft") }]);
 
   // ------------------------------------------------------------- actions --
   const openRefund = (payment: Payment) => {
@@ -597,9 +613,155 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
     });
   };
 
+  // A proforma: issue a draft without consuming a number. The document is payable, and the
+  // number is allocated exactly once — in the transition that stops it being provisional, which
+  // is the payment. Issuing it twice is refused by the server (`already_issued`), so the dialog
+  // does not need to guard against it, but the refusal is reported rather than swallowed.
+  const issueProforma = async () => {
+    const dueIn = input({
+      id: "proforma-due-days",
+      type: "number",
+      min: 1,
+      max: 3650,
+      class: "input--mono",
+      placeholder: "Configured terms",
+    });
+    await ctx.formDialog({
+      title: `Issue ${inv.number || "this draft"} as a proforma?`,
+      subtitle:
+        "The customer is asked to pay without an invoice number being consumed. The number is allocated when it is paid, and only once.",
+      submitLabel: "Issue proforma",
+      body: h(
+        "div",
+        { class: "stack" },
+        banner(
+          "info",
+          "No number is allocated yet",
+          "A proforma is posted as a receivable, because the customer owes it now. Conversion posts nothing: it is a numbering event, not a money event.",
+        ),
+        field({
+          label: "Due in (days)",
+          control: dueIn,
+          id: "proforma-due-days",
+          hint: "Leave empty to use the installation's payment terms. The date is what the customer is asked to pay by.",
+        }),
+      ),
+      onSubmit: async () => {
+        const raw = dueIn.value.trim();
+        let days = 0;
+        if (raw !== "") {
+          const parsed = Number(raw);
+          if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 3650) {
+            return "The due date must be between 1 and 3650 days, or left empty for the configured terms.";
+          }
+          days = parsed;
+        }
+        try {
+          await ctx.api.post(
+            `/api/v1/staff/invoices/${encodeURIComponent(inv.id)}/proforma`,
+            days > 0 ? { due_in_days: days } : {},
+          );
+          ctx.toast("Proforma issued", {
+            tone: "success",
+            detail: "No number has been allocated. It is assigned once, when the invoice is paid.",
+          });
+          reload();
+        } catch (err) {
+          if (err instanceof ApiError) {
+            if (err.code === "already_issued") return err.detail || "This document already carries a number.";
+            if (err.code === "not_draft") return err.detail || "Only a draft can be issued as a proforma.";
+            if (err.code === "issuer_unavailable") {
+              return "Invoice issuance is not configured on this installation.";
+            }
+            return err.detail || humanStatus(err.code);
+          }
+          return "The proforma could not be issued.";
+        }
+        return undefined;
+      },
+    });
+  };
+
+  // The client-visible note. It is stored even when the setting is off — the setting decides
+  // what the customer reads, not what an operator may record — so the dialog says so instead of
+  // pretending the note will appear.
+  const setClientNote = async () => {
+    const note = textarea({
+      id: "client-note",
+      value: inv.client_note ?? "",
+      maxlength: 2000,
+      placeholder: "Something the customer should read on this invoice: what changed, why it was corrected, how to pay.",
+    });
+    await ctx.formDialog({
+      title: "Client-visible note",
+      subtitle: "Printed on the customer's copy of this invoice, and on the PDF they download.",
+      submitLabel: "Save note",
+      body: h(
+        "div",
+        { class: "stack" },
+        notesVisible
+          ? null
+          : banner(
+              "warning",
+              "Client notes are switched off",
+              "The note is stored, but it is not printed for customers until invoices.notes_client_visible is turned on. It appears then, without being re-saved.",
+            ),
+        field({
+          label: "Note",
+          control: note,
+          id: "client-note",
+          hint: "Up to 2000 characters. Emptying the field clears the note.",
+        }),
+      ),
+      onSubmit: async () => {
+        const text = note.value.trim();
+        if (text.length > 2000) return "The note is longer than the 2000 character limit.";
+        try {
+          await ctx.api.put(`/api/v1/staff/invoices/${encodeURIComponent(inv.id)}/client-note`, { note: text });
+          ctx.toast(text === "" ? "Note cleared" : "Note saved", {
+            tone: "success",
+            detail: notesVisible ? "It appears on the customer's copy." : "Stored. It is not printed while client notes are off.",
+          });
+          reload();
+        } catch (err) {
+          if (err instanceof ApiError) {
+            if (err.code === "invoice_void") return err.detail || "A void document cannot carry a note.";
+            if (err.code === "note_too_long") return err.detail || "The note is longer than the limit.";
+            return err.detail || humanStatus(err.code);
+          }
+          return "The note could not be saved.";
+        }
+        return undefined;
+      },
+    });
+  };
+
   const actions: Child[] = [];
+  if (issued) {
+    // The document itself. It is an anchor rather than a fetch: the API answers with a PDF
+    // attachment, and the client-side router would otherwise try to render it as a page.
+    actions.push(pdfLink(`/api/v1/staff/invoices/${encodeURIComponent(inv.id)}/pdf`, "PDF", { size: "sm" }));
+  }
   if (canWrite && inv.status === "draft") {
     actions.push(btn("Issue", { variant: "primary", size: "sm", icon: "send", onclick: () => void issue() }));
+    actions.push(
+      btn("Issue proforma", {
+        size: "sm",
+        icon: "printer",
+        title: "Ask the customer to pay without allocating an invoice number",
+        onclick: () => void issueProforma(),
+      }),
+    );
+  }
+  if (canWrite && inv.status !== "void") {
+    actions.push(
+      btn(clientNote === "" ? "Client note" : "Edit note", {
+        size: "sm",
+        icon: "edit",
+        title: "Write a note the customer reads on this invoice",
+        onclick: () => void setClientNote(),
+      }),
+    );
   }
   if (canWrite && (inv.status === "open" || inv.status === "paid")) {
     actions.push(btn("Credit note", { size: "sm", icon: "undo", onclick: () => void createCreditNote() }));
@@ -799,6 +961,17 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
                 label: "Issued",
                 render: (cn) => (cn.issued_at ? h("span", { class: "dim", title: dateTime(cn.issued_at) }, dateOnly(cn.issued_at)) : h("span", { class: "faint" }, "Not issued")),
               },
+              {
+                // The credit note is a document the customer was sent, so it is downloadable
+                // from the screen that lists it rather than only from the API.
+                label: "Document",
+                align: "right",
+                render: (cn) =>
+                  pdfLink(`/api/v1/staff/credit-notes/${encodeURIComponent(cn.id)}/pdf`, "PDF", {
+                    size: "sm",
+                    title: `Download credit note ${cn.number || "as a PDF"}`,
+                  }),
+              },
             ],
             creditNotes,
           ),
@@ -917,12 +1090,38 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
     );
   }
   if (inv.status === "void") {
-    notices.push(banner("neutral", "This invoice is void", "Voiding does not delete the document and does not reverse a posting. A correction is a credit note."));
+    notices.push(
+      banner(
+        "neutral",
+        "This invoice is void",
+        inv.void_reason
+          ? `Reason recorded on the document: ${inv.void_reason}`
+          : "Voiding does not delete the document and does not reverse a posting. A correction is a credit note.",
+      ),
+    );
+  }
+  if (proforma) {
+    notices.push(
+      banner(
+        "warning",
+        "This is a proforma",
+        "It is payable but carries no invoice number: the number is allocated once, when it is paid. The document itself says it is not a tax invoice.",
+      ),
+    );
+  }
+  if (clientNote !== "" && !notesVisible) {
+    notices.push(
+      banner(
+        "info",
+        "The client note is not printed",
+        "Client notes are switched off installation-wide, so the customer's copy omits it. The note is stored and appears when the setting is turned on.",
+      ),
+    );
   }
 
   return [
     pageHead({
-      title: inv.number || "Draft invoice",
+      title: inv.number || (proforma ? "Proforma" : "Draft invoice"),
       badge: statusBadge(inv.overdue ? "overdue" : inv.status),
       sub: h(
         "span",
@@ -967,9 +1166,14 @@ function invoiceDocument(detail: Detail, amt: (minor: number, code?: string) => 
     "dl",
     { class: "doc-meta" },
     h("dt", null, "Number"),
-    h("dd", null, inv.number || "Draft"),
+    h("dd", null, inv.number || (inv.proforma ? "Proforma" : "Draft")),
     h("dt", null, "Status"),
-    h("dd", null, statusBadge(inv.overdue ? "overdue" : inv.status)),
+    h(
+      "dd",
+      null,
+      statusBadge(inv.overdue ? "overdue" : inv.status),
+      inv.proforma ? badge("Proforma", "warning", { dot: true }) : null,
+    ),
     h("dt", null, "Issued"),
     h("dd", null, inv.issued_at ? dateOnly(inv.issued_at) : "—"),
     h("dt", null, "Due"),
@@ -989,6 +1193,7 @@ function invoiceDocument(detail: Detail, amt: (minor: number, code?: string) => 
   // The billed party comes from the snapshot when it has one, so the reprint matches the
   // document; the live customer record is only the fallback for a draft.
   const billedName = inv.customer.name || textField(customer, "name");
+  const clientNote = (inv.client_note ?? "").trim();
   const parties = h(
     "div",
     { class: "doc-parties" },
@@ -1000,6 +1205,10 @@ function invoiceDocument(detail: Detail, amt: (minor: number, code?: string) => 
         ])
       : null,
     textField(snap, "terms") ? party("Terms", [textField(snap, "terms")]) : null,
+    // The note is reprinted where the customer reads it, so an operator sees the document
+    // they sent rather than only the field they typed. A note that is stored but not printed
+    // (notes_client_visible off) is still shown here, labelled as such.
+    clientNote ? party("Note", [clientNote]) : null,
   );
 
   const lines = inv.lines ?? [];
@@ -1108,6 +1317,26 @@ function party(label: string, lines: string[]): HTMLElement {
 
 function totalRow(label: string, value: Child): HTMLElement {
   return h("div", { class: "doc-total-row" }, h("span", null, label), value);
+}
+
+/** A document download.
+ *
+ *  An anchor, not a fetch: the API answers with `application/pdf` and
+ *  `Content-Disposition: attachment`, and the router skips any link carrying `download`,
+ *  so the browser saves the file instead of the SPA trying to render it as a page. */
+function pdfLink(href: string, label: string, opts: { size?: "sm"; title?: string } = {}): HTMLAnchorElement {
+  return h(
+    "a",
+    {
+      class: `btn${opts.size === "sm" ? " btn--sm" : ""}`,
+      href,
+      download: true,
+      "data-native": "true",
+      title: opts.title ?? "Download the PDF",
+    },
+    icon("download", 14),
+    label,
+  );
 }
 
 // ---------------------------------------------------------------- journal --

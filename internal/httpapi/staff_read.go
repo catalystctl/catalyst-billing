@@ -480,21 +480,42 @@ func (s *Server) handleStaffInvoice(w http.ResponseWriter, r *http.Request) {
 		creditNotes = append(creditNotes, creditNoteMap(cn))
 	}
 
+	// The document's own lifecycle columns: whether it is provisional, the note an operator
+	// wrote for the customer, and why it was voided. They are printed on the PDF and were
+	// absent here, so the screen could not show the note it had just written or say that a
+	// document is a proforma rather than a numbered invoice.
+	doc, err := s.loadInvoiceDocumentState(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, errDocumentNotFound) {
+			writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+			return
+		}
+		s.staffError(w, r, err)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"invoice": map[string]any{
-			"id":        detail.Invoice.ID,
-			"number":    detail.Invoice.Number,
-			"status":    detail.Invoice.Status,
-			"currency":  detail.Invoice.Currency,
-			"total":     amountMap(staff.Amount{Minor: detail.Invoice.Total, Currency: mustCurrency(detail.Invoice.Currency)}),
-			"paid":      amountMap(staff.Amount{Minor: detail.Invoice.Paid, Currency: mustCurrency(detail.Invoice.Currency)}),
-			"due":       amountMap(staff.Amount{Minor: detail.Invoice.Due, Currency: mustCurrency(detail.Invoice.Currency)}),
-			"overdue":   detail.Invoice.Overdue,
-			"issued_at": timeOrNil(detail.Invoice.IssuedAt),
-			"due_at":    timeOrNil(detail.Invoice.DueAt),
-			"customer":  map[string]any{"id": detail.Customer.ID, "email": detail.Customer.Email, "name": detail.Customer.Name},
-			"snapshot":  detail.Snapshot,
-			"lines":     lines,
+			"id":          detail.Invoice.ID,
+			"number":      detail.Invoice.Number,
+			"status":      detail.Invoice.Status,
+			"currency":    detail.Invoice.Currency,
+			"total":       amountMap(staff.Amount{Minor: detail.Invoice.Total, Currency: mustCurrency(detail.Invoice.Currency)}),
+			"paid":        amountMap(staff.Amount{Minor: detail.Invoice.Paid, Currency: mustCurrency(detail.Invoice.Currency)}),
+			"due":         amountMap(staff.Amount{Minor: detail.Invoice.Due, Currency: mustCurrency(detail.Invoice.Currency)}),
+			"overdue":     detail.Invoice.Overdue,
+			"issued_at":   timeOrNil(detail.Invoice.IssuedAt),
+			"due_at":      timeOrNil(detail.Invoice.DueAt),
+			"proforma":    doc.Proforma,
+			"client_note": doc.ClientNote,
+			"void_reason": doc.VoidReason,
+			// The setting that decides whether a customer reads the note. The screen shows
+			// the note either way and says when it is not printed, because a note an operator
+			// wrote and cannot see on the customer's copy is a support call.
+			"notes_client_visible": s.clientNotesVisible(r.Context()),
+			"customer":             map[string]any{"id": detail.Customer.ID, "email": detail.Customer.Email, "name": detail.Customer.Name},
+			"snapshot":             detail.Snapshot,
+			"lines":                lines,
 		},
 		"payments":     payments,
 		"allocations":  allocations,

@@ -7,8 +7,10 @@
 // "Description / Qty / Unit price" table from the total would be a document that disagrees
 // with the one that was issued.
 //
-// There is no Download button: no endpoint serves a PDF to the customer, and a button that
-// does nothing is worse than no button.
+// The documents themselves are a second read (`GET /portal/invoices/{id}/document`): the PDF
+// the customer was sent, the credit notes issued against it, the operator's note, and whether
+// the document is a proforma. That read is what makes the download reachable — the PDF route
+// always existed, but nothing on the page named the document it serves.
 //
 // Two ways to pay, and the second one is the reason this page owns its own reload:
 //
@@ -27,7 +29,7 @@ import { h, swap } from "../lib/dom";
 import { dateOnly, dateTime, type Amount } from "../lib/format";
 import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
-import { banner, btn, moneyEl, pageHead, resource, skeletonPage, statusBadge, withBusy } from "../ui/kit";
+import { banner, btn, card, moneyEl, pageHead, resource, skeletonPage, statusBadge, withBusy } from "../ui/kit";
 import { payButton, type PortalInvoice } from "./portal";
 
 export const meta = { title: "Invoice", crumb: "Invoice" };
@@ -44,6 +46,32 @@ interface InvoicePayload {
   payable: boolean;
   issued_at?: string;
   due_at?: string;
+}
+
+/** One credit note issued against this invoice, from
+ *  `GET /api/v1/portal/invoices/{id}/document` (`handlePortalInvoiceDocument` in
+ *  internal/httpapi/invoice_documents.go). The id is what the PDF route is keyed on. */
+interface CreditNoteDoc {
+  id: string;
+  number: string;
+  total: Amount;
+  tax: Amount;
+  reason: string;
+  status: string;
+  issued_at: string | null;
+}
+
+/** The document facts a customer may read. The note is already filtered by
+ *  `invoices.notes_client_visible` on the server, so an empty `client_note` means "nothing to
+ *  print", never "you may not see it". */
+interface DocumentState {
+  id: string;
+  status: string;
+  proforma: boolean;
+  client_note: string;
+  notes_visible: boolean;
+  void_reason: string;
+  credit_notes: CreditNoteDoc[];
 }
 
 /** `POST /portal/invoices/{id}/pay-with-credit` — `handlePortalPayWithCredit` in
@@ -64,6 +92,9 @@ interface InvoiceView {
   invoice: InvoicePayload;
   /** The balance in the invoice's own currency, or null when there is none to spend. */
   credit: Amount | null;
+  /** The document facts, or null when they could not be read: an invoice that cannot see its
+   *  credit notes is still an invoice, it just offers one fewer document. */
+  doc: DocumentState | null;
 }
 
 export default async function portalInvoicePage(ctx: Ctx): Promise<Node> {
@@ -105,7 +136,20 @@ async function load(ctx: Ctx, id: string, signal: AbortSignal): Promise<InvoiceV
     if (err instanceof DOMException && err.name === "AbortError") throw err;
     credit = null;
   }
-  return { invoice, credit };
+
+  // A third read, and the same rule: the document state is additive. A failure here means the
+  // customer sees the invoice without its PDF and credit-note links, not an error page.
+  let doc: DocumentState | null = null;
+  try {
+    doc = await ctx.api.get<DocumentState>(`/api/v1/portal/invoices/${encodeURIComponent(id)}/document`, {
+      cache: false,
+      signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
+    doc = null;
+  }
+  return { invoice, credit, doc };
 }
 
 /** A 403 and a 404 both mean "not yours or not there" — the API deliberately makes them
@@ -124,8 +168,12 @@ function render(ctx: Ctx, view: InvoiceView, repaint: () => void): Node {
   const invoice: PortalInvoice = inv;
   const user = ctx.session.user;
   const account = [user.display_name || "Your account", user.email].filter(Boolean).join("\n");
+  const doc = view.doc;
+  const creditNotes = doc?.credit_notes ?? [];
+  const clientNote = (doc?.client_note ?? "").trim();
+  const proforma = doc?.proforma === true;
 
-  const notice = noticeFor(inv);
+  const notice = noticeFor(inv, doc);
   // Credit is offered only when it can actually settle part of this invoice: a payable invoice,
   // and a balance in the invoice's own currency. Offering it otherwise would be a button whose
   // only outcome is a refusal.
@@ -136,7 +184,7 @@ function render(ctx: Ctx, view: InvoiceView, repaint: () => void): Node {
     "div",
     { class: "stack" },
     pageHead({
-      title: inv.number ? `Invoice ${inv.number}` : "Invoice",
+      title: inv.number ? `Invoice ${inv.number}` : proforma ? "Proforma" : "Invoice",
       badge: statusBadge(inv.overdue ? "overdue" : inv.status),
       sub: inv.issued_at ? `Issued ${dateTime(inv.issued_at)}` : "This invoice has not been issued yet.",
       actions: h(
@@ -144,6 +192,23 @@ function render(ctx: Ctx, view: InvoiceView, repaint: () => void): Node {
         { class: "row-wrap" },
         inv.payable ? payButton(ctx, invoice, { size: "md" }) : null,
         creditButton,
+        // The document the invoice is about. It is only offered when the server confirms there
+        // is one: a draft has no number and no PDF, and a button that leads to a 404 is worse
+        // than no button.
+        doc
+          ? h(
+              "a",
+              {
+                class: "btn",
+                href: `/api/v1/portal/invoices/${encodeURIComponent(inv.id)}/pdf`,
+                download: true,
+                "data-native": "true",
+                title: "Download this invoice as a PDF",
+              },
+              icon("download", 14),
+              "Download invoice",
+            )
+          : null,
         btn("Back to invoices", { href: "/portal/invoices", size: "md", icon: "arrowLeft" }),
       ),
     }),
@@ -170,8 +235,8 @@ function render(ctx: Ctx, view: InvoiceView, repaint: () => void): Node {
         h(
           "div",
           { class: "doc-issuer" },
-          h("strong", null, "Invoice"),
-          h("span", { class: "mono" }, inv.number || "No number"),
+          h("strong", null, proforma ? "Proforma" : "Invoice"),
+          h("span", { class: "mono" }, inv.number || (proforma ? "No number yet" : "No number")),
           h("span", null, statusBadge(inv.overdue ? "overdue" : inv.status)),
         ),
         h(
@@ -194,6 +259,17 @@ function render(ctx: Ctx, view: InvoiceView, repaint: () => void): Node {
           h("div", { class: "doc-party-label" }, "Your account"),
           h("div", { class: "doc-party" }, account),
         ),
+        // The operator's note, reprinted where the customer reads it. The server has already
+        // applied the installation's note policy, so a note that arrives here is one the
+        // document prints.
+        clientNote
+          ? h(
+              "div",
+              null,
+              h("div", { class: "doc-party-label" }, "Note from us"),
+              h("div", { class: "doc-party" }, clientNote),
+            )
+          : null,
       ),
       h(
         "div",
@@ -209,7 +285,83 @@ function render(ctx: Ctx, view: InvoiceView, repaint: () => void): Node {
         h("span", { class: "mono" }, inv.id),
       ),
     ),
+    creditNotes.length > 0 ? creditNotesCard(creditNotes) : null,
   );
+}
+
+/** The credit notes issued against this invoice.
+ *
+ *  They are separate documents, not negative lines on this one: each has its own number, its
+ *  own date and its own PDF. The download is the reason the section exists — a customer who is
+ *  told they have been credited should be able to hold the note that says so. */
+function creditNotesCard(notes: CreditNoteDoc[]): HTMLElement {
+  return card({
+    title: "Credit notes",
+    sub: notes.length === 1 ? "1 credit note against this invoice" : `${notes.length} credit notes against this invoice`,
+    flush: true,
+    body: h(
+      "div",
+      { class: "table-wrap table-wrap--cards" },
+      h(
+        "table",
+        { class: "table" },
+        h(
+          "thead",
+          null,
+          h(
+            "tr",
+            null,
+            h("th", { scope: "col" }, "Credit note"),
+            h("th", { class: "num", scope: "col" }, "Total"),
+            h("th", { scope: "col" }, "Issued"),
+            h("th", { scope: "col" }, "Document"),
+          ),
+        ),
+        h(
+          "tbody",
+          null,
+          ...notes.map((note) =>
+            h(
+              "tr",
+              null,
+              h(
+                "td",
+                { class: "cell-primary" },
+                h(
+                  "div",
+                  { class: "cell-main" },
+                  h("div", { class: "primary mono" }, note.number || "Credit note"),
+                  note.reason ? h("div", { class: "secondary" }, note.reason) : null,
+                ),
+              ),
+              h("td", { class: "num", "data-label": "Total" }, moneyEl(note.total)),
+              h(
+                "td",
+                { "data-label": "Issued" },
+                h("span", { class: "dim" }, note.issued_at ? dateOnly(note.issued_at) : "Not issued"),
+              ),
+              h(
+                "td",
+                { "data-label": "Document" },
+                h(
+                  "a",
+                  {
+                    class: "btn btn--sm",
+                    href: `/api/v1/portal/credit-notes/${encodeURIComponent(note.id)}/pdf`,
+                    download: true,
+                    "data-native": "true",
+                    title: `Download credit note ${note.number || "as a PDF"}`,
+                  },
+                  icon("download", 14),
+                  "PDF",
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  });
 }
 
 function totalRow(label: string, amount: Amount, grand = false): HTMLElement {
@@ -221,7 +373,7 @@ function totalRow(label: string, amount: Amount, grand = false): HTMLElement {
   );
 }
 
-function noticeFor(inv: InvoicePayload): Node | null {
+function noticeFor(inv: InvoicePayload, doc: DocumentState | null): Node | null {
   if (inv.overdue && inv.due_at) {
     return banner(
       "warning",
@@ -233,7 +385,21 @@ function noticeFor(inv: InvoicePayload): Node | null {
     return banner("success", "Paid in full", "Nothing further is owed on this invoice.");
   }
   if (inv.status === "void") {
-    return banner("neutral", "This invoice was voided", "Nothing is owed on it, and it cannot be paid.");
+    const reason = (doc?.void_reason ?? "").trim();
+    return banner(
+      "neutral",
+      "This invoice was voided",
+      reason
+        ? `Nothing is owed on it, and it cannot be paid. The reason recorded on the document: ${reason}`
+        : "Nothing is owed on it, and it cannot be paid.",
+    );
+  }
+  if (doc?.proforma) {
+    return banner(
+      "info",
+      "This is a proforma",
+      "It asks for payment but carries no invoice number: the number is assigned once, when it is paid. A proforma is not a tax invoice.",
+    );
   }
   if (!inv.payable && inv.due.minor <= 0) {
     return banner("success", "Settled", "There is nothing left to pay on this invoice.");

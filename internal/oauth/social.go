@@ -97,9 +97,17 @@ type NewProvider struct {
 	Enabled               bool
 }
 
+// providerColumns is the read shape of a provider.
+//
+// `email_verified_claim` is COALESCEd because the column is nullable and the struct field is a
+// string: a row whose claim mapping was left unset — a hand-written row, or one an older build
+// wrote before the field existed — used to fail the scan outright, and because the whole list is
+// read with one query, a single such row took down the entire sign-in provider screen. A NULL
+// means "this provider cannot prove an address", which is exactly the empty string the code
+// already treats as that.
 const providerColumns = `id, slug, name, issuer_url, authorization_endpoint, token_endpoint,
 	userinfo_endpoint, client_id, client_secret, scopes, subject_claim, email_claim,
-	email_verified_claim, enabled, created_at, updated_at`
+	COALESCE(email_verified_claim, ''), enabled, created_at, updated_at`
 
 func scanProvider(row pgx.Row) (Provider, error) {
 	var p Provider

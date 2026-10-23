@@ -418,20 +418,6 @@ RECORDED = {
         "GAP: an extension can contribute a service action and no screen renders it",
     "write POST /api/v1/portal/services/{id}/hooks/{extension}/{action}":
         "GAP: an extension can contribute a customer-facing service action and no screen renders it",
-    "write PUT /api/v1/staff/invoices/{id}/client-note":
-        "GAP: a client-visible note cannot be written from the panel; the invoice screen edits "
-        "the invoice, not the note. Recorded: web/src/views/invoice.ts is another package's file.",
-    "write POST /api/v1/staff/invoices/{id}/proforma":
-        "GAP: an operator cannot issue a proforma, although the document and the setting exist. "
-        "Recorded: web/src/views/invoice.ts is another package's file.",
-    "write PUT /api/v1/staff/catalog/servers/{id}":
-        "GAP: a catalog server can be created and listed, but not renamed or removed. Recorded: "
-        "the catalog screen is another package's file.",
-    "write DELETE /api/v1/staff/catalog/servers/{id}":
-        "GAP: a catalog server cannot be removed from the panel. Recorded: the catalog screen "
-        "is another package's file.",
-    "write DELETE /api/v1/portal/social-links/{id}":
-        "GAP: a linked sign-in provider can be listed and linked, but not unlinked",
     "api GET /api/v1/extensions/hooks":
         "the hook catalogue answers an extension asking what it may observe; the panel is not "
         "the caller",

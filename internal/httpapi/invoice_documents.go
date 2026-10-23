@@ -3,15 +3,18 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/events"
 	"github.com/catalyst/billing/internal/invoicepdf"
+	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/portal"
 	"github.com/jackc/pgx/v5"
 )
@@ -38,6 +41,15 @@ func registerInvoiceLifecycle(r *router) {
 	// invoice:write:all. Reading it back is part of the invoice read.
 	r.staffMutation(http.MethodPut, "/api/v1/staff/invoices/{id}/client-note",
 		authn.PermInvoiceWriteAll, r.s.handleSetClientNote)
+
+	// The customer's view of the same facts: the note an operator wrote for them,
+	// whether the document is a proforma, why it was voided, and the credit notes
+	// issued against it. Without this read a customer is sent a credit note they
+	// cannot open — the PDF route exists, but nothing tells them the note exists or
+	// what its id is. It is scoped by `customer_accounts.user_id` in the SQL, so a
+	// substituted invoice id selects no row.
+	r.get("/api/v1/portal/invoices/{id}/document", authn.PermInvoiceReadSelf,
+		r.s.handlePortalInvoiceDocument)
 
 	// Voiding is gated on invoice:void, which is deliberately separate from
 	// invoice:write:all: a void burns a number.
@@ -134,6 +146,153 @@ var (
 	errDocumentNotFound = errors.New("httpapi: document not found")
 	errInvoiceVoid      = errors.New("httpapi: invoice is void")
 )
+
+// ------------------------------------------------ document state on the reads --
+
+// invoiceDocumentState is what a screen needs about a document beyond its money:
+// whether it is provisional, what the operator wrote for the customer, and why it
+// was voided.
+//
+// These columns are printed on the document (`invoicepdf.Meta`) but were absent from
+// the staff invoice payload, so the screen could not say "this is a proforma", could
+// not show the note it had just written, and could not explain a void.
+type invoiceDocumentState struct {
+	Proforma   bool
+	ClientNote string
+	VoidReason string
+}
+
+// loadInvoiceDocumentState reads the document columns for one invoice.
+func (s *Server) loadInvoiceDocumentState(ctx context.Context, invoiceID string) (invoiceDocumentState, error) {
+	var out invoiceDocumentState
+	err := s.pool.QueryRow(ctx, `
+		SELECT proforma, COALESCE(client_note, ''), COALESCE(void_reason, '')
+		FROM invoices WHERE id = $1`, invoiceID).
+		Scan(&out.Proforma, &out.ClientNote, &out.VoidReason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return invoiceDocumentState{}, errDocumentNotFound
+	}
+	if err != nil {
+		return invoiceDocumentState{}, fmt.Errorf("httpapi: read invoice document state: %w", err)
+	}
+	return out, nil
+}
+
+// handlePortalInvoiceDocument serves the customer's own view of a document's
+// lifecycle facts.
+//
+// Three rules, the same three the PDF handlers follow:
+//
+//  1. The ownership predicate is the join, not a later comparison, so another
+//     customer's invoice selects no row and answers 404 byte-identically to an id
+//     that never existed.
+//  2. A draft has no document, so it is 404 for the same reason its PDF is: there is
+//     nothing issued to describe.
+//  3. The client note is included only when `invoices.notes_client_visible` is on. The
+//     note is stored either way — the setting decides what a customer reads, and a
+//     read that ignored it would show a note the document does not print.
+func (s *Server) handlePortalInvoiceDocument(w http.ResponseWriter, r *http.Request) {
+	if s.pool == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "storage_unavailable", "no database configured")
+		return
+	}
+	user, ok := userFrom(r.Context())
+	if !ok {
+		writeProblem(w, http.StatusUnauthorized, "unauthenticated", "sign in to read this document")
+		return
+	}
+	id := r.PathValue("id")
+	if !portal.ValidID(id) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+		return
+	}
+
+	var state invoiceDocumentState
+	var status string
+	err := s.pool.QueryRow(r.Context(), `
+		SELECT i.status, i.proforma, COALESCE(i.client_note, ''), COALESCE(i.void_reason, '')
+		FROM invoices i
+		JOIN customer_accounts ca ON ca.customer_id = i.customer_id
+		WHERE i.id = $1 AND ca.user_id = $2 AND i.status <> 'draft'`, id, user.ID).
+		Scan(&status, &state.Proforma, &state.ClientNote, &state.VoidReason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeProblem(w, http.StatusNotFound, "not_found", "no such record")
+		return
+	}
+	if err != nil {
+		s.cfg.Logger.ErrorContext(r.Context(), "read portal invoice document", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal_error", "the request could not be completed")
+		return
+	}
+
+	notes, err := s.portalInvoiceCreditNotes(r.Context(), user.ID, id)
+	if err != nil {
+		s.cfg.Logger.ErrorContext(r.Context(), "read portal invoice credit notes", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal_error", "the request could not be completed")
+		return
+	}
+
+	note := state.ClientNote
+	visible := s.clientNotesVisible(r.Context())
+	if !visible {
+		note = ""
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":            id,
+		"status":        status,
+		"proforma":      state.Proforma,
+		"client_note":   note,
+		"notes_visible": visible,
+		"void_reason":   state.VoidReason,
+		"credit_notes":  notes,
+	})
+}
+
+// portalInvoiceCreditNotes lists the credit notes issued against one of the caller's
+// invoices, so the portal can offer the download it serves.
+//
+// A credit note is a document in its own right, so this is a list of documents rather
+// than of amounts: the number is what the customer quotes, and the id is what the PDF
+// route needs. The ownership predicate is again the join.
+func (s *Server) portalInvoiceCreditNotes(ctx context.Context, userID, invoiceID string) ([]map[string]any, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT cn.id, COALESCE(cn.number, ''), cn.currency, cn.total_minor, cn.tax_minor,
+		       cn.reason, cn.status, cn.issued_at
+		FROM credit_notes cn
+		JOIN customer_accounts ca ON ca.customer_id = cn.customer_id
+		WHERE cn.invoice_id = $1 AND ca.user_id = $2
+		ORDER BY cn.created_at DESC, cn.id DESC`, invoiceID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: list invoice credit notes: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]map[string]any, 0, 4)
+	for rows.Next() {
+		var (
+			id, number, currency, reason, status string
+			totalMinor, taxMinor                 int64
+			issuedAt                             *time.Time
+		)
+		if err := rows.Scan(&id, &number, &currency, &totalMinor, &taxMinor,
+			&reason, &status, &issuedAt); err != nil {
+			return nil, fmt.Errorf("httpapi: scan invoice credit note: %w", err)
+		}
+		out = append(out, map[string]any{
+			"id":        id,
+			"number":    number,
+			"total":     amountJSON(money.New(totalMinor, moneyFor(currency))),
+			"tax":       amountJSON(money.New(taxMinor, moneyFor(currency))),
+			"reason":    reason,
+			"status":    status,
+			"issued_at": timeOrNil(issuedAt),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("httpapi: iterate invoice credit notes: %w", err)
+	}
+	return out, nil
+}
 
 // ------------------------------------------------------------- void reason --
 

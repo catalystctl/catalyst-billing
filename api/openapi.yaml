@@ -3894,6 +3894,61 @@ paths:
                 required: true
             x-permission: invoice:pay:self
             x-rate-class: mutation
+    /api/v1/portal/invoices/{id}/document:
+        get:
+            description: 'What a customer needs to read and download the documents attached to their invoice: the client-visible note (present only while `invoices.notes_client_visible` is on), whether the document is a proforma rather than a numbered invoice, the recorded void reason, and the credit notes issued against it — each with the id its PDF is served under. Without this read a customer is sent a credit note they cannot open: the download exists, but nothing tells them it does. The ownership predicate is `customer_accounts.user_id` in the SQL, so another customer''s invoice selects no row and answers 404, byte-identical to an id that never existed. A draft is not a document and is also 404.'
+            operationId: GetPortalInvoicesByIdDocument
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: The document state and its credit notes
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such document, or it is not the caller's
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The customer's view of a document's lifecycle facts
+            x-permission: invoice:read:self
+            x-rate-class: read
     /api/v1/portal/invoices/{id}/pay-with-credit:
         post:
             description: 'Applies `min(available balance, what the invoice owes)` and answers with the new remaining balance. Scoped to the session: another customer''s invoice is reported as not_found, identically to a nonexistent one. Idempotent — a replayed request finds the existing application and spends nothing more, which is what makes a double-click safe.'

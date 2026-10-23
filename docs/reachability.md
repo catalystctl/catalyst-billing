@@ -25,6 +25,7 @@ scripts/reachability.sh            # the report
 scripts/reachability.sh --check    # exit 1 on a finding that is not fixed or recorded
 scripts/reachability.sh --json     # machine-readable
 bash scripts/browser-e2e.sh        # the named screens, then every route
+make money-e2e                     # click the money documents: downloads, note, proforma, server CRUD, unlink
 E2E_STRICT_PLACEHOLDERS=1 bash scripts/browser-e2e.sh   # a release check: placeholders fail too
 ```
 
@@ -93,6 +94,10 @@ That is a product decision and three files owned elsewhere; it is reported to th
 | Gap | The fix |
 |---|---|
 | `PUT /api/v1/staff/api-keys/{id}/ip-allowlist` had no UI: a key's CIDR allowlist was enforced by the server and could only be set with curl. | `web/src/views/api-keys.ts` now has a **Networks** action per live key. It reads the current rule, edits it as comma-separated CIDRs, and says plainly that a request from any other address is refused as if the key did not exist. Empty means no restriction. The sweep no longer reports the route. |
+| `GET /api/v1/staff/credit-notes/{id}/pdf` and `GET /api/v1/portal/credit-notes/{id}/pdf` had no link: an operator could issue a credit note and not download it, and a customer was sent one they could not open. | The staff invoice screen's credit-note table has a **PDF** action per note. The portal needed a read first — nothing told a customer which notes existed — so `GET /api/v1/portal/invoices/{id}/document` now lists them (scoped by `customer_accounts.user_id` in the SQL) and `web/src/views/portal-invoice.ts` renders a credit-note section with the same download. The portal also gains the invoice download, from the same read. |
+| `PUT /api/v1/staff/invoices/{id}/client-note` and `POST /api/v1/staff/invoices/{id}/proforma` had no control on the invoice screen. | `web/src/views/invoice.ts` has **Client note** (a dialog that says whether the installation prints notes, and that a note is stored when it does not) and **Issue proforma** on a draft. The staff invoice payload now carries `client_note`, `proforma`, `void_reason` and `notes_client_visible`, so the screen shows what it wrote and can tell a proforma from a numbered invoice. The customer's note is printed on their portal invoice as well as on the PDF. |
+| `PUT` and `DELETE /api/v1/staff/catalog/servers/{id}` had no screen: a catalogue server could be created by API and never renamed or removed. | `web/src/views/catalog-admin.ts` has a **Servers** card: create, edit (rename, region, node, enable) and delete, with the delete refused while products reference the target — the dialog says so before the server refuses. |
+| `DELETE /api/v1/portal/social-links/{id}` had no button: a provider could be linked and never unlinked. | The **Your own linked accounts** card on `/providers` has an **Unlink** action per identity, behind a confirmation that says the password still works. |
 
 ### API surfaces with no screen (27)
 
@@ -150,11 +155,6 @@ done here.
 | `PUT /api/v1/portal/services/{id}/metadata` | a customer cannot edit the properties marked `customer_visible` |
 | `POST /api/v1/staff/services/{id}/hooks/{extension}/{action}` | an extension can contribute a service action; no screen renders it |
 | `POST /api/v1/portal/services/{id}/hooks/{extension}/{action}` | same, for the customer-facing action |
-| `PUT /api/v1/staff/invoices/{id}/client-note` | a client-visible note cannot be written from the panel |
-| `POST /api/v1/staff/invoices/{id}/proforma` | a proforma cannot be issued, although the document and its setting exist |
-| `PUT /api/v1/staff/catalog/servers/{id}` | a catalog server can be created and listed, not renamed |
-| `DELETE /api/v1/staff/catalog/servers/{id}` | a catalog server cannot be removed |
-| `DELETE /api/v1/portal/social-links/{id}` | a linked sign-in provider can be linked, not unlinked |
 | `POST /api/v1/staff/affiliates/{id}/payout` | duplicate of `/payouts` |
 | `POST /api/v1/staff/invoices/{id}/void-reason` | duplicate of `POST /void` |
 | `POST /api/v1/staff/tickets/{id}/attachments` | duplicate of the portal upload path |

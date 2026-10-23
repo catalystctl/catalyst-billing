@@ -115,6 +115,35 @@ interface ReportResponse {
   period: { from: string; to: string };
 }
 
+/** One line of the all-affiliates payout report, as `handleAffiliatePayouts` renders it.
+ *
+ *  It is the same question the reconciliation answers, asked across every payee at once: who is
+ *  owed, in which currency, and how much. `owed` is what a payout would settle today;
+ *  `lifetime_paid` is everything already paid out, so a line states both the debt and the
+ *  history behind it without a second request. `deleted` marks an archived payee: their debt
+ *  survives the archive, which is the whole reason they are still on this list. */
+interface PayoutLine {
+  affiliate_id: string;
+  code: string;
+  user_id: string;
+  email: string;
+  currency: string;
+  owed: Amount;
+  lifetime_paid: Amount;
+  deleted: boolean;
+  pending_commissions: number;
+}
+
+/** `GET /api/v1/staff/affiliates/payouts` — every payee with a balance, plus the totals.
+ *
+ *  `totals` is one amount per currency, computed server-side. The page never adds the lines up
+ *  itself: two currencies have no common unit in this system, and a client-side sum would be a
+ *  second, possibly different, answer to "what do we owe". */
+interface PayoutReportResponse {
+  data: PayoutLine[] | null;
+  totals: Amount[] | null;
+}
+
 /** The windows the server accepts. A custom range needs both bounds. */
 const PERIODS: ReadonlyArray<{ key: string; label: string }> = [
   { key: "30d", label: "30 days" },
@@ -171,6 +200,9 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
   let loaded: Affiliate[] = [];
 
   const reportHost = h("div", { class: "stack" }, skeletonLines(3));
+  // The all-affiliates report is a summary, so it is loaded once for the screen rather than
+  // re-read on every selection: picking a payee changes the reconciliation below, not the total.
+  const payoutReportHost = h("div", { class: "stack" }, skeletonLines(2));
   // `.filter-bar` aligns on the bottom edge, so the preset run, the custom dates and Apply
   // share one line whatever their heights (see the same bar in dashboard.ts).
   const periodHost = h("div", { class: "filter-bar period-bar" });
@@ -321,7 +353,161 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
   const refresh = async (affiliateID: string): Promise<void> => {
     await table.reload();
     if (affiliateID === selected) await loadReport();
+    void loadPayoutReport();
   };
+
+  // ------------------------------------------------- the all-payees report --
+
+  /** Loads the payout report: every payee with a balance, per currency, with the totals.
+   *
+   *  It answers the question the operator arrives with — "what does the programme owe right
+   *  now" — without making them open each affiliate in turn. Selecting a row still reads the
+   *  rows behind that payee's figure, because a total nobody can check is a number to trust
+   *  rather than a report to reconcile. */
+  const loadPayoutReport = async (): Promise<void> => {
+    try {
+      const report = await ctx.api.get<PayoutReportResponse>("/api/v1/staff/affiliates/payouts", {
+        cache: false,
+      });
+      swap(payoutReportHost, renderPayoutReport(report));
+    } catch (err) {
+      swap(
+        payoutReportHost,
+        banner(
+          "danger",
+          "The payout report could not be read",
+          h("span", null, describeError(err)),
+          btn("Try again", { size: "sm", variant: "ghost", icon: "refresh", onclick: () => void loadPayoutReport() }),
+        ),
+      );
+    }
+  };
+
+  /** Renders the report as a card: totals, then one row per payee and currency. */
+  const renderPayoutReport = (report: PayoutReportResponse): Node => {
+    const lines = report.data ?? [];
+    const totals = report.totals ?? [];
+    const outstanding = lines.filter((line) => (line.owed?.minor ?? 0) > 0);
+
+    return card({
+      title: "Payout report",
+      sub: "Every affiliate with a balance, and the total to reconcile against",
+      actions: h(
+        "div",
+        { class: "row-wrap" },
+        badge(
+          outstanding.length === 0
+            ? "Nothing to pay"
+            : `${outstanding.length} payee${outstanding.length === 1 ? "" : "s"} owed`,
+          outstanding.length === 0 ? "neutral" : "warning",
+          { dot: true },
+        ),
+        btn("Refresh", {
+          size: "sm",
+          variant: "ghost",
+          icon: "refresh",
+          title: "Re-read the report: a commission posted since this page loaded belongs in it",
+          onclick: () => void loadPayoutReport(),
+        }),
+      ),
+      body:
+        lines.length === 0
+          ? emptyState({
+              title: "Every balance is settled",
+              body: "No affiliate is owed anything in any currency, so there is nothing to pay out. A commission appears here as soon as an order it was earned on is paid.",
+              icon: "checkCircle",
+            })
+          : h(
+              "div",
+              { class: "stack" },
+              // One figure per currency. The server computed these from the same rows below, so
+              // the two cannot disagree.
+              totals.length > 0
+                ? h(
+                    "div",
+                    { class: "grid-3" },
+                    ...totals.map((total) => figure(`To pay · ${total.currency}`, total, "Outstanding across every affiliate")),
+                  )
+                : null,
+              h(
+                "div",
+                { class: "table-wrap table-wrap--cards" },
+                h(
+                  "table",
+                  { class: "table" },
+                  h(
+                    "thead",
+                    null,
+                    h(
+                      "tr",
+                      null,
+                      h("th", { scope: "col" }, "Affiliate"),
+                      h("th", { scope: "col", class: "num" }, "Owed"),
+                      h("th", { scope: "col", class: "num hide-sm" }, "Paid out"),
+                      h("th", { scope: "col", class: "hide-sm" }, "Pending"),
+                      h("th", { scope: "col", class: "num" }, ""),
+                    ),
+                  ),
+                  h("tbody", null, ...lines.map(payoutLineRow)),
+                ),
+              ),
+            ),
+    });
+  };
+
+  /** One payee and currency in the payout report. */
+  const payoutLineRow = (line: PayoutLine): HTMLElement =>
+    h(
+      "tr",
+      null,
+      h(
+        "td",
+        { class: "cell-primary" },
+        h(
+          "div",
+          { class: "cell-main" },
+          h(
+            "div",
+            { class: "primary" },
+            h("span", { class: "mono" }, line.code),
+            line.deleted ? h("span", { class: "faint" }, " deleted") : null,
+          ),
+          h("div", { class: "secondary" }, line.email || shortId(line.user_id)),
+        ),
+      ),
+      h(
+        "td",
+        { class: "num", "data-label": "Owed" },
+        h("span", { class: (line.owed?.minor ?? 0) > 0 ? "primary money" : "faint" }, money(line.owed)),
+      ),
+      h(
+        "td",
+        { class: "num hide-sm", "data-label": "Paid out" },
+        h("span", { class: "dim money" }, money(line.lifetime_paid)),
+      ),
+      h(
+        "td",
+        { class: "hide-sm", "data-label": "Pending" },
+        h(
+          "span",
+          { class: "dim" },
+          line.pending_commissions === 0
+            ? "—"
+            : `${line.pending_commissions} commission${line.pending_commissions === 1 ? "" : "s"} awaiting an order`,
+        ),
+      ),
+      h(
+        "td",
+        { class: "num", "data-label": "Actions" },
+        btn("Reconcile", {
+          size: "sm",
+          variant: "ghost",
+          icon: "eye",
+          title: `Read what ${line.code} earned, what was paid and the rows that make up the difference`,
+          onclick: () => void selectAffiliate(line.affiliate_id),
+        }),
+      ),
+    );
 
   /**
    * What this affiliate is still owed, in words, for the dialog that has to say it plainly.
@@ -510,6 +696,9 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
           }
           await table.reload(showDeleted ? { include_deleted: "1" } : {});
           await loadReport();
+          // A deleted affiliate is still on the payout report — their debt survives the archive —
+          // so the summary is re-read rather than assumed unchanged.
+          void loadPayoutReport();
           return undefined;
         } catch (err) {
           return describeError(err);
@@ -839,6 +1028,8 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
           });
           await table.reload();
           await loadReport();
+          // The payout settled a balance, so the all-payees total changed with it.
+          void loadPayoutReport();
           return undefined;
         } catch (err) {
           const apiErr = err instanceof ApiError ? err : null;
@@ -971,6 +1162,9 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
       ),
     ),
     noticeHost,
+    // The summary comes before the two-column split: an operator opening this screen is asking
+    // "what do we owe", and the answer is one number per currency, not a payee they have to pick.
+    payoutReportHost,
     h(
       "div",
       { class: "split" },
@@ -998,8 +1192,9 @@ export default async function affiliatesPage(ctx: Ctx): Promise<Node> {
     ),
   );
 
-  // The table loads itself; the report loads when a selection exists.
+  // The table loads itself; the report loads when a selection exists, and the summary loads once.
   void loadReport();
+  void loadPayoutReport();
 }
 
 // ------------------------------------------------------------------ helpers --

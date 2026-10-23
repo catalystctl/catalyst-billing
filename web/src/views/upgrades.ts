@@ -1,4 +1,23 @@
-// The product upgrade graph.
+// Upgrades: the pending queue, and the graph of permitted moves.
+//
+// Two audiences, two permissions, one screen, and the split is the reason this file is not
+// called "graph" any more:
+//
+//  - **The pending-upgrade queue** (`GET /api/v1/staff/upgrades`, `service:read:all`) is an
+//    operations read. It answers "what have customers asked to change, and is the invoice that
+//    pays for it settled yet" — the question an operator chasing a stuck upgrade opens. It is
+//    deliberately not gated on catalog:write: holding `service:read:all` is what a support or
+//    operations role has, and those are the people who receive the ticket.
+//
+//  - **The upgrade graph** (`/api/v1/staff/upgrade-graph`, `catalog:write`) is catalog
+//    configuration. It edits the table of permitted moves.
+//
+// They live on one screen because they are one subject read two ways: an edge is permission to
+// move, and a queue row is somebody using that permission. A role holding only one of the two
+// permissions gets the half it can use and a sentence saying what the other half needs, rather
+// than a refusal page that hides the half it could have read.
+//
+// The graph half of this file:
 //
 // `product_upgrades` is one directed table and a downgrade is the same edge read backwards,
 // so the graph is exactly the promise the storefront makes: from this product, a customer may
@@ -29,8 +48,8 @@
 //    500.
 
 import { ApiError } from "../lib/api";
-import { h, swap } from "../lib/dom";
-import { humanStatus, relative, type Amount } from "../lib/format";
+import { h, swap, type Child } from "../lib/dom";
+import { humanStatus, relative, shortId, type Amount } from "../lib/format";
 import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import {
@@ -43,14 +62,43 @@ import {
   field,
   moneyEl,
   pageHead,
+  sectionTitle,
   select,
+  skeletonLines,
   skeletonPage,
+  statusBadge,
   withBusy,
 } from "../ui/kit";
+import { amountOf, loadCurrencies, type PublicCurrency } from "./cart";
 
-export const meta = { title: "Upgrade graph", crumb: "Upgrades" };
+export const meta = { title: "Upgrades", crumb: "Upgrades" };
 
 // ---------------------------------------------------------------- payloads --
+
+/** One row of the pending-upgrade queue, as `handleStaffUpgrades` renders it.
+ *
+ *  A row is a *request*: `service_id` is the service that would move, `to_price_version_id` the
+ *  price it would move to, and `prorated_minor` what the customer would be charged (or, for a
+ *  downgrade, credited) for the part of the period that is left. The service keeps its old price
+ *  until the invoice is paid — `invoice_status` is the fact that says whether that has happened,
+ *  which is why the queue shows it and the graph does not. */
+interface PendingUpgrade {
+  id: string;
+  service_id: string;
+  customer_id: string;
+  from_price_version_id: string;
+  to_price_version_id: string;
+  prorated_minor: number;
+  currency: string;
+  status: string;
+  created_at: string;
+  invoice_id?: string;
+  invoice_status?: string;
+}
+
+interface PendingUpgradesResponse {
+  upgrades: PendingUpgrade[] | null;
+}
 
 interface GraphPrice {
   price_version_id: string;
@@ -94,28 +142,240 @@ interface GraphResponse {
 }
 
 export default async function upgradesPage(ctx: Ctx): Promise<Node> {
-  if (!ctx.can("catalog:write")) {
+  // Two independent reads, two permissions. A role that holds one gets the half it can use.
+  const canQueue = ctx.can("service:read:all");
+  const canGraph = ctx.can("catalog:write");
+
+  if (!canQueue && !canGraph) {
     return h(
       "div",
       { class: "page" },
-      pageHead({ title: "Upgrade graph" }),
+      pageHead({ title: "Upgrades" }),
       banner(
         "danger",
-        "You cannot change the upgrade graph",
-        "The graph is catalog configuration: adding or removing an edge needs the catalog:write permission.",
+        "You cannot see upgrades",
+        "The pending queue needs service:read:all, and editing the graph needs catalog:write. This screen has two halves and your role holds neither.",
         btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }
 
-  const host = h("div", { class: "page" }, skeletonPage());
+  // Each half is its own element with its own id, so a test can open the half it is about
+  // without depending on the order of two cards inside one page.
+  const queueHost = h("div", { class: "stack", id: "upgrade-queue" }, skeletonLines(4));
+  const graphHost = h("div", { class: "stack", id: "upgrade-graph" }, skeletonPage());
 
-  const load = async (): Promise<void> => {
+  // ------------------------------------------------------------ the queue --
+
+  // `paid=1` lists only the rows whose invoice has settled — the ones the worker will apply.
+  // The default lists every pending row, which is what an operator chasing a stuck upgrade wants.
+  let paidOnly = ctx.route.query.get("paid") === "1";
+
+  const loadQueue = async (): Promise<void> => {
+    try {
+      // The currency rows carry each code's scale, which the queue needs: it sends
+      // `prorated_minor` + `currency` rather than the `{minor, currency, scale}` triple, and a
+      // page that assumed two decimals would misprice a JPY or KWD installation (rule 11).
+      const currencies = await loadCurrencies(ctx.api);
+      const data = await ctx.api.get<PendingUpgradesResponse>("/api/v1/staff/upgrades", {
+        query: { paid: paidOnly ? "true" : undefined, limit: "100" },
+        cache: false,
+      });
+      swap(queueHost, renderQueue(data, currencies));
+    } catch (err) {
+      swap(queueHost, errorState(err, () => void loadQueue()));
+    }
+  };
+
+  const renderQueue = (data: PendingUpgradesResponse, currencies: PublicCurrency[]): Node => {
+    const rows = data.upgrades ?? [];
+    const amountOfRow = (row: PendingUpgrade): Amount => amountOf(currencies, row.prorated_minor, row.currency);
+
+    // One total per currency, never a sum across them: this panel has no exchange rate, so
+    // adding USD to EUR would be arithmetic on unrelated quantities.
+    const byCurrency = new Map<string, number>();
+    for (const row of rows) {
+      byCurrency.set(row.currency, (byCurrency.get(row.currency) ?? 0) + row.prorated_minor);
+    }
+    const awaitingPayment = rows.filter((row) => (row.invoice_status ?? "") !== "paid").length;
+
+    return h(
+      "div",
+      { class: "stack" },
+      card({
+        title: "Pending upgrades",
+        sub: paidOnly
+          ? "Requests whose invoice is paid, so the service is due to move"
+          : "Every request that has not been applied yet, and whether its invoice is settled",
+        actions: h(
+          "div",
+          { class: "row-wrap" },
+          btn("All pending", {
+            size: "sm",
+            variant: paidOnly ? "ghost" : "primary",
+            onclick: () => {
+              paidOnly = false;
+              ctx.replaceQuery({ paid: null });
+              void loadQueue();
+            },
+          }),
+          btn("Invoice paid", {
+            size: "sm",
+            variant: paidOnly ? "primary" : "ghost",
+            icon: "check",
+            title: "Only the rows whose invoice has settled — the ones the worker will apply",
+            onclick: () => {
+              paidOnly = true;
+              ctx.replaceQuery({ paid: "1" });
+              void loadQueue();
+            },
+          }),
+          btn("Refresh", { size: "sm", variant: "ghost", icon: "refresh", onclick: () => void loadQueue() }),
+        ),
+        body:
+          rows.length === 0
+            ? emptyState({
+                title: paidOnly ? "Nothing is waiting to be applied" : "No pending upgrades",
+                body: paidOnly
+                  ? "No request has a settled invoice right now. A row appears here as soon as the invoice that pays for a move is paid, and the worker applies it on its next run."
+                  : "Nobody has asked to change a plan. A request appears here as soon as a customer moves from one product to another, or an operator does it on their behalf.",
+                icon: "trendUp",
+              })
+            : h(
+                "div",
+                { class: "stack" },
+                h(
+                  "div",
+                  { class: "grid-4" },
+                  stat("Waiting", rows.length, "requests not yet applied"),
+                  stat("Awaiting payment", awaitingPayment, "invoice not settled"),
+                  ...Array.from(byCurrency.entries()).map(([currency, minor]) =>
+                    stat(
+                      `Per ${currency}`,
+                      moneyEl(amountOf(currencies, minor, currency), { code: true }),
+                      "prorated, whole queue",
+                    ),
+                  ),
+                ),
+                h(
+                  "div",
+                  { class: "table-wrap table-wrap--cards" },
+                  h(
+                    "table",
+                    { class: "table" },
+                    h(
+                      "thead",
+                      null,
+                      h(
+                        "tr",
+                        null,
+                        h("th", { scope: "col" }, "Service"),
+                        h("th", { scope: "col" }, "Customer"),
+                        h("th", { scope: "col" }, "Prorated charge"),
+                        h("th", { scope: "col" }, "Status"),
+                        h("th", { scope: "col" }, "Invoice"),
+                        h("th", { scope: "col", class: "hide-sm" }, "Requested"),
+                      ),
+                    ),
+                    h(
+                      "tbody",
+                      null,
+                      ...rows.map((row) =>
+                        h(
+                          "tr",
+                          null,
+                          h(
+                            "td",
+                            { class: "cell-primary" },
+                            h(
+                              "div",
+                              { class: "cell-main" },
+                              h(
+                                "div",
+                                { class: "primary" },
+                                h(
+                                  "a",
+                                  { class: "row-title", href: `/services/${encodeURIComponent(row.service_id)}` },
+                                  shortId(row.service_id),
+                                ),
+                              ),
+                              h("div", { class: "secondary mono" }, shortId(row.to_price_version_id)),
+                            ),
+                          ),
+                          h(
+                            "td",
+                            { "data-label": "Customer" },
+                            h(
+                              "a",
+                              { class: "linkish", href: `/customers/${encodeURIComponent(row.customer_id)}` },
+                              shortId(row.customer_id),
+                            ),
+                          ),
+                          h("td", { "data-label": "Prorated charge" }, moneyEl(amountOfRow(row), { code: true })),
+                          h("td", { "data-label": "Status" }, statusBadge(row.status)),
+                          h(
+                            "td",
+                            { "data-label": "Invoice" },
+                            row.invoice_id
+                              ? h(
+                                  "div",
+                                  { class: "cell-main" },
+                                  h(
+                                    "div",
+                                    { class: "primary" },
+                                    h(
+                                      "a",
+                                      { class: "row-title", href: `/invoices/${encodeURIComponent(row.invoice_id)}` },
+                                      shortId(row.invoice_id),
+                                    ),
+                                  ),
+                                  h("div", { class: "secondary" }, statusBadge(row.invoice_status ?? "draft")),
+                                )
+                              : h("span", { class: "faint" }, "—"),
+                          ),
+                          h(
+                            "td",
+                            { class: "hide-sm", "data-label": "Requested" },
+                            h("span", { class: "dim nowrap", title: row.created_at }, relative(row.created_at)),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+      }),
+      banner(
+        "info",
+        "A request is not a move",
+        h(
+          "div",
+          { class: "banner-prose" },
+          h(
+            "p",
+            null,
+            h("strong", null, "An upgrade issues an invoice"),
+            " for the difference, and the service keeps its old price until that invoice is paid. A paid invoice is what moves a row into the worker's hands.",
+          ),
+          h(
+            "p",
+            null,
+            h("strong", null, "A downgrade records a credit"),
+            " the customer is owed; the service moves down only once that credit is posted. A row that sits here for weeks is usually a downgrade whose credit was never posted.",
+          ),
+        ),
+      ),
+    );
+  };
+
+  // ------------------------------------------------------------ the graph --
+
+  const loadGraph = async (): Promise<void> => {
     try {
       const data = await ctx.api.get<GraphResponse>("/api/v1/staff/upgrade-graph", { cache: false });
-      swap(host, render(data));
+      swap(graphHost, render(data));
     } catch (err) {
-      swap(host, errorState(err, () => void load()));
+      swap(graphHost, errorState(err, () => void loadGraph()));
     }
   };
 
@@ -126,12 +386,7 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
 
     return h(
       "div",
-      { class: "page" },
-      pageHead({
-        title: "Upgrade graph",
-        sub: "Which product a customer may move to from which. A downgrade is the same edge read backwards, so there is one table and one screen.",
-        actions: btn("Catalog", { href: "/catalog", size: "sm", variant: "ghost", icon: "box" }),
-      }),
+      { class: "stack" },
 
       banner(
         "info",
@@ -261,7 +516,7 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
               detail: "It permits a move; it does not move anybody or charge anything.",
             });
           }
-          await load();
+          await loadGraph();
         } catch (err) {
           if (!(err instanceof ApiError)) {
             swap(errorHost, inlineError("The server could not be reached, so nothing changed."));
@@ -476,7 +731,7 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
           `/api/v1/staff/upgrade-graph/${encodeURIComponent(edge.product_id)}/${encodeURIComponent(edge.upgrade_to_id)}`,
         );
         ctx.toast("Edge removed", { tone: "success", detail: "No service was repriced." });
-        await load();
+        await loadGraph();
       } catch (err) {
         if (err instanceof ApiError) {
           ctx.toast(err.detail || "The edge could not be removed", { tone: "danger", detail: err.code });
@@ -490,8 +745,63 @@ export default async function upgradesPage(ctx: Ctx): Promise<Node> {
     });
   };
 
-  void load();
-  return host;
+  // The queue is the half an operations role holds, so it is read first and on every visit.
+  // The graph is only read when this session may edit it: fetching a table the screen will not
+  // render would be a request whose answer is a 403 the operator never sees.
+  if (canQueue) void loadQueue();
+  else swap(queueHost, emptyState({
+    title: "You cannot see the pending queue",
+    body: "The queue is an operations read: it needs service:read:all. You can still see and edit the graph below.",
+    icon: "lock",
+  }));
+
+  if (canGraph) void loadGraph();
+  else swap(graphHost, card({
+    title: "Upgrade graph",
+    body: emptyState({
+      title: "You cannot change the graph",
+      body: "The graph is catalog configuration: adding or removing an edge needs catalog:write. You can still see the queue above.",
+      icon: "lock",
+    }),
+  }));
+
+  return h(
+    "div",
+    { class: "page" },
+    pageHead({
+      title: "Upgrades",
+      sub: "What customers have asked to change, and which product a customer may move to from which.",
+      actions: canGraph
+        ? btn("Catalog", { href: "/catalog", size: "sm", variant: "ghost", icon: "box" })
+        : null,
+    }),
+    h(
+      "div",
+      { class: "stack" },
+      // Two headings, because the screen answers two questions and an operator who arrived from
+      // a ticket should see which half is theirs without reading the page subtitle.
+      sectionTitle("Pending queue"),
+      h(
+        "p",
+        { class: "field-hint" },
+        "What customers have asked to change, and whether the invoice that pays for it has settled.",
+      ),
+      queueHost,
+      canGraph
+        ? h(
+            "div",
+            { class: "stack" },
+            sectionTitle("Upgrade graph"),
+            h(
+              "p",
+              { class: "field-hint" },
+              "Which product a customer may move to from which. A downgrade is the same edge read backwards, so there is one table and one screen.",
+            ),
+            graphHost,
+          )
+        : graphHost,
+    ),
+  );
 }
 
 // ------------------------------------------------------------------ helpers --
@@ -500,12 +810,14 @@ function inlineError(message: string): HTMLElement {
   return h("div", { class: "banner banner--danger" }, icon("alertCircle", 15), h("span", null, message));
 }
 
-function stat(label: string, value: number, hint: string): HTMLElement {
+/** One figure. The value may be an amount (`moneyEl`) or a count, so a queue total and a row
+ *  count can sit in the same grid without two components. */
+function stat(label: string, value: Child, hint: string): HTMLElement {
   return h(
     "section",
     { class: "card stat" },
     h("span", { class: "stat-label" }, label),
-    h("span", { class: "stat-value" }, String(value)),
+    h("span", { class: "stat-value" }, value),
     h("span", { class: "stat-hint" }, hint),
   );
 }

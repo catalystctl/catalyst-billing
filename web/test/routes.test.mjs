@@ -239,18 +239,28 @@ function links() {
   return out;
 }
 
-/** The navigation entries, with the permission each is filtered by. */
+/** The navigation entries, with every permission each is filtered by.
+ *
+ *  Parsed one object literal at a time rather than one line at a time: an entry may be gated on
+ *  any of several permissions (`permissionAny`), and that list is allowed to wrap. A per-line
+ *  reader saw the `href` and none of the gate, which is precisely the entry this test exists to
+ *  check — a misspelled permission hides a destination from every role. */
 function navEntries() {
   const layout = files.find((f) => f.path.endsWith("/web/src/ui/layout.ts"));
   assert.ok(layout, "web/src/ui/layout.ts not found: the navigation moved");
   const body = uncommented(layout.body);
   const consts = constsOf(body);
   const out = [];
-  for (const line of body.split("\n")) {
-    const href = line.match(/href:\s*[`"']([^`"']+)[`"']/);
+  for (const match of body.matchAll(/\{([^{}]*href:\s*[`"'][^`"']+[`"'][^{}]*)\}/g)) {
+    const entry = match[1];
+    const href = entry.match(/href:\s*[`"']([^`"']+)[`"']/);
     if (!href) continue;
-    const permission = line.match(/permission:\s*"([^"]+)"/);
-    out.push({ href: patternize(href[1], consts), permission: permission ? permission[1] : null });
+    const permissions = [];
+    const single = entry.match(/permission:\s*"([^"]+)"/);
+    if (single) permissions.push(single[1]);
+    const many = entry.match(/permissionAny:\s*\[([^\]]*)\]/);
+    if (many) for (const p of many[1].matchAll(/"([^"]+)"/g)) permissions.push(p[1]);
+    out.push({ href: patternize(href[1], consts), permission: single ? single[1] : null, permissions });
   }
   assert.ok(out.length > 20, `expected the navigation, found ${out.length} entries`);
   return out;
@@ -341,9 +351,12 @@ test("every navigation permission is one this build declares", () => {
   // The same silence in a different place: an entry filtered by a misspelled permission is
   // hidden from every role, so the screen has no way in at all.
   const catalogue = permissionCatalogue();
-  const unknown = navEntries()
-    .filter((entry) => entry.permission && !catalogue.has(entry.permission))
-    .map((entry) => `${entry.href} (${entry.permission})`);
+  const unknown = [];
+  for (const entry of navEntries()) {
+    for (const permission of entry.permissions) {
+      if (!catalogue.has(permission)) unknown.push(`${entry.href} (${permission})`);
+    }
+  }
   assert.deepEqual(unknown, [], `navigation entries filtered by undeclared permissions: ${unknown.join(", ")}`);
 });
 

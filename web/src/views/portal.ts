@@ -4,6 +4,10 @@
 // below it is the detail behind that answer — the invoices waiting for payment, the services
 // that will renew, and the invoices that are already settled.
 //
+// Above it, when the operator has published one, sits the announcement feed. It is loaded by its
+// own request and renders nothing when the feed is switched off, so the page answers its one
+// question whether or not an announcement exists — see `loadAnnouncements`.
+//
 // The Pay button is one flow shared by three screens (this one, the invoice list and the
 // invoice document). It lives here, in the portal's entry module, so the two rules that make
 // checkout safe are written once: the request body carries no amount (the server reads it from
@@ -16,6 +20,7 @@ import { dateOnly, moneyWithCode, safeExternalURL, shortId, type Amount } from "
 import { tx } from "../lib/i18n";
 import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
+import { dashboardAnnouncements, loadAnnouncementFeed } from "../ui/announcement-feed";
 import { badge, btn, card, emptyState, moneyEl, resource, statusBadge, withBusy } from "../ui/kit";
 
 export const meta = { title: "Overview", crumb: "Overview" };
@@ -193,11 +198,42 @@ function reportCheckoutError(ctx: Ctx, err: unknown): void {
 // -------------------------------------------------------------------- page --
 
 export default async function portalPage(ctx: Ctx): Promise<Node> {
-  return h(
-    "div",
-    { class: "page" },
-    resource(ctx, (signal) => loadOverview(ctx, signal), (data) => renderOverview(ctx, data)),
-  );
+  const overview = resource(ctx, (signal) => loadOverview(ctx, signal), (data) => renderOverview(ctx, data));
+  const page = h("div", { class: "page" }, overview);
+  loadAnnouncements(ctx, page, overview);
+  return page;
+}
+
+/** Loads the announcement feed and puts it above the balance.
+ *
+ *  Two decisions here, both deliberate:
+ *
+ *  - It is a separate request from the overview. A maintenance notice must not be able to delay
+ *    or blank the page that answers "what do I owe", and the overview must not have to carry a
+ *    field that is empty on most installations.
+ *  - It renders *nothing at all* when `announcements.enabled` is false — not an empty card and not
+ *    a heading. An empty "Announcements" card tells a customer there is nothing to read, when the
+ *    truth is that the operator switched the feed off. The server answers the setting; this
+ *    module renders its answer.
+ *
+ *  It sits above the hero because that is the order a notice is read in: "the panel is read-only
+ *  from 02:00" changes what the balance below it means. */
+function loadAnnouncements(ctx: Ctx, page: HTMLElement, before: Node): void {
+  const controller = new AbortController();
+  ctx.onDispose(() => controller.abort());
+  void (async () => {
+    try {
+      const rows = await loadAnnouncementFeed(ctx.api, "dashboard", controller.signal);
+      if (controller.signal.aborted) return;
+      const feed = dashboardAnnouncements(rows);
+      // `insertBefore` rather than a wrapper element: an empty wrapper would still take a slot in
+      // the page's flex gap and leave a hole where no announcement is.
+      if (feed !== null) page.insertBefore(feed, before);
+    } catch {
+      // A notice feed is decoration. A customer whose invoices loaded fine should not be shown an
+      // error banner because a maintenance notice did not.
+    }
+  })();
 }
 
 async function loadOverview(ctx: Ctx, signal: AbortSignal): Promise<PortalOverview> {

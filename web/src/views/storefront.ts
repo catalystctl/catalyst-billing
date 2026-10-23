@@ -2,13 +2,18 @@
 //
 // This is the only page in the app a stranger can see, so it is built to three rules:
 //
-//  - It reads one public endpoint and nothing else. No session, no staff data, no id that
+//  - It reads public endpoints and nothing else. No session, no staff data, no id that
 //    isn't already public. The server decides what is visible; this page renders what it is
 //    given and never guesses at a hidden product.
 //  - A product with no logo is not a broken image. The card falls back to a generated mark
 //    from the product's initial, so a half-filled catalog still looks deliberate.
 //  - It is a storefront, not a CMS. Category and sort order come from the catalog; the layout
 //    is fixed, because a page builder here would be a second product to maintain.
+//
+// The second read is the announcement feed: an operator's maintenance notice belongs where a
+// visitor will see it before choosing a plan, which is here and not only behind the login. It is
+// loaded separately and renders nothing when `announcements.enabled` is off, so the storefront
+// is unchanged on an installation that never publishes one.
 
 import type { Api } from "../lib/api";
 import { h, swap } from "../lib/dom";
@@ -16,6 +21,7 @@ import { money, type Amount } from "../lib/format";
 import { currentLocale, enabledLocales, languageSwitcher, onLocaleChange, setLocale, tx } from "../lib/i18n";
 import { brandMark, icon } from "../lib/icons";
 import type { AuthCtx } from "../lib/types";
+import { loadAnnouncementFeed, storefrontAnnouncements } from "../ui/announcement-feed";
 import { badge, btn, emptyState, errorState, skeletonPage } from "../ui/kit";
 
 export const meta = { title: "Products", crumb: "Products" };
@@ -68,6 +74,24 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
   // catalogue is the operator's data, not the visitor's language, so nothing about it changes
   // when the language does.
   let latest: CatalogResponse | null = null;
+  // The announcement feed, once loaded. It is a separate request from the catalogue because a
+  // notice must not be able to delay or break what the storefront is for, and it is kept as a
+  // node rather than as data because a category filter re-renders from the response already in
+  // hand: moving one element into the new tree is cheaper than refetching the notice.
+  let feed: HTMLElement | null = null;
+
+  const loadFeed = async () => {
+    try {
+      // `?placement=storefront` asks for what a visitor may see: an announcement placed on the
+      // customer dashboard only is not a storefront notice, and the server decides that.
+      const rows = await loadAnnouncementFeed(ctx.api, "storefront");
+      feed = storefrontAnnouncements(rows);
+      if (feed !== null && latest !== null) swap(host, render(latest));
+    } catch {
+      // A notice is decoration. The storefront renders without it, exactly as it does when the
+      // operator has switched the feed off.
+    }
+  };
 
   const load = async () => {
     try {
@@ -201,6 +225,9 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
       { class: "store-page" },
       header,
       hero,
+      // Between the pitch and the catalogue: a visitor reads "we are closed on Sunday" before
+      // deciding on a plan, and a returning customer sees it without signing in.
+      feed,
       h(
         "section",
         { class: "store-section", id: "plans" },
@@ -323,6 +350,7 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
   });
 
   void load();
+  void loadFeed();
   return host;
 }
 

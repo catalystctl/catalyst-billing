@@ -116,10 +116,77 @@ paths:
             x-rate-class: ""
     /api/v1/announcements:
         get:
-            description: 'Public, because the storefront is public: a visitor who cannot see "we are closed for maintenance" has no way to find out before registering. Returns only published, unexpired rows, and only the fields a customer may see — the creator and the draft state are operator information. `?placement=storefront|dashboard` narrows it; `both` matches either. A database failure yields an empty feed rather than a 500, because the storefront must render.'
+            description: 'Public, because the storefront is public: a visitor who cannot see "we are closed for maintenance" has no way to find out before registering. Returns only live rows, and only the fields a customer may see — the creator and the draft state are operator information. `?placement=storefront|dashboard` narrows it; `both` matches either. The envelope''s `enabled` is the `announcements.enabled` setting, read on every request: switched off, the feed is empty and nothing is cached. A database failure yields an empty feed rather than a 500, because the storefront must render.'
             operationId: GetAnnouncements
             responses:
                 2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                body:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                created_by:
+                                                    description: 'Empty in the public feed: who wrote an announcement is operator information.'
+                                                    format: uuid
+                                                    type: string
+                                                expires_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                live:
+                                                    description: Published, not expired and past its publish instant, derived at read time so it cannot drift from the clock.
+                                                    type: boolean
+                                                placement:
+                                                    enum:
+                                                        - storefront
+                                                        - dashboard
+                                                        - both
+                                                    type: string
+                                                published:
+                                                    type: boolean
+                                                published_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                state:
+                                                    description: Why `live` is what it is, so a screen can name the state instead of inferring it from three timestamps. `draft` was never published; `scheduled` is published but its publish instant has not arrived; `expired` is published but its expiry has passed; `live` is what a customer sees now.
+                                                    enum:
+                                                        - draft
+                                                        - scheduled
+                                                        - expired
+                                                        - live
+                                                    type: string
+                                                title:
+                                                    maxLength: 200
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - id
+                                                - title
+                                                - placement
+                                                - published
+                                                - created_at
+                                                - updated_at
+                                            type: object
+                                        type: array
+                                    enabled:
+                                        description: Whether the announcement feed is switched on for customers (`announcements.enabled`).
+                                        type: boolean
+                                type: object
                     description: The live announcements
                 "400":
                     content:
@@ -9949,10 +10016,77 @@ paths:
             x-staff-only: true
     /api/v1/staff/announcements:
         get:
-            description: Every announcement, newest first, with `live` derived from `published` and `expires_at`.
+            description: 'Every announcement, newest first, with `live` and `state` derived from the server''s clock. The envelope''s `enabled` is the `announcements.enabled` setting: with it off, every row is hidden from customers however live it is.'
             operationId: GetStaffAnnouncements
             responses:
                 2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    data:
+                                        items:
+                                            properties:
+                                                body:
+                                                    type: string
+                                                created_at:
+                                                    format: date-time
+                                                    type: string
+                                                created_by:
+                                                    description: 'Empty in the public feed: who wrote an announcement is operator information.'
+                                                    format: uuid
+                                                    type: string
+                                                expires_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                id:
+                                                    format: uuid
+                                                    type: string
+                                                live:
+                                                    description: Published, not expired and past its publish instant, derived at read time so it cannot drift from the clock.
+                                                    type: boolean
+                                                placement:
+                                                    enum:
+                                                        - storefront
+                                                        - dashboard
+                                                        - both
+                                                    type: string
+                                                published:
+                                                    type: boolean
+                                                published_at:
+                                                    format: date-time
+                                                    type:
+                                                        - string
+                                                        - "null"
+                                                state:
+                                                    description: Why `live` is what it is, so a screen can name the state instead of inferring it from three timestamps. `draft` was never published; `scheduled` is published but its publish instant has not arrived; `expired` is published but its expiry has passed; `live` is what a customer sees now.
+                                                    enum:
+                                                        - draft
+                                                        - scheduled
+                                                        - expired
+                                                        - live
+                                                    type: string
+                                                title:
+                                                    maxLength: 200
+                                                    type: string
+                                                updated_at:
+                                                    format: date-time
+                                                    type: string
+                                            required:
+                                                - id
+                                                - title
+                                                - placement
+                                                - published
+                                                - created_at
+                                                - updated_at
+                                            type: object
+                                        type: array
+                                    enabled:
+                                        description: Whether the announcement feed is switched on for customers (`announcements.enabled`).
+                                        type: boolean
+                                type: object
                     description: The announcements
                 "400":
                     content:
@@ -10053,7 +10187,7 @@ paths:
                                         format: uuid
                                         type: string
                                     live:
-                                        description: Published and not expired, derived at read time so it cannot drift from the clock.
+                                        description: Published, not expired and past its publish instant, derived at read time so it cannot drift from the clock.
                                         type: boolean
                                     placement:
                                         enum:
@@ -10068,6 +10202,14 @@ paths:
                                         type:
                                             - string
                                             - "null"
+                                    state:
+                                        description: Why `live` is what it is, so a screen can name the state instead of inferring it from three timestamps. `draft` was never published; `scheduled` is published but its publish instant has not arrived; `expired` is published but its expiry has passed; `live` is what a customer sees now.
+                                        enum:
+                                            - draft
+                                            - scheduled
+                                            - expired
+                                            - live
+                                        type: string
                                     title:
                                         maxLength: 200
                                         type: string
@@ -10312,7 +10454,7 @@ paths:
                                         format: uuid
                                         type: string
                                     live:
-                                        description: Published and not expired, derived at read time so it cannot drift from the clock.
+                                        description: Published, not expired and past its publish instant, derived at read time so it cannot drift from the clock.
                                         type: boolean
                                     placement:
                                         enum:
@@ -10327,6 +10469,14 @@ paths:
                                         type:
                                             - string
                                             - "null"
+                                    state:
+                                        description: Why `live` is what it is, so a screen can name the state instead of inferring it from three timestamps. `draft` was never published; `scheduled` is published but its publish instant has not arrived; `expired` is published but its expiry has passed; `live` is what a customer sees now.
+                                        enum:
+                                            - draft
+                                            - scheduled
+                                            - expired
+                                            - live
+                                        type: string
                                     title:
                                         maxLength: 200
                                         type: string

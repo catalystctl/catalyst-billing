@@ -72,6 +72,7 @@ const GROUP_LABELS: Record<string, string> = {
   cronjob: "Scheduled jobs",
   mail: "Email",
   announcements: "Announcements",
+  storefront: "Storefront",
 };
 
 const GROUP_HINTS: Record<string, string> = {
@@ -83,9 +84,14 @@ const GROUP_HINTS: Record<string, string> = {
   cronjob: "How long the dunning ladder waits before it cancels or terminates.",
   mail: "Outgoing mail. The password is write-only: it is never read back.",
   announcements: "Whether the announcement feed is shown to customers.",
+  storefront: "How the public shop presents the catalog: the category strip, stock counts and the currency switcher.",
 };
 
 const KEY_LABELS: Record<string, string> = {
+  home_categories: "Categories on the home page",
+  show_stock: "Show stock counts",
+  low_stock_threshold: "Low-stock threshold",
+  currency_switcher: "Offer the currency switcher",
   company_name: "Company name",
   system_email_address: "System email address",
   tos: "Terms of service",

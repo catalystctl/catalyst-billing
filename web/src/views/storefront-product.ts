@@ -107,10 +107,6 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
       latest = product;
       session = me;
       swap(host, render(product));
-      // The header is part of this page, so it is decorated with the tenant's brand here: the
-      // shell applied the brand before this view fetched its data, and this swap replaced the
-      // markup it had decorated.
-      applyBrandChrome(host, appliedBrand());
       if (pendingAdd) {
         const wanted = pendingAdd;
         pendingAdd = null;
@@ -153,16 +149,20 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
       footer(),
     );
 
-  const header = (): HTMLElement =>
-    h(
+  const header = (): HTMLElement => {
+    // Built branded, for the reason given in storefront.ts: this page re-renders on a language
+    // change, and a decoration on the previous markup would be lost. A no-op when unset.
+    const brand = h(
+      "a",
+      { class: "store-brand", href: "/" },
+      h("span", { class: "brand-mark" }, brandMark(18)),
+      h("span", { class: "brand-name" }, "Catalyst", h("small", null, "Hosting")),
+    );
+    applyBrandChrome(brand, appliedBrand());
+    return h(
       "header",
       { class: "store-head" },
-      h(
-        "a",
-        { class: "store-brand", href: "/" },
-        h("span", { class: "brand-mark" }, brandMark(18)),
-        h("span", { class: "brand-name" }, "Catalyst", h("small", null, "Hosting")),
-      ),
+      brand,
       h(
         "nav",
         { class: "store-nav" },
@@ -184,6 +184,7 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
         ),
       ),
     );
+  };
 
   const footer = (): HTMLElement =>
     h(

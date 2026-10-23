@@ -113,10 +113,6 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
       });
       latest = data;
       swap(host, render(data));
-      // The header is part of this page, so it is decorated with the tenant's brand here: the
-      // shell applied the brand before this view fetched its data, and this swap replaced the
-      // markup it had decorated.
-      applyBrandChrome(host, appliedBrand());
     } catch (err) {
       if (controller.signal.aborted) return;
       swap(
@@ -134,15 +130,23 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
     const products = data.products ?? [];
     const shown = activeCategory ? products.filter((p) => p.category_slug === activeCategory) : products;
 
+    // The header is built branded rather than decorated afterwards. The shop re-renders itself
+    // when the catalogue arrives and when the language changes, so a decoration applied to the
+    // previous markup would be lost on every one of those swaps; `applyBrandChrome` is idempotent
+    // and is called on the freshly built header instead. It is a no-op when no brand is set, so
+    // an unbranded shop renders the built-in wordmark exactly as before.
+    const brandHeader = h(
+      "a",
+      { class: "store-brand", href: "/" },
+      h("span", { class: "brand-mark" }, brandMark(18)),
+      h("span", { class: "brand-name" }, "Catalyst", h("small", null, "Hosting")),
+    );
+    applyBrandChrome(brandHeader, appliedBrand());
+
     const header = h(
       "header",
       { class: "store-head" },
-      h(
-        "a",
-        { class: "store-brand", href: "/" },
-        h("span", { class: "brand-mark" }, brandMark(18)),
-        h("span", { class: "brand-name" }, "Catalyst", h("small", null, "Hosting")),
-      ),
+      brandHeader,
       h(
         "nav",
         { class: "store-nav" },

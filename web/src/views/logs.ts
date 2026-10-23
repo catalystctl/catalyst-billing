@@ -385,9 +385,18 @@ export default async function logsPage(ctx: Ctx): Promise<Node> {
         key: "detail",
         label: "Detail",
         hideSmall: true,
+        // The row keeps one ellipsised line (a stack trace in a cell makes every other row
+        // unreadable) but the rest is a real element behind a disclosure rather than a `title`
+        // tooltip: a tooltip is invisible to a screenshot, a screen reader and a touch device, and
+        // the diagnostic text is the whole reason an operator opened this tab.
         render: (row) =>
           row.detail
-            ? h("span", { class: "log-error", title: row.detail }, row.detail)
+            ? h(
+                "details",
+                { class: "log-detail-disclosure" },
+                h("summary", null, `diagnostic text (${row.detail.length} bytes)`),
+                h("pre", { class: "log-detail" }, row.detail),
+              )
             : h("span", { class: "faint" }, "—"),
       },
       {

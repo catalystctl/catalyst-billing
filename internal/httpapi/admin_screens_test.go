@@ -28,6 +28,7 @@ import (
 
 	"github.com/catalyst/billing/internal/lifecycle"
 	"github.com/catalyst/billing/internal/notify"
+	"github.com/catalyst/billing/internal/operations"
 )
 
 // --------------------------------------------------------------- templates --
@@ -330,6 +331,17 @@ type automationResponse struct {
 	} `json:"worker"`
 }
 
+// delegatedJobSources are the jobs lifecycle.Jobs() registers on behalf of internal/operations.
+//
+// Their rules live in internal/operations and are only converted into a lifecycle.Job, so the
+// screen names the file that registers them rather than pretending the rule is in lifecycle.go.
+// The map is closed on purpose: a job that is not listed here must be registered in
+// lifecycle.go, so a row cannot claim an arbitrary path.
+var delegatedJobSources = map[string]string{
+	operations.ChargeDueJob: "internal/lifecycle/operations_jobs.go",
+	operations.TelemetryJob: "internal/lifecycle/operations_jobs.go",
+}
+
 func fetchAutomation(t *testing.T, env *staffEnv) automationResponse {
 	t.Helper()
 	rec := env.get(t, "/api/v1/staff/automation", env.admin)
@@ -485,7 +497,8 @@ func TestAutomationMatchesTheJobsTheWorkerRegisters(t *testing.T) {
 		sources[row.Name] = row.Source
 	}
 
-	// 1. The two lifecycle rules, compared against the function the worker itself calls.
+	// 1. The lifecycle rules and the maintenance jobs registered through the same seam,
+	// compared against the function the worker itself calls.
 	registered := lifecycle.Jobs(env.pool, nil)
 	if len(registered) == 0 {
 		t.Fatal("lifecycle.Jobs() returned nothing, so this comparison proves nothing")
@@ -498,8 +511,16 @@ func TestAutomationMatchesTheJobsTheWorkerRegisters(t *testing.T) {
 		if want := int64(job.Interval / time.Second); seconds != want {
 			t.Fatalf("job %q: screen says %ds, the worker registers %ds", job.Name, seconds, want)
 		}
-		if sources[job.Name] != "internal/lifecycle/lifecycle.go" {
-			t.Fatalf("job %q claims to be registered in %q", job.Name, sources[job.Name])
+		// The source names the file the *rule* lives in. For the lifecycle rules that is
+		// lifecycle.go; the two maintenance jobs are registered through lifecycle.Jobs() but
+		// implemented in internal/operations, so their row names the adapter file. Both are
+		// checked by name rather than by prefix so a row cannot claim any arbitrary path.
+		want := "internal/lifecycle/lifecycle.go"
+		if _, ok := delegatedJobSources[job.Name]; ok {
+			want = delegatedJobSources[job.Name]
+		}
+		if sources[job.Name] != want {
+			t.Fatalf("job %q claims to be registered in %q, want %q", job.Name, sources[job.Name], want)
 		}
 	}
 

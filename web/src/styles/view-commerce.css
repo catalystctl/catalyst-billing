@@ -585,6 +585,46 @@
   padding-bottom: 2px;
 }
 
+/* The revenue chart's sparkline wrapper: the SVG is drawn at a fixed viewBox and stretched, so
+ * the wrapper owns the height the card reserves. Without it the chart collapses to the line's
+ * stroke while the data loads. */
+.spark-wrap {
+  display: block;
+  height: 44px;
+  color: var(--accent, currentColor);
+}
+
+.spark-wrap > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* A trend badge beside a figure: "up 12%". It is a line, not a card, so it sits on the value's
+ * baseline rather than in its own row. */
+.stat-trend {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 6px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-dim);
+  vertical-align: middle;
+}
+
+/* Two ends of one line: a label on the left, a value on the right. */
+.row-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.gap-xs {
+  gap: 4px;
+}
+
 /* An error string in a table cell: one line, ellipsised, with the full text in the title. A
  * multi-line stack trace in a table row makes every other row unreadable. */
 .log-error {
@@ -596,6 +636,50 @@
   font-family: var(--font-mono, monospace);
   font-size: var(--text-xs);
   color: var(--text-dim);
+}
+
+/* The full detail of one error, behind a disclosure.
+ *
+ * The cell shows one ellipsised line because a stack trace in a row makes every other row
+ * unreadable. That used to be the whole story: the only way to read the rest was the `title`
+ * tooltip, which a screenshot, a screen reader and a touch device all cannot use. The disclosure
+ * is the same information as a real element, wrapped and scrollable so a long diagnostic cannot
+ * push the table sideways. */
+.log-detail-disclosure {
+  max-width: 34rem;
+}
+
+.log-detail-disclosure > summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  list-style: none;
+}
+
+.log-detail-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.log-detail-disclosure > summary::before {
+  content: "▸ ";
+}
+
+.log-detail-disclosure[open] > summary::before {
+  content: "▾ ";
+}
+
+.log-detail {
+  margin: 6px 0 0;
+  padding: 8px;
+  max-height: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  background: var(--surface-sunken, rgba(0, 0, 0, 0.04));
+  border-radius: var(--radius-sm, 4px);
 }
 
 .log-slow {

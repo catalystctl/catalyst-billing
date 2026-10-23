@@ -38,6 +38,7 @@ import (
 
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/lifecycle"
+	"github.com/catalyst/billing/internal/operations"
 	"github.com/catalyst/billing/internal/tax"
 )
 
@@ -173,6 +174,25 @@ var workerJobs = []automationJob{
 		Summary:    "Finishes pending price changes: credits and applies downgrades, applies paid upgrades, and voids upgrade invoices nobody paid.",
 		KillSwitch: lifecycle.ServiceUpgradesKillSwitch,
 		Source:     "internal/lifecycle/lifecycle.go",
+	},
+	// The two maintenance rules from internal/operations, registered through lifecycle.Jobs()
+	// because that is the seam the worker iterates. Their names and intervals come from the
+	// package that defines them, so a rename is a compile error rather than a screen that lies.
+	{
+		Name:       operations.ChargeDueJob,
+		Interval:   operations.ChargeDueInterval,
+		Summary:    "Charges the saved default payment method of every open, past-due invoice, waiting cronjob.charge_retry_hours before offering a declined card again.",
+		KillSwitch: operations.ChargeDueKillSwitch,
+		Settings:   []string{"gateway.off_session_enabled", "cronjob.charge_retry_hours"},
+		Source:     "internal/lifecycle/operations_jobs.go",
+	},
+	{
+		Name:       operations.TelemetryJob,
+		Interval:   operations.TelemetryInterval,
+		Summary:    "Delivers the anonymous telemetry payload once a day when updates.telemetry is on, and records the send in telemetry_sends.",
+		KillSwitch: operations.TelemetryKillSwitch,
+		Settings:   []string{"updates.telemetry", "updates.channel"},
+		Source:     "internal/lifecycle/operations_jobs.go",
 	},
 	// The tax-rate refresh. Its interval is the worker's *tick*, not the refresh cadence: the
 	// source's own `refresh_interval_hours` (configured on the tax-rates screen) decides whether a

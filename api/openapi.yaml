@@ -5453,6 +5453,421 @@ paths:
             summary: The payment gateways this installation offers
             x-permission: customer:read:self
             x-rate-class: read
+    /api/v1/portal/payment-methods/agreements:
+        post:
+            operationId: PostPortalPaymentmethodsAgreements
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: paymentmethod:write:self
+            x-rate-class: mutation
+    /api/v1/portal/payment-methods/agreements/{id}:
+        delete:
+            operationId: DeletePortalPaymentmethodsAgreementsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: paymentmethod:write:self
+            x-rate-class: mutation
+        get:
+            operationId: GetPortalPaymentmethodsAgreementsById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-permission: paymentmethod:read:self
+            x-rate-class: read
+    /api/v1/portal/payment-methods/saved:
+        get:
+            operationId: GetPortalPaymentmethodsSaved
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-permission: paymentmethod:read:self
+            x-rate-class: read
+        post:
+            operationId: PostPortalPaymentmethodsSaved
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: paymentmethod:write:self
+            x-rate-class: mutation
+    /api/v1/portal/payment-methods/saved/{id}:
+        delete:
+            operationId: DeletePortalPaymentmethodsSavedById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: paymentmethod:write:self
+            x-rate-class: mutation
+        get:
+            operationId: GetPortalPaymentmethodsSavedById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-permission: paymentmethod:read:self
+            x-rate-class: read
+    /api/v1/portal/payment-methods/saved/{id}/default:
+        post:
+            operationId: PostPortalPaymentmethodsSavedByIdDefault
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: paymentmethod:write:self
+            x-rate-class: mutation
     /api/v1/portal/services:
         get:
             operationId: GetPortalServices
@@ -5810,6 +6225,62 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: service:cancel:self
+            x-rate-class: mutation
+    /api/v1/portal/services/{id}/change-plan:
+        post:
+            operationId: PostPortalServicesByIdChangeplan
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:upgrade:self
             x-rate-class: mutation
     /api/v1/portal/services/{id}/config:
         get:
@@ -6626,6 +7097,58 @@ paths:
                 required: true
             x-permission: service:write:self
             x-rate-class: mutation
+    /api/v1/portal/services/{id}/plan-options:
+        get:
+            operationId: GetPortalServicesByIdPlanoptions
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-permission: service:upgrade:self
+            x-rate-class: read
     /api/v1/portal/services/{id}/upgrade:
         post:
             description: Prices the change against the remainder of the current period using exact rational arithmetic — never a float, never a "30 days per month" assumption. A higher price issues an invoice for the prorated amount; the service keeps its current price until that invoice is paid, which is what makes a half-applied upgrade visible. A lower price records the credit owed and reports `credit_pending`. The target must be reachable from the service's product, in the same currency and on the same billing interval.
@@ -16554,6 +17077,110 @@ paths:
             x-permission: log:read
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/cron/{job}/retry:
+        post:
+            operationId: PostStaffCronByJobRetry
+            parameters:
+                - in: path
+                  name: job
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: settings:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/cron/failures:
+        get:
+            operationId: GetStaffCronFailures
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-permission: log:read
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/cron/heartbeat:
         get:
             description: 'The heartbeat row plus whether it is stale. `stale` is derived from the age, because a heartbeat row that exists is not the same as a worker that is alive: a process killed nine hours ago leaves a row behind forever. A worker that has never run answers 200 with `present: false` rather than a 404, because that is the sentence the operator needs.'
@@ -16642,6 +17269,53 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Worker heartbeat
+            x-permission: log:read
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/cron/statistics:
+        get:
+            operationId: GetStaffCronStatistics
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
             x-permission: log:read
             x-rate-class: read
             x-staff-only: true
@@ -18121,6 +18795,59 @@ paths:
                 required: true
             x-permission: credit:write
             x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/customers/{id}/payment-methods:
+        get:
+            operationId: GetStaffCustomersByIdPaymentmethods
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-permission: customer:read:all
+            x-rate-class: read
             x-staff-only: true
     /api/v1/staff/customers/{id}/portal:
         get:
@@ -21098,6 +21825,63 @@ paths:
             x-permission: invoice:read:all
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/invoices/{id}/charge-saved-method:
+        post:
+            operationId: PostStaffInvoicesByIdChargesavedmethod
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: payment:reconcile
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/invoices/{id}/client-note:
         put:
             description: 'The note is printed on the customer''s PDF when `invoices.notes_client_visible` is on. It is stored even when that setting is off: the setting decides what a customer sees, not what an operator may record, and a note written today appears when the setting is turned on. An empty `note` clears it. A void document refuses a note, so the void statement stays the last word on the page.'
@@ -22843,6 +23627,68 @@ paths:
             x-permission: extension:manage
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/marketplace/installed/{name}/{version}:
+        patch:
+            operationId: PatchStaffMarketplaceInstalledByNameByVersion
+            parameters:
+                - in: path
+                  name: name
+                  required: true
+                  schema:
+                    type: string
+                - in: path
+                  name: version
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: extension:manage
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/marketplace/installed/{name}/{version}/artifact:
         get:
             description: Returns exactly the bytes whose digest was checked, with the digest in `X-Content-SHA256`, so the operator deploys the artifact that was verified rather than a fresh download from an index that may have changed since.
@@ -23099,6 +23945,53 @@ paths:
             x-permission: extension:manage
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/marketplace/scaffold:
+        get:
+            operationId: GetStaffMarketplaceScaffold
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-permission: extension:manage
+            x-rate-class: read
+            x-staff-only: true
     /api/v1/staff/marketplace/settings:
         put:
             description: 'Where the listing is fetched from and where a verified artifact is staged. `install_dir` empty means the verified bytes live in the panel only, which is still a real install: the artifact can be downloaded back byte for byte. A URL that is not http(s) is refused when it is saved rather than discovered when the fetch runs.'
@@ -23292,6 +24185,57 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Configure the marketplace index and staging directory
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: extension:manage
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/marketplace/upload:
+        post:
+            operationId: PostStaffMarketplaceUpload
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -25422,6 +26366,82 @@ paths:
             x-permission: invoice:read:all
             x-rate-class: read
             x-staff-only: true
+    /api/v1/staff/orders/{id}/cancel-subscription:
+        post:
+            description: One order can hold several services and each may carry its own provider subscription, so this queues one cancellation per service rather than stopping at the first. Services that fail are reported in `failures`; a partial success is never presented as a complete one.
+            operationId: PostStaffOrdersByIdCancelsubscription
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                reason:
+                                    maxLength: 255
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: Queued, with any per-service failures alongside
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No service of the order carries an external subscription
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Cancel every provider-side subscription of an order
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:write:all
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/payment-methods/offline:
         get:
             description: The closed set of methods the record-payment endpoint accepts, with the label to show a human. It is served so the form does not keep a second copy of the vocabulary that could drift from the database's CHECK constraint.
@@ -25777,6 +26797,57 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: payment:refund
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/payments/charge-due:
+        post:
+            operationId: PostStaffPaymentsChargedue
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: payment:reconcile
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/permissions:
@@ -27081,6 +28152,56 @@ paths:
             x-permission: server:write
             x-rate-class: mutation
             x-staff-only: true
+    /api/v1/staff/servers/fields:
+        get:
+            description: 'Separate from the servers screen''s credentials: those are installation configuration, these are per-purchase data. An installation with no provider configured answers 200 with `configured: false` rather than an error, because there is nothing broken. A failure to launch the adapter is reported inline with a stable code, like the connection test.'
+            operationId: GetStaffServersFields
+            responses:
+                2XX:
+                    description: The declaration, or the reason it could not be read
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The provisioner's purchase-time inputs
+            x-permission: server:write
+            x-rate-class: mutation
+            x-staff-only: true
     /api/v1/staff/servers/test:
         get:
             description: 'Launches the saved configuration''s provisioner and calls `provisioner.describe`, reporting its plans, regions and capabilities. The same rules as the gateway test: a read, safe to press twice, saved configuration only, and a failure is a 200 with `ok: false` and a stable code.'
@@ -27977,6 +29098,81 @@ paths:
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/services/{id}:
+        delete:
+            description: Refused while the service has invoices, provisioning operations, upgrades, cancellations, holds, tickets or suspension decisions behind it, because deleting it would orphan or cascade away part of the record of what happened. Such a service is terminated instead, and the refusal names the records that blocked it.
+            operationId: DeleteStaffServicesById
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                reason:
+                                    maxLength: 255
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: Deleted
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The service has history and must be terminated
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete a service with no history
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:write:all
+            x-rate-class: mutation
+            x-staff-only: true
         get:
             operationId: GetStaffServicesById
             parameters:
@@ -28030,6 +29226,86 @@ paths:
             summary: Service detail
             x-permission: service:read:all
             x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/services/{id}/cancel-subscription:
+        post:
+            description: Records the provider's subscription id on the service and queues the gateway call that ends it. The call is a `cancel_subscription` queue row, never a direct gateway call, so a lost reply is retried against the same idempotency key. The id is stored before the call and cleared only after the provider confirms, so a crash in between is recoverable.
+            operationId: PostStaffServicesByIdCancelsubscription
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                reason:
+                                    maxLength: 255
+                                    type: string
+                                subscription_id:
+                                    description: The provider's id. Omit to use the one already stored on the service.
+                                    maxLength: 200
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: Queued
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No external subscription id, or the service is terminated
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Cancel a provider-side subscription
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:write:all
+            x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/services/{id}/cancellation:
         post:
@@ -28173,6 +29449,82 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: service:upgrade
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/services/{id}/delete-remote:
+        post:
+            description: 'Destroys the resource at the provider and forgets its id, and deliberately leaves the service row, its status and its billing relationship untouched: the customer keeps what they bought. Terminating would end the service, which is a different decision. It is a queue row, so the call is idempotent and its outcome is visible on the operation resource.'
+            operationId: PostStaffServicesByIdDeleteremote
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                reason:
+                                    maxLength: 255
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: Queued
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The service has no remote resource
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Delete the provider-side resource, keeping the service
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:write:all
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/services/{id}/holds:
@@ -28824,6 +30176,299 @@ paths:
                 - sessionCookie: []
                 - bearerKey: []
             summary: Edit a service's label, description and custom properties
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/services/{id}/notify:
+        post:
+            description: 'Writes the mail to the durable outbox and the portal inbox in one transaction. The message is a deliberate act by an operator, so it carries no dedupe key: pressing the button twice sends twice, and the button never lies about having sent.'
+            operationId: PostStaffServicesByIdNotify
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                body:
+                                    maxLength: 8000
+                                    type: string
+                                subject:
+                                    maxLength: 200
+                                    type: string
+                            required:
+                                - subject
+                                - body
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: Queued
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: A missing or oversized subject or body
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The customer has no email address
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Send the customer a message about their service
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/services/{id}/provisioning-fields:
+        get:
+            description: 'The keys come from the configured provisioner''s `provisioner.fields` call, not from the core: a cPanel account needs a domain and a Pterodactyl server needs a panel user id, and the core does not know either. A provisioner that cannot be reached leaves the stored values readable rather than blanking the screen.'
+            operationId: GetStaffServicesByIdProvisioningfields
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    description: Declared fields plus stored values
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: The provisioning inputs an adapter declares, and this service's values
+            x-permission: service:read:all
+            x-rate-class: read
+            x-staff-only: true
+        put:
+            description: 'Validated against the adapter''s own declaration: an unknown key is refused (it would be stored and never sent) and a missing required field is refused (the purchase would fail after the money moved). The values are sent back to the adapter in the create and upgrade metadata under the same keys.'
+            operationId: PutStaffServicesByIdProvisioningfields
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                values:
+                                    additionalProperties:
+                                        type: string
+                                    type: object
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: Stored
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An unknown or missing required field
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No provisioner is configured to declare fields
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Store the provisioning inputs on a service
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:write:all
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/services/{id}/recalculate-price:
+        post:
+            description: 'Reads the product''s newest price for the service''s interval and currency, re-prices the stored config-option selection against it, and reports the difference in exact minor units. With `apply: false` — the default — nothing is written. With `apply: true` the subscription moves to that price version, the stored option amounts are rewritten to it, and a resize is queued when the provisioner plan itself changed. It is not an upgrade: no prorated invoice is raised, because this repairs a stale price rather than selling a change.'
+            operationId: PostStaffServicesByIdRecalculateprice
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            properties:
+                                apply:
+                                    description: Write the result. Default false.
+                                    type: boolean
+                                reason:
+                                    maxLength: 255
+                                    type: string
+                            type: object
+                required: true
+            responses:
+                2XX:
+                    description: The comparison, and whether it was applied
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The service has no billing schedule or no comparable catalogue price
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Recompute a service's price from the catalogue
             x-csrf-required: true
             x-idempotency:
                 header: Idempotency-Key
@@ -35629,6 +37274,117 @@ paths:
             summary: The pending-upgrade queue
             x-permission: service:read:all
             x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/upgrades/{id}/credit:
+        post:
+            operationId: PostStaffUpgradesByIdCredit
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: ""
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: credit:write
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/upgrades/apply:
+        post:
+            description: 'The manual half of the pending-upgrade queue: it applies every upgrade whose invoice has been paid, moving the subscription and queueing the resize. It is idempotent — an applied row is not a candidate — and it is the same function the scheduled job calls, so the two paths cannot disagree.'
+            operationId: PostStaffUpgradesApply
+            responses:
+                2XX:
+                    description: The ids that were applied
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such record
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Apply every paid upgrade now
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:write:all
+            x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/users:
         get:

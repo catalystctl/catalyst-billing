@@ -410,8 +410,27 @@ function telemetryCard(ctx: Ctx, state: UpdateState, reload: () => void): HTMLEl
           ? `${titleCase(telemetry.last_send.status)} · ${relative(telemetry.last_send.sent_at)}`
           : "never",
       },
+      {
+        // The schedule is part of the promise the switch makes (OPS-13). Until the worker ran the
+        // job, "on" meant "on when somebody presses send", which is not what an operator agreed
+        // to; the sentence now says daily, so a missing send is a visible failure rather than an
+        // unstated one.
+        label: "Schedule",
+        value: telemetry.enabled ? "daily, from the worker" : "not scheduled",
+      },
     ]),
   );
+
+  if (telemetry.enabled && !telemetry.endpoint_configured) {
+    body.appendChild(
+      banner(
+        "warning",
+        "Telemetry is on but there is nowhere to send it",
+        "The daily job will do nothing until an endpoint is configured below. Nothing is stored and nothing leaves " +
+          "the installation in this state.",
+      ),
+    );
+  }
 
   if (!telemetry.enabled) {
     body.appendChild(
@@ -566,8 +585,10 @@ function telemetryForm(ctx: Ctx, state: UpdateState, reload: () => void): HTMLEl
     h(
       "p",
       { class: "faint" },
-      "Telemetry is off unless this switch is on. When it is on, the payload is the document above: counts, " +
-        "versions and a random installation id, and nothing that identifies a customer.",
+      "Telemetry is off unless this switch is on. When it is on, the worker sends the document above once a day — " +
+        "counts, versions and a random installation id, and nothing that identifies a customer. Every attempt is " +
+        "recorded in the send history above whether it succeeded or not, and \"Send telemetry\" is for a one-off " +
+        "delivery; it does not replace the schedule.",
     ),
   );
 }

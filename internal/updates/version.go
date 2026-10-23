@@ -42,6 +42,28 @@ import (
 // ErrInvalidVersion is a string that is not a semantic version this package understands.
 var ErrInvalidVersion = errors.New("updates: invalid version")
 
+// buildVersion is the running binary's version, stamped by cmd/billing at startup.
+//
+// It exists because the version is a property of the *process*, and two things in it need to
+// read it without being handed it: the update check the API serves (that path is given the
+// version in its Config) and the daily telemetry job, which runs in the worker — a `package main`
+// that no library can import. Before this the telemetry payload could only be built by an HTTP
+// handler, which is why the daily delivery did not exist.
+//
+// The default is "dev", the same value the linker stamp defaults to, so a build that forgets to
+// call SetBuildVersion reports honestly rather than claiming a release.
+var buildVersion = "dev"
+
+// SetBuildVersion records the running binary's version. It is called once, from main.
+func SetBuildVersion(v string) {
+	if v = strings.TrimSpace(v); v != "" {
+		buildVersion = v
+	}
+}
+
+// BuildVersion returns the running binary's version.
+func BuildVersion() string { return buildVersion }
+
 // Version is a parsed semantic version.
 //
 // It is a small, deliberately strict parser: `MAJOR.MINOR.PATCH` with an optional

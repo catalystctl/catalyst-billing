@@ -256,13 +256,19 @@ type Installed struct {
 	// Status is always "verified". It is stated rather than implied so a client cannot
 	// render "running": the core has no way to start an extension it was not configured for.
 	Status string `json:"status"`
+	// Enabled is the operator's answer to "should the deployment use this?". It is separate from
+	// "verified" and from "the environment variable points at it": an installation may keep an
+	// artifact installed (for rollback) while switched off, and a screen that could not show that
+	// difference left a support engineer guessing which of four gateways was live (ADM-12).
+	Enabled bool `json:"enabled"`
 }
 
 // ListInstalled returns the installed extensions, newest first.
 func (s *Store) ListInstalled(ctx context.Context) ([]Installed, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT name, version, publisher, description, kind, sha256,
-		       pinned_sha256 IS NOT NULL, source_url, size_bytes, staged_path, installed_at
+		       pinned_sha256 IS NOT NULL, source_url, size_bytes, staged_path, installed_at,
+		       enabled
 		FROM installed_extensions
 		ORDER BY installed_at DESC, name`)
 	if err != nil {
@@ -275,7 +281,7 @@ func (s *Store) ListInstalled(ctx context.Context) ([]Installed, error) {
 		var item Installed
 		if err := rows.Scan(&item.Name, &item.Version, &item.Publisher, &item.Description,
 			&item.Kind, &item.SHA256, &item.Pinned, &item.SourceURL, &item.SizeBytes,
-			&item.StagedPath, &item.InstalledAt); err != nil {
+			&item.StagedPath, &item.InstalledAt, &item.Enabled); err != nil {
 			return nil, fmt.Errorf("marketplace: scan installed: %w", err)
 		}
 		item.InstalledAt = item.InstalledAt.UTC()

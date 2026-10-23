@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/money"
@@ -32,15 +35,19 @@ import (
 func cmdAdmin(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: billing admin " +
-			"<create-user|create-customer|issue-invoice|purge-test-data|setting|logs>")
+			"<create-user|password-reset|create-customer|issue-invoice|import|purge-test-data|setting|logs>")
 	}
 	switch args[0] {
 	case "create-user":
 		return adminCreateUser(args[1:])
+	case "password-reset":
+		return adminPasswordReset(args[1:])
 	case "create-customer":
 		return adminCreateCustomer(args[1:])
 	case "issue-invoice":
 		return adminIssueInvoice(args[1:])
+	case "import":
+		return adminImport(args[1:])
 	case "purge-test-data":
 		return adminPurgeTestData(args[1:])
 	case "setting":
@@ -262,6 +269,159 @@ func adminCreateUser(args []string) error {
 		fmt.Printf("created user %s with staff role %s\n", userID, *role)
 	}
 	return nil
+}
+
+// adminPasswordReset sets a password for an existing account from the command line.
+//
+// It exists because the panel's own reset flow needs a working mail transport and a browser, and
+// the situation an operator is in when they need this is usually "the account is locked out and
+// the panel is the thing that is broken". `admin create-user` could make a *new* account but
+// nothing could repair an old one, so the documented break-glass procedure was a psql UPDATE —
+// which sets a password without revoking the sessions that may be the reason for the reset, and
+// without an audit row.
+//
+// It is therefore the same operation the staff screen performs, not a parallel implementation:
+// `authn.Service.SetPasswordByOperator` writes the hash, bumps `credential_version`, revokes every
+// live session of the target and records both the security event and the audit row — inside one
+// transaction, so a half-done reset cannot happen.
+//
+// Usage: billing admin password-reset --email <address|id> [--password ...] [--generate] [--as <operator>]
+//
+// The password comes from BILLING_ADMIN_PASSWORD or a pipe by default, for the same reason
+// create-user does: an argument is visible in `ps` and lands in shell history. `--generate` is for
+// the operator who has nobody to tell a password to yet; the generated value is printed once and
+// never stored anywhere else.
+func adminPasswordReset(args []string) error {
+	flags, positional, err := splitFlags(args, []string{"email", "password", "as"}, []string{"generate"})
+	if err != nil {
+		return err
+	}
+	if len(positional) != 0 {
+		return errors.New("usage: billing admin password-reset --email <address|id> " +
+			"[--password <value>|--generate] [--as <operator email or id>]")
+	}
+
+	target := strings.TrimSpace(flags["email"])
+	if target == "" {
+		return errors.New("--email is required (an address, or a user id)")
+	}
+
+	generated := flags["generate"] == "true"
+	password := flags["password"]
+	if generated && password != "" {
+		// Both would mean one of them is ignored, and a caller cannot tell which.
+		return errors.New("--generate and --password are alternatives; pass one")
+	}
+	if generated {
+		password, err = newCLIPassword()
+		if err != nil {
+			return err
+		}
+	}
+	if password == "" {
+		password = os.Getenv("BILLING_ADMIN_PASSWORD")
+	}
+	if password == "" && stdinIsPipe() {
+		line, rerr := bufio.NewReader(os.Stdin).ReadString('\n')
+		if rerr != nil && !errors.Is(rerr, io.EOF) {
+			return fmt.Errorf("read password from stdin: %w", rerr)
+		}
+		password = strings.TrimRight(line, "\r\n")
+	}
+	if password == "" {
+		return errors.New("set BILLING_ADMIN_PASSWORD, pipe the password on stdin, " +
+			"or pass --password or --generate")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := store.Open(ctx, store.ConfigFromEnv())
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	var (
+		userID string
+		email  string
+	)
+	if validUUID(target) {
+		err = pool.QueryRow(ctx, `SELECT id, email FROM users WHERE id = $1`, target).
+			Scan(&userID, &email)
+	} else {
+		err = pool.QueryRow(ctx, `SELECT id, email FROM users WHERE lower(email) = lower($1)`, target).
+			Scan(&userID, &email)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No "did you mean": the caller is an operator, and echoing account details back to an
+		// unknown address is the enumeration behaviour the login endpoint refuses to have.
+		return fmt.Errorf("no user matches %q", target)
+	}
+	if err != nil {
+		return fmt.Errorf("look up the account: %w", err)
+	}
+
+	// The operator is resolved the same way `setting set` resolves one: when `--as` names a user
+	// their permission is checked, because a shell must not become a way to do something the API
+	// would answer 403 to. Without `--as` the reset is a system action that records the OS user
+	// and host instead of inventing a person.
+	operator, err := resolveCLIOperator(ctx, pool, flags["as"], authn.PermStaffManage)
+	if err != nil {
+		return err
+	}
+
+	hasher, err := authn.NewHasher(authn.DefaultArgon2Params())
+	if err != nil {
+		return err
+	}
+	svc, err := authn.New(pool, hasher, authn.DefaultConfig())
+	if err != nil {
+		return err
+	}
+
+	revoked, err := svc.SetPasswordByOperator(ctx, userID, password, operator.userID,
+		cliAuditor{actor: operator.actor, operator: operator.label})
+	if err != nil {
+		if errors.Is(err, authn.ErrWeakPassword) {
+			return fmt.Errorf("%w (nothing was changed)", err)
+		}
+		return fmt.Errorf("reset the password: %w", err)
+	}
+
+	fmt.Printf("reset the password for %s\n", email)
+	fmt.Printf("revoked %s\n", pluralCount(revoked, "session"))
+	if generated {
+		// Printed once, on stdout, because there is nothing else to give the operator: the
+		// point of the command is to hand somebody their first password.
+		fmt.Printf("password: %s\n", password)
+	}
+	if operator.actor.Kind == audit.ActorSystem {
+		fmt.Fprintf(os.Stderr,
+			"recorded as a system action (%s); pass --as <operator> to name the person\n", operator.label)
+	}
+	return nil
+}
+
+// newCLIPassword returns a random password for `password-reset --generate`.
+//
+// 24 characters from a base64url alphabet is 144 bits of entropy: long enough that the value the
+// operator reads off the terminal survives being typed once, and made of characters that survive
+// a shell and a chat window.
+func newCLIPassword() (string, error) {
+	raw := make([]byte, 18)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate a password: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// pluralCount renders "1 session" / "0 sessions" for the operator-facing summary.
+func pluralCount(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // stdinIsPipe reports whether stdin is a pipe or file rather than a terminal, which

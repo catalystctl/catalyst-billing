@@ -1075,7 +1075,11 @@ try {
         b.click();
         return true;
       })()`);
-      const backHome = await until("the operator's own session", "location.pathname === '/'", 12_000)
+      // The staff home is /dashboard, not /. `/` is the storefront — a staff session that landed
+      // there would be a bug, not a homecoming, and asserting `/` would have passed only by
+      // matching a page the operator should never be sent to. `homeFor()` in lib/session.ts is
+      // the single definition, and the storefront-link assertion above already relies on it.
+      const backHome = await until("the operator's own session", "location.pathname === '/dashboard'", 12_000)
         .then(() => true)
         .catch(() => false);
       check("impersonation: stopping returns the operator to their own session", backHome, `path: ${await evaluate("location.pathname")}`);

@@ -6015,11 +6015,8 @@ paths:
                                                 pattern: ^[A-Z0-9]{2,12}$
                                                 type: string
                                             interval:
-                                                enum:
-                                                    - monthly
-                                                    - quarterly
-                                                    - semiannual
-                                                    - annual
+                                                description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                 type: string
                                             name:
                                                 type: string
@@ -6240,11 +6237,8 @@ paths:
                                                 pattern: ^[A-Z0-9]{2,12}$
                                                 type: string
                                             interval:
-                                                enum:
-                                                    - monthly
-                                                    - quarterly
-                                                    - semiannual
-                                                    - annual
+                                                description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                 type: string
                                             name:
                                                 type: string
@@ -12498,14 +12492,8 @@ paths:
                                                     format: uuid
                                                     type: string
                                                 interval:
-                                                    description: '`one_time` is charged once and `free` costs nothing. Neither creates a subscription, so neither can renew. Arbitrary N-day periods are not supported.'
-                                                    enum:
-                                                        - monthly
-                                                        - quarterly
-                                                        - semiannual
-                                                        - annual
-                                                        - one_time
-                                                        - free
+                                                    description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                    pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                     type: string
                                                 interval_label:
                                                     description: The customer-facing wording ("per month", "one-time", "free").
@@ -12557,14 +12545,8 @@ paths:
                                                     format: uuid
                                                     type: string
                                                 interval:
-                                                    description: '`one_time` is charged once and `free` costs nothing. Neither creates a subscription, so neither can renew. Arbitrary N-day periods are not supported.'
-                                                    enum:
-                                                        - monthly
-                                                        - quarterly
-                                                        - semiannual
-                                                        - annual
-                                                        - one_time
-                                                        - free
+                                                    description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                    pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                     type: string
                                                 interval_label:
                                                     description: The customer-facing wording ("per month", "one-time", "free").
@@ -12836,14 +12818,8 @@ paths:
                                                     format: uuid
                                                     type: string
                                                 interval:
-                                                    description: '`one_time` is charged once and `free` costs nothing. Neither creates a subscription, so neither can renew. Arbitrary N-day periods are not supported.'
-                                                    enum:
-                                                        - monthly
-                                                        - quarterly
-                                                        - semiannual
-                                                        - annual
-                                                        - one_time
-                                                        - free
+                                                    description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                    pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                     type: string
                                                 interval_label:
                                                     description: The customer-facing wording ("per month", "one-time", "free").
@@ -27438,11 +27414,8 @@ paths:
                                                 pattern: ^[A-Z0-9]{2,12}$
                                                 type: string
                                             interval:
-                                                enum:
-                                                    - monthly
-                                                    - quarterly
-                                                    - semiannual
-                                                    - annual
+                                                description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                 type: string
                                             name:
                                                 type: string
@@ -27664,11 +27637,8 @@ paths:
                                                 pattern: ^[A-Z0-9]{2,12}$
                                                 type: string
                                             interval:
-                                                enum:
-                                                    - monthly
-                                                    - quarterly
-                                                    - semiannual
-                                                    - annual
+                                                description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                 type: string
                                             name:
                                                 type: string
@@ -34115,11 +34085,8 @@ paths:
                                                                 pattern: ^[A-Z0-9]{2,12}$
                                                                 type: string
                                                             interval:
-                                                                enum:
-                                                                    - monthly
-                                                                    - quarterly
-                                                                    - semiannual
-                                                                    - annual
+                                                                description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                                pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                                 type: string
                                                             name:
                                                                 type: string
@@ -34159,11 +34126,8 @@ paths:
                                                                 pattern: ^[A-Z0-9]{2,12}$
                                                                 type: string
                                                             interval:
-                                                                enum:
-                                                                    - monthly
-                                                                    - quarterly
-                                                                    - semiannual
-                                                                    - annual
+                                                                description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                                pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                                 type: string
                                                             name:
                                                                 type: string
@@ -34222,11 +34186,8 @@ paths:
                                                                 pattern: ^[A-Z0-9]{2,12}$
                                                                 type: string
                                                             interval:
-                                                                enum:
-                                                                    - monthly
-                                                                    - quarterly
-                                                                    - semiannual
-                                                                    - annual
+                                                                description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                                pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                                 type: string
                                                             name:
                                                                 type: string
@@ -34351,11 +34312,8 @@ paths:
                                                     pattern: ^[A-Z0-9]{2,12}$
                                                     type: string
                                                 interval:
-                                                    enum:
-                                                        - monthly
-                                                        - quarterly
-                                                        - semiannual
-                                                        - annual
+                                                    description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                    pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                     type: string
                                                 name:
                                                     type: string
@@ -34395,11 +34353,8 @@ paths:
                                                     pattern: ^[A-Z0-9]{2,12}$
                                                     type: string
                                                 interval:
-                                                    enum:
-                                                        - monthly
-                                                        - quarterly
-                                                        - semiannual
-                                                        - annual
+                                                    description: 'The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are calendar periods: they hang off `anchor_day`, which is what makes a month end and a leap day come out right. `one_time` is charged once and `free` costs nothing; neither creates a subscription, so neither can renew. `every_<N>_days` is a day-count period (1..366 days, counted from the anchor day for the first period): it renews exactly N civil days later, so its boundary keeps the same wall-clock time across a daylight-saving transition.'
+                                                    pattern: ^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$
                                                     type: string
                                                 name:
                                                     type: string

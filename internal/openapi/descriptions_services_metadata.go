@@ -89,9 +89,10 @@ func servicePlanSchema() map[string]any {
 		"properties": map[string]any{
 			"price_version_id": map[string]any{"type": "string", "format": "uuid"},
 			"name":             map[string]any{"type": "string"},
-			"interval": map[string]any{
-				"type": "string", "enum": []string{"monthly", "quarterly", "semiannual", "annual"},
-			},
+			// The billing period, from the one schema the catalog uses: an enum here went
+			// stale the moment a day-count period was added, and a document that tells an
+			// integrator `every_45_days` is invalid is worse than one that says nothing.
+			"interval":     intervalSchema(),
 			"currency":     map[string]any{"type": "string", "pattern": "^[A-Z0-9]{2,12}$"},
 			"amount_minor": map[string]any{"type": "integer", "format": "int64"},
 			"setup_minor":  map[string]any{"type": "integer", "format": "int64"},

@@ -67,11 +67,13 @@ func LoadPolicy(ctx context.Context, q interface {
 
 // Subscription is the persisted schedule state the engine needs.
 type Subscription struct {
-	ID                 string
-	CustomerID         string
-	PriceVersionID     string
-	Status             string
-	Interval           calendar.Interval
+	ID             string
+	CustomerID     string
+	PriceVersionID string
+	Status         string
+	// IntervalName is the stored interval: a calendar interval, or the day-count
+	// form "every_45_days". The period model is chosen from it, never guessed.
+	IntervalName       string
 	Anchor             calendar.Anchor
 	Timezone           string
 	CurrentPeriodStart time.Time
@@ -233,21 +235,20 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 		if err != nil {
 			return fmt.Errorf("renewal: unknown timezone %q: %w", sub.Timezone, err)
 		}
-		schedule, err := calendar.NewSchedule(sub.Interval, sub.Anchor, loc)
+		// The stored interval decides the period model. A day-count subscription is
+		// counted from its persisted next billing instant, which is the grid's origin:
+		// that is what keeps "every 45 days" on the same dates across restarts, and it
+		// is why the engine never derives a boundary from "now".
+		schedule, err := calendar.ScheduleFor(sub.IntervalName, sub.Anchor, sub.NextBillingAt, loc)
 		if err != nil {
 			return fmt.Errorf("renewal: invalid schedule: %w", err)
 		}
 
-		// The period being billed starts at the persisted boundary. Deriving it
-		// from the anchor rather than adding 30 days is what makes month-end and
-		// leap-day behaviour correct.
-		period := schedule.PeriodAt(sub.NextBillingAt)
-		if !period.Start.Equal(sub.NextBillingAt) {
-			// The stored boundary is not on the calendar (for example after a
-			// timezone change). Re-anchor rather than bill a period the customer
-			// never saw.
-			period = schedule.PeriodStartingIn(sub.NextBillingAt.In(loc).Year(), sub.NextBillingAt.In(loc).Month())
-		}
+		// The period being billed starts at the persisted boundary. Deriving it from
+		// the schedule rather than adding 30 days is what makes month-end and
+		// leap-day behaviour correct; for a day-count interval it is what makes the
+		// period exactly N civil days long across a DST transition.
+		period := schedule.PeriodStartingAt(sub.NextBillingAt)
 		out.PeriodKey = period.Key()
 
 		// Cancellation at period end: the customer still receives the final
@@ -478,11 +479,11 @@ func lockSubscription(ctx context.Context, tx pgx.Tx, id string) (Subscription, 
 	if err != nil {
 		return Subscription{}, fmt.Errorf("renewal: lock subscription: %w", err)
 	}
-	iv, err := calendar.ParseInterval(interval)
-	if err != nil {
-		return Subscription{}, err
-	}
-	sub.Interval = iv
+	// The stored interval is validated where the schedule is built, because that is
+	// also where the period model is chosen from it: a calendar interval and a
+	// day-count interval are different models, and an unknown value has to fail
+	// there rather than be parsed twice with two different rules.
+	sub.IntervalName = interval
 	sub.Anchor = calendar.Anchor{Day: anchorDay, Hour: hour, Minute: minute}
 	sub.Timezone = timezone
 	return sub, nil

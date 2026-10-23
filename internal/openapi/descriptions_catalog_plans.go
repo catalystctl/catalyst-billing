@@ -16,6 +16,30 @@ package openapi
 
 func init() { RegisterDescriptions(catalogPlansOperations) }
 
+// intervalPattern matches every billing period the API accepts: the four calendar intervals, the
+// two non-recurring kinds, and a day count written every_<N>_days with N in 1..366.
+//
+// It is a pattern rather than an enum because a day count has 366 values: an enum would either be
+// enormous or would lie about what the API takes. The range is spelled out here so the document
+// refuses the same day counts the database CHECK does (see 0059), and the two cannot drift apart
+// without this line being edited.
+const intervalPattern = `^(monthly|quarterly|semiannual|annual|one_time|free|every_([1-9]|[1-9][0-9]|[1-2][0-9][0-9]|3[0-5][0-9]|36[0-6])_days)$`
+
+// intervalSchema is the billing-period field of a price.
+func intervalSchema() map[string]any {
+	return map[string]any{
+		"type":    "string",
+		"pattern": intervalPattern,
+		"description": "The billing period. `monthly`, `quarterly`, `semiannual` and `annual` are " +
+			"calendar periods: they hang off `anchor_day`, which is what makes a month end and a " +
+			"leap day come out right. `one_time` is charged once and `free` costs nothing; neither " +
+			"creates a subscription, so neither can renew. `every_<N>_days` is a day-count period " +
+			"(1..366 days, counted from the anchor day for the first period): it renews exactly N " +
+			"civil days later, so its boundary keeps the same wall-clock time across a daylight-saving " +
+			"transition.",
+	}
+}
+
 // planSchema is one plan (one immutable price version) as the panel renders it.
 func planSchema() map[string]any {
 	return map[string]any{
@@ -30,14 +54,9 @@ func planSchema() map[string]any {
 			"currency": map[string]any{
 				"type": "string", "pattern": "^[A-Z0-9]{2,12}$",
 			},
-			"amount": AmountRef(),
-			"setup":  AmountRef(),
-			"interval": map[string]any{
-				"type": "string",
-				"enum": []string{"monthly", "quarterly", "semiannual", "annual", "one_time", "free"},
-				"description": "`one_time` is charged once and `free` costs nothing. Neither creates a " +
-					"subscription, so neither can renew. Arbitrary N-day periods are not supported.",
-			},
+			"amount":   AmountRef(),
+			"setup":    AmountRef(),
+			"interval": intervalSchema(),
 			"interval_label": map[string]any{
 				"type":        "string",
 				"description": "The customer-facing wording (\"per month\", \"one-time\", \"free\").",

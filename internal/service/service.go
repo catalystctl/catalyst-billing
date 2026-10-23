@@ -281,11 +281,16 @@ func scanSubscription(row pgx.Row) (subscription, error) {
 	if err != nil {
 		return subscription{}, fmt.Errorf("service: load subscription: %w", err)
 	}
-	interval, err := calendar.ParseInterval(sub.IntervalName)
-	if err != nil {
-		return subscription{}, fmt.Errorf("service: %w", err)
+	// A day-count interval ("every 45 days") has no calendar Interval, so it is left
+	// at the zero value rather than rejected: the schedule below is built from the
+	// stored name, which is what decides which period model applies.
+	if _, dayCount := calendar.ParseDayInterval(sub.IntervalName); !dayCount {
+		interval, err := calendar.ParseInterval(sub.IntervalName)
+		if err != nil {
+			return subscription{}, fmt.Errorf("service: %w", err)
+		}
+		sub.Interval = interval
 	}
-	sub.Interval = interval
 	sub.Anchor = calendar.Anchor{Day: anchorDay, Hour: anchorHour, Minute: anchorMinute}
 	return sub, nil
 }
@@ -300,10 +305,14 @@ const subscriptionColumns = `
 // but the calendar is consulted first so a month-end or DST period is measured by the length
 // it really has rather than by a remembered column that a timezone change could have made
 // stale. When the two disagree the stored boundary wins, because the customer was billed on it.
+//
+// A day-count period is counted from that same stored boundary, which is its grid origin, so a
+// mid-cycle upgrade on "every 45 days" prorates against the 45 days the customer paid for —
+// not against a remembered start and end that a re-anchor could have moved.
 func billingPeriod(sub subscription, now time.Time) (time.Time, time.Time) {
 	loc, err := time.LoadLocation(sub.Timezone)
 	if err == nil {
-		if schedule, err := calendar.NewSchedule(sub.Interval, sub.Anchor, loc); err == nil {
+		if schedule, err := calendar.ScheduleFor(sub.IntervalName, sub.Anchor, sub.CurrentPeriodStart, loc); err == nil {
 			if p := schedule.PeriodAt(now); p.Start.Equal(sub.CurrentPeriodStart) {
 				return p.Start, p.End
 			}

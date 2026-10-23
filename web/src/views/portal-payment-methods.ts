@@ -1,173 +1,228 @@
-// Saved payment methods — and the honest state when there are none to save.
+// Saved payment methods — the customer's side of the mandate (PAY-10, PAY-11).
 //
-// The protocol has no charge method and no `create_billing_agreement`, so this installation
-// cannot store a card and cannot charge one off-session. The backlog says so (PAY-10 is open, and
-// `docs/paymenter-parity.md` lists `billing_agreements` as absent), and the payment flow reflects
-// it: `POST /api/v1/portal/invoices/{id}/checkout` returns a gateway redirect URL, and the card
-// is entered on the gateway's page every time.
+// There is still no card form on this page, and that is the point. The number is entered on
+// the provider's page, which returns a reusable reference; this panel stores the reference and
+// the display metadata (brand, last four, expiry) and never sees the card itself.
 //
-// So this screen has exactly one job, and it is not to draw a card form. A card form on our own
-// origin would pull the panel into PCI scope — the number would touch our DOM, our logs and our
-// error reporting — to add a feature the backend cannot accept the output of. That is not a
-// feature; it is an incident waiting for a bad afternoon.
-//
-// What it does instead:
-//
-//   - asks `GET /api/v1/portal/payment-methods`, which is the endpoint the billing-agreement work
-//     will provide. If it answers with rows, they are listed (the shape is coded defensively:
-//     a saved method needs only an id and a label to render).
-//   - if it answers 404 — the likely case today — the page says plainly that nothing is stored,
-//     explains that the card is entered at the payment page each time, and links to the invoices
-//     that can be paid. A 404 is a fact about the build, so it is not an error state.
-//   - if it answers with an empty list, it says the same thing, because "no saved methods" and
-//     "no support for saved methods" lead the customer to the same next step.
+// The page does four things the previous version could only explain it could not do: add a
+// method through the provider's hosted flow, list what is saved, choose the default that a
+// renewal will charge, and remove one. It also reports, honestly, whether this installation
+// can charge a saved method without the customer present.
 
 import { ApiError } from "../lib/api";
-import { h } from "../lib/dom";
+import { h, swap } from "../lib/dom";
 import { dateTime } from "../lib/format";
 import { icon } from "../lib/icons";
 import type { Ctx } from "../lib/types";
-import { badge, banner, btn, card, emptyState, pageHead, resource, skeletonTable } from "../ui/kit";
+import { badge, banner, btn, card, emptyState, pageHead, resource, skeletonTable, withBusy } from "../ui/kit";
+import {
+  methodExpiry,
+  methodIcon,
+  methodTitle,
+  type SavedMethod,
+  type SavedMethodsPayload,
+} from "./payment-methods";
 
 export const meta = { title: "Payment methods", crumb: "Payment methods" };
 
-/** One saved method. Only `id` and a human label are required: the billing-agreement protocol is
- *  not built yet, so this screen must not depend on a field name that has not been agreed. Every
- *  other field is read only when it is present. */
-interface SavedMethod {
-  id: string;
-  brand?: string;
-  last4?: string;
-  label?: string;
-  expiry_month?: number;
-  expiry_year?: number;
-  default?: boolean;
-  created_at?: string;
-}
-
-interface MethodsPayload {
-  data?: unknown;
-  /** Some drafts of the endpoint answer `{methods: [...]}`; accept either rather than crash. */
-  methods?: unknown;
+interface State extends SavedMethodsPayload {
+  supported: boolean;
 }
 
 export default async function portalPaymentMethodsPage(ctx: Ctx): Promise<Node> {
+  const host = h("div", { class: "stack" });
+  const paint = (): void => {
+    swap(
+      host,
+      resource(ctx, (signal) => load(ctx, signal), (state) => render(ctx, state, paint), {
+        skeleton: () => skeletonTable(2, 3),
+      }),
+    );
+  };
+  paint();
+  return host;
+}
+
+async function load(ctx: Ctx, signal: AbortSignal): Promise<State> {
+  // Returning from the provider: confirm the mandate and save the method it produced before
+  // listing, and remove the query parameter so a refresh does not re-confirm.
+  const pending = ctx.route.query.get("agreement");
+  if (pending) {
+    try {
+      await ctx.api.get(`/api/v1/portal/payment-methods/agreements/${encodeURIComponent(pending)}`, {
+        cache: false,
+        signal,
+      });
+      ctx.replaceQuery({ agreement: null });
+      ctx.api.invalidate("/api/v1/portal/payment-methods");
+      ctx.toast("Payment method saved", {
+        tone: "success",
+        detail: "The card is stored by the payment provider. Its brand and last four appear here.",
+      });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      ctx.toast("The card was not saved", {
+        tone: "danger",
+        detail:
+          err instanceof ApiError && err.status === 404
+            ? "That saved-card request no longer exists."
+            : "The payment provider did not confirm the card. Nothing has been charged; try again.",
+      });
+      ctx.replaceQuery({ agreement: null });
+    }
+  }
+
+  try {
+    const body = await ctx.api.get<SavedMethodsPayload>("/api/v1/portal/payment-methods/saved", {
+      cache: false,
+      signal,
+    });
+    return { supported: true, ...body, methods: body.methods ?? [] };
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 404 || err.status === 501)) {
+      return {
+        supported: false,
+        methods: [],
+        has_default: false,
+        off_session: { enabled: false, reason: "this build cannot store payment methods" },
+      };
+    }
+    throw err;
+  }
+}
+
+function render(ctx: Ctx, state: State, repaint: () => void): Node {
+  const add = addButton(ctx, state.supported);
   return h(
     "div",
-    { class: "page" },
+    { class: "stack" },
     pageHead({
       title: "Payment methods",
-      sub: "Cards are entered on the payment page, which is run by the payment provider. This panel never sees the number.",
-      actions: btn("Back to overview", { href: "/portal", size: "sm", icon: "arrowLeft" }),
-    }),
-    resource(
-      ctx,
-      async (signal) => {
-        try {
-          const body = await ctx.api.get<MethodsPayload>("/api/v1/portal/payment-methods", { cache: false, signal });
-          const raw = Array.isArray(body?.data) ? body.data : Array.isArray(body?.methods) ? body.methods : [];
-          return { supported: true as const, rows: raw as SavedMethod[] };
-        } catch (err) {
-          // The endpoint does not exist on an installation without billing agreements. That is
-          // the expected answer today, so it becomes "nothing is stored" rather than an error.
-          if (err instanceof ApiError && (err.status === 404 || err.status === 501)) {
-            return { supported: false as const, rows: [] as SavedMethod[] };
-          }
-          throw err;
-        }
-      },
-      (data) => {
-        if (data.rows.length === 0) return nothingStored(data.supported);
-        return h(
-          "div",
-          { class: "stack" },
-          card({
-            title: "Saved methods",
-            sub: `${data.rows.length} on this account`,
-            flush: true,
-            body: h("div", { class: "portal-list" }, ...data.rows.map((row) => methodRow(row))),
-            foot: h(
-              "span",
-              { class: "row" },
-              icon("shield", 12),
-              "The number is held by the payment provider. This panel stores a reference to it, never the card.",
-            ),
-          }),
-          payNote(),
-        );
-      },
-      { skeleton: () => skeletonTable(2, 3) },
-    ),
-  );
-}
-
-/** The state that matters today: no stored methods, because the installation has no
- *  billing-agreement support (or because the customer has never saved one). The wording differs
- *  slightly between the two, and both point at the one action that exists. */
-function nothingStored(supported: boolean): HTMLElement {
-  return h(
-    "div",
-    { class: "stack" },
-    card({
-      flush: true,
-      body: emptyState({
-        title: supported ? "No saved payment methods" : "Nothing is stored on this installation",
-        body: supported
-          ? "Cards are entered at the payment page each time. If your provider supports saving one, it will be offered there, and it will appear here afterwards."
-          : "This installation has no billing-agreement support, so there is no card to save and none is kept. Each payment is made on the provider's page, where you enter the card, and nothing about it is stored here.",
-        icon: "card",
-        action: h(
-          "div",
-          { class: "row-wrap" },
-          btn("Pay an invoice", { href: "/portal/invoices", size: "sm", variant: "primary", icon: "invoice" }),
-          btn("Back to overview", { href: "/portal", size: "sm", icon: "home" }),
-        ),
-      }),
-    }),
-    payNote(),
-  );
-}
-
-/** Why there is no card form here. It is stated rather than implied, because "add a card" is the
- *  first thing a customer looks for on a page with this title. */
-function payNote(): HTMLElement {
-  return h(
-    "div",
-    { class: "stack" },
-    banner(
-      "info",
-      "Why there is no card form on this page",
-      "A card form here would put this panel in the path of the card number — in its forms, its logs and its error reports — and the backend has no way to charge a stored card. Payments are made on the provider's page, which is the part of the flow that is allowed to see a card.",
-    ),
-    card({
-      title: "How paying works",
-      body: h(
+      sub: "Cards are entered on the payment provider's page. This panel stores a reference, the brand, the last four digits and the expiry — never the number.",
+      actions: h(
         "div",
-        { class: "stack-sm" },
-        h(
-          "p",
-          { class: "page-sub" },
-          "Open an invoice and choose Pay. The panel asks the server for a payment session and sends you to the provider's page with the amount already set — the amount comes from the invoice, never from the browser.",
-        ),
-        h(
-          "p",
-          { class: "field-hint" },
-          "When the provider confirms the payment, the invoice is marked paid here and a receipt is emailed. You are returned to the invoice afterwards.",
-        ),
-        h("div", { class: "row-wrap" }, btn("See your invoices", { href: "/portal/invoices", size: "sm", icon: "invoice" })),
+        { class: "row-wrap" },
+        add,
+        btn("Back to overview", { href: "/portal", size: "sm", icon: "arrowLeft" }),
       ),
     }),
+    offSessionNotice(state),
+    state.methods.length === 0
+      ? nothingStored(state.supported, add)
+      : card({
+          title: "Saved methods",
+          sub: `${state.methods.length} on this account`,
+          flush: true,
+          body: h("div", { class: "portal-list" }, ...state.methods.map((row) => methodRow(ctx, row, repaint))),
+          foot: h(
+            "span",
+            { class: "row" },
+            icon("shield", 12),
+            "The number is held by the payment provider. This panel stores a reference to it, never the card.",
+          ),
+        }),
   );
 }
 
-/** One saved method. Rendered from whatever the row carries: a brand and last four if it has
- *  them, its own label otherwise, and the id as a last resort. */
-function methodRow(row: SavedMethod): HTMLElement {
-  const title = row.label?.trim() || describeMethod(row);
-  const expiry =
-    typeof row.expiry_month === "number" && typeof row.expiry_year === "number"
-      ? `expires ${String(row.expiry_month).padStart(2, "0")}/${String(row.expiry_year).slice(-2)}`
-      : "";
+/** What the installation can actually do, rather than a promise the gateway cannot keep. */
+function offSessionNotice(state: State): Node | null {
+  if (state.off_session.enabled) {
+    return banner(
+      "success",
+      "Renewals can be charged automatically",
+      "The default card is charged when a renewal invoice comes due. If the card is declined, the invoice stays open and the usual reminder path takes over — nothing is suspended by the card alone.",
+    );
+  }
+  return banner(
+    "info",
+    "Saved cards are not charged automatically",
+    state.off_session.reason
+      ? `You can still save a card, but a renewal will need paying by hand: ${state.off_session.reason}.`
+      : "You can still save a card, but a renewal will need paying by hand on this installation.",
+  );
+}
+
+function addButton(ctx: Ctx, supported: boolean): HTMLButtonElement {
+  const el = btn("Add a card", {
+    variant: "primary",
+    size: "sm",
+    icon: "plus",
+    title: "Add a card through the payment provider's secure page",
+  }) as HTMLButtonElement;
+  if (!supported) {
+    el.disabled = true;
+    el.title = "This installation cannot store payment methods";
+    return el;
+  }
+  el.addEventListener("click", () =>
+    void withBusy(ctx, el, async () => {
+      let started: { redirect_url?: string };
+      try {
+        started = await ctx.api.post("/api/v1/portal/payment-methods/agreements", {});
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          ctx.toast("Saved cards are not available", {
+            tone: "danger",
+            detail: "This build does not support storing a card. Pay an invoice on the provider's page instead.",
+          });
+          return;
+        }
+        ctx.toast("The card page could not be opened", {
+          tone: "danger",
+          detail:
+            err instanceof ApiError && err.code === "gateway_unavailable"
+              ? "The payment gateway is not configured. Nothing has been charged."
+              : "The payment gateway is unavailable. Nothing has been charged; try again.",
+        });
+        return;
+      }
+      const target = started.redirect_url;
+      if (!target) {
+        ctx.toast("The card page could not be opened", {
+          tone: "danger",
+          detail: "The provider returned no usable link. Nothing has been charged.",
+        });
+        return;
+      }
+      window.location.assign(target);
+    }),
+  );
+  return el;
+}
+
+function nothingStored(supported: boolean, add: HTMLButtonElement): HTMLElement {
+  return card({
+    flush: true,
+    body: emptyState({
+      title: supported ? "No saved payment methods" : "Nothing is stored on this installation",
+      body: supported
+        ? "Add a card to pay renewals without entering it every time. The card is entered on the payment provider's page, not here."
+        : "This installation has no billing-agreement support, so there is no card to save and none is kept. Each payment is made on the provider's page.",
+      icon: "card",
+      action: h(
+        "div",
+        { class: "row-wrap" },
+        add,
+        btn("Pay an invoice", { href: "/portal/invoices", size: "sm", icon: "invoice" }),
+      ),
+    }),
+  });
+}
+
+function methodRow(ctx: Ctx, row: SavedMethod, repaint: () => void): HTMLElement {
+  const title = row.label?.trim() || methodTitle(row);
+  const expiry = methodExpiry(row);
+  const failure = row.last_failure_at
+    ? `Refused ${dateTime(row.last_failure_at)}${row.last_failure_code ? ` (${row.last_failure_code})` : ""}`
+    : "";
+  const actions = h(
+    "div",
+    { class: "row-wrap" },
+    row.default
+      ? null
+      : defaultButton(ctx, row.id, repaint),
+    removeButton(ctx, row.id, title, repaint),
+  );
   return h(
     "div",
     { class: "portal-row" },
@@ -177,7 +232,7 @@ function methodRow(row: SavedMethod): HTMLElement {
       h(
         "div",
         { class: "portal-row-title" },
-        icon("card", 13),
+        methodIcon(row.brand, 30),
         h("span", null, title),
         row.default ? badge("Default", "accent", { dot: true }) : null,
       ),
@@ -185,25 +240,56 @@ function methodRow(row: SavedMethod): HTMLElement {
         "div",
         { class: "portal-row-meta" },
         expiry ? h("span", null, expiry) : null,
+        row.last4 ? h("span", { class: "mono" }, `•••• ${row.last4}`) : null,
         row.created_at ? h("span", { class: "portal-row-dot" }, "·") : null,
         row.created_at ? h("span", { title: dateTime(row.created_at) }, `added ${dateTime(row.created_at)}`) : null,
+        failure ? badge(failure, "danger") : null,
       ),
     ),
-    h(
-      "div",
-      { class: "portal-row-side" },
-      // No remove button: there is no documented endpoint to delete a saved method, and a button
-      // that 404s is worse than a sentence explaining where to change it.
-      h("span", { class: "faint nowrap" }, "Managed at the provider"),
-    ),
+    h("div", { class: "portal-row-side" }, actions),
   );
 }
 
-function describeMethod(row: SavedMethod): string {
-  const brand = row.brand?.trim();
-  const last4 = row.last4?.trim();
-  if (brand && last4) return `${brand} ending ${last4}`;
-  if (last4) return `Card ending ${last4}`;
-  if (brand) return brand;
-  return "Saved payment method";
+function defaultButton(ctx: Ctx, id: string, repaint: () => void): HTMLButtonElement {
+  const el = btn("Make default", { size: "sm" }) as HTMLButtonElement;
+  el.addEventListener("click", () =>
+    void withBusy(ctx, el, async () => {
+      try {
+        await ctx.api.post(`/api/v1/portal/payment-methods/saved/${encodeURIComponent(id)}/default`, {});
+        ctx.api.invalidate("/api/v1/portal/payment-methods");
+        ctx.toast("Default card changed", {
+          tone: "success",
+          detail: "Renewals will use this card when automatic charging is enabled.",
+        });
+        repaint();
+      } catch {
+        ctx.toast("The default card could not be changed", { tone: "danger" });
+      }
+    }),
+  );
+  return el;
+}
+
+function removeButton(ctx: Ctx, id: string, title: string, repaint: () => void): HTMLButtonElement {
+  const el = btn("Remove", { size: "sm", variant: "ghost" }) as HTMLButtonElement;
+  el.addEventListener("click", async () => {
+    const ok = await ctx.confirm({
+      title: `Remove ${title}?`,
+      body: "The card is deleted from this panel and from the payment provider. A renewal that relied on it will need paying by hand until you save another one.",
+      confirmLabel: "Remove card",
+      danger: true,
+    });
+    if (!ok) return;
+    void withBusy(ctx, el, async () => {
+      try {
+        await ctx.api.del(`/api/v1/portal/payment-methods/saved/${encodeURIComponent(id)}`);
+        ctx.api.invalidate("/api/v1/portal/payment-methods");
+        ctx.toast("Card removed", { tone: "success" });
+        repaint();
+      } catch {
+        ctx.toast("The card could not be removed", { tone: "danger" });
+      }
+    });
+  });
+  return el;
 }

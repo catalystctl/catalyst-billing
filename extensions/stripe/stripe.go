@@ -204,7 +204,9 @@ type session struct {
 	PaymentIntent json.RawMessage `json:"payment_intent"`
 
 	// Filled from the expanded intent.
-	AmountRefunded int64 `json:"-"`
+	AmountRefunded int64  `json:"-"`
+	Fee            int64  `json:"-"`
+	FeeCurrency    string `json:"-"`
 	intentID       string
 }
 
@@ -227,7 +229,20 @@ type intent struct {
 	AmountReceived int64             `json:"amount_received"`
 	AmountRefunded int64             `json:"amount_refunded"`
 	Currency       string            `json:"currency"`
+	Customer       string            `json:"customer"`
 	Metadata       map[string]string `json:"metadata"`
+	// LatestCharge is an id string by default and an object when expanded. The
+	// balance transaction under it is where Stripe reports its own fee.
+	LatestCharge json.RawMessage `json:"latest_charge"`
+	// LastPaymentError is Stripe's decline object on a failed confirmation.
+	LastPaymentError json.RawMessage `json:"last_payment_error"`
+
+	// Filled from the expanded latest charge.
+	Fee         int64  `json:"-"`
+	FeeCurrency string `json:"-"`
+	DeclineCode string `json:"-"`
+	FailCode    string `json:"-"`
+	FailMessage string `json:"-"`
 }
 
 // protocolStatus maps an intent's state onto the protocol's statuses.
@@ -265,18 +280,24 @@ func (c *stripeClient) getSession(ctx context.Context, id string) (session, erro
 			Currency:       in.Currency,
 			Metadata:       in.Metadata,
 			AmountRefunded: in.AmountRefunded,
+			Fee:            in.Fee,
+			FeeCurrency:    in.FeeCurrency,
 		}, nil
 	}
 	var out session
-	path := "/v1/checkout/sessions/" + url.PathEscape(id) + "?expand%5B%5D=payment_intent"
+	path := "/v1/checkout/sessions/" + url.PathEscape(id) +
+		"?expand%5B%5D=payment_intent&expand%5B%5D=payment_intent.latest_charge.balance_transaction"
 	if err := c.get(ctx, path, &out); err != nil {
 		return session{}, err
 	}
 	var expanded intent
 	if len(out.PaymentIntent) > 0 {
 		if err := json.Unmarshal(out.PaymentIntent, &expanded); err == nil {
+			expanded.readLatestCharge()
 			out.intentID = expanded.ID
 			out.AmountRefunded = expanded.AmountRefunded
+			out.Fee = expanded.Fee
+			out.FeeCurrency = expanded.FeeCurrency
 		} else {
 			// It is a bare id string.
 			var raw string
@@ -310,9 +331,12 @@ func intentPaymentStatus(in intent) string {
 
 func (c *stripeClient) getIntent(ctx context.Context, id string) (intent, error) {
 	var out intent
-	if err := c.get(ctx, "/v1/payment_intents/"+url.PathEscape(id), &out); err != nil {
+	path := "/v1/payment_intents/" + url.PathEscape(id) +
+		"?expand%5B%5D=latest_charge.balance_transaction"
+	if err := c.get(ctx, path, &out); err != nil {
 		return intent{}, err
 	}
+	out.readLatestCharge()
 	return out, nil
 }
 
@@ -352,3 +376,162 @@ func idempotencyKeyFor(operationKey string) string {
 func minorAmount(minor int64) string { return strconv.FormatInt(minor, 10) }
 
 var errNoWebhookSecret = errors.New("no STRIPE_WEBHOOK_SECRET is configured, so a delivery cannot be authenticated")
+
+// ---------------------------------------------------------- billing agreements --
+
+// setupSession is the part of a Checkout Session in setup mode the adapter reads.
+type setupSession struct {
+	ID          string            `json:"id"`
+	Status      string            `json:"status"`
+	URL         string            `json:"url"`
+	Customer    string            `json:"customer"`
+	Metadata    map[string]string `json:"metadata"`
+	Created     int64             `json:"created"`
+	ExpiresAt   int64             `json:"expires_at"`
+	SetupIntent json.RawMessage   `json:"setup_intent"`
+}
+
+// setupIntent is the mandate underneath a setup session.
+type setupIntent struct {
+	ID            string          `json:"id"`
+	Status        string          `json:"status"`
+	Customer      string          `json:"customer"`
+	PaymentMethod json.RawMessage `json:"payment_method"`
+}
+
+// paymentMethod is the display metadata and provider id of a stored method. It is the
+// only place this adapter reads a card's brand and last four, and it never reads a PAN.
+type paymentMethod struct {
+	ID       string `json:"id"`
+	Customer string `json:"customer"`
+	Card     struct {
+		Brand    string `json:"brand"`
+		Last4    string `json:"last4"`
+		ExpMonth int    `json:"exp_month"`
+		ExpYear  int    `json:"exp_year"`
+	} `json:"card"`
+}
+
+// createBillingAgreement starts a hosted setup session: the customer enters the card on
+// Stripe's page, and Stripe returns a reusable PaymentMethod id.
+func (c *stripeClient) createBillingAgreement(ctx context.Context, key, customerID, successURL, cancelURL string, metadata map[string]string) (setupSession, error) {
+	form := newForm()
+	form.Set("mode", "setup")
+	form.Set("success_url", successURL)
+	form.Set("cancel_url", cancelURL)
+	form.Set("payment_method_types[0]", "card")
+	form.Set("client_reference_id", customerID)
+	for k, v := range metadata {
+		form.Set("metadata["+k+"]", v)
+		form.Set("setup_intent_data[metadata]["+k+"]", v)
+	}
+	var out setupSession
+	if err := c.post(ctx, "/v1/checkout/sessions", key, form, &out); err != nil {
+		return setupSession{}, err
+	}
+	return out, nil
+}
+
+// getBillingAgreement reads a setup session and expands the method it produced.
+func (c *stripeClient) getBillingAgreement(ctx context.Context, id string) (setupSession, paymentMethod, error) {
+	var out setupSession
+	path := "/v1/checkout/sessions/" + url.PathEscape(id) +
+		"?expand%5B%5D=setup_intent.payment_method"
+	if err := c.get(ctx, path, &out); err != nil {
+		return setupSession{}, paymentMethod{}, err
+	}
+	var si setupIntent
+	if len(out.SetupIntent) > 0 {
+		if err := json.Unmarshal(out.SetupIntent, &si); err == nil && len(si.PaymentMethod) > 0 {
+			var pm paymentMethod
+			if err := json.Unmarshal(si.PaymentMethod, &pm); err == nil {
+				return out, pm, nil
+			}
+		}
+	}
+	return out, paymentMethod{}, nil
+}
+
+// chargeSavedMethod confirms a PaymentIntent against a stored method with off_session=true.
+// The amount and currency are the core's, in minor units; this adapter never scales them.
+func (c *stripeClient) chargeSavedMethod(ctx context.Context, key string, p chargeRequest) (intent, error) {
+	form := newForm()
+	form.Set("amount", minorAmount(p.amountMinor))
+	form.Set("currency", strings.ToLower(p.currency))
+	form.Set("payment_method", p.methodToken)
+	form.Set("confirm", "true")
+	form.Set("off_session", "true")
+	form.Set("description", p.description)
+	if p.providerCustomerID != "" {
+		form.Set("customer", p.providerCustomerID)
+	}
+	for k, v := range p.metadata {
+		form.Set("metadata["+k+"]", v)
+	}
+	var out intent
+	path := "/v1/payment_intents?expand%5B%5D=latest_charge.balance_transaction"
+	if err := c.post(ctx, path, key, form, &out); err != nil {
+		return intent{}, err
+	}
+	out.readLatestCharge()
+	return out, nil
+}
+
+type chargeRequest struct {
+	amountMinor        int64
+	currency           string
+	methodToken        string
+	providerCustomerID string
+	description        string
+	metadata           map[string]string
+}
+
+// readLatestCharge pulls the provider's fee out of the expanded latest charge.
+func (i *intent) readLatestCharge() {
+	if len(i.LastPaymentError) > 0 {
+		var pe struct {
+			Code        string `json:"code"`
+			DeclineCode string `json:"decline_code"`
+			Message     string `json:"message"`
+		}
+		if err := json.Unmarshal(i.LastPaymentError, &pe); err == nil {
+			i.FailCode = pe.DeclineCode
+			if i.FailCode == "" {
+				i.FailCode = pe.Code
+			}
+			i.FailMessage = pe.Message
+		}
+	}
+	if len(i.LatestCharge) == 0 {
+		return
+	}
+	var charge struct {
+		BalanceTransaction json.RawMessage `json:"balance_transaction"`
+	}
+	if err := json.Unmarshal(i.LatestCharge, &charge); err != nil || len(charge.BalanceTransaction) == 0 {
+		return
+	}
+	var bt struct {
+		Fee      int64  `json:"fee"`
+		Currency string `json:"currency"`
+	}
+	if err := json.Unmarshal(charge.BalanceTransaction, &bt); err == nil {
+		i.Fee = bt.Fee
+		i.FeeCurrency = strings.ToUpper(bt.Currency)
+	}
+}
+
+// detachPaymentMethod removes a stored method from the provider. A method that is already
+// gone is a success: the local row is what ultimately decides whether it can be charged.
+func (c *stripeClient) detachPaymentMethod(ctx context.Context, key, methodToken string) error {
+	if !strings.HasPrefix(methodToken, "pm_") {
+		return nil
+	}
+	form := newForm()
+	err := c.post(ctx, "/v1/payment_methods/"+url.PathEscape(methodToken)+"/detach", key, form, nil)
+	var ae *apiError
+	if errors.As(err, &ae) && ae.httpStatus == http.StatusNotFound {
+		return nil
+	}
+	return err
+}

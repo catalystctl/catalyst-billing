@@ -100,6 +100,12 @@ type config struct {
 	// tolerance is how old a webhook signature may be. Stripe's own default is
 	// five minutes; a replayed delivery outside that window is refused.
 	tolerance time.Duration
+	// savedCards enables the billing-agreement surface. It is a kill switch, not a
+	// capability probe: Stripe supports it, and an operator who turned it off in the
+	// environment must not have it advertised to the core. The value is passed through
+	// gatewayconfig's environment allowlist; a variable not listed there never reaches
+	// this process, which is why it is declared in providers.go as an EnvOnly knob.
+	savedCards bool
 }
 
 // configFromEnv reads the configuration, refusing a missing key rather than
@@ -118,6 +124,7 @@ func configFromEnv(environ []string) (config, error) {
 		publishable:   strings.TrimSpace(env["STRIPE_PUBLISHABLE_KEY"]),
 		timeout:       20 * time.Second,
 		tolerance:     5 * time.Minute,
+		savedCards:    true,
 	}
 	if cfg.apiBase == "" {
 		cfg.apiBase = "https://api.stripe.com"
@@ -149,6 +156,16 @@ func configFromEnv(environ []string) (config, error) {
 			return config{}, fmt.Errorf("STRIPE_WEBHOOK_TOLERANCE_S=%q is not a positive integer", raw)
 		}
 		cfg.tolerance = time.Duration(secs) * time.Second
+	}
+	if raw := strings.TrimSpace(env["STRIPE_SAVED_CARDS"]); raw != "" {
+		switch strings.ToLower(raw) {
+		case "1", "true", "yes":
+			cfg.savedCards = true
+		case "0", "false", "no":
+			cfg.savedCards = false
+		default:
+			return config{}, fmt.Errorf("STRIPE_SAVED_CARDS=%q is not a boolean", raw)
+		}
 	}
 	return cfg, nil
 }
@@ -264,6 +281,21 @@ var capabilities = []string{
 	"gateway.query_payment",
 	"gateway.refund",
 	"gateway.verify_webhook",
+	"gateway.create_billing_agreement",
+	"gateway.query_billing_agreement",
+	"gateway.cancel_billing_agreement",
+	"gateway.charge",
+}
+
+// advertisedCapabilities returns what this process will actually serve. A disabled
+// billing-agreement surface is not advertised, because the core refuses to call a method
+// the handshake omitted: that is a refusal at the right moment rather than a charge that
+// fails halfway through.
+func (s *server) advertisedCapabilities() []string {
+	if s.cfg.savedCards {
+		return capabilities
+	}
+	return capabilities[:5]
 }
 
 func (s *server) handle(req *request) reply {
@@ -282,6 +314,14 @@ func (s *server) handle(req *request) reply {
 		return s.refund(req)
 	case "gateway.verify_webhook":
 		return s.verifyWebhook(req)
+	case "gateway.create_billing_agreement":
+		return s.createBillingAgreement(req)
+	case "gateway.query_billing_agreement":
+		return s.queryBillingAgreement(req)
+	case "gateway.cancel_billing_agreement":
+		return s.cancelBillingAgreement(req)
+	case "gateway.charge":
+		return s.charge(req)
 	default:
 		return reply{rpcErr: &rpcError{Code: codeMethodNotFound, Message: "method not found: " + req.Method}}
 	}
@@ -301,7 +341,7 @@ func (s *server) initialize(req *request) reply {
 				"version":      protocolVersion,
 				"name":         "stripe-gateway",
 				"publisher":    "catalyst",
-				"capabilities": capabilities,
+				"capabilities": s.advertisedCapabilities(),
 			}}
 		}
 	}
@@ -314,12 +354,13 @@ func (s *server) initialize(req *request) reply {
 
 func (s *server) describe() map[string]any {
 	return map[string]any{
-		"name":              "stripe",
-		"currencies":        s.cfg.currencies,
-		"methods":           []map[string]string{{"id": "card", "name": "Card"}},
-		"supports_refunds":  true,
-		"supports_webhooks": s.webhook != "",
-		"publishable_key":   s.cfg.publishable,
+		"name":                        "stripe",
+		"currencies":                  s.cfg.currencies,
+		"methods":                     []map[string]string{{"id": "card", "name": "Card"}},
+		"supports_refunds":            true,
+		"supports_webhooks":           s.webhook != "",
+		"supports_billing_agreements": s.cfg.savedCards,
+		"publishable_key":             s.cfg.publishable,
 		// Stripe's minimum charge is 50 minor units in most currencies and 1 in
 		// JPY; the panel only uses this to disable a button, so the general
 		// figure is the honest one to publish.
@@ -416,6 +457,17 @@ func (s *server) queryPayment(req *request) reply {
 	if err != nil {
 		return stripeErrorReply(err)
 	}
+	metadata := make(map[string]string, len(sess.Metadata)+2)
+	for k, v := range sess.Metadata {
+		metadata[k] = v
+	}
+	// The protocol's payment result has no fee field, so the adapter reports the provider's
+	// own fee under namespaced metadata. The core records it beside the payment for
+	// reconciliation; it never changes the amount applied to an invoice.
+	if sess.Fee > 0 {
+		metadata["catalyst_fee_minor"] = strconv.FormatInt(sess.Fee, 10)
+		metadata["catalyst_fee_currency"] = strings.ToUpper(sess.FeeCurrency)
+	}
 	return reply{result: map[string]any{
 		"payment_id":      sess.ID,
 		"status":          sess.protocolStatus(),
@@ -423,7 +475,7 @@ func (s *server) queryPayment(req *request) reply {
 		"amount_refunded": amount{Minor: sess.AmountRefunded, Currency: strings.ToUpper(sess.Currency)},
 		"created_at":      time.Unix(sess.Created, 0).UTC(),
 		"updated_at":      time.Unix(sess.Created, 0).UTC(),
-		"metadata":        sess.Metadata,
+		"metadata":        metadata,
 	}}
 }
 
@@ -563,6 +615,189 @@ func stripeErrorReply(err error) reply {
 		}
 	}
 	return reply{rpcErr: &rpcError{Code: codeInternal, Message: err.Error()}}
+}
+
+// createBillingAgreement starts the hosted flow that collects a reusable method.
+func (s *server) createBillingAgreement(req *request) reply {
+	if !s.cfg.savedCards {
+		return reply{rpcErr: &rpcError{Code: codeMethodNotFound, Message: "billing agreements are disabled"}}
+	}
+	var p struct {
+		OperationKey string            `json:"operation_key"`
+		CustomerID   string            `json:"customer_id"`
+		SuccessURL   string            `json:"success_url"`
+		CancelURL    string            `json:"cancel_url"`
+		Metadata     map[string]string `json:"metadata"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "create_billing_agreement params: " + err.Error()}}
+	}
+	if strings.TrimSpace(p.OperationKey) == "" {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "operation_key is required"}}
+	}
+	if p.CustomerID == "" || p.SuccessURL == "" {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "customer_id and success_url are required"}}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.timeout)
+	defer cancel()
+	sess, err := s.client.createBillingAgreement(ctx, p.OperationKey, p.CustomerID,
+		p.SuccessURL, p.CancelURL, p.Metadata)
+	if err != nil {
+		return stripeErrorReply(err)
+	}
+	if sess.ID == "" || sess.URL == "" {
+		return reply{rpcErr: &rpcError{Code: codeInternal, Message: "stripe returned a setup session with no id or url"}}
+	}
+	expires := time.Time{}
+	if sess.ExpiresAt > 0 {
+		expires = time.Unix(sess.ExpiresAt, 0).UTC()
+	}
+	return reply{result: map[string]any{
+		"agreement_id": sess.ID,
+		"checkout_url": sess.URL,
+		"status":       "pending",
+		"expires_at":   expires,
+	}}
+}
+
+// queryBillingAgreement reads the mandate and, once confirmed, the method it produced.
+func (s *server) queryBillingAgreement(req *request) reply {
+	if !s.cfg.savedCards {
+		return reply{rpcErr: &rpcError{Code: codeMethodNotFound, Message: "billing agreements are disabled"}}
+	}
+	var p struct {
+		AgreementID string `json:"agreement_id"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "query_billing_agreement params: " + err.Error()}}
+	}
+	if p.AgreementID == "" {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "agreement_id is required"}}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.timeout)
+	defer cancel()
+	sess, pm, err := s.client.getBillingAgreement(ctx, p.AgreementID)
+	if err != nil {
+		return stripeErrorReply(err)
+	}
+	status := "pending"
+	if pm.ID != "" {
+		status = "succeeded"
+	} else if sess.Status == "expired" {
+		status = "canceled"
+	}
+	out := map[string]any{
+		"agreement_id": sess.ID,
+		"status":       status,
+	}
+	if sess.Customer != "" {
+		out["provider_customer_id"] = sess.Customer
+	}
+	if pm.ID != "" {
+		// This is the one method on this adapter whose result carries a credential. The
+		// core stores it and never returns it; it is not part of a browser response.
+		out["method_token"] = pm.ID
+		out["brand"] = pm.Card.Brand
+		out["last4"] = pm.Card.Last4
+		out["expiry_month"] = pm.Card.ExpMonth
+		out["expiry_year"] = pm.Card.ExpYear
+	}
+	if sess.Created > 0 {
+		out["created_at"] = time.Unix(sess.Created, 0).UTC()
+	}
+	return reply{result: out}
+}
+
+// cancelBillingAgreement detaches the method from the provider.
+func (s *server) cancelBillingAgreement(req *request) reply {
+	if !s.cfg.savedCards {
+		return reply{rpcErr: &rpcError{Code: codeMethodNotFound, Message: "billing agreements are disabled"}}
+	}
+	var p struct {
+		OperationKey string `json:"operation_key"`
+		AgreementID  string `json:"agreement_id"`
+		MethodToken  string `json:"method_token"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "cancel_billing_agreement params: " + err.Error()}}
+	}
+	if strings.TrimSpace(p.OperationKey) == "" {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "operation_key is required"}}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.timeout)
+	defer cancel()
+	token := p.MethodToken
+	if token == "" && p.AgreementID != "" {
+		_, pm, err := s.client.getBillingAgreement(ctx, p.AgreementID)
+		if err != nil {
+			var ae *apiError
+			if !errors.As(err, &ae) || ae.httpStatus != 404 {
+				return stripeErrorReply(err)
+			}
+		}
+		token = pm.ID
+	}
+	if token == "" {
+		return reply{result: map[string]any{"agreement_id": p.AgreementID, "changed": false}}
+	}
+	if err := s.client.detachPaymentMethod(ctx, p.OperationKey, token); err != nil {
+		return stripeErrorReply(err)
+	}
+	return reply{result: map[string]any{"agreement_id": p.AgreementID, "changed": true}}
+}
+
+// charge charges a stored method with nobody present.
+func (s *server) charge(req *request) reply {
+	if !s.cfg.savedCards {
+		return reply{rpcErr: &rpcError{Code: codeMethodNotFound, Message: "billing agreements are disabled"}}
+	}
+	var p struct {
+		OperationKey       string            `json:"operation_key"`
+		CustomerID         string            `json:"customer_id"`
+		MethodToken        string            `json:"method_token"`
+		ProviderCustomerID string            `json:"provider_customer_id"`
+		Amount             amount            `json:"amount"`
+		Description        string            `json:"description"`
+		Metadata           map[string]string `json:"metadata"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "charge params: " + err.Error()}}
+	}
+	if strings.TrimSpace(p.OperationKey) == "" {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "operation_key is required"}}
+	}
+	if p.MethodToken == "" {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "method_token is required"}}
+	}
+	if err := p.Amount.validate(); err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: err.Error()}}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.timeout)
+	defer cancel()
+	in, err := s.client.chargeSavedMethod(ctx, p.OperationKey, chargeRequest{
+		amountMinor:        p.Amount.Minor,
+		currency:           p.Amount.Currency,
+		methodToken:        p.MethodToken,
+		providerCustomerID: p.ProviderCustomerID,
+		description:        firstNonEmpty(p.Description, "Invoice"),
+		metadata:           p.Metadata,
+	})
+	if err != nil {
+		return stripeErrorReply(err)
+	}
+	out := map[string]any{
+		"payment_id": in.ID,
+		"status":     in.protocolStatus(),
+		"amount":     amount{Minor: in.Amount, Currency: strings.ToUpper(in.Currency)},
+	}
+	if in.Fee > 0 {
+		out["fee"] = amount{Minor: in.Fee, Currency: strings.ToUpper(in.FeeCurrency)}
+	}
+	if in.FailCode != "" || in.FailMessage != "" {
+		out["failure_code"] = in.FailCode
+		out["failure_message"] = in.FailMessage
+	}
+	return reply{result: out}
 }
 
 func firstNonEmpty(values ...string) string {

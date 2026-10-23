@@ -82,6 +82,11 @@ var gatewayProviders = []Provider{
 				Key: "webhook_secret", Label: "Webhook signing secret", Env: "STRIPE_WEBHOOK_SECRET", Secret: true,
 				Hint: "whsec_…. Without it every delivery is rejected, which is the correct default.",
 			},
+			{
+				Key: "saved_cards_enabled", Label: "Saved cards and off-session charging",
+				Env:  "STRIPE_SAVED_CARDS",
+				Hint: "true to let customers save a card and charge renewals without them; false disables the adapter surface. Default true.",
+			},
 		},
 		EnvOnly: []EnvKnob{
 			{Env: "STRIPE_API_BASE", Hint: "Defaults to https://api.stripe.com."},

@@ -322,6 +322,25 @@ type gatewayDescriber interface {
 	DescribeGateway(ctx context.Context) (extproto.GatewayDescribeResult, error)
 }
 
+// paymentMethodIcon names the glyph the pay dialog draws for one method. It is derived from
+// the method's own id/name rather than from a brand table in the browser, so a gateway that
+// advertises "sepa_debit" or "card" gets the right glyph without a frontend release.
+func paymentMethodIcon(id, name string) string {
+	value := strings.ToLower(strings.TrimSpace(id + " " + name))
+	switch {
+	case strings.Contains(value, "card"):
+		return "card"
+	case strings.Contains(value, "sepa"), strings.Contains(value, "bank"), strings.Contains(value, "debit"):
+		return "bank"
+	case strings.Contains(value, "wallet"), strings.Contains(value, "apple"), strings.Contains(value, "google"):
+		return "wallet"
+	case strings.Contains(value, "paypal"), strings.Contains(value, "mollie"):
+		return "globe"
+	default:
+		return "card"
+	}
+}
+
 // brandHint derives a display hint from the provider name.
 //
 // The panel knows the provider by its configured name, not by a brand table, and inventing
@@ -359,7 +378,9 @@ func (s *Server) handlePortalPaymentMethods(w http.ResponseWriter, r *http.Reque
 			if len(res.Methods) > 0 {
 				methods = make([]map[string]any, 0, len(res.Methods))
 				for _, m := range res.Methods {
-					methods = append(methods, map[string]any{"id": m.ID, "name": m.Name})
+					methods = append(methods, map[string]any{
+						"id": m.ID, "name": m.Name, "icon": paymentMethodIcon(m.ID, m.Name),
+					})
 				}
 			}
 			currencies = res.Currencies
@@ -382,6 +403,7 @@ func (s *Server) handlePortalPaymentMethods(w http.ResponseWriter, r *http.Reque
 			"provider":         name,
 			"name":             displayName(name),
 			"brand_hint":       brandHint(name),
+			"icon":             brandHint(name),
 			"methods":          methods,
 			"currencies":       currencies,
 			"supports_refunds": canRefund,

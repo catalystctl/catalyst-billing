@@ -36,6 +36,11 @@ package importer
 //     (`tblproductconfigoptions` plus its values and pricing) cannot be mapped without guessing
 //     which value priced which service, and a wrong mapping re-prices a live service on its next
 //     renewal.
+//   - **Product groups.** WHMCS groups products in `tblproductgroups`; this panel has one flat level
+//     (`categories`). The mapping is not a mapping, it is a decision about a storefront's
+//     navigation, so products import uncategorised and the operator files them on the catalog
+//     screen — which is a minute of work with the real catalogue in front of them, and cannot be
+//     got wrong by a guess.
 //   - **Ticket replies.** The ticket *header* is imported; the thread is a separate document whose
 //     shape (author attribution, staff flag, attachments) has no fixture here. Every imported
 //     ticket carries the `ticket_thread_not_imported` warning so an operator reads the subject and

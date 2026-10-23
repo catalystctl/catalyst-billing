@@ -340,6 +340,10 @@ type automationResponse struct {
 var delegatedJobSources = map[string]string{
 	operations.ChargeDueJob: "internal/lifecycle/operations_jobs.go",
 	operations.TelemetryJob: "internal/lifecycle/operations_jobs.go",
+	// The abandoned-cart rule is a lifecycle rule, but it lives in its own file rather than in
+	// the already-long lifecycle.go. Listing it here keeps the map closed: the row still names
+	// a real file, and a new job cannot claim a path without an edit to this list.
+	lifecycle.AbandonCartJob: "internal/lifecycle/carts.go",
 }
 
 func fetchAutomation(t *testing.T, env *staffEnv) automationResponse {

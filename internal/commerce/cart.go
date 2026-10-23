@@ -63,6 +63,11 @@ type Cart struct {
 	TosAcceptedAt *time.Time `json:"tos_accepted_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
+	// Created reports that the read that produced this value also created the cart. It is
+	// carried out of the store because only the store can tell "the first line in a new cart"
+	// from "another line in an existing one", and the caller needs that to name the event it
+	// publishes. It is not part of the wire shape.
+	Created bool `json:"-"`
 }
 
 // CartItem is one line of a cart: what was chosen, never what it costs.
@@ -172,14 +177,22 @@ func (s *Store) CartTx(ctx context.Context, q querier, customerID, currency stri
 		return Cart{}, invalid("currency %q is not valid", currency)
 	}
 
-	var id string
+	var (
+		id string
+		// created is non-nil exactly when the insert did not conflict, which is the only
+		// moment "this cart came into existence" is knowable. xmax = 0 is PostgreSQL's own way
+		// of saying "this row version was inserted by this statement"; a conflicting update
+		// returns a row whose xmax is set. Counting the lines instead would be wrong: adding a
+		// second unit of the same product is an update, not a creation.
+		created *bool
+	)
 	// The insert is a no-op when a cart already exists, so two concurrent "open my cart"
 	// requests cannot race into two rows.
 	err := q.QueryRow(ctx, `
 		INSERT INTO carts (customer_id, currency)
 		VALUES ($1, $2)
 		ON CONFLICT (customer_id) DO UPDATE SET updated_at = now()
-		RETURNING id`, customerID, currency).Scan(&id)
+		RETURNING id, (xmax = 0)`, customerID, currency).Scan(&id, &created)
 	if err != nil {
 		if isForeignKeyViolation(err) {
 			return Cart{}, fmt.Errorf("%w: customer %s does not exist", ErrNotFound, customerID)
@@ -189,7 +202,12 @@ func (s *Store) CartTx(ctx context.Context, q querier, customerID, currency stri
 		}
 		return Cart{}, fmt.Errorf("commerce: open cart: %w", err)
 	}
-	return s.cartWith(ctx, q, id, customerID)
+	out, err := s.cartWith(ctx, q, id, customerID)
+	if err != nil {
+		return Cart{}, err
+	}
+	out.Created = created != nil && *created
+	return out, nil
 }
 
 // CartForCustomer reads the customer's cart without creating one.
@@ -391,7 +409,14 @@ func (s *Store) AddItemTx(ctx context.Context, q querier, customerID, currency s
 	if _, err := q.Exec(ctx, `UPDATE carts SET updated_at = now(), abandoned_at = NULL WHERE id = $1`, cart.ID); err != nil {
 		return Cart{}, fmt.Errorf("commerce: touch cart: %w", err)
 	}
-	return s.cartWith(ctx, q, cart.ID, customerID)
+	out, err := s.cartWith(ctx, q, cart.ID, customerID)
+	if err != nil {
+		return Cart{}, err
+	}
+	// The pre-add read is the only one that knows whether the cart existed, so its answer is
+	// carried onto the post-add value the caller receives.
+	out.Created = cart.Created
+	return out, nil
 }
 
 // UpdateQuantity sets a line's quantity. Zero is not a delete: removing a line is its own

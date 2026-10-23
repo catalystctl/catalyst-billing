@@ -330,7 +330,7 @@ const (
 	ServiceUpgradesKillSwitch = "BILLING_DISABLE_SERVICE_UPGRADES"
 )
 
-// ServiceJobs returns the service-price-change jobs, for the worker to schedule.
+// ServiceJobs returns the price-change job, for the worker to schedule.
 //
 // It is called from Jobs(), which is the list cmd/billing/jobs.go and the automation screen both
 // read, so a job added here is scheduled and visible in one step rather than two.

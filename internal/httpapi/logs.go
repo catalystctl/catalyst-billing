@@ -15,10 +15,10 @@
 //
 // They are tables rather than only stdout because an operator without a log aggregator
 // still has to answer "what failed last night" from the panel. That is also why the writers
-// below are exported functions rather than something the request middleware calls inline:
-// the middleware and the worker live in packages that must be able to record a row without
-// depending on the HTTP handler set, and a failed write must never fail the request it is
-// describing.
+// below are exported functions rather than private helpers: a component with a context, a name
+// and an error should be able to record a row without depending on the HTTP handler set, and a
+// failed write must never fail the work it is describing. The request middleware is one such
+// caller — see middleware.go for where it hooks in and why the write is bounded.
 //
 // Redaction happens on the way in first, because a stored credential is stored in a backup,
 // a replica and a `pg_dump` as well. `redactLogText` is the one rule, applied by both

@@ -18,6 +18,7 @@
 // how an operator makes a variant without retyping a price, which is how prices get mistyped.
 
 import { h, swap } from "../lib/dom";
+import { ApiError } from "../lib/api";
 import { dateTime, money, relative, type Amount } from "../lib/format";
 import { icon } from "../lib/icons";
 import { descriptionBody, richTextEditor } from "../lib/richtext";
@@ -29,6 +30,7 @@ import {
   emptyState,
   errorState,
   field,
+  input,
   kv,
   metaGrid,
   pageHead,
@@ -169,6 +171,18 @@ export function intervalValueFor(selection: string, days: number): string {
   return selection === "every_days" ? dayIntervalValue(days) : selection;
 }
 
+/** parseMinorUnits reads a major-unit amount ("12.00") into minor units without ever passing
+ *  through a float, which is the rule this codebase holds everywhere money is parsed. Returns
+ *  null when the text is not a number, so the caller can refuse the submit rather than send a
+ *  silently wrong amount. */
+function parseMinorUnits(raw: string): number | null {
+  const cleaned = raw.trim().replace(/[,\s]/g, "");
+  if (!/^\d*(\.\d{0,})?$/.test(cleaned) || cleaned === "" || cleaned === ".") return null;
+  const [whole = "0", fraction = ""] = cleaned.split(".");
+  const padded = (fraction + "00").slice(0, 2);
+  return Number(whole) * 100 + Number(padded);
+}
+
 // plansInOrder is the display order: the operator's plan order, then the newest version within
 // one position. It mirrors catalog.Plans on the server, so the preview here and the storefront
 // cannot disagree.
@@ -227,7 +241,87 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
     const ordered = plansInOrder(prices);
     const canWrite = ctx.can("catalog:write");
 
-    // saveDescription writes the description and its format in one request. The format travels
+    // addPrice appends a price version without leaving the product.
+  //
+  // The "Add price version" button used to navigate to `?addPrice=1`, which nothing consumed:
+  // the price dialog lives on the catalog list, so the button re-rendered this page and did
+  // nothing. It is a dead end, and a dead end on the one screen where a price is entered is how
+  // a product ends up unpriced. The form is here instead, and it shares the interval list with
+  // the catalog screen's dialog (INTERVAL_OPTIONS), so the two cannot offer different periods.
+  const addPrice = (p: Product, onDone: () => void) => {
+    const name = input({ id: "price-name", placeholder: "Monthly", required: true });
+    const currency = input({ id: "price-currency", value: "USD", class: "input--mono", maxlength: 12 });
+    const amount = input({ id: "price-amount", placeholder: "12.00", inputmode: "decimal", class: "input--mono" });
+    const setup = input({ id: "price-setup", placeholder: "0.00", inputmode: "decimal", class: "input--mono" });
+    const interval = select(INTERVAL_OPTIONS, { id: "price-interval", value: "monthly" });
+    const days = input({ id: "price-interval-days", type: "number", value: "45", min: "1", max: "366" });
+    const anchorDay = input({ id: "price-anchor-day", type: "number", value: "1", min: "1", max: "31" });
+    const timezone = input({ id: "price-tz", value: "UTC", class: "input--mono" });
+
+    const daysField = field({
+      label: "Days between renewals",
+      control: days,
+      id: "price-interval-days",
+      hint: "1-366. Each period is exactly this many days, counted from the first one.",
+    });
+    const syncDays = () => {
+      daysField.hidden = interval.value !== "every_days";
+    };
+    interval.addEventListener("change", syncDays);
+    syncDays();
+
+    void ctx.formDialog({
+      title: "Add a price version",
+      subtitle: `${p.name} — a new version is appended; the old one is never edited.`,
+      submitLabel: "Add price version",
+      body: h(
+        "div",
+        { class: "form-grid" },
+        field({ label: "Plan name", control: name, id: "price-name", hint: "What the customer sees: “Monthly”, “8 GB”." }),
+        field({ label: "Currency", control: currency, id: "price-currency", hint: "ISO code, e.g. USD." }),
+        field({ label: "Amount", control: amount, id: "price-amount", hint: "In major units, e.g. 12.00" }),
+        field({ label: "Setup fee", control: setup, id: "price-setup", hint: "Optional. Charged once." }),
+        field({ label: "Billing interval", control: interval, id: "price-interval" }),
+        daysField,
+        field({ label: "Anchor day", control: anchorDay, id: "price-anchor-day", hint: "Day of the month the first period starts." }),
+        field({ label: "Anchor timezone", control: timezone, id: "price-tz", hint: "IANA name, e.g. Europe/Berlin." }),
+      ),
+      onSubmit: async () => {
+        const minor = parseMinorUnits(amount.value);
+        const setupMinor = setup.value.trim() === "" ? 0 : parseMinorUnits(setup.value);
+        if (minor === null || setupMinor === null) {
+          return "Amounts must be numbers, e.g. 12.00.";
+        }
+        if (interval.value === "every_days") {
+          const n = Math.trunc(Number(days.value));
+          if (!Number.isFinite(n) || n < 1 || n > 366) {
+            return "Days between renewals must be a whole number from 1 to 366.";
+          }
+        }
+        try {
+          await ctx.api.post(`/api/v1/staff/catalog/products/${p.id}/prices`, {
+            name: name.value.trim(),
+            currency: currency.value.trim().toUpperCase(),
+            amount_minor: minor,
+            setup_minor: setupMinor,
+            interval: intervalValueFor(interval.value, Number(days.value)),
+            anchor_day: Number(anchorDay.value) || 1,
+            anchor_timezone: timezone.value.trim() || "UTC",
+          });
+        } catch (err) {
+          // A refusal is shown in the dialog rather than closing it, so the operator keeps what
+          // they typed and can correct the one field the server objected to.
+          return err instanceof ApiError
+            ? err.detail || "The price could not be added."
+            : "The server could not be reached.";
+        }
+        ctx.toast("Price version added", { tone: "success" });
+        onDone();
+      },
+    });
+  };
+
+  // saveDescription writes the description and its format in one request. The format travels
     // with the text because the renderer has to know whether to parse it or escape it.
     const saveDescription = async (
       text: string,
@@ -520,7 +614,7 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
               ? btn("Add price version", {
                   size: "sm",
                   icon: "plus",
-                  onclick: () => ctx.navigate(`/catalog-management/${p.id}?addPrice=1`),
+                  onclick: () => addPrice(p, () => void load()),
                 })
               : null,
             flush: true,

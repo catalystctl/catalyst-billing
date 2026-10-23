@@ -102,6 +102,12 @@ DELETE FROM coupons WHERE code LIKE 'E2E-%';
 DELETE FROM tax_rates WHERE name LIKE 'e2e-tax-%';
 DELETE FROM announcements WHERE title LIKE 'e2e-announcement-%';
 DELETE FROM currencies WHERE code LIKE 'ZZ%';
+-- The brand is installation-wide configuration the branding screen writes, so this run owns
+-- it: the harness sets a name and two accents to prove they reach the panel, and resets them
+-- at the end of that block. This is the belt to that braces — a run killed mid-block would
+-- otherwise leave a tenant brand on the next person's installation, and every screenshot
+-- after it would show "Acme Hosting".
+DELETE FROM settings WHERE group_key = 'branding';
 SQL
 
     # The support desk's switch is restored to whatever this installation had before the run,

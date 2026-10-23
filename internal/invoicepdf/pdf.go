@@ -132,8 +132,14 @@ func (c *canvas) line(x1, y1, x2, y2 float64, width float64) {
 }
 
 // fillRect fills a rectangle with a light grey, used for the table header.
+//
+// The `q`/`Q` pair is not decoration. The fill colour is part of the graphics state, so a bare
+// `g ... re f` leaves the grey set and every glyph drawn afterwards — the column labels, every
+// row, the totals, the terms — is painted in it. That was the behaviour before this pair was
+// added: an invoice's totals printed at 92% grey, which is legible on screen and nearly
+// invisible on paper. The state is now saved and restored, so a fill cannot leak into text.
 func (c *canvas) fillRect(x, y, w, h float64, grey float64) {
-	fmt.Fprintf(&c.ops, "%.2f g %.2f %.2f %.2f %.2f re f\n", grey, x, y, w, h)
+	fmt.Fprintf(&c.ops, "q %.2f g %.2f %.2f %.2f %.2f re f Q\n", grey, x, y, w, h)
 }
 
 // rect strokes a rectangle outline.

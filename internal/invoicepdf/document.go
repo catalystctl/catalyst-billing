@@ -319,7 +319,10 @@ func (r *renderer) drawHeader() {
 	if r.logo != nil {
 		if w, h := drawnLogoSize(*r.logo); w > 0 && h > 0 {
 			r.cur.drawImage(contentLeft, y-h, w, h, logoResourceName)
-			y -= h + 10
+			// The gap has to clear the name's ascender, not just the image: the name is drawn
+			// with its *baseline* at the cursor, so 16pt of leading is what keeps a descender-free
+			// cap height of 16pt from touching the logo's bottom edge.
+			y -= h + 20
 		}
 	}
 

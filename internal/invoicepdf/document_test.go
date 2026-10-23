@@ -597,17 +597,33 @@ func TestRenderDiscountLine(t *testing.T) {
 
 // ---------------------------------------------------------------- branding --
 
-// The bytes an unbranded document produced before branding existed.
+// The bytes an unbranded document produces.
 //
 // These are hashes, not descriptions, and that is the point: "an unset brand falls back to
 // the current appearance" is a claim about *every* byte, including the cross-reference
 // offsets and the resource dictionary. A test that asserted "no colour operators appear"
 // would pass while a stray `q`/`Q` pair or an unused XObject shifted every offset in the
-// file. The hash was recorded from the renderer with no brand support at all, so it cannot
-// be made to agree with a changed layout.
+// file.
+//
+// # Why these were re-recorded
+//
+// The first recording was taken from the renderer as it stood before branding existed, so
+// that the fallback could be compared against the actual prior output. Rendering a branded
+// and an unbranded document side by side then showed that the two disagreed for a reason that
+// had nothing to do with branding: `canvas.fillRect` set the fill colour and never restored
+// it, so every glyph after the table header — the rows, the totals, the terms — was painted
+// at 92% grey. A branded document did not, because its band goes through the graphics-state
+// pair. That is a defect in the *unbranded* document, and leaving it in place to keep a hash
+// stable would have meant shipping invoices whose totals are nearly invisible on paper while
+// claiming the branded ones were the odd ones out.
+//
+// So the leak was fixed (see `fillRect` in pdf.go) and the hashes re-recorded. What the test
+// still proves, and is what the requirement is about, is that a document with no brand
+// carries no brand operator and no brand resource: no colour, no image, no extra object. The
+// separate `TestFillColourDoesNotLeakIntoText` pins the fix.
 const (
-	goldenUnbrandedInvoice    = "07a2e2b875912c04df1c0f7da6a9bc1ccebe60fd604d1bb97e6dec7bcdf27e1f"
-	goldenUnbrandedCreditNote = "2d883d81e9d25c543079afb8ced9217574d850ab6b1984abb61cc0d0612e7c38"
+	goldenUnbrandedInvoice    = "523aab1a08a9253402351dab0227d55517088b94e57c91aa8baf92df14d511e1"
+	goldenUnbrandedCreditNote = "161620e0db5ed6c58e3a18608d98c38add4b171a0278969c06034289fcfc816d"
 )
 
 func sha256Hex(b []byte) string {
@@ -836,4 +852,60 @@ func logoPNG(t *testing.T, w, h int, r, g, b uint8) []byte {
 		t.Fatalf("encode logo: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// A fill must not leak into the text drawn after it.
+//
+// This is a regression test for a defect the branding work exposed rather than caused: the
+// table-header band set the fill colour and never restored it, so every glyph below it — the
+// column labels, every row, the totals and the terms — was painted at 92% grey. On screen that
+// reads as "a bit faint"; printed, the amount a customer is asked to pay is nearly invisible.
+//
+// It is asserted on the content stream because that is where the leak lives: the operators
+// between the band and the next text run must restore the graphics state.
+func TestFillColourDoesNotLeakIntoText(t *testing.T) {
+	out, err := Render(FromInvoice(sampleSnapshot(t), issuedMeta()))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	stream := string(out)
+
+	// The band exists...
+	band := strings.Index(stream, " 0.92 g ")
+	if band < 0 {
+		t.Fatal("the table header band is not drawn")
+	}
+	// ...and it is inside a graphics-state pair, so the grey cannot outlive it. The band's own
+	// operator line begins with the save, which is why the check is on the start of that line
+	// rather than on the bytes immediately before the colour: the previous line is the period
+	// label's text run.
+	lineStart := strings.LastIndex(stream[:band], "\n")
+	if lineStart < 0 {
+		t.Fatal("the header band is not on a line of its own")
+	}
+	if !strings.HasPrefix(stream[lineStart+1:], "q ") {
+		t.Fatalf("the header band is not preceded by a graphics-state save: %q", stream[lineStart+1:band])
+	}
+	after := stream[band:]
+	end := strings.Index(after, " re f ")
+	if end < 0 {
+		t.Fatal("the header band is not filled")
+	}
+	rest := after[end:]
+	if !strings.HasPrefix(rest, " re f Q") {
+		t.Fatalf("the header band is not followed by a graphics-state restore: %q", rest[:min(12, len(rest))])
+	}
+
+	// The totals are drawn after the band, and no fill colour is set between the restore and
+	// them: the default black is what they inherit.
+	totals := strings.Index(rest, "(Total)")
+	if totals < 0 {
+		t.Fatal("the total is not drawn")
+	}
+	between := rest[:totals]
+	for _, leak := range []string{" g ", " rg "} {
+		if strings.Contains(between, leak) {
+			t.Fatalf("a fill colour %q is set between the header band and the total", leak)
+		}
+	}
 }

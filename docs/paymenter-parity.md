@@ -168,28 +168,28 @@ Source: `routes/web.php`, `app/Livewire/Home.php`, `Products/Index.php`, `Produc
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| SF-01 | Home page lists top-level categories that have children or visible products, ordered by `sort` | `/` serves a storefront index with flat categories and products | 🟡 | P1 |
-| SF-02 | Nested categories (`parent_id`), category page at `/products/{category}` with child categories | Flat categories only; filtering is `?category=` on one page | ❌ | P1 |
-| SF-03 | Product page at `/products/{category}/{product}`: image, rich description, plans, config options, stock | `/products/:slug`: image, description, price list | 🟡 | P1 |
-| SF-04 | Product `hidden` flag removes it from the storefront but keeps it billable | `products.hidden`; filtering is in SQL | ✅ | — |
-| SF-05 | Product image upload, served from the app | `product_images` bytes + `/api/v1/media/{id}`; CSP-safe | ✅ | — |
-| SF-06 | Category image, description, sort | `categories` has `description`, `sort_order`, `hidden`; **no image** | 🟡 | P1 |
-| SF-07 | Product `stock` (null = unlimited), decremented on order, restored on cancel/terminate | No stock column | ❌ | P2 |
-| SF-08 | Product `per_user_limit` | No column | ❌ | P2 |
-| SF-09 | Product `allow_quantity`: `disabled` / `separated` / `combined` | No column; order quantity exists but no policy | ❌ | P2 |
-| SF-10 | Product `sort` order within category | `products.sort_order` | ✅ | — |
-| SF-11 | Product `email_template` snippet used in the activation email | No per-product template | ❌ | P3 |
-| SF-12 | Product assigned to a `server` integration | No product→server assignment; provisioner is global | ❌ | P4 |
-| SF-13 | Plan types: `free`, `one-time`, `recurring` | `price_versions.interval` is `monthly/quarterly/semiannual/annual` only | 🟡 | P1 |
-| SF-14 | Billing period/unit: any `N day/week/month/year` | `every_<N>_days` (1..366) is a real period model in `internal/calendar`: counted in civil days from an explicit origin, so it renews on the right date across a month end, a leap day and a DST transition. A week is 7 days. An arbitrary N-*month* unit is still the fixed calendar set (monthly/quarterly/semiannual/annual): a month is not a day count | 🟡 | P1 |
-| SF-15 | Plan name, sort order | `price_versions.name` exists; no sort | 🟡 | P1 |
-| SF-16 | Price + setup fee per currency per plan | `price_versions` per currency, append-only | ✅ | — |
-| SF-17 | Unavailable price in the selected currency is shown as unavailable, never free | Storefront lists only currencies that have a price | ✅ | — |
-| SF-18 | Currency switcher (session currency; blocked while cart has items) | No currency switcher | ❌ | P1 |
-| SF-19 | Language switcher (allowed locales) | No i18n | ❌ | P6 |
-| SF-20 | Guest browsing; checkout requires login | Storefront is public; buy links to login | 🟡 | P1 |
-| SF-21 | TOS acceptance at checkout when configured | No TOS setting or checkbox | ❌ | P1 |
-| SF-22 | Public storefront SEO/URLs per category | One index page, query-param filtering | 🟡 | P1 |
+| SF-01 | Home page lists top-level categories that have children or visible products, ordered by `sort` | web/src/views/storefront.ts renders a chip per category from GET /api/v1/catalog, where handlePublicCatalog returns every visible category (children and empty ones included) with product_count of its own products, so Paymenter's top-level-only, has-children-or-visible-products rule is not applied. | 🟡 | P1 |
+| SF-02 | Nested categories (`parent_id`), category page at `/products/{category}` with child categories | categories.parent_id with the categories_guard_tree trigger (cycle refusal plus a four-level bound) and the public GET /api/v1/catalog/categories and /api/v1/catalog/category/{slug} routes exist, but storefront.ts still reads the flat /api/v1/catalog and filters client-side and web/src/routes.ts declares no /products/:category page. | 🟡 | P1 |
+| SF-03 | Product page at `/products/{category}/{product}`: image, rich description, plans, config options, stock | storefront-product.ts shows the logo, the sanitised description, plans in price_versions.sort_order with interval labels and setup fees, but publicProductJSON sends no stock and no config options and the page has no option picker, so a plan with required options cannot be bought from the storefront. | 🟡 | P1 |
+| SF-04 | Product `hidden` flag removes it from the storefront but keeps it billable | products.hidden is filtered in SQL by catalog.Public and catalog.PublicProduct through the hidden_branches CTE, so a hidden product or anything under a hidden category is absent from the storefront and still bills. | ✅ | — |
+| SF-05 | Product image upload, served from the app | product_images (0018_catalog.sql) stores the bytes, POST /api/v1/staff/catalog/images uploads them and handleMedia serves /api/v1/media/{id} with nosniff, an immutable cache and an SVG sandbox, which is what the CSP img-src 'self' data: allows. | ✅ | — |
+| SF-06 | Category image, description, sort | categories has description, sort_order, hidden and parent_id but no image column, and storefront.ts renders a text chip per category, so category imagery is still missing while product images exist. | 🟡 | P1 |
+| SF-07 | Product `stock` (null = unlimited), decremented on order, restored on cancel/terminate | products.stock (NULL = unlimited) is locked FOR UPDATE in sorted order and decremented by register.checkoutTx and returned by lifecycle.CancelUnpaidOrders, but no service termination or cancellation path calls service.RestoreStock, so a terminated service never puts its unit back. | 🟡 | P2 |
+| SF-08 | Product `per_user_limit` | products.per_user_limit is enforced in register.checkoutTx under the product lock and again by service.CheckPerUserLimit, and both count pending subscriptions as held units, so ten unpaid orders cannot become ten servers. | ✅ | P2 |
+| SF-09 | Product `allow_quantity`: `disabled` / `separated` / `combined` | products.allow_quantity exists with disabled, separated and combined and disabled is honoured in commerce.AddItemTx and register (quantity_not_allowed), but separated and combined behave identically: quantity N yields one order item and one subscription rather than N independent services. | 🟡 | P2 |
+| SF-10 | Product `sort` order within category | products.sort_order (0018_catalog.sql) orders catalog.Public by category then product and is editable per product in web/src/views/catalog-admin-product.ts. | ✅ | — |
+| SF-11 | Product `email_template` snippet used in the activation email | products.email_template (bounded by 0031_product_email_template.sql) is read by internal/notify/activation.go and rendered as {{product_instructions}} in the activation mail, with an empty value falling back to the shipped sentence. | ✅ | P3 |
+| SF-12 | Product assigned to a `server` integration | products.server_id, the servers table and PUT /api/v1/staff/catalog/products/{id}/server let an operator assign a node, but nothing reads products.server_id: register.provisionTarget and internal/orders both take only price_versions.provision_region, so the assignment never reaches CreateRequest.Region. | 🟡 | P4 |
+| SF-13 | Plan types: `free`, `one-time`, `recurring` | 0028_plan_types.sql widens price_versions.interval to monthly, quarterly, semiannual, annual, one_time and free with a CHECK that a free price is zero, and storefront-product.ts reads the server's recurring flag so a one-time plan is not described as a subscription. | ✅ | P1 |
+| SF-14 | Billing period/unit: any `N day/week/month/year` | 0059_n_day_periods.sql and internal/calendar implement every_<N>_days for N in 1..366 as a civil-day period model, but N-week and N-month units are still not expressible: a week is 7 days and months remain the four fixed calendar intervals. | 🟡 | P1 |
+| SF-15 | Plan name, sort order | price_versions.name (0018_catalog.sql) and price_versions.sort_order (0028_plan_types.sql) are real columns, with the plan-order write in internal/httpapi/catalog_polish.go and the sort field in catalog-admin-product.ts, and storefront-product.ts renders plans in that order. | ✅ | P1 |
+| SF-16 | Price + setup fee per currency per plan | price_versions carries amount_minor, setup_minor, currency and interval per version, prices are append-only through POST /api/v1/staff/catalog/products/{id}/prices, and an issued invoice snapshots the version it priced from. | ✅ | — |
+| SF-17 | Unavailable price in the selected currency is shown as unavailable, never free | catalog.Public filters with EXISTS (SELECT 1 FROM price_versions ...) and publicProductJSON emits each price with its own currency and amount, so a currency with no price row is simply not listed rather than rendered as zero. | ✅ | — |
+| SF-18 | Currency switcher (session currency; blocked while cart has items) | GET /api/v1/currencies, the selector in cart.ts and the fixed-once-non-empty rule in commerce.CartTx exist, but the storefront never reads the ?currency= parameter cart.ts sets and /api/v1/catalog has no currency filter, so the switcher does not change what the storefront offers. | 🟡 | P1 |
+| SF-19 | Language switcher (allowed locales) | internal/i18n resolves from the locales table (enabled flag), GET /api/v1/i18n/locales and /api/v1/i18n/messages feed lib/i18n.ts, and storefront.ts and storefront-product.ts render languageSwitcher plus tx() at build time. | ✅ | P6 |
+| SF-20 | Guest browsing; checkout requires login | web/src/routes.ts puts /, /products and /products/:slug in PUBLIC_PATHS and isStorefrontPath, while /cart and /checkout are customer prefixes and every /api/v1/portal/cart route requires a session, so browsing is anonymous and buying is not. | ✅ | P1 |
+| SF-21 | TOS acceptance at checkout when configured | general.tos and checkout.tos_required in internal/settings/settings.go drive register.ReadPolicy (ErrTOSRequired to tos_required), carts.tos_accepted_at records the acceptance, and checkout.ts posts the real tos_accepted checkbox. | ✅ | P1 |
+| SF-22 | Public storefront SEO/URLs per category | the public API has GET /api/v1/catalog/categories and /api/v1/catalog/category/{slug} with a slug path, but web/src/routes.ts has no category route and storefront.ts keeps one index page filtered by ?category=, so a category has no shareable or crawlable URL. | 🟡 | P1 |
 
 **Note on SF-13/14.** This is a schema decision, not a UI one: `price_versions.interval` is a
 `CHECK` list, and the billing calendar assumes month-end anchors. Supporting `one-time` and
@@ -205,19 +205,19 @@ Source: `app/Livewire/Cart.php`, `app/Classes/Cart.php`, `app/Models/Cart.php`, 
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| CT-01 | Persistent cart (`carts`, `cart_items`) with currency and coupon | No cart tables | ❌ | P1 |
-| CT-02 | Add to cart from product page; duplicate policy from `allow_quantity` | No add-to-cart | ❌ | P1 |
-| CT-03 | Cart line pricing: plan + config options + setup fee, tax applied | No cart pricing | ❌ | P1 |
-| CT-04 | Update quantity, remove line, clear cart | No cart | ❌ | P1 |
-| CT-05 | Apply/remove coupon on the cart, with validation and live total | No coupons | ❌ | P1 |
-| CT-06 | Checkout: login required, email-verified if configured, TOS checkbox | No customer checkout | ❌ | P1 |
-| CT-07 | Checkout creates order + services + one invoice in one transaction; stock and per-user limits enforced under lock | `internal/orders` creates order + items + subscription + issued invoice, **staff-only** (`POST /api/v1/staff/orders`, `/orders/new`) | 🟡 | P1 |
-| CT-08 | Free/zero-total order activates the service immediately and skips the invoice | Not implemented | ❌ | P1 |
-| CT-09 | Order model: user, currency, services, total, invoices | `orders` + `order_items`; staff list/detail/create | 🟡 | P1 |
-| CT-10 | Admin order CRUD, services relation manager | Staff list/detail/create (`/orders/new`); no edit/delete | 🟡 | P5 |
-| CT-11 | Unpaid order cancelled after N days; pending invoices cancelled; stock restored | Dunning suspends services, but no order-cancel rule | 🟡 | P2 |
-| CT-12 | "Cancel subscription ID" action on an order/service (legacy external subscription) | Not implemented | ❌ | P5 |
-| CT-13 | Cart/order events for extensions (`Cart/Created`, `Order/Finalized`, …) | No extension event surface | ❌ | P4 |
+| CT-01 | Persistent cart (`carts`, `cart_items`) with currency and coupon | carts and cart_items (0020_commerce.sql) hold customer_id UNIQUE, currency, coupon_id and tos_accepted_at, and commerce.CartTx get-or-creates one cart per customer with cart_items_unique merging an identical line. | ✅ | P1 |
+| CT-02 | Add to cart from product page; duplicate policy from `allow_quantity` | storefront-product.ts posts /api/v1/portal/cart/items and commerce.AddItemTx applies allow_quantity plus the merge ceiling, reporting already_in_cart, not_applicable and not_found as distinct messages on the product page. | ✅ | P1 |
+| CT-03 | Cart line pricing: plan + config options + setup fee, tax applied | commerce.Store.totalsFor prices amount, setup and coupon per line and cartTotals applies the tax pricer, but loadPrice never reads config_option_prices, so an option's price is added only at checkout in register.loadConfig and the cart total can be lower than the invoice. | 🟡 | P1 |
+| CT-04 | Update quantity, remove line, clear cart | cart.ts renders quantity steppers, a per-line remove and an Empty cart action backed by PUT and DELETE /api/v1/portal/cart/items/{id} and DELETE /api/v1/portal/cart in commerce_cart.go. | ✅ | P1 |
+| CT-05 | Apply/remove coupon on the cart, with validation and live total | cart.ts couponCard applies and removes a code through POST and DELETE /api/v1/portal/cart/coupon, commerce.ApplyCouponTx validates window, scope, uses and currency, and Totals re-validates on every read with coupon_problem shown in the UI. | ✅ | P1 |
+| CT-06 | Checkout: login required, email-verified if configured, TOS checkbox | POST /api/v1/portal/orders needs a session and PermInvoicePaySelf, register.ReadPolicy refuses without terms acceptance (tos_required) or a verified address when the installation requires it, and checkout.ts submits the real checkbox state. | ✅ | P1 |
+| CT-07 | Checkout creates order + services + one invoice in one transaction; stock and per-user limits enforced under lock | register.CheckoutService.checkoutTx writes orders, order_items, subscriptions and the invoice in one transaction and locks products.stock in sorted order before the limit check, with customer_id derived from the session in checkout_customer.go. | ✅ | P1 |
+| CT-08 | Free/zero-total order activates the service immediately and skips the invoice | register.checkout.go treats payable == 0 by skipping the invoice, activating the subscriptions through activateZeroTotal, creating the service and marking the order paid, and checkout.ts reports activated with an empty invoice_id. | ✅ | P1 |
+| CT-09 | Order model: user, currency, services, total, invoices | orders and order_items (0001_core.sql) hold customer, currency and total, invoices.order_id and services.order_id (0029_service_metadata.sql) link both sides, and staff_read.go handleStaffOrder returns the order with items, invoices and payment attempts. | ✅ | P1 |
+| CT-10 | Admin order CRUD, services relation manager | staff_read.go handleStaffOrders and handleStaffOrder plus orders.go POST /api/v1/staff/orders and the /orders/new screen give create, list and detail only, with no edit, delete or cancel endpoint, and docs/parity-status.md records order editing as a deliberate divergence. | 🟡 | P5 |
+| CT-11 | Unpaid order cancelled after N days; pending invoices cancelled; stock restored | lifecycle.CancelUnpaidOrders reads cronjob.order_cancel_days, flips pending_payment under FOR UPDATE, voids open invoices through the void path, reverses the receivable, calls service.RestoreStock and cancels pending subscriptions, wired as a kill-switchable cron job. | ✅ | P2 |
+| CT-12 | "Cancel subscription ID" action on an order/service (legacy external subscription) | no cancel-subscription-id action exists: nothing in internal/httpapi or web/src matches cancel_subscription or cancelSubscription, web/src/views/service.ts only prints the internal subscription id with a copy button, and the only cancellation paths are the service-cancellation queue and POST /api/v1/portal/services/{id}/cancel, neither of which calls a gateway. | ❌ | P5 |
+| CT-13 | Cart/order events for extensions (`Cart/Created`, `Order/Finalized`, …) | extproto/events.go declares v2 events.subscribe and events.deliver and httpapi/extension_hooks.go forwards the in-process broker to extensions, but only order.created and the ticket kinds are ever published, so cart.created, cart.updated, cart.abandoned, cart.checked_out, order.paid and order.cancelled are declared and never emitted. | 🟡 | P4 |
 
 **Important distinction.** `internal/orders` already prices from the catalog, creates a
 subscription, issues the invoice and posts the ledger in one transaction. The gap is not the
@@ -234,17 +234,17 @@ Source: `app/Admin/Resources/ProductResource.php`, `CategoryResource.php`, migra
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| CAT-01 | Category CRUD (name, slug, description, image, parent, sort) | Create/update/delete, flat, no image | 🟡 | P1 |
-| CAT-02 | Product CRUD (name, slug, category, description, image, hidden, sort) | Create/update/delete + logo + hidden | ✅ | — |
-| CAT-03 | Plan/price editor (repeater: period, unit, type, price, setup, currency) | "Add price version" UI exists; no plan type (free/one-time), no period/unit editor, no currency picker beyond the row's own | 🟡 | P1 |
-| CAT-04 | Duplicate product action | Not implemented | ❌ | P5 |
-| CAT-05 | Product "refresh" action (reload plans/prices) | Not applicable (no inline repeater) | ⛔ | — |
-| CAT-06 | Rich text product description | Plain text (`description`, `short_description`) | 🟡 | P5 |
-| CAT-07 | Product image upload + storage | Bytes in DB, digest-deduped, CSP-safe | ✅ | — |
-| CAT-08 | Product-level `server_id` and `email_template` | Absent | ❌ | P4 |
-| CAT-09 | Product→product upgrade graph (`product_upgrades`) | Absent | ❌ | P2 |
-| CAT-10 | Plan availability by currency (no price = unavailable) | Enforced in the storefront query | ✅ | — |
-| CAT-11 | Prices are mutable in admin (history via audits) | Prices are append-only versions; issued invoices snapshot the version | ✅ stronger | — |
+| CAT-01 | Category CRUD (name, slug, description, image, parent, sort) | internal/catalog.CreateCategory/UpdateCategory with the 0049 parent_id tree give name, slug, description, sort, hidden and nesting, but categories has no image column or upload path. | 🟡 | P1 |
+| CAT-02 | Product CRUD (name, slug, category, description, image, hidden, sort) | ProductInput and CreateProductTx/UpdateProductTx in internal/catalog/catalog.go carry name, slug, category, short and long description, logo, hidden and sort, served by /api/v1/staff/catalog/products and the catalog-admin.ts dialog. | ✅ | — |
+| CAT-03 | Plan/price editor (repeater: period, unit, type, price, setup, currency) | catalog.ValidateInterval and handleAddPrice accept one_time and free and the dialog edits amount, setup, interval, anchor and provision plan/region, but the INTERVALS picker in web/src/views/catalog-admin.ts and INTERVAL_OPTIONS in catalog-admin-product.ts omit one_time and free. | 🟡 | P1 |
+| CAT-04 | Duplicate product action | catalog.DuplicateProductTx in internal/catalog/plans.go and POST /api/v1/staff/catalog/products/{id}/duplicate copy the product, its price versions and config options, wired to the Duplicate button in web/src/views/catalog-admin-product.ts. | ✅ | P5 |
+| CAT-05 | Product "refresh" action (reload plans/prices) | Deliberate divergence: there is no inline price repeater to reload, because internal/catalog appends immutable price_versions and the panel re-reads plans from /api/v1/staff/catalog/products. | ⛔ | — |
+| CAT-06 | Rich text product description | catalog.Description plus the allowlist in internal/catalog/sanitize.go store an html-or-plain description_format that the rich editor in catalog-admin-product.ts writes and the storefront renders. | ✅ | P5 |
+| CAT-07 | Product image upload + storage | catalog.PutImageTx stores digest-deduped bytes in product_images and /api/v1/media/{id} serves them with their own content type, keeping the panel CSP img-src 'self' data:. | ✅ | — |
+| CAT-08 | Product-level `server_id` and `email_template` | products.server_id is fully wired through catalog.SetProductServerTx, productPlacementWith and the placement control, while products.email_template exists in catalog.Product and planJSON but has no editor and no activation-mail consumer. | 🟡 | P4 |
+| CAT-09 | Product→product upgrade graph (`product_upgrades`) | internal/httpapi/upgrades_ext.go implements product_upgrades create/list/delete and reachable-product reads, used by service_upgrades.go and the web/src/views/upgrades.ts screen. | ✅ | P2 |
+| CAT-10 | Plan availability by currency (no price = unavailable) | catalog.Public and PublicProduct require a price_versions row so an unpriced product is not shown, and commerce.AddItemTx refuses a price whose currency differs from the cart's. | ✅ | — |
+| CAT-11 | Prices are mutable in admin (history via audits) | internal/catalog has no update-price endpoint: AddPriceTx appends a version and ReorderPlansTx writes only price_versions.sort_order, while an issued invoice snapshots the version it priced from. | ✅ | — |
 
 **Deliberate divergence (`CAT-03`, `CAT-11`).** Paymenter edits a price row in place. Catalyst
 appends a version because an issued invoice records the version it priced from. The admin
@@ -258,16 +258,16 @@ Source: `app/Models/Coupon.php`, `CouponProduct.php`, `app/Admin/Resources/Coupo
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| CPN-01 | Coupon code, percentage or fixed value | Absent | ❌ | P1 |
-| CPN-02 | `applies_to`: price, setup fee, or all | Absent | ❌ | P1 |
-| CPN-03 | `max_uses` globally | Absent | ❌ | P1 |
-| CPN-04 | `max_uses_per_user` | Absent | ❌ | P1 |
-| CPN-05 | `starts_at` / `expires_at` window | Absent | ❌ | P1 |
-| CPN-06 | `recurring`: apply for the first N cycles, or lifetime (`null`/1) | Absent | ❌ | P1 |
-| CPN-07 | Product restrictions (`coupon_products`) | Absent | ❌ | P1 |
-| CPN-08 | Coupon stored on the service so renewals recompute the right price | Absent | ❌ | P1 |
-| CPN-09 | Coupon validation at cart and revalidation under lock at checkout | Absent | ❌ | P1 |
-| CPN-10 | Admin coupon CRUD + services relation manager | Absent | ❌ | P5 |
+| CPN-01 | Coupon code, percentage or fixed value | commerce.Coupon in internal/commerce/coupons.go supports kind percentage as an exact rational (money.ParseRatio) and kind fixed as AmountMinor plus Currency, matching the coupons CHECK in 0020_commerce.sql. | ✅ | P1 |
+| CPN-02 | `applies_to`: price, setup fee, or all | AppliesTo price, setup or all is stored on coupons and enforced by applyCoupon in internal/commerce/coupons.go and couponBase in internal/commerce/cart.go. | ✅ | P1 |
+| CPN-03 | `max_uses` globally | coupons.max_uses is enforced by counting coupon_redemptions, and register.resolveCoupon re-counts under SELECT FOR UPDATE on the coupon row. | ✅ | P1 |
+| CPN-04 | `max_uses_per_user` | coupons.max_uses_per_user is counted per customer_id in commerce.validateCouponWith and re-checked by the locked query in internal/register/checkout.go with the ErrCouponUsed code. | ✅ | P1 |
+| CPN-05 | `starts_at` / `expires_at` window | coupons.starts_at and expires_at are validated in normaliseCoupon and refused at cart and checkout as ErrExpired, ErrCouponNotStarted and ErrCouponExpired. | ✅ | P1 |
+| CPN-06 | `recurring`: apply for the first N cycles, or lifetime (`null`/1) | coupons.recurring_cycles is stored and checkout seeds subscriptions.coupon_cycles_applied, but internal/renewal/renewal.go reads only price_versions so a first-N-cycles coupon is never applied to a renewal invoice. | 🟡 | P1 |
+| CPN-07 | Product restrictions (`coupon_products`) | coupon_products restricts a coupon to a product set, enforced in commerce.validateCouponWith, ApplyCouponTx and register.resolveCoupon with the ErrCouponNotForYou code. | ✅ | P1 |
+| CPN-08 | Coupon stored on the service so renewals recompute the right price | checkout writes subscriptions.coupon_id and coupon_cycles_applied in internal/register/checkout.go, yet the renewal engine never reads either column and re-prices the undiscounted price_version amount. | 🟡 | P1 |
+| CPN-09 | Coupon validation at cart and revalidation under lock at checkout | commerce.ApplyCouponTx validates at cart time and register.resolveCoupon revalidates inside the checkout transaction under SELECT FOR UPDATE before insertRedemption. | ✅ | P1 |
+| CPN-10 | Admin coupon CRUD + services relation manager | registerCouponRoutes in internal/httpapi/commerce_coupon.go serves list, get, create, update and /redemptions with no delete, mirrored by the retire-only screen web/src/views/coupons.ts. | ✅ | P5 |
 
 **Design warning.** A coupon is a *price modifier with a life*, not a discount column. The
 renewal engine currently reads `price_versions`; a coupon that applies for N cycles needs the
@@ -282,14 +282,14 @@ Source: `app/Models/TaxRate.php`, `app/Classes/Settings::tax()`, `app/Classes/Pr
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| TAX-01 | Tax rates table: name, rate, country (unique), wildcard `all` | Single fixed rate per installation (`FixedTaxPricer`) | ❌ | P1 |
-| TAX-02 | Country selection from the customer's custom property `country` | `billing_profiles.country_code` exists, unused by tax | 🟡 | P1 |
-| TAX-03 | Inclusive vs exclusive tax mode | `FixedTaxPricer.Inclusive` | ✅ | — |
-| TAX-04 | Tax calculated per line, per currency, recorded as evidence | Per-line rational rate + `TaxEvidence` in the snapshot | ✅ stronger | — |
-| TAX-05 | EU VAT / jurisdiction rules | None | ❌ | P1 |
-| TAX-06 | Tax exemption (reverse charge, valid VAT ID) | `TaxEvidence.ExemptionReason` field exists; no rule sets it | 🟡 | P1 |
-| TAX-07 | Admin tax-rate CRUD | None | ❌ | P5 |
-| TAX-08 | Tax included in product/cart display ("incl. tax") | Storefront shows net prices only | ❌ | P1 |
+| TAX-01 | Tax rates table: name, rate, country (unique), wildcard `all` | commerce.TaxRate and the tax_rates table in 0020_commerce.sql give a dated row per country_code (wildcard all), region_code and tax_class, guarded by the tax_rates_one_open unique index. | ✅ | P1 |
+| TAX-02 | Country selection from the customer's custom property `country` | taxPricerFor in internal/httpapi/commerce_tax.go feeds billing_profiles.country_code and region into commerce.TaxPricer for cart totals, but the server issuer in internal/httpapi/server.go is still billing.FixedTaxPricer{Policy: no-tax} so issued invoices resolve no rate. | 🟡 | P1 |
+| TAX-03 | Inclusive vs exclusive tax mode | Inclusive is a per-rate column plus the tax.default_mode setting, both honoured by billing.FixedTaxPricer and commerce.TaxPricer.Price. | ✅ | — |
+| TAX-04 | Tax calculated per line, per currency, recorded as evidence | billing.Pricer returns per-line net and tax stored in invoice_lines.tax_rate, and billing.TaxEvidence records mode, rate and jurisdiction in the invoice snapshot. | ✅ | — |
+| TAX-05 | EU VAT / jurisdiction rules | There is no jurisdiction rules engine: internal/tax imports a rate table and internal/commerce/tax.go does a (country, region, class) lookup, with no EU place-of-supply or reverse-charge rule and no US nexus determination anywhere. | ❌ | P1 |
+| TAX-06 | Tax exemption (reverse charge, valid VAT ID) | billing_profiles.tax_exempt and tax_exemption_reason are staff-set and short-circuit commerce.TaxPricer.Price, but no rule derives the exemption because there is no VAT-ID validation or reverse-charge decision. | 🟡 | P1 |
+| TAX-07 | Admin tax-rate CRUD | registerTaxRoutes in internal/httpapi/commerce_tax.go serves /api/v1/staff/tax-rates CRUD and internal/httpapi/tax_import.go adds source, preview, import, runs and provenance plus the tax-rate-refresh job, edited in web/src/views/tax-rates.ts. | ✅ | P5 |
+| TAX-08 | Tax included in product/cart display ("incl. tax") | web/src/views/cart.ts renders an Includes rate tax line and a tax total from cartTotals, but web/src/views/storefront.ts and storefront-product.ts show net prices only. | 🟡 | P1 |
 
 **Design note.** The `Pricer` interface already accepts an exact rate and records evidence. A
 tax-rate table is a `Pricer` implementation that resolves a rate from
@@ -305,13 +305,13 @@ Source: `app/Models/Currency.php`, `app/Admin/Resources/CurrencyResource.php`,
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| CUR-01 | Currency entity: code, name, prefix, suffix, decimal format (`1.000,00`, `1,000.00`, …) | No currency table; `money.Currency` carries code + scale only | ❌ | P1 |
-| CUR-02 | Default currency setting | No setting; price versions carry whatever currency they were created with | ❌ | P1 |
-| CUR-03 | Storefront currency switcher, cart locked to one currency | None | ❌ | P1 |
-| CUR-04 | Per-plan price row per currency | `price_versions.currency` | ✅ | — |
-| CUR-05 | No FX conversion (explicit prices only) | Same rule; `money` refuses cross-currency arithmetic | ✅ | — |
-| CUR-06 | Admin currency CRUD | None | ❌ | P5 |
-| CUR-07 | Currency-aware formatting (prefix/suffix/grouping) | `Amount.Display` and the frontend insert the decimal point; no prefix/suffix | 🟡 | P1 |
+| CUR-01 | Currency entity: code, name, prefix, suffix, decimal format (`1.000,00`, `1,000.00`, …) | commerce.Currency and the currencies table in 0020_commerce.sql carry code, name, scale, symbol, symbol_position, group_separator, decimal_mark and group_size, edited in web/src/views/currencies.ts. | ✅ | P1 |
+| CUR-02 | Default currency setting | currencies.is_default with its partial unique index and commerce.Store.DefaultCurrency supply the default, which commerce.CartTx falls back to when a cart names no currency. | ✅ | P1 |
+| CUR-03 | Storefront currency switcher, cart locked to one currency | web/src/views/cart.ts has a currency selector that locks once the cart holds an item and commerce.AddItemTx adopts the first price's currency, but the storefront has no switcher and ignores the ?currency= the selector redirects to. | 🟡 | P1 |
+| CUR-04 | Per-plan price row per currency | price_versions.currency plus catalog.AddPriceTx give each plan its own currency row, and no conversion exists between rows. | ✅ | — |
+| CUR-05 | No FX conversion (explicit prices only) | internal/commerce/currencies.go stores presentation only, money.Amount refuses cross-currency arithmetic, and sumAmounts in web/src/lib/format.ts returns null for mixed currencies. | ✅ | — |
+| CUR-06 | Admin currency CRUD | registerCurrencyRoutes in internal/httpapi/commerce_currency.go serves /api/v1/staff/currencies list, create, update and delete, and DeleteCurrencyTx refuses a currency with price or invoice history. | ✅ | P5 |
+| CUR-07 | Currency-aware formatting (prefix/suffix/grouping) | commerce.Currency.Format and formatCurrency in web/src/lib/format.ts insert the symbol prefix or suffix and the row's grouping and decimal marks, keeping integer minor-unit arithmetic. | ✅ | P1 |
 
 **Deliberate divergence.** Paymenter formats money with floats and `number_format`. Catalyst
 must keep integer minor units and render by string insertion. A currency table can supply
@@ -324,16 +324,16 @@ Source: `app/Models/Credit.php`, `app/Livewire/Client/Credits.php`,
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| CRD-01 | Per-customer, per-currency credit balance | `ledger.AccountCredit` + derived balance; shown in portal overview | ✅ | — |
-| CRD-02 | Customer tops up credit through a gateway (min/max deposit) | No deposit flow | ❌ | P1 |
-| CRD-03 | Auto-use credit on a new invoice if it covers the total | Not implemented; staff must apply credit manually | ❌ | P1 |
-| CRD-04 | Partial credit payment then pay the remainder | Not implemented | ❌ | P1 |
-| CRD-05 | Max credit balance | Not implemented | ❌ | P1 |
-| CRD-06 | Credit returned on downgrade (prorated) | No downgrades | ❌ | P2 |
-| CRD-07 | Admin adds credit to a user | Only "apply a credit note to an invoice"; no arbitrary credit grant | 🟡 | P5 |
-| CRD-08 | Client credits page | No page; balance appears on the portal overview | 🟡 | P1 |
-| CRD-09 | Credit transactions marked as such (`is_credit_transaction`) | `ledger.KindAdjustment` + `RefCreditApplication` | ✅ | — |
-| CRD-10 | Settings: enabled, min/max deposit, max credit, auto-use, credit-on-downgrade | None | ❌ | P1 |
+| CRD-01 | Per-customer, per-currency credit balance | internal/credit/credit.go BalanceFor sums journal_entries on ledger.AccountCredit per currency, served to the customer by handlePortalCredits in internal/httpapi/credits.go. | ✅ | — |
+| CRD-02 | Customer tops up credit through a gateway (min/max deposit) | credit.Service.StartDeposit in internal/credit/deposit.go enforces credits.minimum_deposit_minor and maximum_deposit_minor, creates a snapshot-marked deposit invoice and opens a gateway session via POST /api/v1/portal/credits/deposit. | ✅ | P1 |
+| CRD-03 | Auto-use credit on a new invoice if it covers the total | credit.ApplyCreditToInvoice is called only from internal/register/checkout.go, so auto-use does not run on renewal (internal/renewal/renewal.go), upgrade (internal/service/upgrades.go) or manual (internal/httpapi/staff_write.go) issuance. | 🟡 | P1 |
+| CRD-04 | Partial credit payment then pay the remainder | credit.ApplyCredit in internal/credit/apply.go spends min(owed, balance) and leaves the invoice open, and checkout.Service.Start prices the remainder as total_minor minus amount_paid_minor. | ✅ | P1 |
+| CRD-05 | Max credit balance | internal/credit/deposit.go refuses a top-up over credits.maximum_credit_minor counting open deposit invoices as reservation, and SettleDeposit reports OverLimit when a settlement overshoots. | ✅ | P1 |
+| CRD-06 | Credit returned on downgrade (prorated) | internal/service/upgrades.go records a prorated CreditMinor with CreditPending on a service_upgrades row and Store.ApplyDowngrade is the credit hook, but nothing posts that credit to customer_credit. | 🟡 | P2 |
+| CRD-07 | Admin adds credit to a user | credit.Grant issues a numbered credit note (internal/credit/grant.go) and credit.Debit (internal/credit/debit.go) appends a credit_debit entry with a mandatory reason, behind POST /api/v1/staff/customers/{id}/credit and /credit/debit. | ✅ | P5 |
+| CRD-08 | Client credits page | web/src/views/portal-credits.ts is routed at /portal/credits in web/src/routes.ts and shows derived balances, GET /api/v1/portal/credits/transactions history and a deposit form. | ✅ | P1 |
+| CRD-09 | Credit transactions marked as such (`is_credit_transaction`) | internal/credit/TransactionsFor joins journal_transactions.kind so entries read as credit_debit, adjustment or payment_received, with ledger.RefCreditApplication, RefCreditDeposit and RefCreditGrant distinguishing the events. | ✅ | — |
+| CRD-10 | Settings: enabled, min/max deposit, max credit, auto-use, credit-on-downgrade | internal/settings/settings.go declares credits.enabled, minimum_deposit_minor, maximum_deposit_minor, maximum_credit_minor and auto_use, but there is no credit-on-downgrade key. | 🟡 | P1 |
 
 **Design note.** Credit is already a subledger account, so `CRD-02`/`CRD-03` are a payment
 intent (gateway) plus a posting rule, not a new balance column. `CRD-03` must be keyed by the
@@ -347,24 +347,24 @@ Source: `app/Models/Invoice.php`, `InvoiceItem.php`, `InvoiceTransaction.php`,
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| INV-01 | Draft → pending → paid / cancelled lifecycle | `draft → open → paid / void / uncollectible` | 🟡 | P1 |
-| INV-02 | Invoice items: description, price, quantity, reference to service/upgrade | `invoice_lines` with position, tax, totals | ✅ | — |
-| INV-03 | Invoice numbering: next number, padding, format with `{number}/{year}/{month}/{day}` | Fixed `INV-` + 6 digits (`DefaultSeries`) | 🟡 | P1 |
-| INV-04 | Proforma invoices: no official number until paid | Not implemented | ❌ | P1 |
-| INV-05 | Optional immutable invoices (editable while draft) | Always immutable once issued (trigger) | ✅ stronger | — |
-| INV-06 | Invoice snapshot of customer details on payment | Snapshot at issue, includes customer/tax evidence | ✅ | — |
-| INV-07 | `bill_to_text`, notes visible to client | `billing_profiles`; no free-text bill-to or client-visible notes | 🟡 | P1 |
-| INV-08 | PDF invoice (client + admin download) | No PDF | ❌ | P1 |
-| INV-09 | Cancel invoice with reason | `void` exists; no reason field | 🟡 | P5 |
-| INV-10 | Credit/debit adjustment notes with number series and `active/voided` status | Credit notes only, immutable, `CN-` series; no debit notes, no void | 🟡 | P1 |
-| INV-11 | Show adjustment notes to clients (setting) | Credit notes are visible in the staff invoice detail; no client toggle | 🟡 | P1 |
-| INV-12 | Invoice `remaining` / `currentBalance` | `amount_paid_minor` + allocations | ✅ | — |
-| INV-13 | Invoice list filters (status, user, date) | Status/customer/currency/date/overdue filters | ✅ | — |
-| INV-14 | Admin "publish" (draft→pending), "send email" toggle | `issue` exists; no email toggle on issue | 🟡 | P1 |
-| INV-15 | Invoice PDF template per theme | No theme system | ❌ | P6 |
-| INV-16 | Invoice reminders (X days before due, X days overdue) | Dunning engine sends reminders by policy | 🟡 | P1 |
-| INV-17 | Invoice due date default (7 days) | `Terms` string / due_at parameter | 🟡 | P1 |
-| INV-18 | Credit/debit note numbering settings | Fixed `CN-` series | 🟡 | P5 |
+| INV-01 | Draft → pending → paid / cancelled lifecycle | invoices_status_check plus the transition table rebuilt in internal/store/migrations/0021_proforma.sql allow draft to open to paid, void, uncollectible, refunded and disputed. | ✅ | P1 |
+| INV-02 | Invoice items: description, price, quantity, reference to service/upgrade | invoice_lines in 0001_core.sql carries position, description, quantity, unit, net, tax and total, and 0019_invoice_line_product.sql adds product_id and price_version_id for the service reference. | ✅ | — |
+| INV-03 | Invoice numbering: next number, padding, format with `{number}/{year}/{month}/{day}` | invoicepdf.LoadNumbering and seriesPrefix support a configured prefix, padding and {year}/{month}/{day} tokens, but issuance sites still pass billing.DefaultSeries so only proforma conversion honours them. | 🟡 | P1 |
+| INV-04 | Proforma invoices: no official number until paid | invoicepdf.IssueProforma and ConvertProforma with 0021_proforma.sql convert once, called from internal/fulfilment/applier.go inside the settling transaction so a paid document cannot stay provisional. | ✅ | P1 |
+| INV-05 | Optional immutable invoices (editable while draft) | guard_issued_invoice in internal/store/migrations/0021_proforma.sql freezes number, currency, money, snapshot, customer, order and period once issued, but client_note, void_reason, due_at and amount_paid_minor remain writable. | 🟡 | — |
+| INV-06 | Invoice snapshot of customer details on payment | billing.Issuer.CreateDraft writes billing.Snapshot with merchant, customer, prices, totals and TaxEvidence, frozen by the 0021 trigger and reprinted by invoicepdf.FromInvoice. | ✅ | — |
+| INV-07 | `bill_to_text`, notes visible to client | invoices.client_note is written by handleSetClientNote and billing_profiles.bill_to_text is read in internal/httpapi/invoice_pdf.go, both printed via invoicepdf.Meta under invoices.notes_client_visible. | ✅ | P1 |
+| INV-08 | PDF invoice (client + admin download) | handlePortalInvoicePDF and handleStaffInvoicePDF in internal/httpapi/invoice_pdf.go serve invoicepdf.Render bytes to the customer and to staff, with the portal link in web/src/views/portal-invoice.ts. | ✅ | P1 |
+| INV-09 | Cancel invoice with reason | handleVoidWithReason in internal/httpapi/invoice_documents.go stores invoices.void_reason in the same UPDATE as the status, and invoicepdf prints it beside the void banner. | ✅ | P5 |
+| INV-10 | Credit/debit adjustment notes with number series and `active/voided` status | credit_notes (0012_money_actions.sql) are issued with CN- numbers by creditnote.Issue, but there are no debit notes and creditnote.StatusVoid is never written by any code path. | 🟡 | P1 |
+| INV-11 | Show adjustment notes to clients (setting) | handlePortalInvoiceDocument and portalInvoiceCreditNotes in internal/httpapi/invoice_documents.go list every credit note to its customer with a working portal credit-note PDF route, unconditionally. | ✅ | P1 |
+| INV-12 | Invoice `remaining` / `currentBalance` | internal/httpapi/staff_read.go reports due as total_minor minus amount_paid_minor and internal/httpapi/export.go emits balance_due_minor, both derived from payments and their allocations. | ✅ | — |
+| INV-13 | Invoice list filters (status, user, date) | handleStaffInvoices in internal/httpapi/staff_read.go filters status, customer_id, currency, from, to and overdue, and web/src/views/invoices.ts filters nothing in the browser. | ✅ | — |
+| INV-14 | Admin "publish" (draft→pending), "send email" toggle | POST /api/v1/staff/invoices/{id}/issue publishes a draft and always queues the customer mail through queueInvoiceNotification in internal/httpapi/staff_write.go, so there is no per-issue send toggle. | 🟡 | P1 |
+| INV-15 | Invoice PDF template per theme | internal/invoicepdf/document.go renders one fixed layout with an invoicepdf.Brand overlay (accent, logo, name) sourced from internal/brand, and there is no per-theme PDF template. | 🟡 | P6 |
+| INV-16 | Invoice reminders (X days before due, X days overdue) | internal/dunning/dunning.go only reminds after the due date using DefaultPolicy (48h interval, three steps) with no pre-due reminder and no settings key for the schedule. | 🟡 | P1 |
+| INV-17 | Invoice due date default (7 days) | invoices.due_days defaults to 7 and is read by the proforma handler in internal/httpapi/invoice_documents.go, but manual invoice create (internal/httpapi/staff_write.go) and checkout (internal/register/checkout.go) hardcode 30 days. | 🟡 | P1 |
+| INV-18 | Credit/debit note numbering settings | invoices.credit_note_prefix and credit_note_padding are declared in internal/settings/settings.go and parsed by invoicepdf.LoadNumbering, yet creditnote.CreditSeries and credit.CreditSeries stay hardcoded to CN- and width 6. | 🟡 | P5 |
 
 **Design note (`INV-03`, `INV-04`).** Numbering is already a persisted sequence with a
 gap-free guarantee. Making the format configurable is a settings read at issue time; making
@@ -380,25 +380,25 @@ Source: `app/Classes/Extension/Gateway.php`, `app/Helpers/ExtensionHelper.php`,
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| PAY-01 | Real gateway: Stripe | Fake gateway only; `HMACSigner` is Stripe-shaped but unexercised | ❌ | P4 |
-| PAY-02 | Real gateway: PayPal | None | ❌ | P4 |
-| PAY-03 | Real gateway: PayPal IPN (legacy) | None | ❌ | P4 |
-| PAY-04 | Real gateway: Mollie | None | ❌ | P4 |
-| PAY-05 | Marketplace gateways (Razorpay, Coinbase, BTCPay, bank transfer, 200+) | Protocol could host them; none built | ❌ | P6 |
-| PAY-06 | Gateway CRUD: name + extension + config fields | No gateway records; extension configured by env | ❌ | P4 |
-| PAY-07 | Gateway test/connection check | None | ❌ | P4 |
-| PAY-08 | Checkout session with amount/currency and redirect | `gateway.create_checkout` + `checkout` package | ✅ | — |
-| PAY-09 | Webhook verification + authoritative re-query | `gateway.verify_webhook` + re-query; idempotent inbox | ✅ stronger | — |
-| PAY-10 | Saved payment methods / billing agreements (create, list, remove, default for recurring) | No `billing_agreements`, no gateway charge method | ❌ | P4 |
-| PAY-11 | Off-session charging of recurring invoices | Deferred; protocol has no charge method | ❌ | P4 |
-| PAY-12 | Refund through the gateway, partial refunds, `refunded_amount` | Refund intent + provider call + reconciliation; refunds are separate rows | ✅ | — |
-| PAY-13 | Transaction fee recorded per payment | No fee column | ❌ | P5 |
-| PAY-14 | Manual payment recording (admin creates a transaction) | No endpoint; only gateway webhooks and credit application | ❌ | P5 |
-| PAY-15 | Transaction status `processing/succeeded/failed` | `payments.status` (`succeeded/refunded/partially_refunded/disputed`); `payment_attempts.status` covers the pre-settlement states | ✅ | — |
-| PAY-16 | Multiple transactions per invoice (partial payments) | `payment_allocations` | ✅ | — |
-| PAY-17 | Pay with credit on the invoice page | Staff-only credit application | 🟡 | P1 |
-| PAY-18 | Payment method icons/branding in the pay modal | No pay modal; portal checkout redirects | 🟡 | P1 |
-| PAY-19 | Payment polling ("check payment status") | Webhook-driven; no poll endpoint | 🟡 | P1 |
+| PAY-01 | Real gateway: Stripe | extensions/stripe is a real adapter: createCheckout builds a Checkout Session with amount, currency and an Idempotency-Key, queryPayment and refund resolve a session id to its PaymentIntent, webhook.go verifies the t=,v1= signature over timestamp and raw body, and conformance_test.go drives the whole thing through extproto.Launch. | ✅ | P4 |
+| PAY-02 | Real gateway: PayPal | No PayPal adapter exists: gatewayProviders in internal/gatewayconfig/providers.go lists only stripe and fake, and extensions/ contains no PayPal process. | ❌ | P4 |
+| PAY-03 | Real gateway: PayPal IPN (legacy) | No legacy PayPal IPN listener: the protocol's only webhook entry is gateway.verify_webhook in internal/extproto/spec.go and no adapter exists to parse an IPN payment_status delivery or validate its POST-back. | ❌ | P4 |
+| PAY-04 | Real gateway: Mollie | No Mollie adapter: the two entries in gatewayProviders are Stripe and the fixture, and nothing under extensions/ speaks the Mollie API. | ❌ | P4 |
+| PAY-05 | Marketplace gateways (Razorpay, Coinbase, BTCPay, bank transfer, 200+) | internal/marketplace can install an extension whose Kind is KindGateway after a SHA-256 check, but gatewayProviders in internal/gatewayconfig/providers.go is a closed two-entry list and no Razorpay, Coinbase or BTCPay adapter exists. | ❌ | P6 |
+| PAY-06 | Gateway CRUD: name + extension + config fields | gatewayconfig.Resolver.Save stores one provider plus its credential Fields in the settings table and web/src/views/gateways.ts renders and edits them, but there are no gateway records: one gateway per installation and no create, delete, order or naming. | 🟡 | P4 |
+| PAY-07 | Gateway test/connection check | GET /api/v1/staff/gateways/test and /api/v1/staff/servers/test (handleTestGateway, handleTestServer) launch the saved configuration through gatewayconfig.Launch and report a failed describe as ok:false with the reason. | ✅ | P4 |
+| PAY-08 | Checkout session with amount/currency and redirect | POST /api/v1/portal/invoices/{id}/checkout (handlePortalCheckout in internal/httpapi/checkout.go) records a payment_attempts row under an operation key and returns the adapter redirect_url, and extensions/stripe createCheckout sends the amount, currency and idempotency key. | ✅ | — |
+| PAY-09 | Webhook verification + authoritative re-query | payments.ExtensionVerifier delegates to gateway.verify_webhook, payments.Inbox.Receive stores the normalised payment_id beside the raw payload (0058_gateway_event_payment_id.sql) and Processor.processOne re-queries the provider with query_payment before applying anything. | ✅ | — |
+| PAY-10 | Saved payment methods / billing agreements (create, list, remove, default for recurring) | Migration 0036_payment_methods.sql plus payments.Agreements Save, List, Get, SetDefault and Remove give a saved token with one database-enforced default, but no HTTP route or adapter token issuance is wired and internal/payments has no test for it. | 🟡 | P4 |
+| PAY-11 | Off-session charging of recurring invoices | payments.Agreements.ChargeInvoice and ChargeDue implement the gateway.off_session_enabled guard, payment_attempts reuse and settlement through Applier.ApplySettledPayment, but nothing implements OffSessionCharger and nothing calls ChargeDue, so no renewal is ever charged. | 🟡 | P4 |
+| PAY-12 | Refund through the gateway, partial refunds, `refunded_amount` | refunds.Service.Create writes the intent before calling Gateway.Refund, accepts a partial amount, leaves a timeout as unknown and Reconcile re-asks the provider, while billing derives payments.status partially_refunded or refunded from the refund rows. | ✅ | — |
+| PAY-13 | Transaction fee recorded per payment | payments.fee_minor exists (0020_commerce.sql) and handleStaffRecordPayment stores a fee_minor from the operator, but no gateway or webhook path records the provider's own fee. | 🟡 | P5 |
+| PAY-14 | Manual payment recording (admin creates a transaction) | handleStaffRecordPayment and handleRecordManualPayment with payments.RecordManual record money that arrived outside a gateway: provider manual, closed-set method and note from 0057_offline_payment_method.sql, a mandatory reference and the ordinary settlement applier. | ✅ | P5 |
+| PAY-15 | Transaction status `processing/succeeded/failed` | payments.status covers succeeded, refunded, partially_refunded and disputed, and payment_attempts.status covers created, pending, requires_action, succeeded, failed and cancelled in 0001_core.sql. | ✅ | — |
+| PAY-16 | Multiple transactions per invoice (partial payments) | payment_allocations is unique on (payment_id, invoice_id) and billing.Allocate accumulates invoices.amount_paid_minor without forcing paid, so two payments against one invoice are ordinary rows. | ✅ | — |
+| PAY-17 | Pay with credit on the invoice page | POST /api/v1/portal/invoices/{id}/pay-with-credit (handlePortalPayWithCredit) spends the customer's balance, and web/src/views/portal-invoice.ts offers it beside the gateway button with the remainder shown. | ✅ | P1 |
+| PAY-18 | Payment method icons/branding in the pay modal | handlePortalPaymentMethods returns each configured gateway as id and name taken from gateway.describe Methods and /portal/payment-methods lists them, but there are no per-method icons and payment is still a hosted redirect with no pay modal. | 🟡 | P1 |
+| PAY-19 | Payment polling ("check payment status") | GET /api/v1/portal/invoices/{id}/payment-status (handlePortalPaymentStatus) reports the local attempt status and derives settled from the allocation, but no web/src view calls it, so nothing in the UI polls. | 🟡 | P1 |
 
 **Protocol gap (`PAY-10`, `PAY-11`).** The v1 extension protocol has `create_checkout`,
 `query_payment`, `refund`, `verify_webhook`. A billing agreement needs
@@ -414,29 +414,29 @@ Source: `app/Models/Service.php`, `app/Classes/Extension/Server.php`,
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| SVC-01 | Service lifecycle: pending → active → suspended → cancelled | `services`: `pending/provisioning/active/suspended/terminating/terminated/error`; `subscriptions`: `pending/active/past_due/cancelled/ended`; provisioning `unknown` | ✅ stronger | — |
-| SVC-02 | Service belongs to order, product, plan, customer, currency, quantity, price | `services` + `subscriptions`; config JSON | 🟡 | P2 |
-| SVC-03 | Service label (customer-editable) | No label | ❌ | P2 |
-| SVC-04 | Service description derived from product + config options | No config options | ❌ | P2 |
-| SVC-05 | Service expiry, next due date, price recalculation | Renewal engine + calendar anchors | ✅ stronger | — |
-| SVC-06 | Service `suspend_hold_until` (do not suspend before) | `service_holds` with expiry; automation respects them | ✅ | — |
-| SVC-07 | Service config options (`service_configs`) | `services.config` JSON, no option model | 🟡 | P2 |
-| SVC-08 | Service custom properties | `billing_profiles` only; no arbitrary properties | ❌ | P2 |
-| SVC-09 | Service cancellation record | No cancellation table; cancellation is a subscription end date | 🟡 | P2 |
-| SVC-10 | Service upgrade record | None | ❌ | P2 |
-| SVC-11 | Server actions exposed to the client (buttons/views/text from the extension) | No extension action surface | ❌ | P4 |
-| SVC-12 | Admin service CRUD (create/edit/delete, status change, send notification, delete remote) | Read + suspend/resume/terminate/holds; no create/edit/delete | 🟡 | P5 |
-| SVC-13 | Admin "recalculate price" action | None | ❌ | P5 |
-| SVC-14 | Admin "cancel subscription ID" action | None | ❌ | P5 |
-| SVC-15 | Admin service invoices relation | Customer detail shows recent invoices | 🟡 | P5 |
-| SVC-16 | Provisioning: create/suspend/unsuspend/terminate/upgrade | `create/suspend/resume/terminate/inspect/lookup/validate`; no upgrade | 🟡 | P4 |
-| SVC-17 | Provisioning queue with retries and failure visibility | Durable operation queue, fencing, leases, reconciliation | ✅ stronger | — |
-| SVC-18 | Server integrations: Pterodactyl, cPanel, DirectAdmin, Plesk, Virtualizor, Virtfusion, Convoy, Enhance | `fakeprov` only | ❌ | P4 |
-| SVC-19 | Server config fields + test connection | No server records; extension configured by env | ❌ | P4 |
-| SVC-20 | Product→server assignment | None | ❌ | P4 |
-| SVC-21 | Server "config options → environment variables" mapping | No config options | ❌ | P4 |
-| SVC-22 | Upgrade server call on product change | None | ❌ | P4 |
-| SVC-23 | Server jobs (`CreateJob`, `SuspendJob`, `TerminateJob`) with `deleteExtensionServer` | Operations queue | ✅ stronger | — |
+| SVC-01 | Service lifecycle: pending → active → suspended → cancelled | services.status carries pending, provisioning, active, suspended, terminating, terminated and error with a services.generation fencing token, and subscriptions.status adds past_due and ended, which is stricter than the four upstream states. | ✅ | — |
+| SVC-02 | Service belongs to order, product, plan, customer, currency, quantity, price | services carries customer_id, product_id, order_id and quantity (0029_service_metadata.sql) and plan, price and currency come from subscriptions.price_version_id. | ✅ | P2 |
+| SVC-03 | Service label (customer-editable) | services.label is bounded and single-line and is editable by the customer through PUT /api/v1/portal/services/{id}/metadata and by staff through PUT /api/v1/staff/services/{id}/metadata. | ✅ | P2 |
+| SVC-04 | Service description derived from product + config options | service.deriveDescription in internal/service/metadata.go builds the description from product, plan, interval and the chosen config options, and the customer's own text wins as effective_description. | ✅ | P2 |
+| SVC-05 | Service expiry, next due date, price recalculation | internal/renewal issues from subscriptions.next_billing_at on an internal/calendar anchor of day-of-month plus wall clock with clamping, and renewal re-reads the subscription price_version_id on every period. | ✅ | — |
+| SVC-06 | Service `suspend_hold_until` (do not suspend before) | service_holds (0006_dunning.sql) with an expiry is read by handleSuspensionEligibility, the dunning and termination automation and handleListHolds, so a hold really stops a suspend. | ✅ | — |
+| SVC-07 | Service config options (`service_configs`) | service_configs (0020_commerce.sql) stores the chosen options priced per price version and internal/httpapi/service_config.go validates, prices and reprices a change. | ✅ | P2 |
+| SVC-08 | Service custom properties | services.custom_properties jsonb plus service_property_definitions with show_on_invoice and customer_visible in 0029_service_metadata.sql, and a trigger refuses a value whose key has no definition. | ✅ | P2 |
+| SVC-09 | Service cancellation record | service_cancellations (0020_commerce.sql) records type, reason and end date, with POST /api/v1/staff/services/{id}/cancellation, the portal request path and the /cancellations queue. | ✅ | P2 |
+| SVC-10 | Service upgrade record | service_upgrades (0020_commerce.sql) plus internal/service/upgrades.go and POST /api/v1/staff/services/{id}/upgrade keep a half-applied change as a pending row instead of losing it. | ✅ | P2 |
+| SVC-11 | Server actions exposed to the client (buttons/views/text from the extension) | extproto.ServiceAction and ui.describe with internal/httpapi/extension_hooks.go let an extension declare a service action that the core then calls with the declared permission checked, but no web/src view requests GET /api/v1/extensions/hooks, so no button is ever rendered. | 🟡 | P4 |
+| SVC-12 | Admin service CRUD (create/edit/delete, status change, send notification, delete remote) | POST /api/v1/staff/services (handleCreateService) creates, PUT /api/v1/staff/services/{id}/metadata edits and suspend, resume, terminate and cancellation change status, but there is no delete, no send-notification and no delete-remote action. | 🟡 | P5 |
+| SVC-13 | Admin "recalculate price" action | Nothing recomputes a service price from the catalogue: the only price change path is internal/service/upgrades.go, and 0029_service_metadata.sql says the plan and price come from the subscription. | ❌ | P5 |
+| SVC-14 | Admin "cancel subscription ID" action | internal/service ends the local subscriptions row on a cancellation, but no admin action and no extproto method cancels a provider-side subscription or billing agreement id. | ❌ | P5 |
+| SVC-15 | Admin service invoices relation | staff.ServiceDetail.Invoices is returned by handleStaffService and web/src/views/service.ts renders an Invoices tab on the service screen. | ✅ | P5 |
+| SVC-16 | Provisioning: create/suspend/unsuspend/terminate/upgrade | provisioning.Worker.execute dispatches create, inspect, suspend, resume and terminate to the extproto provisioner methods and Reconcile uses provisioner.lookup, but there is no upgrade or replace call in the protocol or the worker. | 🟡 | P4 |
+| SVC-17 | Provisioning queue with retries and failure visibility | service_operations is a durable queue with a unique operation_key, generations, leases, Worker.Reap for expired leases and Worker.Reconcile for unknown outcomes. | ✅ | — |
+| SVC-18 | Server integrations: Pterodactyl, cPanel, DirectAdmin, Plesk, Virtualizor, Virtfusion, Convoy, Enhance | extensions/pterodactyl and extensions/cpanel are two real adapters against different APIs, but gatewayconfig.serverProviders registers only Pterodactyl plus the fixture so cPanel cannot be selected, and DirectAdmin, Plesk, Virtualizor, Virtfusion, Convoy and Enhance are absent. | 🟡 | P4 |
+| SVC-19 | Server config fields + test connection | gatewayconfig.Field with GET /api/v1/staff/servers/test gives credential fields and a connection test, but serverProviders in internal/gatewayconfig/providers.go lists only pterodactyl and fake, so the CPANEL_WHM_URL and CPANEL_API_TOKEN values have no form and never reach the child environment. | 🟡 | P4 |
+| SVC-20 | Product→server assignment | products.server_id from 0049_catalog_structure.sql with PUT /api/v1/staff/catalog/products/{id}/server and the servers CRUD routes in internal/httpapi/catalog_nesting.go. | ✅ | P4 |
+| SVC-21 | Server "config options → environment variables" mapping | extensions/pterodactyl environmentFor passes env.-prefixed metadata to the egg, but provisioning.Operation.metadata() emits only service_id, customer_id, server_id and server_node, so no chosen config option ever becomes an environment variable. | 🟡 | P4 |
+| SVC-22 | Upgrade server call on product change | internal/service.apply enqueues a resize operation on a price change, but provisioning.Worker.execute has no resize case and fails it as an unsupported operation kind, and extproto has no provisioner.upgrade. | ❌ | P4 |
+| SVC-23 | Server jobs (`CreateJob`, `SuspendJob`, `TerminateJob`) with `deleteExtensionServer` | service_operations with Worker.Run, Reap and Reconcile replaces Paymenter's CreateJob, SuspendJob and TerminateJob, and termination removes the remote resource through provisioner.terminate. | ✅ | — |
 
 ### 3.11 Cancellations
 
@@ -445,13 +445,13 @@ Source: `app/Models/ServiceCancellation.php`, `app/Livewire/Services/Cancel.php`
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| CAN-01 | Customer cancellation request with `immediate` or `end_of_period` | Portal cancellation is end-of-period only | 🟡 | P2 |
-| CAN-02 | Cancellation reason (free text, max 255) | No reason | ❌ | P2 |
-| CAN-03 | Cancellation record + admin queue (`ServiceCancellationResource`) | No record; only subscription `ends_at` | 🟡 | P2 |
-| CAN-04 | Cancellation notification to customer and staff | No cancellation email kind | ❌ | P3 |
-| CAN-05 | Cancellation prevents renewal | Renewal engine skips cancelled subscriptions | ✅ | — |
-| CAN-06 | Immediate cancellation triggers terminate | Not implemented | ❌ | P2 |
-| CAN-07 | Client can cancel only if `cancellable` (not already cancelled, not free/one-time) | Portal action list controls this | ✅ | — |
+| CAN-01 | Customer cancellation request with `immediate` or `end_of_period` | internal/service/cancellations.go validate and the service_cancellations CHECK accept immediate and end_of_period, but web/src/views/portal-service.ts posts only the end-of-period /api/v1/portal/services/{id}/cancel route, so no customer screen offers an immediate request. | 🟡 | P2 |
+| CAN-02 | Cancellation reason (free text, max 255) | service.MaxReasonLength and the service_cancellations reason CHECK bound the text at 255 characters and web/src/views/cancellations.ts renders it, but the portal cancel path portal.Manager.RequestCancellation accepts no reason, so a customer cannot supply one. | 🟡 | P2 |
+| CAN-03 | Cancellation record + admin queue (`ServiceCancellationResource`) | service_cancellations, service.Store.Cancellations and GET /api/v1/staff/cancellations back web/src/views/cancellations.ts, but portal.Manager.RequestCancellation only sets subscriptions.cancel_at_period_end and inserts no row, so a portal cancellation never reaches the queue. | 🟡 | P2 |
+| CAN-04 | Cancellation notification to customer and staff | notify.EventServiceCancellationReceived and its CancellationReceived template mail the customer from notifyCancellationReceived in internal/httpapi/service_cancellations.go, but no staff notification is emitted and the legacy portal cancel path sends nothing. | 🟡 | P3 |
+| CAN-05 | Cancellation prevents renewal | internal/renewal/renewal.go returns OutcomeSkippedCancelled and calls endSubscription when subscriptions.cancel_at_period_end is set, so no further period is invoiced. | ✅ | — |
+| CAN-06 | Immediate cancellation triggers terminate | service.Store.ExecuteCancellation enqueues the terminate operation through enqueueOperation with the terminate:<service>:<generation> key and web/src/views/cancellations.ts exposes it as Execute, although the scheduled ExecuteDue job is not wired into cmd/billing/jobs.go. | ✅ | P2 |
+| CAN-07 | Client can cancel only if `cancellable` (not already cancelled, not free/one-time) | portal.actionsFor offers cancel only for an active service whose cancel_at_period_end is false, and service.Store.requestCancellation accepts only active or suspended statuses and refuses a second open request, so the action list and the handler agree. | ✅ | — |
 
 **Design note.** "Immediate cancellation" is destructive and should not be a customer-only
 switch. Recommendation: model a *request* (`CAN-03`) with a type, then let staff or an
@@ -465,20 +465,20 @@ Source: `app/Models/ServiceUpgrade.php`, `ProductUpgrade.php`, `ConfigOption.php
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| UPG-01 | Product upgrade graph (`product_upgrades`) | None | ❌ | P2 |
-| UPG-02 | Customer upgrade/downgrade flow: choose product, same billing period, config options | None | ❌ | P2 |
-| UPG-03 | Prorated price for the remainder of the period | None | ❌ | P2 |
-| UPG-04 | Upgrade creates an invoice; downgrade credits the difference | None | ❌ | P2 |
-| UPG-05 | Upgrade applied by a queued server call, then the service is updated | None | ❌ | P2 |
-| UPG-06 | Pending upgrade invoices recalculated/cancelled by cron | None | ❌ | P2 |
-| UPG-07 | Config options: parent/child (dropdown/radio/checkbox/text/number), `env_variable`, `hidden`, `upgradable`, `sort`, `description` | None | ❌ | P2 |
-| UPG-08 | Config option pricing per plan/period (child price + setup fee) | None | ❌ | P2 |
-| UPG-09 | Config options attached to products (`config_option_products`) | None | ❌ | P2 |
-| UPG-10 | Selected options stored on the service (`service_configs`) and sent to the server | `services.config` JSON only | 🟡 | P2 |
-| UPG-11 | Config option upgrade path (change RAM/CPU on an existing service) | None | ❌ | P2 |
-| UPG-12 | Checkout config fields supplied by the server extension | None | ❌ | P4 |
-| UPG-13 | Admin config option CRUD + products relation | None | ❌ | P5 |
-| UPG-14 | Admin "upgradable" flag on options | None | ❌ | P5 |
+| UPG-01 | Product upgrade graph (`product_upgrades`) | product_upgrades in internal/store/migrations/0020_commerce.sql plus internal/httpapi/upgrades_ext.go and web/src/views/upgrades.ts provide the directed graph with admin add and remove, and internal/service/upgrades.go reachable enforces it. | ✅ | P2 |
+| UPG-02 | Customer upgrade/downgrade flow: choose product, same billing period, config options | web/src/views/portal-service.ts requests an upgrade from /api/v1/portal/services/{id}/upgrade-options and the store enforces the same interval and currency, but config options are changed through a separate PUT /api/v1/portal/services/{id}/config call rather than as part of the upgrade. | 🟡 | P2 |
+| UPG-03 | Prorated price for the remainder of the period | service.ComputeProration and ProratedDifference in internal/service/upgrades.go prorate by the exact remaining fraction of the real billing period with one RoundHalfUp rounding, and prorationJSON in internal/httpapi/service_upgrades.go exposes the ratio. | ✅ | P2 |
+| UPG-04 | Upgrade creates an invoice; downgrade credits the difference | an upgrade issues a prorated invoice via issueProratedInvoice, but a downgrade only records CreditMinor with CreditPending in service.Store.upgrade and nothing in internal/credit calls ApplyDowngrade, so the credit is never posted. | 🟡 | P2 |
+| UPG-05 | Upgrade applied by a queued server call, then the service is updated | service.Store.ApplyUpgrade reprices the subscription and enqueues a resize operation, but ApplyPendingUpgrades is not scheduled in cmd/billing/jobs.go and no route calls it, so a paid upgrade is never applied automatically. | 🟡 | P2 |
+| UPG-06 | Pending upgrade invoices recalculated/cancelled by cron | service.Store.CancelStaleUpgrades voids an unpaid upgrade invoice after StaleUpgradeAfter, but cmd/billing/jobs.go registers no job for it, which docs/parity-status.md E2.2 also records. | 🟡 | P2 |
+| UPG-07 | Config options: parent/child (dropdown/radio/checkbox/text/number), `env_variable`, `hidden`, `upgradable`, `sort`, `description` | config_options in internal/store/migrations/0020_commerce.sql carries parent_id, option_type of dropdown/radio/checkbox/text/number, env_variable, hidden, upgradable, sort_order and description, edited by web/src/views/config-options.ts. | ✅ | P2 |
+| UPG-08 | Config option pricing per plan/period (child price + setup fee) | config_option_prices keys amount_minor and setup_minor by config_option_id, price_version_id and choice, and web/src/views/config-options.ts edits that matrix per price version. | ✅ | P2 |
+| UPG-09 | Config options attached to products (`config_option_products`) | config_options.product_id attaches every option to a product and service.Store.ConfigOptions reads them per product, a single-owner column rather than Paymenter's config_option_products join. | ✅ | P2 |
+| UPG-10 | Selected options stored on the service (`service_configs`) and sent to the server | internal/register/checkout.go and internal/customer/service.go write the selection to service_configs and ResolveSelection builds the env map, but provisioning.Worker Operation.metadata sends only service_id, customer_id, server_id and server_node, so env_variable values never reach the adapter. | 🟡 | P2 |
+| UPG-11 | Config option upgrade path (change RAM/CPU on an existing service) | service.Store.ChangeServiceConfig re-prices an upgradable option through the same proration and service_upgrades row and PUT /api/v1/portal/services/{id}/config is offered by web/src/views/portal-service.ts. | ✅ | P2 |
+| UPG-12 | Checkout config fields supplied by the server extension | internal/extproto/spec.go has no method for an extension to supply checkout fields and checkout options come only from config_options via loadConfig in internal/register/checkout.go. | ❌ | P4 |
+| UPG-13 | Admin config option CRUD + products relation | the staff routes in internal/httpapi/service_config.go create, update, delete and price options, rendered by web/src/views/config-options.ts. | ✅ | P5 |
+| UPG-14 | Admin "upgradable" flag on options | config_options.upgradable is edited by the Upgradable switch in web/src/views/config-options.ts and enforced by ChangeServiceConfig and handlePortalConfigOptions in internal/httpapi/portal_services.go. | ✅ | P5 |
 
 **Design note.** Config options are the thing hosting customers actually buy. They also change
 the price of a *subscription*, not just an order: a service with "8 GB" must renew at the 8 GB
@@ -493,21 +493,21 @@ Source: `app/Models/Ticket.php`, `TicketMessage.php`, `TicketMessageAttachment.p
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| TKT-01 | Ticket table: subject, status, priority, department, user, assigned_to, service | No ticket tables; `ticket:read:self` / `ticket:write:self` permissions exist but gate nothing | ❌ | P3 |
-| TKT-02 | Ticket messages (user or staff author, body) | None | ❌ | P3 |
-| TKT-03 | Attachments (uuid, filename, path, size, mime) with 10 MB cap and policy-checked download | None | ❌ | P3 |
-| TKT-04 | Client: create ticket (subject, department, priority, service, first message) | None | ❌ | P3 |
-| TKT-05 | Client: list tickets with status filter | None | ❌ | P3 |
-| TKT-06 | Client: view thread, reply, close | None | ❌ | P3 |
-| TKT-07 | Staff: ticket queue, filters, assignment, status/priority/department change, reply | None | ❌ | P3 |
-| TKT-08 | Departments configured in settings; priorities low/normal/high; statuses open/replied/closed | None | ❌ | P3 |
-| TKT-09 | Disable tickets setting; disallow client closing setting | None | ❌ | P3 |
-| TKT-10 | Auto-close tickets with no reply for N days | None | ❌ | P3 |
-| TKT-11 | Email piping: IMAP fetch, reply parsing, message-id threading, attachment import, mail log | None | ❌ | P3 |
-| TKT-12 | Ticket mail log (`message_id`, subject, from, to, body, status) | None | ❌ | P3 |
-| TKT-13 | New-reply email notification + in-app notification | None | ❌ | P3 |
-| TKT-14 | Support widget on the client dashboard | None | ❌ | P3 |
-| TKT-15 | Ticket events for extensions (`Ticket/Created`, `TicketMessage/Created`) | None | ❌ | P4 |
+| TKT-01 | Ticket table: subject, status, priority, department, user, assigned_to, service | tickets, ticket_messages, ticket_attachments and ticket_mail_logs exist in internal/store/migrations/0020_commerce.sql and every route in internal/httpapi/tickets.go is gated on ticket:read:self, ticket:write:self, ticket:read:all or ticket:write:all. | ✅ | P3 |
+| TKT-02 | Ticket messages (user or staff author, body) | ticket_messages stores author_user_id, from_staff, body and message_id, read by Store.threadTx and written by insertMessage in internal/tickets/tickets.go. | ✅ | P3 |
+| TKT-03 | Attachments (uuid, filename, path, size, mime) with 10 MB cap and policy-checked download | tickets.ValidateAttachment, AddAttachmentAsCustomer and AddAttachmentAsStaff in internal/tickets/attachments.go enforce MaxAttachmentBytes of 10 MB and a content-type allowlist, and writeAttachment sets nosniff and an attachment Content-Disposition on download. | ✅ | P3 |
+| TKT-04 | Client: create ticket (subject, department, priority, service, first message) | POST /api/v1/portal/tickets with subject, department, priority, service_id and a first message runs Store.CreateTx, which also stores custom-field answers and refuses the create naming an unanswered required field. | ✅ | P3 |
+| TKT-05 | Client: list tickets with status filter | Store.ListForCustomer filters on customer_id and status with cursor pagination, is served by handlePortalTickets and rendered in web/src/views/tickets.ts. | ✅ | P3 |
+| TKT-06 | Client: view thread, reply, close | Store.ThreadForCustomer, ReplyAsCustomerTx and CloseAsCustomerTx back web/src/views/ticket.ts, and requireCloseAnswers refuses a close with the unanswered field's label. | ✅ | P3 |
+| TKT-07 | Staff: ticket queue, filters, assignment, status/priority/department change, reply | Store.ListForStaff filters by status, priority, department, assignee and query, and internal/httpapi/tickets_staff.go adds reply, close, assign, patch and staff create for a named customer_id, rendered by web/src/views/support-queue.ts and web/src/views/support.ts. | ✅ | P3 |
+| TKT-08 | Departments configured in settings; priorities low/normal/high; statuses open/replied/closed | the tickets settings group in internal/settings/settings.go holds departments, priorities are tickets.Priorities, statuses are tickets.Statuses, and defaults come from tickets.DefaultSettings. | ✅ | P3 |
+| TKT-09 | Disable tickets setting; disallow client closing setting | tickets.disabled and tickets.client_closing_disabled are read by settingsFrom and enforced as ErrDisabled and ErrClosingDisabled, edited in web/src/views/system-settings.ts. | ✅ | P3 |
+| TKT-10 | Auto-close tickets with no reply for N days | tickets.CloseStale closes stale tickets after tickets.autoclose_days and the ticket-autoclose job in cmd/billing/jobs.go runs it every six hours. | ✅ | P3 |
+| TKT-11 | Email piping: IMAP fetch, reply parsing, message-id threading, attachment import, mail log | the webhook POST /api/v1/webhooks/mail/piping and the hand-written IMAP poller in internal/tickets/imap.go share Ingest with message-id threading and ticket_mail_logs, but inbound attachments are counted and refused rather than imported. | 🟡 | P3 |
+| TKT-12 | Ticket mail log (`message_id`, subject, from, to, body, status) | ticket_mail_logs in internal/store/migrations/0020_commerce.sql stores message_id, subject, from_address, to_address, body and status, written by Store.logInbound and listed by ListInboundMail. | ✅ | P3 |
+| TKT-13 | New-reply email notification + in-app notification | notify.EventNewTicketMessage has mail and in-app templates, but notify.TicketMessage is called only from notifyAssignee in internal/tickets/piping.go, so a staff reply in tickets_staff.go notifies no customer and a portal reply notifies no assignee. | 🟡 | P3 |
+| TKT-14 | Support widget on the client dashboard | customers reach tickets from web/src/ui/layout.ts and web/src/views/tickets.ts, but web/src/views/portal.ts has no ticket card, so the only dashboard widget is the staff open_tickets one in internal/httpapi/dashboard_widgets.go. | 🟡 | P3 |
+| TKT-15 | Ticket events for extensions (`Ticket/Created`, `TicketMessage/Created`) | internal/extproto/events.go lists ticket.created, ticket.replied, ticket.closed, ticket.assigned and ticket.updated and internal/httpapi/extension_hooks.go delivers them to subscribed extensions. | ✅ | P4 |
 
 **Design note.** The permissions are already a promise the code does not keep
 (`internal/authn/authz.go` grants `ticket:read:self` / `ticket:write:self` to customers and to

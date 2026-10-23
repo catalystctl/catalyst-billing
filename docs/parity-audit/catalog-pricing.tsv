@@ -1,0 +1,36 @@
+CAT-01	🟡	internal/catalog.CreateCategory/UpdateCategory with the 0049 parent_id tree give name, slug, description, sort, hidden and nesting, but categories has no image column or upload path.
+CAT-02	✅	ProductInput and CreateProductTx/UpdateProductTx in internal/catalog/catalog.go carry name, slug, category, short and long description, logo, hidden and sort, served by /api/v1/staff/catalog/products and the catalog-admin.ts dialog.
+CAT-03	🟡	catalog.ValidateInterval and handleAddPrice accept one_time and free and the dialog edits amount, setup, interval, anchor and provision plan/region, but the INTERVALS picker in web/src/views/catalog-admin.ts and INTERVAL_OPTIONS in catalog-admin-product.ts omit one_time and free.
+CAT-04	✅	catalog.DuplicateProductTx in internal/catalog/plans.go and POST /api/v1/staff/catalog/products/{id}/duplicate copy the product, its price versions and config options, wired to the Duplicate button in web/src/views/catalog-admin-product.ts.
+CAT-05	⛔	Deliberate divergence: there is no inline price repeater to reload, because internal/catalog appends immutable price_versions and the panel re-reads plans from /api/v1/staff/catalog/products.
+CAT-06	✅	catalog.Description plus the allowlist in internal/catalog/sanitize.go store an html-or-plain description_format that the rich editor in catalog-admin-product.ts writes and the storefront renders.
+CAT-07	✅	catalog.PutImageTx stores digest-deduped bytes in product_images and /api/v1/media/{id} serves them with their own content type, keeping the panel CSP img-src 'self' data:.
+CAT-08	🟡	products.server_id is fully wired through catalog.SetProductServerTx, productPlacementWith and the placement control, while products.email_template exists in catalog.Product and planJSON but has no editor and no activation-mail consumer.
+CAT-09	✅	internal/httpapi/upgrades_ext.go implements product_upgrades create/list/delete and reachable-product reads, used by service_upgrades.go and the web/src/views/upgrades.ts screen.
+CAT-10	✅	catalog.Public and PublicProduct require a price_versions row so an unpriced product is not shown, and commerce.AddItemTx refuses a price whose currency differs from the cart's.
+CAT-11	✅	internal/catalog has no update-price endpoint: AddPriceTx appends a version and ReorderPlansTx writes only price_versions.sort_order, while an issued invoice snapshots the version it priced from.
+CPN-01	✅	commerce.Coupon in internal/commerce/coupons.go supports kind percentage as an exact rational (money.ParseRatio) and kind fixed as AmountMinor plus Currency, matching the coupons CHECK in 0020_commerce.sql.
+CPN-02	✅	AppliesTo price, setup or all is stored on coupons and enforced by applyCoupon in internal/commerce/coupons.go and couponBase in internal/commerce/cart.go.
+CPN-03	✅	coupons.max_uses is enforced by counting coupon_redemptions, and register.resolveCoupon re-counts under SELECT FOR UPDATE on the coupon row.
+CPN-04	✅	coupons.max_uses_per_user is counted per customer_id in commerce.validateCouponWith and re-checked by the locked query in internal/register/checkout.go with the ErrCouponUsed code.
+CPN-05	✅	coupons.starts_at and expires_at are validated in normaliseCoupon and refused at cart and checkout as ErrExpired, ErrCouponNotStarted and ErrCouponExpired.
+CPN-06	🟡	coupons.recurring_cycles is stored and checkout seeds subscriptions.coupon_cycles_applied, but internal/renewal/renewal.go reads only price_versions so a first-N-cycles coupon is never applied to a renewal invoice.
+CPN-07	✅	coupon_products restricts a coupon to a product set, enforced in commerce.validateCouponWith, ApplyCouponTx and register.resolveCoupon with the ErrCouponNotForYou code.
+CPN-08	🟡	checkout writes subscriptions.coupon_id and coupon_cycles_applied in internal/register/checkout.go, yet the renewal engine never reads either column and re-prices the undiscounted price_version amount.
+CPN-09	✅	commerce.ApplyCouponTx validates at cart time and register.resolveCoupon revalidates inside the checkout transaction under SELECT FOR UPDATE before insertRedemption.
+CPN-10	✅	registerCouponRoutes in internal/httpapi/commerce_coupon.go serves list, get, create, update and /redemptions with no delete, mirrored by the retire-only screen web/src/views/coupons.ts.
+TAX-01	✅	commerce.TaxRate and the tax_rates table in 0020_commerce.sql give a dated row per country_code (wildcard all), region_code and tax_class, guarded by the tax_rates_one_open unique index.
+TAX-02	🟡	taxPricerFor in internal/httpapi/commerce_tax.go feeds billing_profiles.country_code and region into commerce.TaxPricer for cart totals, but the server issuer in internal/httpapi/server.go is still billing.FixedTaxPricer{Policy: no-tax} so issued invoices resolve no rate.
+TAX-03	✅	Inclusive is a per-rate column plus the tax.default_mode setting, both honoured by billing.FixedTaxPricer and commerce.TaxPricer.Price.
+TAX-04	✅	billing.Pricer returns per-line net and tax stored in invoice_lines.tax_rate, and billing.TaxEvidence records mode, rate and jurisdiction in the invoice snapshot.
+TAX-05	❌	There is no jurisdiction rules engine: internal/tax imports a rate table and internal/commerce/tax.go does a (country, region, class) lookup, with no EU place-of-supply or reverse-charge rule and no US nexus determination anywhere.
+TAX-06	🟡	billing_profiles.tax_exempt and tax_exemption_reason are staff-set and short-circuit commerce.TaxPricer.Price, but no rule derives the exemption because there is no VAT-ID validation or reverse-charge decision.
+TAX-07	✅	registerTaxRoutes in internal/httpapi/commerce_tax.go serves /api/v1/staff/tax-rates CRUD and internal/httpapi/tax_import.go adds source, preview, import, runs and provenance plus the tax-rate-refresh job, edited in web/src/views/tax-rates.ts.
+TAX-08	🟡	web/src/views/cart.ts renders an Includes rate tax line and a tax total from cartTotals, but web/src/views/storefront.ts and storefront-product.ts show net prices only.
+CUR-01	✅	commerce.Currency and the currencies table in 0020_commerce.sql carry code, name, scale, symbol, symbol_position, group_separator, decimal_mark and group_size, edited in web/src/views/currencies.ts.
+CUR-02	✅	currencies.is_default with its partial unique index and commerce.Store.DefaultCurrency supply the default, which commerce.CartTx falls back to when a cart names no currency.
+CUR-03	🟡	web/src/views/cart.ts has a currency selector that locks once the cart holds an item and commerce.AddItemTx adopts the first price's currency, but the storefront has no switcher and ignores the ?currency= the selector redirects to.
+CUR-04	✅	price_versions.currency plus catalog.AddPriceTx give each plan its own currency row, and no conversion exists between rows.
+CUR-05	✅	internal/commerce/currencies.go stores presentation only, money.Amount refuses cross-currency arithmetic, and sumAmounts in web/src/lib/format.ts returns null for mixed currencies.
+CUR-06	✅	registerCurrencyRoutes in internal/httpapi/commerce_currency.go serves /api/v1/staff/currencies list, create, update and delete, and DeleteCurrencyTx refuses a currency with price or invoice history.
+CUR-07	✅	commerce.Currency.Format and formatCurrency in web/src/lib/format.ts insert the symbol prefix or suffix and the row's grouping and decimal marks, keeping integer minor-unit arithmetic.

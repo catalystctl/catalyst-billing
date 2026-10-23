@@ -140,6 +140,18 @@ var mergedRouteOperations = map[string]Operation{
 			{Status: 409, Description: "The invoice is paid, void, or has no chargeable instrument."},
 		},
 	},
+	"GET /api/v1/staff/payments/charge-due": {
+		Summary: "What the unattended charger would take, without charging anything",
+		Description: "The dry run for `charge-agreements`: the invoices the next tick would charge, the amount per " +
+			"currency, and the invoices it would skip with the reason (`retry_window`, `checkout_open`, " +
+			"`no_mandate`). It resolves no gateway at all — it takes the provider *name* — so asking it cannot " +
+			"move money, which is what makes it safe to open before turning the job back on.\n\n" +
+			"The three refusal states are reported separately rather than collapsed into an empty list: " +
+			"`enabled` is the setting, `kill_switch_set` is the process-level switch, and `reason` says why " +
+			"the sweep would do nothing. An empty candidate list for four different causes is the answer that " +
+			"sends an operator to the wrong screen.",
+		Responses: []Response{{Status: 200, Description: "The plan: candidates, skips with reasons, per-currency totals, and refusal state."}},
+	},
 	"POST /api/v1/staff/payments/charge-due": {
 		Summary: "Charge every overdue invoice with a saved method",
 		Description: "The batch form of the single charge, and the entry point a scheduled job uses. It reports " +

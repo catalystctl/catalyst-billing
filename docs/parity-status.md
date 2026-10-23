@@ -128,7 +128,12 @@ package that built it. Three states, and no fourth:
 
 **Tally:** 47 built, 1 partial, 1 not started, out of 49 epics.
 
-What this round added, all browser-driven rather than asserted: a customer can **buy** a product
+Every endpoint the panel serves is now either reachable or recorded with a reason in
+`docs/reachability.md`, and `scripts/reachability.sh --check` fails if that stops being true. The
+browser harness opens all 79 routes and drives 41 screens: **510 assertions, 0 failed, 0 not built
+yet.**
+
+What the last rounds added, all browser-driven rather than asserted: a customer can **buy** a product
 end to end (the funnel was API-only — see below); an operator can set a customer's password, reset
 their second factor and close their account; credit can be **taken away**, as an append-only entry
 with a reason the customer can read; an order line can carry a **negotiated price** without touching
@@ -303,21 +308,29 @@ What an operator can now do, all browser-verified:
 
 ## Not done, and why
 
-Three things, recorded rather than hidden:
+One epic is not started and one is partial. Both are breadth, not capability:
 
-- **An arbitrary N-day billing period.** `one_time` and `free` are in the interval set; an N-day
-  period is not, because it needs a period model `internal/calendar` does not have — the calendar
-  reasons about month ends and leap days, which is what makes the existing intervals correct.
-  Adding "every 45 days" means giving that package a second concept of a period, and it was not
-  worth doing badly. Recorded in `0028_plan_types.sql`.
-- **More gateways.** Stripe is built and the protocol hosts more; PayPal and Mollie are not
-  written. This is breadth rather than capability — a shop that needs PayPal needs someone to
-  write one adapter, and `extensions/stripe` is the worked example with a conformance test to
-  copy.
-- **A per-theme invoice PDF.** There is no theme system, so a template per theme has nothing to
-  hang from. The PDF writer is dependency-free and the layout is one function.
+- **E4.3 PayPal / Mollie — not started.** Stripe is built and the protocol hosts more; these two
+  adapters are not written. A shop that needs PayPal needs someone to write one adapter, and
+  `extensions/stripe` is the worked example with a conformance test to copy. Deliberately deferred:
+  no customer has asked for it.
+- **E6.10 — partial.** The invoice PDF is branded per tenant now (name, logo, accent per colour
+  mode), which is the part that mattered. What is not built is a *versioned theme registry* —
+  presets, per-scope overrides, a theme applied to one product line but not another. That is a
+  different and much larger thing than branding, and the boundary is stated in `docs/branding.md` §5
+  so a later reader does not mistake the overlay for the registry.
 
-Two things that were on this list and are now decisions rather than gaps:
+Three things moved from this list to **done** in the last round, each with a test that can fail:
+
+- **An arbitrary N-day billing period** is expressible as `every_<N>_days` (N in 1..366).
+  `internal/calendar` now carries a second period model that counts civil days from an explicit
+  origin, kept deliberately apart from the calendar-month model. The calendar intervals are proven
+  byte-identical by a differential test rather than by a claim about the diff.
+- **A per-tenant invoice PDF** exists, with an unset brand proven byte-identical by hash.
+- **The purchase funnel** — a customer can buy end to end in a browser, which was the single largest
+  gap in the product.
+
+Two things on this list are decisions rather than gaps:
 
 - **Self-applying panel updates.** The update check and the approved target version are real; the
   panel does not replace its own binary, because doing that safely needs a deployment shape this
@@ -326,7 +339,7 @@ Two things that were on this list and are now decisions rather than gaps:
 - **Order editing.** Deliberately absent. An order is the record of what was agreed; corrections
   go through credit notes and cancellations, which is what keeps an issued invoice immutable.
 
-## The never-regress list, checked
+## The never-regress list, checked## The never-regress list, checked
 
 | Rule | Evidence |
 |---|---|

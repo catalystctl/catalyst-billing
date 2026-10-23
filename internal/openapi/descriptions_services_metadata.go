@@ -184,6 +184,10 @@ func serviceMetadataSchema() map[string]any {
 }
 
 // serviceMetadataUpdateSchema is the body of a metadata edit.
+//
+// Both audiences may send `custom_properties`; the difference is which keys are accepted, and that
+// is decided by the definitions rather than by the schema. Saying so here matters: a client that
+// reads the document must not conclude that a customer can only rename their service.
 func serviceMetadataUpdateSchema(staff bool) map[string]any {
 	properties := map[string]any{
 		"label": map[string]any{
@@ -196,14 +200,18 @@ func serviceMetadataUpdateSchema(staff bool) map[string]any {
 				"description. Newlines and tabs are allowed; other control characters are a 400.",
 		},
 	}
-	if staff {
-		properties["custom_properties"] = map[string]any{
-			"type":                 "object",
-			"additionalProperties": map[string]any{"type": "string", "maxLength": 200},
-			"description": "A partial edit of the property values: a key that is named is set (or, with an " +
-				"empty string, unset) and a key that is not named is left alone. A key with no definition " +
-				"is a 400: a value nobody can label is a value nobody can explain.",
-		}
+	propertyDescription := "A partial edit of the property values: a key that is named is set (or, with an " +
+		"empty string, unset) and a key that is not named is left alone. A key with no definition is a " +
+		"400: a value nobody can label is a value nobody can explain."
+	if !staff {
+		propertyDescription += " A customer may name only the keys whose definition is " +
+			"`customer_visible`; naming any other is a 403 `property_not_visible`, and the edit is " +
+			"refused whole rather than applied in part."
+	}
+	properties["custom_properties"] = map[string]any{
+		"type":                 "object",
+		"additionalProperties": map[string]any{"type": "string", "maxLength": 200},
+		"description":          propertyDescription,
 	}
 	return map[string]any{
 		"type":                 "object",
@@ -233,18 +241,22 @@ func serviceMetadataOperations() map[string]Operation {
 			},
 		},
 		"PUT /api/v1/portal/services/{id}/metadata": {
-			Summary: "Rename or describe your own service",
-			Description: "The customer's own label and description, and nothing else: a body that names " +
-				"`custom_properties` is refused with 403 rather than silently ignored, because the property " +
-				"record is the operator's account of the installation. An absent field is left alone, so " +
-				"renaming a service does not blank the description an operator wrote. A label is collapsed " +
-				"to one line; a description keeps its newlines. Another customer's identifier is a 404, and " +
-				"nothing is written.",
+			Summary: "Rename your service, describe it, and edit the properties shown to you",
+			Description: "The customer's own label and description, and the property values the operator marked " +
+				"`customer_visible`. A key whose definition is not customer_visible is refused with 403 " +
+				"`property_not_visible` rather than silently ignored — a customer who believes they changed an " +
+				"internal record has to be told they did not — and the edit is refused whole rather than applied " +
+				"in part. Which properties a customer may write is the operator's decision on the definitions " +
+				"screen, not a rule invented here. An absent field is left alone, so renaming a service does not " +
+				"blank the description an operator wrote. A label is collapsed to one line; a description keeps " +
+				"its newlines. Another customer's identifier is a 404, and nothing is written.",
 			RequestSchema: serviceMetadataUpdateSchema(false),
 			Responses: []Response{
 				{Status: 200, Description: "The updated metadata", Schema: serviceMetadataSchema()},
-				{Status: 400, Description: "The label or the description is not acceptable", Schema: ProblemRef()},
-				{Status: 403, Description: "The body tried to set a custom property", Schema: ProblemRef()},
+				{Status: 400, Description: "The label, the description or a property value is not acceptable",
+					Schema: ProblemRef()},
+				{Status: 403, Description: "The body named a property the customer may not edit",
+					Schema: ProblemRef()},
 				{Status: 404, Description: "No such service, or it belongs to another customer",
 					Schema: ProblemRef()},
 			},

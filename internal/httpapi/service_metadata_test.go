@@ -160,19 +160,70 @@ func TestPortalServiceMetadataIsScopedToTheCustomer(t *testing.T) {
 	}
 }
 
-// The property record belongs to the operator, and a customer who tries to write it is told so
-// rather than silently ignored.
-func TestPortalCannotSetCustomProperties(t *testing.T) {
-	env := newAuthEnv(t)
+// A customer edits the properties the operator made visible, and naming an internal one is a 403
+// with a stable code rather than a silent no-op.
+//
+// The rule is the definition's: `rack` is customer_visible so the customer may write it, `asset_tag`
+// is not, so the same body that sets one is refused for the other — and the whole edit is refused,
+// because a half-applied edit is a state the customer never asked for.
+func TestPortalEditsOnlyCustomerVisibleProperties(t *testing.T) {
+	env := newStaffEnv(t)
 	tenant := env.createTenant(t, "meta-props@example.test", "12.00")
 	cookie, csrf := env.login(t, "meta-props@example.test", "a long enough password")
 
-	rec := env.putServiceMetadata(t, "/api/v1/portal/services/"+tenant.serviceID+"/metadata",
-		cookie, csrf, map[string]any{"custom_properties": map[string]string{"rack": "B2"}})
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status %d, want 403; body %s", rec.Code, rec.Body)
+	// Two definitions: one the customer may edit, one the operator kept internal.
+	rec := env.putServiceJSON(t, "/api/v1/staff/service-properties/rack", env.support, env.supportCSRF,
+		map[string]any{"label": "Rack", "customer_visible": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("define rack: status %d; body %s", rec.Code, rec.Body)
 	}
-	problemCode(t, rec)
+	rec = env.putServiceJSON(t, "/api/v1/staff/service-properties/asset_tag", env.support, env.supportCSRF,
+		map[string]any{"label": "Asset tag", "customer_visible": false})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("define asset_tag: status %d; body %s", rec.Code, rec.Body)
+	}
+
+	rec = env.putServiceMetadata(t, "/api/v1/portal/services/"+tenant.serviceID+"/metadata",
+		cookie, csrf, map[string]any{"custom_properties": map[string]string{"rack": "B2"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("customer sets a visible property: status %d; body %s", rec.Code, rec.Body)
+	}
+	if body := decodeMetadata(t, rec); body.CustomProperties["rack"] != "B2" {
+		t.Fatalf("stored properties = %v", body.CustomProperties)
+	}
+
+	rec = env.putServiceMetadata(t, "/api/v1/portal/services/"+tenant.serviceID+"/metadata",
+		cookie, csrf, map[string]any{
+			"custom_properties": map[string]string{"rack": "B3", "asset_tag": "CT-0042"},
+		})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("customer sets an internal property: status %d, want 403; body %s", rec.Code, rec.Body)
+	}
+	if code := problemCode(t, rec); code != "property_not_visible" {
+		t.Fatalf("code = %q, want property_not_visible", code)
+	}
+
+	rec = env.get(t, "/api/v1/portal/services/"+tenant.serviceID+"/metadata", cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-read: status %d; body %s", rec.Code, rec.Body)
+	}
+	body := decodeMetadata(t, rec)
+	if body.CustomProperties["rack"] != "B2" {
+		t.Fatalf("a refused edit wrote its visible key anyway: %v", body.CustomProperties)
+	}
+	if _, ok := body.CustomProperties["asset_tag"]; ok {
+		t.Fatalf("the customer's view carries an internal property: %v", body.CustomProperties)
+	}
+
+	// A key with no definition at all is still the older, narrower refusal.
+	rec = env.putServiceMetadata(t, "/api/v1/portal/services/"+tenant.serviceID+"/metadata",
+		cookie, csrf, map[string]any{"custom_properties": map[string]string{"serial": "nope"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("undefined key: status %d, want 400; body %s", rec.Code, rec.Body)
+	}
+	if code := problemCode(t, rec); code != "unknown_property" {
+		t.Fatalf("code = %q, want unknown_property", code)
+	}
 }
 
 // Staff read the whole record and edit the properties; a key with no definition is a 400 with a

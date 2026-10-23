@@ -237,18 +237,100 @@ func TestMetadataEditIsScopedToTheCustomer(t *testing.T) {
 	}
 }
 
-// A customer may not write the operator's property record, and is told so rather than ignored.
-func TestCustomerCannotSetCustomProperties(t *testing.T) {
+// A customer edits the properties the operator chose to show them, and only those.
+//
+// The visibility decision is made once, on the definition, and the writer enforces it: a customer
+// can set `rack` because its definition is customer_visible, and naming `asset_tag` — a defined
+// property the operator kept internal — is refused with ErrPropertyNotVisible and changes nothing.
+func TestCustomerEditsOnlyVisibleProperties(t *testing.T) {
 	f := newFixture(t, 1200, "monthly")
-	defineProperties(t, f, service.PropertyDefinitionInput{Key: "rack", Label: "Rack"})
+	ctx := context.Background()
+	defineProperties(t, f,
+		service.PropertyDefinitionInput{Key: "rack", Label: "Rack"},
+		service.PropertyDefinitionInput{Key: "asset_tag", Label: "Asset tag",
+			CustomerVisible: boolPtr(false)},
+	)
 
-	_, err := f.store.UpdateServiceMetadata(context.Background(), service.MetadataUpdate{
+	m, err := f.store.UpdateServiceMetadata(ctx, service.MetadataUpdate{
 		ServiceID:        f.serviceID,
 		UserID:           f.userID,
 		CustomProperties: map[string]string{"rack": "B2"},
 	})
-	if !errors.Is(err, service.ErrInvalidInput) {
-		t.Fatalf("customer property write: %v, want ErrInvalidInput", err)
+	if err != nil {
+		t.Fatalf("customer property write: %v", err)
+	}
+	if m.CustomProperties["rack"] != "B2" {
+		t.Fatalf("stored properties = %v", m.CustomProperties)
+	}
+
+	// The internal property is refused, and the refusal takes the visible key down with it: a
+	// half-applied edit is a state the customer never asked for.
+	_, err = f.store.UpdateServiceMetadata(ctx, service.MetadataUpdate{
+		ServiceID:        f.serviceID,
+		UserID:           f.userID,
+		CustomProperties: map[string]string{"rack": "B3", "asset_tag": "CT-0042"},
+	})
+	if !errors.Is(err, service.ErrPropertyNotVisible) {
+		t.Fatalf("customer wrote an internal property: %v, want ErrPropertyNotVisible", err)
+	}
+	m, err = f.store.ServiceMetadata(ctx, f.serviceID)
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if m.CustomProperties["rack"] != "B2" {
+		t.Fatalf("a refused edit wrote its visible key anyway: %v", m.CustomProperties)
+	}
+	if _, ok := m.CustomProperties["asset_tag"]; ok {
+		t.Fatalf("a refused edit stored the internal key: %v", m.CustomProperties)
+	}
+}
+
+// The audit row of a property edit names the keys the request touched and nothing else.
+//
+// The stored object also holds properties the actor may not see, and a log line that repeated them
+// would hand an internal value to everyone who can read the log — which is every support agent.
+func TestAPropertyEditAuditsOnlyTheEditedKeys(t *testing.T) {
+	f := newFixture(t, 1200, "monthly")
+	ctx := context.Background()
+	defineProperties(t, f,
+		service.PropertyDefinitionInput{Key: "rack", Label: "Rack"},
+		service.PropertyDefinitionInput{Key: "asset_tag", Label: "Asset tag",
+			CustomerVisible: boolPtr(false)},
+	)
+	if _, err := f.store.UpdateServiceMetadata(ctx, service.MetadataUpdate{
+		ServiceID: f.serviceID, UserID: f.userID, Staff: true,
+		CustomProperties: map[string]string{"asset_tag": "CT-0042"},
+	}); err != nil {
+		t.Fatalf("staff write: %v", err)
+	}
+
+	if _, err := f.store.UpdateServiceMetadata(ctx, service.MetadataUpdate{
+		ServiceID: f.serviceID, UserID: f.userID,
+		CustomProperties: map[string]string{"rack": "B2"},
+	}); err != nil {
+		t.Fatalf("customer write: %v", err)
+	}
+
+	var changes []byte
+	if err := f.pool.QueryRow(ctx, `
+		SELECT changes FROM audit_events
+		WHERE action = 'service.metadata_updated' AND target_id = $1
+		ORDER BY created_at DESC, id DESC LIMIT 1`, f.serviceID).Scan(&changes); err != nil {
+		t.Fatalf("audit row: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(changes, &decoded); err != nil {
+		t.Fatalf("decode changes: %v", err)
+	}
+	properties, ok := decoded["custom_properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("the audit row does not name the properties: %v", decoded)
+	}
+	if properties["rack"] != "B2" {
+		t.Fatalf("the audit row does not record the edit: %v", properties)
+	}
+	if _, leaked := properties["asset_tag"]; leaked {
+		t.Fatalf("the audit row repeated an internal property: %v", properties)
 	}
 }
 

@@ -1079,6 +1079,18 @@ func (c *Client) GetPortalServicesByIdConfig(ctx context.Context, id string, que
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetPortalServicesByIdConfigoptions calls GET /api/v1/portal/services/{id}/config-options.
+//
+// # The options a customer may change, priced on their own plan
+//
+// Permission: service:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalServicesByIdConfigoptions(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/services/{id}/config-options"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetPortalServicesByIdMetadata calls GET /api/v1/portal/services/{id}/metadata.
 //
 // # What this service is, for the customer who owns it
@@ -3793,7 +3805,7 @@ func (c *Client) PutPortalServicesByIdConfig(ctx context.Context, id string, que
 
 // PutPortalServicesByIdMetadata calls PUT /api/v1/portal/services/{id}/metadata.
 //
-// # Rename or describe your own service
+// # Rename your service, describe it, and edit the properties shown to you
 //
 // Permission: service:write:self.
 // The CSRF token is sent from Client.CSRFToken; a session without one is refused.

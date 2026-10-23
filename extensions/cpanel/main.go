@@ -404,6 +404,10 @@ var capabilities = []string{
 	"provisioner.suspend",
 	"provisioner.resume",
 	"provisioner.terminate",
+	// SVC-16 / SVC-22: a plan change has to reach WHM, not just the ledger.
+	"provisioner.upgrade",
+	// UPG-12: the panel asks which per-purchase inputs this adapter needs.
+	"provisioner.fields",
 }
 
 func (s *server) handle(req *request) reply {
@@ -431,6 +435,10 @@ func (s *server) handle(req *request) reply {
 		return s.setState(req, "resume")
 	case "provisioner.terminate":
 		return s.terminate(req)
+	case "provisioner.upgrade":
+		return s.upgrade(req)
+	case "provisioner.fields":
+		return s.fields(req)
 	default:
 		return reply{rpcErr: &rpcError{Code: codeMethodNotFound, Message: "method not found: " + req.Method}}
 	}
@@ -887,6 +895,97 @@ func (s *server) setState(req *request, kind string) reply {
 	}
 	return reply{result: map[string]any{
 		"external_id": acct.User, "status": "active", "changed": true,
+	}}
+}
+
+// fields is what this adapter needs to create an account (UPG-12).
+//
+// A cPanel account is a domain plus a username. The adapter derived the username from the
+// operation key long before the protocol could declare fields (it is the only way lookup can
+// survive a restart), but the *domain* is a fact only the customer has, and it arrived through a
+// config option purely by convention. Declaring it makes the requirement visible to the purchase
+// form instead of depending on an operator remembering to add the option.
+func (s *server) fields(*request) reply {
+	return reply{result: map[string]any{"fields": []map[string]any{
+		{
+			"key":      "domain",
+			"label":    "Domain",
+			"type":     "text",
+			"required": true,
+			"hint":     "The bare hostname this account hosts, e.g. example.com. No scheme or path.",
+		},
+		{
+			"key":   "cpanel_contact_email",
+			"label": "Contact email",
+			"type":  "text",
+			"hint":  "Optional. WHM stores it on the account for its own notices.",
+		},
+	}}}
+}
+
+// upgrade moves an account to another plan (SVC-16, SVC-22, UPG-05).
+//
+// NOT PTERODACTYL-SHAPED: there is nothing to rebuild. WHM's modifyacct sets the quota and the
+// bandwidth limit on an existing account, in place, and the files, databases and mailboxes are
+// untouched — which is what a hosting customer expects from an upgrade.
+//
+// It reports changed=true after a successful call. WHM answers modifyacct with a result flag and
+// nothing about the previous limits, so this adapter cannot distinguish a first resize from a
+// replay; the call itself is idempotent (it sets the values it is given), so a replay writes the
+// same numbers rather than compounding anything.
+func (s *server) upgrade(req *request) reply {
+	var p struct {
+		OperationKey string            `json:"operation_key"`
+		ExternalID   string            `json:"external_id"`
+		PlanID       string            `json:"plan_id"`
+		Region       string            `json:"region"`
+		Quantity     int32             `json:"quantity"`
+		Metadata     map[string]string `json:"metadata"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "upgrade params: " + err.Error()}}
+	}
+	if strings.TrimSpace(p.ExternalID) == "" {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "external_id is required"}}
+	}
+	pl, ok := s.resolvePlan(p.PlanID)
+	if !ok {
+		msg := fmt.Sprintf("unknown plan %q (known plans: %s)", p.PlanID, planIDs(s.cfg.plans))
+		return reply{rpcErr: &rpcError{
+			Code: codeRejected, Message: msg, Data: map[string]any{"problems": []string{msg}},
+		}}
+	}
+	ctx, cancel := s.ctxFor(req.Params)
+	defer cancel()
+
+	acct, err := s.client.findAccount(ctx, p.ExternalID)
+	if err != nil {
+		return whmErrorReply(err)
+	}
+	if acct == nil {
+		// Resizing an account that is not there is not something this adapter can decide: the
+		// core has to learn it is gone. Reporting success would leave a paid customer with a
+		// service the panel believes is provisioned.
+		return reply{rpcErr: &rpcError{Code: codeNotFound,
+			Message: "cPanel has no account named " + p.ExternalID,
+			Data:    map[string]any{"external_id": p.ExternalID}}}
+	}
+	if err := s.client.modifyAccount(ctx, acct.User, pl); err != nil {
+		return whmErrorReply(err)
+	}
+	// The ledger is the only place the billing panel's plan id survives (WHM knows quota, not
+	// plan names), so it is updated here rather than left describing the size the account used
+	// to be.
+	if rec, ok, err := s.ops.get(p.OperationKey); err == nil && ok {
+		rec.PlanID = pl.ID
+		_ = s.ops.put(rec)
+	}
+	return reply{result: map[string]any{
+		"external_id": acct.User,
+		"status":      protocolStatus(acct),
+		"plan_id":     pl.ID,
+		"region":      firstNonEmpty(p.Region, s.cfg.host),
+		"changed":     true,
 	}}
 }
 

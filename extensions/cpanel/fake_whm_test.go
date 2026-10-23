@@ -250,6 +250,8 @@ func (f *fakeWHM) handle(w http.ResponseWriter, r *http.Request) {
 		f.listAccts(w, rec.Query)
 	case "createacct":
 		f.createAcct(w, rec.Query)
+	case "modifyacct":
+		f.modifyAcct(w, rec.Query)
 	case "suspendacct":
 		f.suspendAcct(w, rec.Query, true)
 	case "unsuspendacct":
@@ -357,6 +359,35 @@ func (f *fakeWHM) createAcct(w http.ResponseWriter, query url.Values) {
 		Email: query.Get("contactemail"), StartDate: time.Now().UTC().Format("2006-01-02"),
 	}
 	f.writeOK(w, "createacct", map[string]any{"ip": "192.0.2.10", "user": user})
+}
+
+// modifyAcct applies modifyacct the way WHM does: it sets the two limits it is given and
+// leaves everything else (files, mailboxes, the domain) alone.
+func (f *fakeWHM) modifyAcct(w http.ResponseWriter, query url.Values) {
+	user := query.Get("user")
+	quota, quotaErr := strconv.ParseInt(query.Get("quota"), 10, 64)
+	bandwidth, bandwidthErr := strconv.ParseInt(query.Get("bwlimit"), 10, 64)
+	switch {
+	case user == "":
+		f.writeRefused(w, "modifyacct", "The user is required")
+		return
+	case quotaErr != nil || quota <= 0:
+		f.writeRefused(w, "modifyacct", "The quota is not a positive number of megabytes")
+		return
+	case bandwidthErr != nil || bandwidth <= 0:
+		f.writeRefused(w, "modifyacct", "The bandwidth limit is not a positive number of megabytes")
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	acct, ok := f.accounts[user]
+	if !ok {
+		f.writeRefused(w, "modifyacct", "Sorry, the user "+user+" does not exist")
+		return
+	}
+	acct.Quota = quota
+	acct.Bandwidth = bandwidth
+	f.writeOK(w, "modifyacct", map[string]any{"user": user})
 }
 
 func (f *fakeWHM) suspendAcct(w http.ResponseWriter, query url.Values, suspend bool) {

@@ -93,7 +93,8 @@ func TestInitializeAdvertisesProvisionerMethods(t *testing.T) {
 	}
 	want := []string{"provisioner.describe", "provisioner.validate", "provisioner.create",
 		"provisioner.inspect", "provisioner.lookup", "provisioner.suspend",
-		"provisioner.resume", "provisioner.terminate"}
+		"provisioner.resume", "provisioner.terminate", "provisioner.upgrade",
+		"provisioner.fields"}
 	if len(res.Capabilities) != len(want) {
 		t.Fatalf("capabilities = %v, want %v", res.Capabilities, want)
 	}
@@ -1008,5 +1009,116 @@ func TestPlanLimitsReachTheRequest(t *testing.T) {
 	q := f.requestFor("createacct").Query
 	if q.Get("quota") != "10240" || q.Get("bwlimit") != "102400" {
 		t.Fatalf("quota/bwlimit = %q/%q, want the large plan's 10240/102400", q.Get("quota"), q.Get("bwlimit"))
+	}
+}
+
+// ---------------------------------------------------------------- upgrade --
+
+// A paid upgrade must reach WHM: modifyacct sets the target plan's quota and bandwidth, in
+// place, without rebuilding the account.
+//
+// The "in place" half is the point. An upgrade implemented as removeacct+createacct would
+// delete the customer's files, databases and mailboxes and still report success.
+func TestUpgradeChangesTheQuotaInPlace(t *testing.T) {
+	s, f := newTestServer(t)
+	call(t, s, "provisioner.create", createParams("create:1", "small"))
+
+	raw := call(t, s, "provisioner.upgrade", map[string]any{
+		"operation_key": "resize:1:price-2:1",
+		"external_id":   usernameForKey("create:1"),
+		"plan_id":       "large",
+	})
+	var res struct {
+		PlanID  string `json:"plan_id"`
+		Status  string `json:"status"`
+		Changed bool   `json:"changed"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.PlanID != "large" || !res.Changed {
+		t.Fatalf("result = %+v, want the large plan and changed", res)
+	}
+
+	name := usernameForKey("create:1")
+	f.mu.Lock()
+	acct := f.accounts[name]
+	f.mu.Unlock()
+	if acct == nil {
+		t.Fatal("the account disappeared during an upgrade")
+	}
+	if acct.Quota != 10240 {
+		t.Fatalf("quota = %d, want 10240 (the large plan)", acct.Quota)
+	}
+	if acct.Domain != "example.com" {
+		t.Fatalf("domain = %q, want the original domain to survive an upgrade", acct.Domain)
+	}
+	// No account was removed and re-created.
+	for _, rec := range f.requests {
+		if rec.Command == "removeacct" {
+			t.Fatal("an upgrade removed the account")
+		}
+	}
+}
+
+// An unknown target plan is refused before WHM is asked to change anything.
+func TestUpgradeRefusesAnUnknownPlan(t *testing.T) {
+	s, f := newTestServer(t)
+	call(t, s, "provisioner.create", createParams("create:1", "small"))
+	before := len(f.requests)
+
+	// A plan id WHM has never heard of must not reach it: WHM would silently accept the
+	// parameters and the account would keep its old quota.
+	err := callErr(t, s, "provisioner.upgrade", map[string]any{
+		"operation_key": "resize:1:x:1",
+		"external_id":   usernameForKey("create:1"),
+		"plan_id":       "enormous",
+	})
+	if err.Code != codeRejected {
+		t.Fatalf("code = %d, want rejected", err.Code)
+	}
+	if len(f.requests) != before {
+		t.Fatal("an unknown plan reached WHM")
+	}
+}
+
+// ---------------------------------------------------------------- fields --
+
+// The declared fields must include the domain a create actually refuses to run without.
+func TestDeclaredFieldsMatchWhatCreateRequires(t *testing.T) {
+	s, _ := newTestServer(t)
+	raw := call(t, s, "provisioner.fields", map[string]any{})
+	var res struct {
+		Fields []struct {
+			Key      string `json:"key"`
+			Type     string `json:"type"`
+			Required bool   `json:"required"`
+		} `json:"fields"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	required := ""
+	for _, field := range res.Fields {
+		if field.Required {
+			required = field.Key
+		}
+		if field.Type == "" {
+			t.Fatalf("field %q declares no type, so a form cannot render it", field.Key)
+		}
+	}
+	if required != "domain" {
+		t.Fatalf("required field = %q, want domain", required)
+	}
+
+	params := map[string]any{
+		"operation_key": "create:no-domain",
+		"plan_id":       "small",
+		"quantity":      1,
+		"metadata":      map[string]string{},
+	}
+	rpcErr := callErr(t, s, "provisioner.create", params)
+	if !strings.Contains(rpcErr.Message, "domain") {
+		t.Fatalf("create without a domain said %q", rpcErr.Message)
 	}
 }

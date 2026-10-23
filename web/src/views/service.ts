@@ -223,6 +223,80 @@ interface Accepted {
   status_url: string;
 }
 
+/** One action an installed extension contributes to a service (SVC-11).
+ *
+ *  The extension declares it in `ui.describe`, the core refuses a declaration whose permission
+ *  it does not itself declare, and the call is checked against the *declared* permission rather
+ *  than the route's. So a button the session may not press is never rendered, and hiding it is
+ *  presentation rather than enforcement. */
+interface ExtensionAction {
+  extension: string;
+  id: string;
+  label: string;
+  method: string;
+  permission: string;
+  /** Confirmation copy the extension asked for, when it asks for one. */
+  confirm?: string;
+}
+
+interface HooksResponse {
+  nav_items: unknown[] | null;
+  service_actions: ExtensionAction[] | null;
+}
+
+/** One input the configured provisioner needs per purchase (UPG-12).
+ *
+ *  The key is also the metadata key the adapter reads on create and upgrade, so the form, the
+ *  stored value and the adapter cannot disagree about what a field is called. */
+interface ProvisioningField {
+  key: string;
+  label: string;
+  type: string;
+  required: boolean;
+  secret: boolean;
+  choices?: string[];
+  hint?: string;
+}
+
+/** GET /api/v1/staff/services/{id}/provisioning-fields. */
+interface ProvisioningFields {
+  service_id: string;
+  provider: string;
+  extension: string;
+  configured: boolean;
+  supported: boolean;
+  fields: ProvisioningField[] | null;
+  values: Record<string, string>;
+  capabilities?: string[];
+}
+
+/** One side of a price recalculation (SVC-13). Every amount is the API's money shape. */
+interface RecalcSide {
+  price_version_id: string;
+  version: number;
+  name: string;
+  interval: string;
+  currency: string;
+  plan: Amount;
+  options: Amount;
+  setup: Amount;
+  total: Amount;
+  plan_id: string;
+  region: string;
+}
+
+/** POST /api/v1/staff/services/{id}/recalculate-price. */
+interface RecalcResult {
+  service_id: string;
+  applied: boolean;
+  changed: boolean;
+  plan_changed: boolean;
+  repriced_options: number;
+  from: RecalcSide;
+  to: RecalcSide;
+  operation_id?: string;
+}
+
 interface Failure {
   kind: string;
   code: string;
@@ -282,6 +356,8 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
   let failure: Failure | null = null;
   let transition: Transition | null = null;
   let tab: TabKey = tabFrom(ctx.route.query.get("tab"));
+  let extensionActions: ExtensionAction[] = [];
+  let provisioning: ProvisioningFields | null = null;
 
   const sleep = (ms: number): Promise<void> =>
     new Promise((resolve) => {
@@ -316,6 +392,35 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
     }
   };
 
+  /**
+   * The extension-contributed actions (SVC-11) and the provisioner's own inputs (UPG-12).
+   *
+   * Both are tolerant reads: a screen about "why is my server down" must not lose the queue and
+   * the holds because an extension is not installed or a panel is unreachable. A missing list
+   * simply omits its card.
+   */
+  const loadSideReads = async (): Promise<void> => {
+    try {
+      const hooks = await ctx.api.get<HooksResponse>("/api/v1/extensions/hooks", {
+        cache: false,
+        signal: controller.signal,
+      });
+      extensionActions = (hooks.service_actions ?? []).filter((action) => ctx.can(action.permission));
+    } catch (err) {
+      if (isAbort(err)) return;
+      extensionActions = [];
+    }
+    try {
+      provisioning = await ctx.api.get<ProvisioningFields>(`/api/v1/staff/services/${id}/provisioning-fields`, {
+        cache: false,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (isAbort(err)) return;
+      provisioning = null;
+    }
+  };
+
   const load = async (): Promise<void> => {
     try {
       const next = await ctx.api.get<ServiceDetail>(`/api/v1/staff/services/${id}`, {
@@ -325,6 +430,7 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
       if (controller.signal.aborted) return;
       detail = next;
       await loadMetadata();
+      await loadSideReads();
       if (controller.signal.aborted) return;
       describe(next.service);
       paint();
@@ -353,6 +459,7 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
       if (controller.signal.aborted) return;
       detail = next;
       await loadMetadata();
+      await loadSideReads();
       if (controller.signal.aborted) return;
       describe(next.service);
       paint();
@@ -817,6 +924,293 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
     }
   };
 
+  // --------------------------------------------------- operator actions --
+
+  /**
+   * One extension-contributed action (SVC-11).
+   *
+   * The confirmation copy is the extension's, because only it knows what the action does. The
+   * call is the core's, because the core is what checks the declared permission — a client that
+   * posted to an extension directly would be trusting the extension's own authorisation.
+   */
+  const runExtensionAction = async (action: ExtensionAction): Promise<void> => {
+    if (action.confirm) {
+      const ok = await ctx.confirm({
+        title: action.label,
+        body: h("p", null, action.confirm),
+        confirmLabel: action.label,
+      });
+      if (!ok) return;
+    }
+    failure = null;
+    try {
+      await ctx.api.post(
+        `/api/v1/staff/services/${id}/hooks/${encodeURIComponent(action.extension)}/${encodeURIComponent(action.id)}`,
+        {},
+      );
+      ctx.toast(`${action.label} sent`, { tone: "success", detail: `Handled by ${action.extension}` });
+      await refresh();
+    } catch (err) {
+      recordFailure("extension", err);
+    }
+  };
+
+  /**
+   * Recalculate the price from the catalogue (SVC-13).
+   *
+   * It reads first and writes second, in one flow: the operator sees the exact difference before
+   * anything moves, because a recalculation can raise a customer's next bill and the preview is
+   * the only place that is stated in money rather than in a paragraph.
+   */
+  const recalculatePrice = async (): Promise<void> => {
+    failure = null;
+    let preview: RecalcResult;
+    try {
+      preview = await ctx.api.post<RecalcResult>(`/api/v1/staff/services/${id}/recalculate-price`, {
+        apply: false,
+      });
+    } catch (err) {
+      recordFailure("recalculate", err);
+      return;
+    }
+    if (!preview.changed) {
+      ctx.toast("Already at the catalogue price", {
+        tone: "info",
+        detail: `${preview.to.name || preview.to.price_version_id} · ${preview.to.total.display ?? ""}`,
+      });
+      return;
+    }
+    const body = h(
+      "div",
+      { class: "stack-sm" },
+      h(
+        "p",
+        null,
+        "The catalogue now prices this service differently from the subscription. Applying it moves the subscription to the catalogue's current version and re-prices the selected options.",
+      ),
+      h(
+        "div",
+        { class: "kv" },
+        h("span", { class: "kv-key" }, "Now"),
+        h("span", { class: "kv-value" }, `${preview.from.name || preview.from.price_version_id} · `, moneyEl(preview.from.total)),
+      ),
+      h(
+        "div",
+        { class: "kv" },
+        h("span", { class: "kv-key" }, "Catalogue"),
+        h("span", { class: "kv-value" }, `${preview.to.name || preview.to.price_version_id} · `, moneyEl(preview.to.total)),
+      ),
+      preview.plan_changed
+        ? h(
+            "p",
+            { class: "field-hint" },
+            `The provisioner plan changes from ${preview.from.plan_id || "none"} to ${preview.to.plan_id || "none"}, so a resize is queued.`,
+          )
+        : h("p", { class: "field-hint" }, "The provisioner plan is unchanged, so nothing is sent to the server."),
+    );
+    const ok = await ctx.confirm({
+      title: "Apply the catalogue price?",
+      body,
+      confirmLabel: "Recalculate and apply",
+    });
+    if (!ok) return;
+    try {
+      const applied = await ctx.api.post<RecalcResult>(`/api/v1/staff/services/${id}/recalculate-price`, {
+        apply: true,
+      });
+      ctx.toast("Price recalculated", {
+        tone: "success",
+        detail: applied.operation_id
+          ? `Resize queued as operation ${shortId(applied.operation_id)}`
+          : `${applied.repriced_options} option(s) re-priced`,
+      });
+      await refresh();
+    } catch (err) {
+      recordFailure("recalculate", err);
+    }
+  };
+
+  /** Cancel the provider-side subscription (SVC-14). */
+  const cancelExternalSubscription = async (): Promise<void> => {
+    const subscriptionId = input({
+      id: "external-subscription",
+      class: "input--mono",
+      placeholder: "the provider's subscription id",
+      autocomplete: "off",
+    });
+    const reason = textarea({ id: "external-subscription-reason", placeholder: "Why is it being cancelled?" });
+    await ctx.formDialog({
+      title: "Cancel the provider-side subscription",
+      subtitle:
+        "The gateway is told to stop billing the customer. The panel's own billing schedule is untouched — cancel the service for that.",
+      body: h(
+        "div",
+        { class: "stack" },
+        field({
+          label: "Subscription id",
+          hint: "The id the payment provider holds. Leave it empty to use the one already recorded on this service.",
+          control: subscriptionId,
+        }),
+        field({ label: "Reason", hint: "Recorded in the audit log.", control: reason }),
+      ),
+      submitLabel: "Queue the cancellation",
+      onSubmit: async () => {
+        try {
+          const accepted = await ctx.api.post<Accepted>(`/api/v1/staff/services/${id}/cancel-subscription`, {
+            subscription_id: subscriptionId.value.trim(),
+            reason: reason.value.trim(),
+          });
+          ctx.toast("Cancellation queued", {
+            tone: "success",
+            detail: `Operation ${shortId(accepted.operation_id)}`,
+          });
+          await refresh();
+        } catch (err) {
+          if (err instanceof ApiError) return err.detail || humanStatus(err.code);
+          return String(err);
+        }
+        return;
+      },
+    });
+  };
+
+  /** Destroy the provider's resource and keep the service (SVC-12). */
+  const deleteRemote = async (svc: Service): Promise<void> => {
+    const reason = textarea({ id: "delete-remote-reason", placeholder: "Why is the server being removed?" });
+    const ok = await ctx.confirm({
+      title: "Delete the server at the provider?",
+      body: h(
+        "div",
+        { class: "stack-sm" },
+        h(
+          "p",
+          null,
+          "The provider's resource is destroyed and this service forgets its id. The service, its billing and its status are untouched — the customer keeps what they bought. This is not a termination.",
+        ),
+        h("p", { class: "faint" }, `Service ${nameOf(svc)} · ${svc.customer.email} · ${svc.product.name}`),
+        field({ label: "Reason", hint: "Recorded in the audit log.", control: reason }),
+      ),
+      danger: true,
+      confirmLabel: "Delete the remote resource",
+    });
+    if (!ok) return;
+    failure = null;
+    try {
+      const accepted = await ctx.api.post<Accepted>(`/api/v1/staff/services/${id}/delete-remote`, {
+        reason: reason.value.trim(),
+      });
+      ctx.toast("Remote deletion queued", {
+        tone: "success",
+        detail: `Operation ${shortId(accepted.operation_id)}`,
+      });
+      startTransition("Remote deletion", accepted.operation_id);
+    } catch (err) {
+      recordFailure("delete-remote", err);
+    }
+  };
+
+  /** Send the customer a message about this service (SVC-12). */
+  const notifyCustomer = async (svc: Service): Promise<void> => {
+    const subject = input({ id: "notify-subject", value: `${svc.product.name} — update`, maxlength: 200 });
+    const body = textarea({ id: "notify-body", maxlength: 8000, placeholder: "What does the customer need to know?" });
+    await ctx.formDialog({
+      title: "Message the customer",
+      subtitle: `Sent to ${svc.customer.email} and shown in their portal inbox.`,
+      body: h(
+        "div",
+        { class: "stack" },
+        field({ label: "Subject", required: true, control: subject }),
+        field({ label: "Message", required: true, control: body }),
+      ),
+      submitLabel: "Send the message",
+      onSubmit: async () => {
+        if (subject.value.trim() === "") return "A subject is required.";
+        if (body.value.trim() === "") return "A message is required.";
+        try {
+          await ctx.api.post(`/api/v1/staff/services/${id}/notify`, {
+            subject: subject.value.trim(),
+            body: body.value.trim(),
+          });
+        } catch (err) {
+          if (err instanceof ApiError) return err.detail || humanStatus(err.code);
+          return String(err);
+        }
+        ctx.toast("Message queued", { tone: "success", detail: subject.value.trim() });
+        return;
+      },
+    });
+  };
+
+  /** Delete a service that has no history (SVC-12). */
+  const deleteService = async (svc: Service): Promise<void> => {
+    const reason = textarea({ id: "delete-service-reason", placeholder: "Why is this service being deleted?" });
+    const ok = await ctx.confirm({
+      title: "Delete this service?",
+      body: h(
+        "div",
+        { class: "stack-sm" },
+        h(
+          "p",
+          null,
+          "Only a service with no invoices, operations, upgrades, cancellations, holds, tickets or suspension decisions behind it can be deleted. Anything else is refused — terminate it instead, which keeps the record.",
+        ),
+        h("p", { class: "faint" }, `Service ${nameOf(svc)} · ${svc.customer.email}`),
+        field({ label: "Reason", control: reason }),
+      ),
+      danger: true,
+      confirmLabel: "Delete the service",
+    });
+    if (!ok) return;
+    failure = null;
+    try {
+      await ctx.api.del(`/api/v1/staff/services/${id}`, { reason: reason.value.trim() });
+      ctx.toast("Service deleted", { tone: "success", detail: nameOf(svc) });
+      ctx.navigate(`/customers/${svc.customer.id}`);
+    } catch (err) {
+      recordFailure("delete-service", err);
+    }
+  };
+
+  /** Store the provisioner's per-purchase inputs (UPG-12). */
+  const editProvisioningFields = async (): Promise<void> => {
+    const current = provisioning;
+    if (!current) return;
+    const inputs = new Map<string, HTMLInputElement | HTMLTextAreaElement>();
+    const rows: Node[] = (current.fields ?? []).map((f) => {
+      const value = current.values[f.key] ?? "";
+      const control =
+        f.type === "password"
+          ? input({ type: "password", id: `pf-${f.key}`, name: f.key, value, autocomplete: "off" })
+          : input({ type: "text", id: `pf-${f.key}`, name: f.key, value, autocomplete: "off" });
+      inputs.set(f.key, control);
+      return field({
+        label: f.label,
+        required: f.required,
+        hint: f.hint,
+        control,
+      });
+    });
+    await ctx.formDialog({
+      title: "Provisioning inputs",
+      subtitle: `These are the values the ${current.provider} adapter needs to build this service. They are sent to it verbatim.`,
+      body: h("div", { class: "stack" }, ...rows),
+      submitLabel: "Save inputs",
+      onSubmit: async () => {
+        const values: Record<string, string> = {};
+        for (const [key, el] of inputs) values[key] = el.value.trim();
+        try {
+          await ctx.api.put(`/api/v1/staff/services/${id}/provisioning-fields`, { values });
+        } catch (err) {
+          if (err instanceof ApiError) return err.detail || humanStatus(err.code);
+          return String(err);
+        }
+        ctx.toast("Provisioning inputs saved", { tone: "success" });
+        await refresh();
+        return;
+      },
+    });
+  };
+
   // --------------------------------------------------------------- renders --
 
   const renderPage = (): Node => {
@@ -1175,7 +1569,12 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
       ),
     });
 
-    return h("div", { class: "split" }, h("div", { class: "stack" }, facts, lastError, subscription), h("div", { class: "stack" }, metadataPanel, related));
+    return h(
+      "div",
+      { class: "split" },
+      h("div", { class: "stack" }, facts, lastError, subscription, serviceActionsCard(), extensionActionsCard()),
+      h("div", { class: "stack" }, metadataPanel, provisioningCard(), related),
+    );
   };
 
   /**
@@ -1262,6 +1661,145 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
         ? btn("Edit metadata", { size: "sm", icon: "edit", onclick: () => void editMetadata() })
         : null,
       body: h("div", { class: "stack-sm" }, description, metaGrid(items), properties),
+    });
+  };
+
+  /**
+   * The operator actions the panel grew for parity (SVC-12, SVC-13, SVC-14).
+   *
+   * Each button states the queue-or-immediate distinction where it matters: a recalculation is a
+   * synchronous pricing change, while everything that touches a provider is queued and answers
+   * 202. A screen that implied immediacy for a queued action would make an operator click twice.
+   */
+  const serviceActionsCard = (): Node | null => {
+    const allowed = ctx.can("service:write:all");
+    const svc = detail?.service;
+    if (!allowed || !svc) return null;
+    const terminated = svc.status === "terminated";
+    const buttons: Node[] = [
+      btn("Recalculate price", {
+        size: "sm",
+        icon: "refresh",
+        title: "Recompute this service's price from the catalogue",
+        onclick: () => void recalculatePrice(),
+      }),
+    ];
+    if (!terminated) {
+      buttons.push(
+        btn("Cancel provider subscription", {
+          size: "sm",
+          icon: "x",
+          title: "Stop the payment gateway billing this customer",
+          onclick: () => void cancelExternalSubscription(),
+        }),
+      );
+    }
+    if (svc.external_id !== "") {
+      buttons.push(
+        btn("Delete remote server", {
+          size: "sm",
+          icon: "trash",
+          title: "Destroy the provider's resource and keep the service",
+          onclick: () => void deleteRemote(svc),
+        }),
+      );
+    }
+    buttons.push(
+      btn("Message customer", {
+        size: "sm",
+        icon: "mail",
+        title: "Send the customer a message about this service",
+        onclick: () => void notifyCustomer(svc),
+      }),
+    );
+    return card({
+      title: "Price and provider",
+      sub: "The actions that change what the customer pays or where their server lives",
+      body: h(
+        "div",
+        { class: "stack-sm" },
+        h("div", { class: "row-wrap" }, ...buttons),
+        h(
+          "p",
+          { class: "field-hint" },
+          "Recalculating applies the catalogue's current price to the subscription. The provider actions are queued as operations, so the outcome appears in the transition panel rather than in a toast.",
+        ),
+      ),
+    });
+  };
+
+  /** The actions the installed extensions contribute (SVC-11). */
+  const extensionActionsCard = (): Node | null => {
+    if (extensionActions.length === 0) return null;
+    return card({
+      title: "Extension actions",
+      sub: "Contributed by the installed extensions; each one runs in the extension that declared it",
+      body: h(
+        "div",
+        { class: "stack-sm" },
+        h(
+          "div",
+          { class: "row-wrap" },
+          ...extensionActions.map((action) =>
+            btn(action.label, {
+              size: "sm",
+              icon: "zap",
+              title: `Declared by ${action.extension} · requires ${action.permission}`,
+              onclick: () => void runExtensionAction(action),
+            }),
+          ),
+        ),
+      ),
+    });
+  };
+
+  /**
+   * The provisioner's own per-purchase inputs (UPG-12).
+   *
+   * The fields are the adapter's declaration, not the core's list, which is why this card says
+   * where they came from: an operator who sees "Domain" has to know that it is cPanel asking and
+   * not a property somebody invented.
+   */
+  const provisioningCard = (): Node | null => {
+    const data = provisioning;
+    if (!data || !data.configured) return null;
+    const fields = data.fields ?? [];
+    if (fields.length === 0) {
+      return card({
+        title: "Provisioning inputs",
+        sub: `${data.provider} · ${data.extension}`,
+        body: h(
+          "p",
+          { class: "field-hint" },
+          data.supported
+            ? "This provisioner declares no per-service inputs, so there is nothing to fill in."
+            : "This provisioner does not declare its inputs. Anything it needs arrives through the product's config options.",
+        ),
+      });
+    }
+    const rows = fields.map((f) => {
+      const value = data.values[f.key];
+      return kvRow(
+        f.label,
+        value ? mono(value) : h("span", { class: "faint" }, f.required ? "required, not set" : "not set"),
+      );
+    });
+    return card({
+      title: "Provisioning inputs",
+      sub: `${data.provider} asked for these`,
+      actions: ctx.can("service:write:all")
+        ? btn("Edit inputs", { size: "sm", icon: "edit", onclick: () => void editProvisioningFields() })
+        : null,
+      body: h(
+        "div",
+        { class: "stack-sm" },
+        ...rows,
+        h(
+          "p",
+          { class: "field-hint" },
+          "These are sent to the provisioner verbatim when the service is created or resized. A missing required input is refused before the purchase, not after it.",
+        ),
+      ),
     });
   };
 
@@ -1540,6 +2078,19 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
                 onclick: () => {
                   const current = detail?.service;
                   if (current) void terminate(current);
+                },
+              })
+            : null,
+          // Deleting is offered beside termination because the difference between them is the
+          // point: one ends the service and keeps its history, the other removes a row that has
+          // none.
+          allowed && !terminated
+            ? btn("Delete service", {
+                variant: "ghost",
+                icon: "trash",
+                onclick: () => {
+                  const current = detail?.service;
+                  if (current) void deleteService(current);
                 },
               })
             : null,

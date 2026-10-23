@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -83,7 +85,8 @@ func TestInitializeAdvertisesProvisionerMethods(t *testing.T) {
 	}
 	want := []string{"provisioner.describe", "provisioner.validate", "provisioner.create",
 		"provisioner.inspect", "provisioner.lookup", "provisioner.suspend",
-		"provisioner.resume", "provisioner.terminate"}
+		"provisioner.resume", "provisioner.terminate", "provisioner.upgrade",
+		"provisioner.fields"}
 	if len(res.Capabilities) != len(want) {
 		t.Fatalf("capabilities = %v, want %v", res.Capabilities, want)
 	}
@@ -585,3 +588,152 @@ func TestLookupWorksAcrossARestart(t *testing.T) {
 }
 
 var _ = time.Now
+
+// ---------------------------------------------------------------- upgrade --
+
+// A paid upgrade must reach the panel: the build limits move to the target plan and the
+// customer's chosen options survive the resize.
+//
+// The environment assertion is the one that matters most. Pterodactyl replaces the whole
+// environment on a startup PATCH, so an upgrade that forgot to resend the product's config
+// options would silently wipe "Minecraft version" off a live server — a data loss that an
+// operator would not connect to the upgrade that caused it.
+func TestUpgradeMovesTheBuildAndKeepsTheEnvironment(t *testing.T) {
+	s, f := newTestServer(t)
+	call(t, s, "provisioner.create", createParams("create:1", "small"))
+
+	var created struct {
+		ExternalID string `json:"external_id"`
+	}
+	raw := call(t, s, "provisioner.create", createParams("create:1", "small"))
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatal(err)
+	}
+
+	raw = call(t, s, "provisioner.upgrade", map[string]any{
+		"operation_key": "resize:1:price-2:1",
+		"external_id":   created.ExternalID,
+		"plan_id":       "medium",
+		"region":        "3",
+		"quantity":      1,
+		"metadata": map[string]string{
+			"env.MINECRAFT_VERSION": "1.21.4",
+			"env.MAX_PLAYERS":       "40",
+		},
+	})
+	var res struct {
+		Status  string `json:"status"`
+		PlanID  string `json:"plan_id"`
+		Changed bool   `json:"changed"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.PlanID != "medium" {
+		t.Fatalf("plan_id = %q, want medium", res.PlanID)
+	}
+	if !res.Changed {
+		t.Fatal("changed = false on the first resize")
+	}
+
+	// The next free allocation is not consumed by a resize: it is the same server.
+	if got := f.requestCount(); got == 0 {
+		t.Fatal("no request reached the panel")
+	}
+	srv := f.serverByID("1")
+	if srv == nil {
+		// Identifiers are idN in the fake; find by identifier instead.
+		for _, candidate := range f.servers {
+			srv = candidate
+		}
+	}
+	if srv == nil {
+		t.Fatal("the fake panel has no server after an upgrade")
+	}
+	if fmt.Sprint(srv.Limits["memory"]) != "4096" {
+		t.Fatalf("memory = %v after the resize, want 4096 (the medium plan)", srv.Limits["memory"])
+	}
+	if srv.Env["MINECRAFT_VERSION"] != "1.21.4" {
+		t.Fatalf("environment after resize = %v, want the new MINECRAFT_VERSION", srv.Env)
+	}
+
+	// A replay reports the truth: already at the plan, so nothing is written again.
+	before := f.requestCount()
+	raw = call(t, s, "provisioner.upgrade", map[string]any{
+		"operation_key": "resize:1:price-2:1",
+		"external_id":   created.ExternalID,
+		"plan_id":       "medium",
+		"metadata":      map[string]string{"env.MINECRAFT_VERSION": "1.21.4"},
+	})
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed {
+		t.Fatal("changed = true on a replay of a completed resize")
+	}
+	// One lookup still happens (the state must be read to answer honestly); no PATCH may.
+	for _, rec := range f.requests[before:] {
+		if rec.Method == http.MethodPatch {
+			t.Fatalf("a replayed resize issued %s %s", rec.Method, rec.Path)
+		}
+	}
+}
+
+// An unknown target plan is refused before any request: guessing would resize a paid server to
+// something nobody bought and report success.
+func TestUpgradeRefusesAnUnknownPlan(t *testing.T) {
+	s, f := newTestServer(t)
+	call(t, s, "provisioner.create", createParams("create:1", "small"))
+	before := f.requestCount()
+
+	rpcErr := callErr(t, s, "provisioner.upgrade", map[string]any{
+		"operation_key": "resize:1:x:1",
+		"external_id":   "id1",
+		"plan_id":       "enormous",
+	})
+	if rpcErr.Code != codeRejected {
+		t.Fatalf("code = %d, want rejected", rpcErr.Code)
+	}
+	if f.requestCount() != before {
+		t.Fatal("an unknown plan reached the panel")
+	}
+}
+
+// ---------------------------------------------------------------- fields --
+
+// The declared fields must be the ones a create actually needs: the required key a purchase is
+// told to collect is the key create refuses to run without.
+func TestDeclaredFieldsMatchWhatCreateRequires(t *testing.T) {
+	s, _ := newTestServer(t)
+	raw := call(t, s, "provisioner.fields", map[string]any{})
+	var res struct {
+		Fields []struct {
+			Key      string `json:"key"`
+			Type     string `json:"type"`
+			Required bool   `json:"required"`
+		} `json:"fields"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	required := ""
+	for _, field := range res.Fields {
+		if field.Required {
+			required = field.Key
+		}
+		if field.Type == "" {
+			t.Fatalf("field %q declares no type, so a form cannot render it", field.Key)
+		}
+	}
+	if required != "pterodactyl_user_id" {
+		t.Fatalf("required field = %q, want pterodactyl_user_id", required)
+	}
+
+	// And the create path really does refuse without it.
+	params := createParams("create:missing-user", "small")
+	params["metadata"] = map[string]string{"name": "x"}
+	rpcErr := callErr(t, s, "provisioner.create", params)
+	if !strings.Contains(rpcErr.Message, required) {
+		t.Fatalf("create without %q said %q", required, rpcErr.Message)
+	}
+}

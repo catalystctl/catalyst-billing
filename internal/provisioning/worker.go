@@ -24,10 +24,12 @@ package provisioning
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/extproto"
 	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/store"
@@ -96,6 +98,20 @@ type Operation struct {
 	ServerID     string
 	ServerRegion string
 	ServerNode   string
+	// ExternalSubscription is the provider-side subscription id the service carries, read at
+	// claim time so a cancellation queued before the id was recorded still finds it.
+	ExternalSubscription string
+	// Payload is the instruction this operation was queued with, e.g. the plan a resize
+	// must reach. It is read from the row rather than derived from the service, because a
+	// second upgrade between the enqueue and the claim would otherwise be applied under the
+	// first operation's identity.
+	Payload map[string]any
+	// ConfigEnv is the service's config-option selection as one environment variable per
+	// option that names one. It is read at claim time so an option changed after the
+	// operation was queued is still delivered at the next call, and it is what turns
+	// "8 GB" from a line on an invoice into a real environment variable on the server
+	// (SVC-21, UPG-10).
+	ConfigEnv map[string]string
 }
 
 // Worker executes provisioning operations.
@@ -115,6 +131,15 @@ type Worker struct {
 	LeaseDuration time.Duration
 	// Now is injectable for tests.
 	Now func() time.Time
+	// Upgrader, when set, is what a resize operation calls. Nil means "launch the provisioner
+	// this panel has configured", which is what production does: the Adapter cmd/billing builds
+	// is one long-lived client whose interface predates provisioner.upgrade, and a queue row
+	// must still be able to resize.
+	Upgrader Upgrader
+	// Canceller, when set, is what a subscription-cancellation operation calls. Nil means
+	// "launch the configured gateway", because a card subscription belongs to the gateway and
+	// not to the hosting panel.
+	Canceller SubscriptionCanceller
 	// notify is the outbox the activation message is written to. It is optional: a worker with
 	// no queue still provisions, it just does not tell the customer. Nil is also what a test
 	// gets, so the provisioning tests are unaffected by the notification feature.
@@ -197,8 +222,10 @@ func (w *Worker) claim(ctx context.Context) (Operation, error) {
 	err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `
 			SELECT o.id, o.service_id, o.kind, o.operation_key, o.generation, o.status, o.attempts,
+			       o.payload,
 			       s.status, COALESCE(s.external_id, ''), s.product_id, s.customer_id, s.config,
-			       COALESCE(srv.id::text, ''), COALESCE(srv.region, ''), COALESCE(srv.node, '')
+			       COALESCE(srv.id::text, ''), COALESCE(srv.region, ''), COALESCE(srv.node, ''),
+			       COALESCE(s.external_subscription_id, '')
 			FROM service_operations o
 			JOIN services s ON s.id = o.service_id
 			LEFT JOIN products p ON p.id = s.product_id
@@ -209,13 +236,23 @@ func (w *Worker) claim(ctx context.Context) (Operation, error) {
 			FOR UPDATE OF o SKIP LOCKED
 			LIMIT 1`, w.Now().Add(-w.LeaseDuration)).
 			Scan(&op.ID, &op.ServiceID, &op.Kind, &op.OperationKey, &op.Generation, &op.Status,
-				&op.Attempts, &op.ServiceStatus, &op.ServiceExternal, &op.ProductID,
-				&op.CustomerID, &op.Config, &op.ServerID, &op.ServerRegion, &op.ServerNode)
+				&op.Attempts, &op.Payload, &op.ServiceStatus, &op.ServiceExternal, &op.ProductID,
+				&op.CustomerID, &op.Config, &op.ServerID, &op.ServerRegion, &op.ServerNode,
+				&op.ExternalSubscription)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNoWork
 		}
 		if err != nil {
 			return fmt.Errorf("provisioning: claim operation: %w", err)
+		}
+		if op.Payload == nil {
+			// A row written before 0063, or by a caller with no instruction beyond the kind.
+			op.Payload = map[string]any{}
+		}
+		// The selection is read here rather than joined into the claim query so a duplicate
+		// env_variable across two options cannot make the aggregate fail and stall the queue.
+		if op.ConfigEnv, err = contractEnv(ctx, tx, op.ServiceID); err != nil {
+			return err
 		}
 		_, err = tx.Exec(ctx, `
 			UPDATE service_operations
@@ -322,6 +359,104 @@ func (w *Worker) execute(ctx context.Context, op Operation) (Result, error) {
 		res.ExternalID = out.ExternalID
 		return res, w.finish(ctx, op, res)
 
+	case "resize":
+		// A service that was never provisioned has no remote resource to resize, and saying so
+		// is the truthful outcome: the ledger moved and there was nothing to tell.
+		if op.ServiceExternal == "" {
+			res.Outcome = "succeeded"
+			res.Detail = "the service has no remote resource, so there was nothing to resize"
+			return res, w.finish(ctx, op, res)
+		}
+		upg, err := w.upgrader()
+		if err != nil {
+			// "No adapter advertises provisioner.upgrade" and "no provisioner is configured"
+			// do not improve by being attempted again in five seconds, and five quick
+			// failures would park the row with a message about attempts instead of the one
+			// fact an operator can act on.
+			res.Outcome = "needs_review"
+			res.Detail = err.Error()
+			return res, w.finish(ctx, op, res)
+		}
+		out, err := upg.Upgrade(callCtx, UpgradeRequest{
+			OperationKey: op.OperationKey,
+			ExternalID:   op.ServiceExternal,
+			ServiceID:    op.ServiceID,
+			PlanID:       op.targetPlan(),
+			Region:       op.targetRegion(),
+			Quantity:     op.quantity(),
+			Metadata:     op.metadata(),
+		})
+		if err != nil {
+			if unsupported(err) {
+				res.Outcome = "needs_review"
+				res.Detail = err.Error()
+				return res, w.finish(ctx, op, res)
+			}
+			return w.recordFailure(ctx, op, res, err)
+		}
+		res.Outcome = "succeeded"
+		res.ExternalID = out.ExternalID
+		if res.ExternalID == "" {
+			res.ExternalID = op.ServiceExternal
+		}
+		res.Detail = fmt.Sprintf("resized to plan %q (changed=%t)", op.targetPlan(), out.Changed)
+		return res, w.finish(ctx, op, res)
+
+	case "delete_remote":
+		// The operator's "the server is gone from the panel, the customer keeps the service".
+		// It is a terminate at the provider and nothing else: the service row, its billing and
+		// its status are untouched, which is what makes it different from terminating.
+		if op.ServiceExternal == "" {
+			res.Outcome = "succeeded"
+			res.Detail = "the service has no remote resource, so there was nothing to delete"
+			return res, w.finish(ctx, op, res)
+		}
+		out, err := w.adapter.Terminate(callCtx, op.ServiceExternal, "delete_remote")
+		if err != nil {
+			return w.recordFailure(ctx, op, res, err)
+		}
+		res.Outcome = "succeeded"
+		res.ExternalID = op.ServiceExternal
+		res.Detail = "remote resource deleted: " + string(out.Status)
+		return res, w.finish(ctx, op, res)
+
+	case "cancel_subscription":
+		subscriptionID := op.targetSubscription()
+		if subscriptionID == "" {
+			res.Outcome = "needs_review"
+			res.Detail = "the service has no external subscription id to cancel"
+			return res, w.finish(ctx, op, res)
+		}
+		cancel, err := w.canceller()
+		if err != nil {
+			res.Outcome = "needs_review"
+			res.Detail = err.Error()
+			return res, w.finish(ctx, op, res)
+		}
+		out, err := cancel.CancelSubscription(callCtx, CancelSubscriptionRequest{
+			OperationKey:   op.OperationKey,
+			SubscriptionID: subscriptionID,
+			Reason:         op.reason(),
+		})
+		if err != nil {
+			if unsupported(err) {
+				res.Outcome = "needs_review"
+				res.Detail = err.Error()
+				return res, w.finish(ctx, op, res)
+			}
+			return w.recordFailure(ctx, op, res, err)
+		}
+		res.Outcome = "succeeded"
+		res.ExternalID = out.SubscriptionID
+		res.Detail = fmt.Sprintf("subscription %s: status %q, cancelled=%t", subscriptionID, out.Status, out.Canceled)
+		if out.AlreadyGone {
+			// The provider has no such subscription. The panel's record is wrong rather than
+			// the call failed, and an operator should see that instead of a green tick.
+			res.Outcome = "needs_review"
+			res.Detail = fmt.Sprintf("the provider does not know subscription %s", subscriptionID)
+		}
+		return res, w.finish(ctx, op, res)
+
 	default:
 		res.Outcome = "failed"
 		res.Detail = fmt.Sprintf("unsupported operation kind %q", op.Kind)
@@ -396,6 +531,16 @@ func (o Operation) region() string {
 // metadata is what the adapter is told about the resource, beyond its target. The product's
 // server is named here as well as in Region because the providers that address a target by node
 // id read the node from the environment rather than from the region label.
+//
+// Two families of entry ride along, and both exist because the adapter is the only component
+// that can act on them:
+//
+//   - `env.NAME=value` is the service's config-option selection. Pterodactyl passes it to the
+//     egg's startup environment verbatim, so a "Minecraft version" option becomes a real
+//     variable on the server without the core knowing what it means (SVC-21, UPG-10).
+//   - an entry supplied by the service extension's own `provisioner.fields` (a panel user id, a
+//     domain name) is passed under its own key, because that is the key the adapter declared
+//     and the key its create call reads (UPG-12).
 func (o Operation) metadata() map[string]string {
 	out := map[string]string{"service_id": o.ServiceID, "customer_id": o.CustomerID}
 	if o.ServerID != "" {
@@ -404,7 +549,127 @@ func (o Operation) metadata() map[string]string {
 	if o.ServerNode != "" {
 		out["server_node"] = o.ServerNode
 	}
+	for name, value := range o.ConfigEnv {
+		if name == "" {
+			continue
+		}
+		out["env."+name] = value
+	}
+	for key, value := range o.fields() {
+		// The bookkeeping keys above win: an extension field may not rewrite which service
+		// this operation is about.
+		if _, taken := out[key]; taken {
+			continue
+		}
+		out[key] = value
+	}
 	return out
+}
+
+// fields is the extension-supplied provisioning input stored on the service.
+//
+// It lives in `services.config` rather than in `custom_properties` because these values are the
+// provisioner's own inputs, not operator-defined labels: they are sent to the adapter verbatim
+// and must not be rendered as service metadata or edited by a customer.
+func (o Operation) fields() map[string]string {
+	raw, ok := o.Config["fields"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for key, value := range raw {
+		if text, ok := value.(string); ok && key != "" {
+			out[key] = text
+		}
+	}
+	return out
+}
+
+// contractEnv reads the service's config-option selection as environment entries.
+//
+// An option with no env_variable is a priced choice with nothing to tell the server, so it is
+// skipped here and still priced by the renewal engine.
+func contractEnv(ctx context.Context, q interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}, serviceID string) (map[string]string, error) {
+	rows, err := q.Query(ctx, `
+		SELECT o.env_variable, sc.value
+		FROM service_configs sc
+		JOIN config_options o ON o.id = sc.config_option_id
+		WHERE sc.service_id = $1 AND o.env_variable <> ''
+		ORDER BY o.sort_order, o.name`, serviceID)
+	if err != nil {
+		return nil, fmt.Errorf("provisioning: read service config options: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var name, value string
+		if err := rows.Scan(&name, &value); err != nil {
+			return nil, fmt.Errorf("provisioning: scan service config option: %w", err)
+		}
+		out[name] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("provisioning: read service config options: %w", err)
+	}
+	return out, nil
+}
+
+// targetPlan is the plan a resize must reach.
+//
+// The payload wins, because it is the upgrade's own record of what was paid for. The service
+// configuration is the fallback for a resize queued by a caller that had no plan to name (a
+// plain price change), where the plan the service already has is exactly right.
+func (o Operation) targetPlan() string {
+	if v, ok := o.Payload["plan_id"].(string); ok && v != "" {
+		return v
+	}
+	return o.planID()
+}
+
+// targetRegion is where a resize must land.
+func (o Operation) targetRegion() string {
+	if v, ok := o.Payload["region"].(string); ok && v != "" {
+		return v
+	}
+	return o.region()
+}
+
+// targetSubscription is the provider-side subscription a cancellation must end.
+func (o Operation) targetSubscription() string {
+	if v, ok := o.Payload["subscription_id"].(string); ok && v != "" {
+		return v
+	}
+	return o.ExternalSubscription
+}
+
+// reason is the operator's stated reason, for the adapter and the audit trail.
+func (o Operation) reason() string {
+	if v, ok := o.Payload["reason"].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// quantity is how many units the resource covers. It defaults to one because every row
+// written before the payload existed meant one.
+func (o Operation) quantity() int32 {
+	switch v := o.Payload["quantity"].(type) {
+	case float64:
+		if v > 0 && v <= 1000 {
+			return int32(v)
+		}
+	case int32:
+		if v > 0 {
+			return v
+		}
+	case int64:
+		if v > 0 && v <= 1000 {
+			return int32(v)
+		}
+	}
+	return 1
 }
 
 // finish writes the operation outcome and the service transition atomically.
@@ -489,9 +754,112 @@ func (w *Worker) finish(ctx context.Context, op Operation, res Result) error {
 				op.ServiceID); err != nil {
 				return fmt.Errorf("provisioning: mark service terminated: %w", err)
 			}
+		case "resize":
+			// The service now *is* the plan the operation was queued for, so the row must say
+			// so: a later create, inspect or second resize reads the plan from here, and a
+			// service whose configuration still named the old plan would be re-created at the
+			// size the customer already upgraded away from.
+			patch, err := resizePatch(op)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `
+				UPDATE services SET config = config || $2::jsonb, updated_at = now() WHERE id = $1`,
+				op.ServiceID, patch); err != nil {
+				return fmt.Errorf("provisioning: record resized service config: %w", err)
+			}
+		case "delete_remote":
+			// The remote resource is gone, so the id that named it is gone too. The status is
+			// deliberately untouched: the customer still holds the service.
+			if _, err := tx.Exec(ctx, `
+				UPDATE services SET external_id = NULL, updated_at = now() WHERE id = $1`,
+				op.ServiceID); err != nil {
+				return fmt.Errorf("provisioning: clear remote service id: %w", err)
+			}
+		case "cancel_subscription":
+			// The provider-side record is cancelled, so the panel must stop pointing at it.
+			// The id itself is kept in the audit row rather than in the column: a column that
+			// still names a cancelled subscription is an invitation to cancel it twice.
+			if _, err := tx.Exec(ctx, `
+				UPDATE services SET external_subscription_id = '', updated_at = now() WHERE id = $1`,
+				op.ServiceID); err != nil {
+				return fmt.Errorf("provisioning: clear external subscription id: %w", err)
+			}
+		}
+
+		// The three operator-initiated kinds are audited here, in the transaction that applied
+		// them, because each one changes something a customer paid for and each one is a call
+		// an operator made rather than a schedule. The row is written with the system actor: a
+		// worker has no session, and recording it as a user would make the trail lie about who
+		// acted.
+		if action := auditedKind(op.Kind); action != "" {
+			changes := map[string]any{
+				"operation_id": op.ID,
+				"operation":    op.Kind,
+			}
+			switch op.Kind {
+			case "resize":
+				changes["plan_id"] = op.targetPlan()
+				changes["region"] = op.targetRegion()
+			case "delete_remote":
+				changes["external_id"] = op.ServiceExternal
+			case "cancel_subscription":
+				changes["external_subscription_id"] = op.targetSubscription()
+				changes["reason"] = op.reason()
+			}
+			if err := audit.Record(ctx, tx, audit.Event{
+				Actor:      audit.Actor{Kind: audit.ActorSystem},
+				Action:     action,
+				TargetType: "service",
+				TargetID:   op.ServiceID,
+				Outcome:    audit.OutcomeSuccess,
+				Changes:    changes,
+			}); err != nil {
+				return fmt.Errorf("provisioning: audit %s: %w", op.Kind, err)
+			}
 		}
 		return nil
 	})
+}
+
+// unsupported reports whether an error means "this installation cannot do this".
+//
+// Such an operation is parked for review instead of retried: an adapter that does not implement
+// provisioner.upgrade and an installation with no gateway configured both stay that way five
+// seconds later, and five quick attempts would replace the actionable message with a note about
+// attempt counts.
+func unsupported(err error) bool {
+	return errors.Is(err, ErrUnsupportedOperation) || errors.Is(err, ErrNotConfigured)
+}
+
+// auditedKind names the audit action an operation kind applies, or "" for the kinds that are
+// part of the ordinary lifecycle and are audited by whatever queued them.
+func auditedKind(kind string) string {
+	switch kind {
+	case "resize":
+		return "service.resized"
+	case "delete_remote":
+		return "service.delete_remote"
+	case "cancel_subscription":
+		return "service.subscription_cancelled"
+	}
+	return ""
+}
+
+// resizePatch is the jsonb patch that records the plan and region a resize reached.
+func resizePatch(op Operation) ([]byte, error) {
+	patch := map[string]string{}
+	if plan := op.targetPlan(); plan != "" {
+		patch["plan_id"] = plan
+	}
+	if region := op.targetRegion(); region != "" {
+		patch["region"] = region
+	}
+	encoded, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("provisioning: encode resize patch: %w", err)
+	}
+	return encoded, nil
 }
 
 // advanceOrder moves the order behind a service along its own lifecycle.

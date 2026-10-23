@@ -14,7 +14,7 @@ import (
 
 // whmClient is the adapter's view of WHM's API1 "json-api" endpoint.
 //
-// Five calls: listaccts, createacct, suspendacct, unsuspendacct, removeacct. That
+// Six calls: listaccts, createacct, modifyacct, suspendacct, unsuspendacct, removeacct. That
 // is the whole surface a hosting-account provisioner needs, and it is *four* calls
 // fewer than Pterodactyl needed only because cPanel has no concept of an
 // allocation, a nest or an egg to discover.
@@ -307,6 +307,19 @@ func (c *whmClient) createAccount(ctx context.Context, in createAccountRequest) 
 
 // suspendAccount stops an account without deleting it. WHM keeps the files and
 // the databases, which is what a billing suspension means.
+// modifyAccount changes an account's quota and bandwidth in place.
+//
+// NOT PTERODACTYL-SHAPED: there is no build to rebuild and no startup environment to resend. An
+// account's "size" here is two WHM limits, and modifyacct sets them without touching a file,
+// a database or a mailbox.
+func (c *whmClient) modifyAccount(ctx context.Context, user string, p plan) error {
+	params := url.Values{}
+	params.Set("user", user)
+	params.Set("quota", fmt.Sprint(p.QuotaMB))
+	params.Set("bwlimit", fmt.Sprint(p.BandwidthMB))
+	return c.call(ctx, "modifyacct", params, nil)
+}
+
 func (c *whmClient) suspendAccount(ctx context.Context, user, reason string) error {
 	params := url.Values{}
 	params.Set("user", user)

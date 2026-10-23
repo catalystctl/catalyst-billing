@@ -735,8 +735,11 @@ func (s *Store) apply(ctx context.Context, upgradeID string, allowCredit bool) e
 		// The provisioner is told, but only when there is something to tell it about. A
 		// service that was never provisioned has no remote resource to resize.
 		if externalID != "" {
-			if _, err := enqueueOperation(ctx, tx, serviceID, "resize",
-				fmt.Sprintf("resize:%s:%s:%d", serviceID, toPrice, generation), generation); err != nil {
+			target, err := loadPriceVersion(ctx, tx, toPrice)
+			if err != nil {
+				return err
+			}
+			if _, err := enqueueResize(ctx, tx, serviceID, target, generation); err != nil {
 				return err
 			}
 		}

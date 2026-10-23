@@ -131,6 +131,33 @@ var serverProviders = []Provider{
 		},
 	},
 	{
+		// The second real adapter. It is listed here because it exists in this repository
+		// (extensions/cpanel) and was previously unreachable: `serverProviders` named only
+		// Pterodactyl and the fixture, so an operator with a WHM server had no form, the
+		// CPANEL_* variables never reached the child, and the adapter was dead code.
+		ID:        "cpanel",
+		Name:      "cPanel / WHM",
+		Extension: "cpanel",
+		Note:      "Hosting accounts through WHM's API. Create, suspend, resume and terminate are real calls.",
+		Fields: []Field{
+			{
+				Key: "whm_url", Label: "WHM URL", Env: "CPANEL_WHM_URL",
+				Hint: "The WHM origin, e.g. https://whm.example.com:2087. No /json-api suffix: the adapter adds it.",
+			},
+			{
+				Key: "api_token", Label: "WHM API token", Env: "CPANEL_API_TOKEN", Secret: true,
+				Hint: "A WHM API token sent as `Authorization: whm root:TOKEN`. Write-only: it is never returned.",
+			},
+		},
+		EnvOnly: []EnvKnob{
+			{Env: "CPANEL_PLANS", Hint: "Comma-separated id:quota_mb:bandwidth_mb bundles."},
+			{Env: "CPANEL_DEFAULT_PLAN", Hint: "The plan to use when a price version names none."},
+			{Env: "CPANEL_TIMEOUT_MS", Hint: "Per-call HTTP timeout, default 30000."},
+			{Env: "CPANEL_VERIFY_TLS", Hint: "Default on. Setting it off prints a warning on the adapter's stderr."},
+			{Env: "CPANEL_STATE_FILE", Hint: "The adapter's operation ledger; defaults to /var/lib/catalyst/cpanel/operations.json."},
+		},
+	},
+	{
 		ID:        "fake",
 		Name:      "Fixture provisioner",
 		Extension: "fakeprov",

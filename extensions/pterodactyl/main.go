@@ -309,6 +309,10 @@ var capabilities = []string{
 	"provisioner.suspend",
 	"provisioner.resume",
 	"provisioner.terminate",
+	// SVC-16 / SVC-22: a product change has to reach the panel, not just the ledger.
+	"provisioner.upgrade",
+	// UPG-12: the panel asks which per-purchase inputs this adapter needs.
+	"provisioner.fields",
 }
 
 func (s *server) handle(req *request) reply {
@@ -333,6 +337,10 @@ func (s *server) handle(req *request) reply {
 		return s.setState(req, "resume")
 	case "provisioner.terminate":
 		return s.terminate(req)
+	case "provisioner.upgrade":
+		return s.upgrade(req)
+	case "provisioner.fields":
+		return s.fields(req)
 	default:
 		return reply{rpcErr: &rpcError{Code: codeMethodNotFound, Message: "method not found: " + req.Method}}
 	}
@@ -657,6 +665,106 @@ func (s *server) setState(req *request, kind string) reply {
 			"external_id": srv.identifier(), "status": "active", "changed": true,
 		}}
 	}
+}
+
+// fields is what this adapter needs to create a server for a customer (UPG-12).
+//
+// Pterodactyl refuses a create with no `user`, and the panel user id is a per-customer
+// fact the panel cannot invent: it is not the billing customer id, it is the id in the
+// game panel. Declaring it here is what lets the purchase form collect it *before* the
+// server is bought, instead of failing the provisioning call with a 422 an hour later.
+func (s *server) fields(*request) reply {
+	return reply{result: map[string]any{"fields": []map[string]any{
+		{
+			"key":      "pterodactyl_user_id",
+			"label":    "Panel user ID",
+			"type":     "text",
+			"required": true,
+			"hint":     "The numeric user id on the Pterodactyl panel that will own the server. It is not the billing customer id.",
+		},
+		{
+			"key":   "name",
+			"label": "Server name",
+			"type":  "text",
+			"hint":  "Optional. Defaults to a short suffix of the operation key.",
+		},
+		{
+			"key":   "description",
+			"label": "Description",
+			"type":  "text",
+		},
+		{
+			"key":   "allocation_id",
+			"label": "Allocation ID",
+			"type":  "text",
+			"hint":  "Optional. A fixed allocation instead of the first free port on the node.",
+		},
+	}}}
+}
+
+// upgrade moves an existing server to another plan (SVC-16, SVC-22, UPG-05).
+//
+// It is the call that was missing: the ledger moved and the server did not, so a customer
+// who paid to upgrade from 2 GB to 4 GB kept the 2 GB box until an operator edited the
+// panel by hand.
+//
+// Two requests, because Pterodactyl splits the two things a plan consists of: the *build*
+// (memory, disk, cpu) and the *startup environment* (the egg's variables, where a product's
+// config options land). Both are sent, because a resize that resized the box and dropped the
+// customer's "Minecraft version" would be a different kind of data loss.
+func (s *server) upgrade(req *request) reply {
+	var p struct {
+		OperationKey string            `json:"operation_key"`
+		ExternalID   string            `json:"external_id"`
+		PlanID       string            `json:"plan_id"`
+		Region       string            `json:"region"`
+		Quantity     int32             `json:"quantity"`
+		Metadata     map[string]string `json:"metadata"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "upgrade params: " + err.Error()}}
+	}
+	if strings.TrimSpace(p.ExternalID) == "" {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "external_id is required"}}
+	}
+	pl, ok := s.cfg.plansByID[p.PlanID]
+	if !ok {
+		// Guessing a size would resize a paid server to the wrong plan and report success.
+		msg := fmt.Sprintf("unknown plan %q", p.PlanID)
+		return reply{rpcErr: &rpcError{
+			Code: codeRejected, Message: msg, Data: map[string]any{"problems": []string{msg}},
+		}}
+	}
+	environment, err := s.environmentFor(p.Metadata)
+	if err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: err.Error()}}
+	}
+
+	srv, err := s.client.getServer(p.ExternalID)
+	if err != nil {
+		return pteroErrorReply(err)
+	}
+	// A replay of a completed upgrade must report what is true now rather than claim another
+	// change, so both halves are read back from the panel before anything is written.
+	buildChanged := !srv.atPlan(pl)
+	envChanged := !srv.hasEnvironment(environment)
+	if buildChanged {
+		if err := s.client.updateBuild(srv.ID, pl); err != nil {
+			return pteroErrorReply(err)
+		}
+	}
+	if envChanged {
+		if err := s.client.updateStartup(srv.ID, environment, p.Metadata["startup"]); err != nil {
+			return pteroErrorReply(err)
+		}
+	}
+	return reply{result: map[string]any{
+		"external_id": srv.identifier(),
+		"status":      srv.protocolStatus(),
+		"plan_id":     pl.ID,
+		"region":      firstNonEmpty(p.Region, fmt.Sprintf("%d", srv.NodeID)),
+		"changed":     buildChanged || envChanged,
+	}}
 }
 
 func (s *server) terminate(req *request) reply {

@@ -163,6 +163,10 @@ func (f *fakePtero) handle(w http.ResponseWriter, r *http.Request) {
 		f.setSuspended(w, strings.TrimSuffix(strings.TrimPrefix(path, "/servers/"), "/suspend"), true)
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/unsuspend"):
 		f.setSuspended(w, strings.TrimSuffix(strings.TrimPrefix(path, "/servers/"), "/unsuspend"), false)
+	case r.Method == http.MethodPatch && strings.HasSuffix(path, "/build"):
+		f.updateBuild(w, rec, strings.TrimSuffix(strings.TrimPrefix(path, "/servers/"), "/build"))
+	case r.Method == http.MethodPatch && strings.HasSuffix(path, "/startup"):
+		f.updateStartup(w, rec, strings.TrimSuffix(strings.TrimPrefix(path, "/servers/"), "/startup"))
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/servers/"):
 		f.deleteServer(w, strings.TrimPrefix(path, "/servers/"))
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/allocations"):
@@ -292,6 +296,60 @@ func (f *fakePtero) setSuspended(w http.ResponseWriter, id string, suspended boo
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// updateBuild applies a PATCH /servers/{id}/build the way the real panel does: the body
+// replaces the limits it names.
+func (f *fakePtero) updateBuild(w http.ResponseWriter, rec pteroRequest, id string) {
+	f.mu.Lock()
+	found := f.serverByID(id)
+	if found != nil && rec.Body != nil {
+		limits, _ := found.Limits, rec.Body
+		_ = limits
+		memory, _ := rec.Body["memory"].(float64)
+		disk, _ := rec.Body["disk"].(float64)
+		cpu, _ := rec.Body["cpu"].(float64)
+		found.Limits = map[string]any{"memory": memory, "disk": disk, "cpu": cpu}
+	}
+	f.mu.Unlock()
+	if found == nil {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"errors":{"server":["The requested server was not found."]}}`)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// updateStartup replaces the environment, matching the panel's own semantics.
+func (f *fakePtero) updateStartup(w http.ResponseWriter, rec pteroRequest, id string) {
+	f.mu.Lock()
+	found := f.serverByID(id)
+	if found != nil && rec.Body != nil {
+		if env, ok := rec.Body["environment"].(map[string]any); ok {
+			replaced := map[string]string{}
+			for k, v := range env {
+				replaced[k] = fmt.Sprint(v)
+			}
+			found.Env = replaced
+		}
+	}
+	f.mu.Unlock()
+	if found == nil {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"errors":{"server":["The requested server was not found."]}}`)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// serverByID finds a server without taking the lock (callers hold it).
+func (f *fakePtero) serverByID(id string) *fakeServer {
+	for _, srv := range f.servers {
+		if fmt.Sprint(srv.ID) == id {
+			return srv
+		}
+	}
+	return nil
+}
+
 func (f *fakePtero) deleteServer(w http.ResponseWriter, id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -327,6 +385,10 @@ func serverAttrs(srv *fakeServer) map[string]any {
 		"suspended":   srv.Suspended,
 		"node":        srv.Node,
 		"created_at":  srv.CreatedAt,
+		"limits":      srv.Limits,
+		// The application API reports the egg's environment under container; the adapter reads
+		// it so a replayed resize can answer "already like this".
+		"container": map[string]any{"environment": srv.Env},
 	}
 }
 

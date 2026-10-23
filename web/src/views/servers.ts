@@ -106,8 +106,37 @@ interface TestResult {
   tested_at: string;
 }
 
+/** GET /api/v1/staff/servers/fields: the inputs the adapter needs per *purchase*.
+ *
+ *  They are a different thing from the credentials above. A credential is installation
+ *  configuration and is stored once; a panel user id or a domain belongs to one service and is
+ *  collected when that service is sold. The adapter declares them, so this screen lists them
+ *  instead of the core guessing what a provider needs. */
+interface ServerFields {
+  provider: string;
+  provider_name: string;
+  configured: boolean;
+  supported: boolean;
+  ok?: boolean;
+  code?: string;
+  detail?: string;
+  extension?: string;
+  capabilities?: string[];
+  fields: Array<{
+    key: string;
+    label: string;
+    type: string;
+    required: boolean;
+    secret: boolean;
+    choices?: string[];
+    hint?: string;
+  }>;
+  notes?: string[];
+}
+
 const ENDPOINT = "/api/v1/staff/servers";
 const TEST_ENDPOINT = "/api/v1/staff/servers/test";
+const FIELDS_ENDPOINT = "/api/v1/staff/servers/fields";
 
 export default async function serversPage(ctx: Ctx): Promise<Node> {
   const host = h("div", { class: "resource" }, skeletonPage());
@@ -117,8 +146,20 @@ export default async function serversPage(ctx: Ctx): Promise<Node> {
   const load = async (): Promise<void> => {
     try {
       const cfg = await ctx.api.get<IntegrationConfig>(ENDPOINT, { cache: false, signal: controller.signal });
+      // The declarations are a second launch of the same extension, so a failure is not allowed
+      // to take the credentials form with it: the screen must still be able to save a fixed key.
+      let declarations: ServerFields | null = null;
+      try {
+        declarations = await ctx.api.get<ServerFields>(FIELDS_ENDPOINT, {
+          cache: false,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (controller.signal.aborted || isAbort(err)) return;
+        declarations = null;
+      }
       if (controller.signal.aborted) return;
-      swap(host, render(ctx, cfg, load));
+      swap(host, render(ctx, cfg, declarations, load));
     } catch (err) {
       if (controller.signal.aborted) return;
       swap(host, errorState(err, () => {
@@ -131,7 +172,12 @@ export default async function serversPage(ctx: Ctx): Promise<Node> {
   return host;
 }
 
-function render(ctx: Ctx, cfg: IntegrationConfig, reload: () => Promise<void>): Node {
+function render(
+  ctx: Ctx,
+  cfg: IntegrationConfig,
+  declarations: ServerFields | null,
+  reload: () => Promise<void>,
+): Node {
   const providers = cfg.providers ?? [];
   const chosen = providers.find((p) => p.id === cfg.provider) ?? null;
 
@@ -328,7 +374,120 @@ function render(ctx: Ctx, cfg: IntegrationConfig, reload: () => Promise<void>): 
         chosen?.note ? h("p", { class: "field-hint" }, chosen.note) : null,
       ),
     }),
+
+    declarationsCard(ctx, declarations),
   );
+}
+
+/**
+ * What the provisioner needs for each purchase (SVC-19, UPG-12).
+ *
+ * This is the counterpart of the credentials card: those are configured once, these are asked
+ * for on every service. A provider that needs nothing says so, and a provider that cannot be
+ * reached says that too — the two are different facts and the operator acts differently on each.
+ */
+function declarationsCard(ctx: Ctx, decl: ServerFields | null): Node {
+  if (!decl || !decl.configured) {
+    return card({
+      title: "Purchase-time inputs",
+      sub: "What the provisioner needs for each service",
+      body: emptyState({
+        title: "No provisioner is configured",
+        body: "Choose a provisioner above and save it. It will then declare which inputs it needs when a service is sold — a panel user id, a domain, or nothing at all.",
+        icon: "box",
+      }),
+    });
+  }
+
+  if (decl.ok === false) {
+    return card({
+      title: "Purchase-time inputs",
+      sub: `${decl.provider_name || decl.provider} could not be asked`,
+      body: banner(
+        "warning",
+        "The extension did not answer",
+        h(
+          "div",
+          { class: "stack-sm" },
+          h("p", null, decl.detail ?? "The provisioner could not be launched to read its declaration."),
+          decl.code ? h("p", { class: "field-hint" }, "Reason code: ", h("code", null, decl.code)) : null,
+        ),
+      ),
+    });
+  }
+
+  const fields = decl.fields ?? [];
+  if (fields.length === 0) {
+    return card({
+      title: "Purchase-time inputs",
+      sub: `${decl.extension || decl.provider} declares none`,
+      body: h(
+        "p",
+        { class: "field-hint" },
+        decl.supported
+          ? "This provisioner needs no per-service inputs, so there is nothing to collect at checkout."
+          : "This provisioner does not declare its inputs (it predates `provisioner.fields`), so anything it needs must arrive through the product's config options.",
+      ),
+    });
+  }
+
+  const rows = fields.map((f) =>
+    h(
+      "tr",
+      null,
+      h("td", { class: "cell-primary" }, h("code", null, f.key)),
+      h("td", { "data-label": "Label" }, f.label),
+      h("td", { "data-label": "Type" }, f.type),
+      h(
+        "td",
+        { "data-label": "Required" },
+        f.required ? badge("required", "warning", { dot: true }) : h("span", { class: "faint" }, "optional"),
+      ),
+      h("td", { "data-label": "Notes" }, f.hint ?? "—"),
+    ),
+  );
+
+  return card({
+    title: "Purchase-time inputs",
+    sub: `${decl.extension || decl.provider} asked for ${fields.length} input${fields.length === 1 ? "" : "s"}`,
+    body: h(
+      "div",
+      { class: "stack-sm" },
+      h(
+        "div",
+        { class: "table-wrap table-wrap--cards" },
+        h(
+          "table",
+          { class: "table" },
+          h(
+            "thead",
+            null,
+            h(
+              "tr",
+              null,
+              h("th", { scope: "col" }, "Key"),
+              h("th", { scope: "col" }, "Label"),
+              h("th", { scope: "col" }, "Type"),
+              h("th", { scope: "col" }, "Required"),
+              h("th", { scope: "col" }, "Notes"),
+            ),
+          ),
+          h("tbody", null, ...rows),
+        ),
+      ),
+      h(
+        "p",
+        { class: "field-hint" },
+        ctx.can("service:write:all")
+          ? "Fill these in on a service page, under \"Provisioning inputs\". The key is the metadata key sent to the adapter, so it is shown verbatim."
+          : "These are filled in on a service page, under \"Provisioning inputs\".",
+      ),
+    ),
+  });
+}
+
+function isAbort(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
 }
 
 // ------------------------------------------------------------------- test --

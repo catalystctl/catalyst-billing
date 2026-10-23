@@ -82,6 +82,51 @@ type pteroServer struct {
 	Suspended  bool    `json:"suspended"`
 	NodeID     int64   `json:"node"`
 	CreatedAt  string  `json:"created_at"`
+	// Limits is what the panel currently enforces for the server. It is read so a replay of
+	// a resize can answer "already at the requested plan" instead of claiming a second change.
+	Limits pteroLimits `json:"limits"`
+	// Container carries the egg's startup environment. Pterodactyl replaces that map wholesale
+	// on a startup PATCH, so it is read back before writing: a resize whose only difference is
+	// a config option must still be sent, and a replayed one must not be.
+	Container struct {
+		Environment map[string]string `json:"environment"`
+	} `json:"container"`
+}
+
+// pteroLimits is the part of a server's build configuration a plan controls.
+type pteroLimits struct {
+	Memory int64 `json:"memory"`
+	Disk   int64 `json:"disk"`
+	CPU    int64 `json:"cpu"`
+}
+
+// atPlan reports whether the server already runs at the plan's size.
+//
+// A server built before this adapter existed reports zero limits, which does not match any
+// plan and therefore resizes once — the safe direction: an unnecessary PATCH writes the same
+// values it found, while a skipped one would leave the wrong size in place.
+func (s pteroServer) atPlan(p plan) bool {
+	return s.Limits.Memory == p.MemoryMB && s.Limits.Disk == p.DiskMB && s.Limits.CPU == p.CPUPercent
+}
+
+// hasEnvironment reports whether the server already runs with these variables.
+//
+// A nil map means the panel did not report one (an older version), which is answered as "no":
+// writing the same values again is harmless, while assuming they match would silently drop the
+// customer's options.
+func (s pteroServer) hasEnvironment(env map[string]string) bool {
+	if len(env) == 0 {
+		return true
+	}
+	if s.Container.Environment == nil {
+		return false
+	}
+	for name, value := range env {
+		if s.Container.Environment[name] != value {
+			return false
+		}
+	}
+	return true
 }
 
 // identifier is what the core records as the external id. Pterodactyl's short
@@ -387,6 +432,37 @@ func numericOrString(s string) any {
 		return n
 	}
 	return s
+}
+
+// updateBuild rewrites a server's limits.
+//
+// Pterodactyl's build endpoint takes the full set, not a delta, so every limit the plan controls
+// is sent: a partial body would leave the previous value for any field omitted.
+func (c *pteroClient) updateBuild(id int64, p plan) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	body := map[string]any{
+		"memory": p.MemoryMB,
+		"swap":   0,
+		"disk":   p.DiskMB,
+		"io":     500,
+		"cpu":    p.CPUPercent,
+	}
+	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/servers/%d/build", id), body, nil)
+}
+
+// updateStartup rewrites the server's egg environment.
+//
+// The environment is replaced wholesale, which is why the core sends every declared option on
+// every resize: a merged body would keep the value of an option the customer removed.
+func (c *pteroClient) updateStartup(id int64, environment map[string]string, startup string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	body := map[string]any{"environment": environment}
+	if strings.TrimSpace(startup) != "" {
+		body["startup"] = startup
+	}
+	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/servers/%d/startup", id), body, nil)
 }
 
 func (c *pteroClient) suspendServer(id int64) error {

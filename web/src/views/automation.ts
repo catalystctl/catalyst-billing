@@ -92,6 +92,40 @@ interface FailedRun {
   duration_ms: number | null;
 }
 
+/** What the unattended charger would take right now, from `handleChargeDuePlan` in
+ *  internal/httpapi/charge_due_plan.go. `enabled` is the setting, `kill_switch_set` is the
+ *  process-level switch, and `reason` is set when the sweep would do nothing. */
+interface ChargePlan {
+  enabled: boolean;
+  kill_switch_set: boolean;
+  reason?: string;
+  provider?: string;
+  retry_window_hours: number;
+  batch: number;
+  candidates: ChargePlanRow[];
+  skipped: ChargePlanRow[];
+  without_method: number;
+  truncated: boolean;
+  totals: Array<{ currency: string; amount: string; amount_minor: number; invoices: number }>;
+  generated_at: string;
+}
+
+interface ChargePlanRow {
+  invoice_id: string;
+  invoice_number: string;
+  customer_name: string;
+  currency: string;
+  amount: string;
+  amount_minor: number;
+  due_at: string;
+  method_brand?: string;
+  method_last4?: string;
+  chargeable: boolean;
+  skip_reason?: string;
+  attempt_count: number;
+  last_attempt?: { status: string; at: string } | null;
+}
+
 /** The worker heartbeat, from `handleHeartbeat` in internal/httpapi/cron.go. A worker that has
  *  never run has `present: false` rather than a 404. */
 interface HeartbeatResponse {
@@ -144,6 +178,21 @@ export default async function automationPage(ctx: Ctx): Promise<Node> {
     let heartbeatDenied = false;
     let statistics: StatisticsResponse | null = null;
     let failures: FailedRun[] = [];
+    let chargePlan: ChargePlan | null = null;
+    // The plan names the cards about to be charged, so it needs the permission to charge rather
+    // than the permission to read logs. Asking without it is a 403 the screen already expects.
+    if (ctx.can("payment:reconcile")) {
+      try {
+        chargePlan = await ctx.api.get<ChargePlan>("/api/v1/staff/payments/charge-due", {
+          cache: false,
+          signal,
+        });
+      } catch (err) {
+        if (!(err instanceof ApiError) && !(err instanceof DOMException && err.name === "AbortError")) {
+          throw err;
+        }
+      }
+    }
     if (canReadLogs) {
       try {
         heartbeat = await ctx.api.get<HeartbeatResponse>("/api/v1/staff/cron/heartbeat", {
@@ -167,7 +216,7 @@ export default async function automationPage(ctx: Ctx): Promise<Node> {
         }
       }
     }
-    return { body, heartbeat, heartbeatDenied, canReadLogs, statistics, failures };
+    return { body, heartbeat, heartbeatDenied, canReadLogs, statistics, failures, chargePlan };
   };
 
   paint();
@@ -186,7 +235,7 @@ export default async function automationPage(ctx: Ctx): Promise<Node> {
   function pageBody(): Node {
     return resource(ctx, load, (data) =>
       render(ctx, data.body, data.heartbeat, data.heartbeatDenied, data.canReadLogs,
-        data.statistics, data.failures, () => paint()),
+        data.statistics, data.failures, data.chargePlan, () => paint()),
     );
   }
 }
@@ -201,6 +250,7 @@ function render(
   canReadLogs: boolean,
   statistics: StatisticsResponse | null,
   failures: FailedRun[],
+  chargePlan: ChargePlan | null,
   reload: () => void,
 ): Node {
   if (body.data.length === 0) {
@@ -232,6 +282,7 @@ function render(
         )
       : null,
     heartbeatCard(heartbeat, heartbeatDenied, canReadLogs, body),
+    chargePlanCard(chargePlan, body.data.find((job) => job.name === "charge-agreements")),
     runsCard(ctx, statistics, failures, reload),
     jobsCard(body.data),
   );
@@ -342,6 +393,188 @@ function runsCard(
         : null,
     ),
   });
+}
+
+/** chargePlanCard shows what the unattended charger would take right now.
+ *
+ *  It is on this screen because this is where an operator decides what to switch off. Enabling a job
+ *  that charges stored cards with nobody watching is a decision that needs its consequence visible
+ *  next to the switch, and "the sweep charges what is due" is not something a person can check. */
+function chargePlanCard(plan: ChargePlan | null, job: AutomationJob | undefined): HTMLElement {
+  if (plan === null) {
+    return card({
+      title: "Next charge run",
+      body: h(
+        "p",
+        { class: "field-hint" },
+        "Reading the plan needs payment:reconcile, because it names the customers and cards the run " +
+          "would use. The job list below is complete.",
+      ),
+    });
+  }
+
+  // The reason is the sentence an operator needs first, and each one has a different fix.
+  const state = !plan.enabled
+    ? { tone: "info" as const, title: "Off-session charging is switched off",
+        body: "gateway.off_session_enabled is off, so the run would charge nothing. The figures below are what it " +
+          "would take if it were on." }
+    : plan.kill_switch_set
+      ? { tone: "warning" as const, title: "The process kill switch is set",
+          body: `${job?.kill_switch ?? "The kill switch"} is set in the worker's environment, so the job is not scheduled. ` +
+            "The figures below are what it would take if the switch were cleared." }
+      : plan.reason === "not_configured"
+        ? { tone: "warning" as const, title: "No gateway is configured",
+            body: "A saved card cannot be charged without a gateway, so the run would do nothing." }
+        : null;
+
+  const rows = plan.candidates.length === 0
+    ? emptyState({
+        title: "Nothing would be charged",
+        body: plan.skipped.length === 0
+          ? "No invoice is due with a saved card and an active mandate. This is the healthy state."
+          : `${plan.skipped.length} invoice${plan.skipped.length === 1 ? " is" : "s are"} due but left alone — the list below says why.`,
+        icon: "check",
+      })
+    : h(
+        "div",
+        { class: "table-wrap" },
+        h(
+          "table",
+          { class: "table" },
+          h(
+            "thead",
+            null,
+            h(
+              "tr",
+              null,
+              h("th", { scope: "col" }, "Invoice"),
+              h("th", { scope: "col" }, "Customer"),
+              h("th", { scope: "col" }, "Card"),
+              h("th", { scope: "col" }, "Amount"),
+              h("th", { scope: "col" }, "Overdue"),
+            ),
+          ),
+          h(
+            "tbody",
+            null,
+            ...plan.candidates.map((row) =>
+              h(
+                "tr",
+                null,
+                h("td", { class: "cell-primary" }, h("span", { class: "mono" }, row.invoice_number)),
+                h("td", { "data-label": "Customer" }, row.customer_name),
+                h(
+                  "td",
+                  { "data-label": "Card" },
+                  row.method_last4 ? `${row.method_brand || "card"} ···· ${row.method_last4}` : "saved method",
+                ),
+                h("td", { "data-label": "Amount" }, h("span", { class: "money" }, row.amount)),
+                h("td", { "data-label": "Overdue" }, relative(row.due_at)),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  return card({
+    title: "Next charge run",
+    sub: plan.provider
+      ? `${plan.provider} · retry window ${plan.retry_window_hours}h · up to ${plan.batch} invoices per run`
+      : `retry window ${plan.retry_window_hours}h · up to ${plan.batch} invoices per run`,
+    actions: badge(
+      plan.candidates.length === 0 ? "nothing to charge" : `${plan.candidates.length} to charge`,
+      plan.candidates.length === 0 ? "neutral" : "warning",
+      { dot: true },
+    ),
+    body: h(
+      "div",
+      { class: "stack-sm" },
+      state ? banner(state.tone, state.title, state.body) : null,
+      plan.totals.length > 0
+        ? h(
+            "div",
+            { class: "row-wrap" },
+            ...plan.totals.map((total) =>
+              h(
+                "div",
+                { class: "stack-xs" },
+                h("span", { class: "field-label" }, total.currency),
+                h("span", { class: "money money--lg" }, total.amount),
+                h("span", { class: "field-hint faint" }, `${total.invoices} invoice${total.invoices === 1 ? "" : "s"}`),
+              ),
+            ),
+          )
+        : null,
+      plan.truncated
+        ? h(
+            "p",
+            { class: "field-hint" },
+            `This is the next run only: the batch stops at ${plan.batch}, so more invoices are waiting behind it.`,
+          )
+        : null,
+      rows,
+      plan.skipped.length > 0 ? skippedList(plan.skipped) : null,
+      plan.without_method > 0
+        ? h(
+            "p",
+            { class: "field-hint" },
+            `${plan.without_method} due invoice${plan.without_method === 1 ? "" : "s"} cannot be charged at all: the ` +
+              "customer has no saved card. Those go to dunning like any other unpaid invoice.",
+          )
+        : null,
+      h(
+        "p",
+        { class: "field-hint" },
+        "A preview, not a promise: the run reads the invoice, the card and the mandate again when it charges, and a " +
+          "decline goes to dunning rather than to a suspension.",
+      ),
+    ),
+  });
+}
+
+/** skippedList says why a due invoice is left alone. It is the half of the answer that makes the
+ *  other half trustworthy: a plan that silently omitted an invoice would look like a plan that had
+ *  nothing to do. */
+function skippedList(rows: ChargePlanRow[]): HTMLElement {
+  const why = (row: ChargePlanRow): string => {
+    switch (row.skip_reason) {
+      case "retry_window":
+        return row.last_attempt
+          ? `attempted ${relative(row.last_attempt.at)} and ${row.last_attempt.status}`
+          : "attempted recently";
+      case "checkout_open":
+        return "the customer has a checkout open";
+      case "no_mandate":
+        return "the saved card has no active mandate";
+      default:
+        return row.skip_reason || "skipped";
+    }
+  };
+  return h(
+    "details",
+    { class: "log-detail-disclosure" },
+    h("summary", null, `${rows.length} due invoice${rows.length === 1 ? "" : "s"} left alone`),
+    h(
+      "div",
+      { class: "stack-xs log-detail" },
+      ...rows.slice(0, 20).map((row) =>
+        h(
+          "div",
+          { class: "row-between" },
+          h(
+            "span",
+            null,
+            h("span", { class: "mono" }, row.invoice_number),
+            h("span", { class: "faint" }, ` · ${row.customer_name}`),
+          ),
+          h("span", { class: "field-hint faint" }, `${row.amount} · ${why(row)}`),
+        ),
+      ),
+      rows.length > 20
+        ? h("p", { class: "field-hint faint" }, `…and ${rows.length - 20} more.`)
+        : null,
+    ),
+  );
 }
 
 /** retryButton runs one job now.

@@ -32,6 +32,24 @@ import (
 //   - `BuildPayload` returns no payload, which is the same as the first refusal stated by the
 //     builder rather than by this caller.
 //
+// # What leaves the installation
+//
+// Exactly the document `updates.Payload` marshals, and nothing else: the payload schema version, a
+// random per-installation id, the panel version and channel, the Go version, OS and architecture,
+// the highest applied migration number, a timestamp, and seven integer counts (customers, active
+// and suspended services, open invoices, invoices paid in the last 30 days, open tickets, installed
+// extensions). No customer name, address, email, invoice number, amount or ticket subject is in it,
+// and there is no "send more" tier to opt into: the anonymous document is the ceiling, which is the
+// safest shape for a thing that leaves the building by default-off.
+//
+// # Why the endpoint is configuration and not a constant
+//
+// There is no vendor endpoint compiled in. `update_config.telemetry_endpoint` is an operator-set
+// URL, treated as a credential on every read path, and this build cannot verify what a third
+// party's collector expects — so it makes no assumption beyond "POST this JSON, accept a 2xx". A
+// deployment that points it at a sink it controls sees exactly the bytes documented above, which is
+// also how the test proves the payload is anonymous: it reads them off a local server.
+//
 // # Why the sender is a parameter
 //
 // The delivery is an outbound POST to an operator-chosen host. A test must be able to point it at

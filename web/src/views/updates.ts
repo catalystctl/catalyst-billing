@@ -92,6 +92,8 @@ interface UpdateState {
     endpoint_host: string;
     instance_id: string;
     last_send: LastSend | null;
+    /** The job that keeps the "reported daily" promise. Null when nothing schedules a delivery. */
+    schedule: { job: string; interval_hours: number; kill_switch: string } | null;
   };
   apply: { mode: string; steps: string[]; note: string };
   server_time: string;
@@ -395,6 +397,23 @@ function applyCard(state: UpdateState): HTMLElement {
 
 // ---------------------------------------------------------------- telemetry --
 
+/**
+ * The schedule row's sentence.
+ *
+ * "Not scheduled" is a real state and is said plainly: a build whose worker does not run the
+ * telemetry job must not claim a daily delivery just because the switch is on.
+ */
+function scheduleSentence(
+  enabled: boolean,
+  schedule: UpdateState["telemetry"]["schedule"],
+): string {
+  if (!enabled) return "not scheduled — telemetry is off";
+  if (!schedule) return "not scheduled — no job in this build sends telemetry";
+  const hours = schedule.interval_hours;
+  const every = hours === 24 ? "daily" : `every ${hours} hours`;
+  return `${every}, from the worker (${schedule.job})`;
+}
+
 function telemetryCard(ctx: Ctx, state: UpdateState, reload: () => void): HTMLElement {
   const body = h("div", { class: "stack" });
   const telemetry = state.telemetry;
@@ -413,10 +432,11 @@ function telemetryCard(ctx: Ctx, state: UpdateState, reload: () => void): HTMLEl
       {
         // The schedule is part of the promise the switch makes (OPS-13). Until the worker ran the
         // job, "on" meant "on when somebody presses send", which is not what an operator agreed
-        // to; the sentence now says daily, so a missing send is a visible failure rather than an
-        // unstated one.
+        // to; the sentence now says when, so a missing send is a visible failure rather than an
+        // unstated one. The interval is the job's own, read from the server rather than written
+        // into this template, so the two cannot drift.
         label: "Schedule",
-        value: telemetry.enabled ? "daily, from the worker" : "not scheduled",
+        value: scheduleSentence(telemetry.enabled, telemetry.schedule),
       },
     ]),
   );

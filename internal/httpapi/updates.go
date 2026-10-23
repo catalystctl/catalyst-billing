@@ -32,9 +32,11 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/authn"
+	"github.com/catalyst/billing/internal/operations"
 	"github.com/catalyst/billing/internal/settings"
 	"github.com/catalyst/billing/internal/updates"
 	"github.com/jackc/pgx/v5"
@@ -142,6 +144,16 @@ func (s *Server) handleUpdateState(w http.ResponseWriter, r *http.Request) {
 	// A state read must not be cached: it embeds a cache age and an approval, and a proxy
 	// serving a stale one would tell an operator their approval was lost.
 	w.Header().Set("Cache-Control", "no-store")
+	// The schedule is the *job's* interval, not a number typed into the screen. The screen used to
+	// say "daily" because that is what the setting's label promised; the promise is now kept by a job
+	// in internal/operations, so the sentence is generated from the constant that registers it
+	// (OPS-13). Stamped here rather than built in internal/updates because that package cannot import
+	// operations: operations imports it.
+	state.Telemetry.Schedule = &updates.TelemetrySchedule{
+		Job:           operations.TelemetryJob,
+		IntervalHours: int64(operations.TelemetryInterval / time.Hour),
+		KillSwitch:    operations.TelemetryKillSwitch,
+	}
 	writeJSON(w, http.StatusOK, state)
 }
 

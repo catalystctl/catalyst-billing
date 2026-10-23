@@ -18,6 +18,7 @@ import (
 
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/httpapi"
+	"github.com/catalyst/billing/internal/operations"
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/store/storetest"
 )
@@ -968,4 +969,45 @@ func TestMarketplaceRefreshWithoutConfiguration(t *testing.T) {
 func sha256Of(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
+}
+
+// The schedule the screen states is the one the worker keeps (OPS-13).
+//
+// The screen said "daily" from a template while nothing scheduled a send, which is the class of
+// defect this batch exists to close: a promise made in prose. The interval is now read from the
+// constant the job is registered with, so changing the job changes the sentence, and a build whose
+// worker has no telemetry job must not claim one.
+func TestUpdateStateCarriesTheTelemetryJobSchedule(t *testing.T) {
+	env := newUpdatesEnv(t, "1.4.0")
+
+	rec := env.get(t, "/api/v1/staff/updates", env.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body)
+	}
+	var state struct {
+		Telemetry struct {
+			Schedule *struct {
+				Job           string `json:"job"`
+				IntervalHours int64  `json:"interval_hours"`
+				KillSwitch    string `json:"kill_switch"`
+			} `json:"schedule"`
+		} `json:"telemetry"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &state); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	schedule := state.Telemetry.Schedule
+	if schedule == nil {
+		t.Fatal("the state carries no telemetry schedule, so the screen has to invent one")
+	}
+	if schedule.Job != operations.TelemetryJob {
+		t.Fatalf("job = %q, want %q", schedule.Job, operations.TelemetryJob)
+	}
+	if schedule.IntervalHours != int64(operations.TelemetryInterval/time.Hour) {
+		t.Fatalf("interval = %d hours, want %d", schedule.IntervalHours,
+			int64(operations.TelemetryInterval/time.Hour))
+	}
+	if schedule.KillSwitch != operations.TelemetryKillSwitch {
+		t.Fatalf("kill switch = %q, want %q", schedule.KillSwitch, operations.TelemetryKillSwitch)
+	}
 }

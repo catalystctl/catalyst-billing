@@ -204,3 +204,32 @@ func TestAbandonCartKillSwitch(t *testing.T) {
 		t.Fatalf("scanned = %d, want 0 with the switch on", run.Scanned)
 	}
 }
+
+// CT-13: a cancelled unpaid order is announced to the extension bridge, once, with the order and
+// the reason. It is deferred to the transaction that cancelled the order, so an event can never
+// describe a cancellation that rolled back.
+func TestCancelledOrderIsAnnounced(t *testing.T) {
+	f := newFixture(t)
+	events := subscribe(t)
+
+	o := f.order(t, orderSpec{createdAt: baseTime.AddDate(0, 0, -40), total: orderTotal})
+
+	run, err := f.runner().CancelUnpaidOrders(context.Background())
+	if err != nil {
+		t.Fatalf("cancel unpaid orders: %v", err)
+	}
+	if len(run.Cancelled) != 1 {
+		t.Fatalf("cancelled = %+v, want the stale order", run.Cancelled)
+	}
+
+	ev := nextEvent(t, events)
+	if ev.Kind != extproto.EventOrderCancelled {
+		t.Fatalf("kind = %q, want %q", ev.Kind, extproto.EventOrderCancelled)
+	}
+	if ev.Data["order_id"] != o.orderID {
+		t.Fatalf("event order = %v, want %s", ev.Data["order_id"], o.orderID)
+	}
+	if ev.CustomerID != f.customerID {
+		t.Fatalf("event customer = %q, want the order's owner", ev.CustomerID)
+	}
+}

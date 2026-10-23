@@ -266,3 +266,31 @@ func TestCronRetryRefusesAWorkerOnlyJob(t *testing.T) {
 		t.Fatalf("detail = %q, want it to say where the job lives", problem.Detail)
 	}
 }
+
+// A lifecycle job that is switched off is refused by name, because the operator can fix that —
+// unlike a job that lives in the worker process, which no switch will make runnable from here.
+func TestCronRetryDistinguishesDisabledFromWorkerOnly(t *testing.T) {
+	env := newStaffEnv(t)
+	// A switch that is set *after* the environment was captured, so the job exists in the process
+	// but not in lifecycle.Jobs().
+	t.Setenv(lifecycle.OrderCancelKillSwitch, "1")
+
+	rec := env.postJSONWithKey(t, "/api/v1/staff/cron/"+lifecycle.OrderCancelJob+"/retry",
+		env.admin, env.adminCSRF, map[string]any{}, "retry-disabled")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body %s", rec.Code, rec.Body)
+	}
+	var problem struct {
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("decode: %v\n%s", err, rec.Body)
+	}
+	if problem.Code != "job_disabled" {
+		t.Fatalf("code = %q, want job_disabled", problem.Code)
+	}
+	if !strings.Contains(problem.Detail, "kill switch") {
+		t.Fatalf("detail = %q, want it to name the switch", problem.Detail)
+	}
+}

@@ -45,6 +45,7 @@ import (
 	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/authn"
 	"github.com/catalyst/billing/internal/lifecycle"
+	"github.com/catalyst/billing/internal/operations"
 	"github.com/catalyst/billing/internal/paginate"
 	"github.com/jackc/pgx/v5"
 )
@@ -277,6 +278,17 @@ func (s *Server) handleCronStatistics(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// knownJobNames are the jobs this process *could* run if they were not switched off. It exists so
+// the retry can tell "switched off" from "lives in another process": both are absent from
+// lifecycle.Jobs(), and only one of them can be fixed by the operator reading this screen.
+var knownJobNames = map[string]bool{
+	lifecycle.OrderCancelJob:     true,
+	lifecycle.TerminationJob:     true,
+	lifecycle.ServiceUpgradesJob: true,
+	operations.ChargeDueJob:      true,
+	operations.TelemetryJob:      true,
+}
+
 // retryableJobs resolves the jobs this process can run, by name.
 //
 // It is lifecycle.Jobs(), which also carries the maintenance rules from internal/operations. The
@@ -310,8 +322,15 @@ func (s *Server) handleCronRetry(w http.ResponseWriter, r *http.Request) {
 	jobs := s.retryableJobs()
 	job, ok := jobs[name]
 	if !ok {
-		// Two different refusals, one route. A name that exists in cmd/billing is a job this
-		// process cannot construct, and saying so is more useful than "not found".
+		// Two different refusals, one route, and they are different questions. A lifecycle job
+		// that is absent because its kill switch is set is available — the operator can switch it
+		// back on; a job that lives in cmd/billing cannot be built here at all.
+		if knownJobNames[name] {
+			writeProblem(w, http.StatusUnprocessableEntity, "job_disabled",
+				name+" is switched off by its kill switch, so the worker does not schedule it and "+
+					"nothing can be run on demand. Clear the switch and restart the worker.")
+			return
+		}
 		writeProblem(w, http.StatusUnprocessableEntity, "job_not_retryable",
 			"the panel cannot re-run "+name+" itself: it is registered in the worker process, "+
 				"which is the only place it can be built. Restart the worker, or wait for its next tick.")

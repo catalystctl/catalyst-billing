@@ -410,3 +410,50 @@ func TestJobsAreNamedAndSwitchable(t *testing.T) {
 		}
 	}
 }
+
+// A restart does not become a second daily report.
+//
+// The worker ticks every job once on start and then on its interval, so a deployment that restarts
+// an hour later would otherwise send again — the setting says "daily", and a schedule that depends
+// on uptime is not one. The guard reads the recorded history, so two workers restarting together
+// agree.
+func TestTelemetryIsNotResentOnRestart(t *testing.T) {
+	pool := storetest.DB(t)
+	recv := newReceiver(t)
+	setEndpoint(t, pool, recv.srv.URL)
+	set(t, pool, "updates", "telemetry", "true")
+	ctx := context.Background()
+	opts := operations.Options{Version: "1.0.0"}
+
+	first, err := operations.SendTelemetry(ctx, pool, opts)
+	if err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	if first.Reason != operations.ReasonSent {
+		t.Fatalf("first run = %+v, want a delivery", first)
+	}
+
+	again, err := operations.SendTelemetry(ctx, pool, opts)
+	if err != nil {
+		t.Fatalf("second send: %v", err)
+	}
+	if again.Reason != operations.ReasonRecentlySent {
+		t.Fatalf("second run = %+v, want %q", again, operations.ReasonRecentlySent)
+	}
+	if recv.count() != 1 {
+		t.Fatalf("%d payload(s) were delivered on a restart, want 1", recv.count())
+	}
+
+	// Age the recorded delivery past the gap: a day later the job sends again.
+	if _, err := pool.Exec(ctx, `
+		UPDATE telemetry_sends SET sent_at = now() - interval '25 hours'`); err != nil {
+		t.Fatalf("age the send: %v", err)
+	}
+	third, err := operations.SendTelemetry(ctx, pool, opts)
+	if err != nil {
+		t.Fatalf("third send: %v", err)
+	}
+	if third.Reason != operations.ReasonSent || recv.count() != 2 {
+		t.Fatalf("third run = %+v after %d deliveries, want a new delivery", third, recv.count())
+	}
+}

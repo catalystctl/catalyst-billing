@@ -85,8 +85,17 @@ func ChargeDue(ctx context.Context, pool *store.Pool, opts Options) (ChargeDueRu
 	}
 	charger, account, closeFn, err := factory(ctx)
 	if err != nil {
-		if errors.Is(err, gatewayconfig.ErrNotConfigured) || errors.Is(err, payments.ErrOffSessionUnsupported) {
+		switch {
+		case errors.Is(err, gatewayconfig.ErrNotConfigured), errors.Is(err, payments.ErrOffSessionUnsupported):
+			// No gateway, or one whose protocol cannot charge a saved method. Both are states of
+			// the installation, not failures of the run: a red cron row every fifteen minutes for
+			// a deployment that has not configured a gateway is how an operator learns to ignore
+			// red rows.
 			return ChargeDueRun{Reason: ReasonNotConfigured}, nil
+		case errors.Is(err, gatewayconfig.ErrDisabled):
+			// Configured and switched off on the integrations screen: the operator's decision, and
+			// the same answer as a missing gateway.
+			return ChargeDueRun{Reason: ReasonDisabled}, nil
 		}
 		return ChargeDueRun{}, fmt.Errorf("operations: resolve the payment gateway: %w", err)
 	}
@@ -189,6 +198,11 @@ func dueInvoices(ctx context.Context, pool *store.Pool, provider string, retryBe
 // It is the same launch internal/httpapi performs for the staff "charge saved method" button
 // (gatewayconfig.Launch), which is the point: a charge the worker makes and a charge an operator
 // makes must go through one adapter, or the two would disagree about what the gateway supports.
+//
+// It launches per run rather than holding a long-lived client the way the worker's own job list
+// does: this package is a library and cannot own the process lifecycle of a child that outlives a
+// request or a test. A process launch every fifteen minutes is the price, and it is the same price
+// the staff button pays per click.
 func gatewayCharger(pool *store.Pool) ChargerFactory {
 	return func(ctx context.Context) (payments.OffSessionCharger, string, func(), error) {
 		cfg, err := gatewayconfig.New(pool).Load(ctx, gatewayconfig.GatewayKind)

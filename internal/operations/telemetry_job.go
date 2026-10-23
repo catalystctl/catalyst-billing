@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/catalyst/billing/internal/settings"
 	"github.com/catalyst/billing/internal/store"
@@ -45,6 +46,24 @@ type TelemetryRun struct {
 	Result *updates.SendResult
 }
 
+// TelemetryMinimumGap is how close two recorded deliveries may be.
+//
+// Twenty hours rather than twenty-four: a daily tick that drifts by a restart should still send, and
+// the cost of an occasional early delivery is nothing next to a job that sends on every restart.
+const TelemetryMinimumGap = 20 * time.Hour
+
+// deliveredWithin reports whether a successful delivery was recorded inside the window.
+func deliveredWithin(ctx context.Context, pool *store.Pool, now time.Time, window time.Duration) (bool, error) {
+	var count int
+	err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM telemetry_sends
+		WHERE status = 'sent' AND sent_at > $1`, now.Add(-window)).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("operations: read the telemetry history: %w", err)
+	}
+	return count > 0, nil
+}
+
 // SendTelemetry delivers the payload when the operator has opted in and an endpoint is stored.
 func SendTelemetry(ctx context.Context, pool *store.Pool, opts Options) (TelemetryRun, error) {
 	opts = opts.withDefaults()
@@ -72,6 +91,19 @@ func SendTelemetry(ctx context.Context, pool *store.Pool, opts Options) (Telemet
 	}
 	if cfg.TelemetryEndpoint == "" {
 		return TelemetryRun{Reason: ReasonNotConfigured}, nil
+	}
+
+	// A restart must not become a second delivery. The worker ticks a job once on start and then
+	// every interval, so a deployment that restarts hourly would otherwise send hourly — the
+	// schedule is a promise about frequency, and a promise that depends on uptime is not one.
+	// The guard is a stored row, not an in-memory timestamp: two workers restarting together see
+	// the same history.
+	sentRecently, err := deliveredWithin(ctx, pool, opts.Now(), TelemetryMinimumGap)
+	if err != nil {
+		return TelemetryRun{}, err
+	}
+	if sentRecently {
+		return TelemetryRun{Reason: ReasonRecentlySent}, nil
 	}
 
 	payload, err := updateStore.BuildPayload(ctx, opts.Version, channel, true)

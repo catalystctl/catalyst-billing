@@ -48,7 +48,9 @@ import {
 } from "../ui/kit";
 import { portalLoadError } from "./portal";
 
-export const meta = { title: "Referrals", crumb: "Referrals" };
+// The title matches the navigation entry and the breadcrumb label the shell already carries for
+// this path (`SEGMENT_LABELS.affiliate` is "Affiliate"), so the tab, the crumb and the rail agree.
+export const meta = { title: "Affiliate", crumb: "Affiliate" };
 
 // ---------------------------------------------------------------- payloads --
 

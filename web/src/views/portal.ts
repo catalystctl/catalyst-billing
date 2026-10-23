@@ -302,11 +302,6 @@ function renderOverview(ctx: Ctx, data: PortalOverview): Node {
         // to click. Both are ordinary customer routes, so the shell guard already allows them.
         btn(tx("portal.hero.browse", "Browse products"), { href: "/products", icon: "box", size: "md" }),
         btn(tx("portal.hero.cart", "Your cart"), { href: "/cart", icon: "bag", size: "md" }),
-        // The referral programme. A customer who has been given a code has no reason to look for
-        // it in the rail, so the landing page carries the door as well. A customer who is not
-        // enrolled lands on a screen that says so and says who to ask, which is a better answer
-        // than a menu entry they never find.
-        btn(tx("portal.hero.referrals", "Referrals"), { href: "/portal/affiliate", icon: "percent", size: "md" }),
       ),
     ),
     h(

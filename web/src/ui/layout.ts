@@ -91,7 +91,12 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
       label: "Configuration",
       items: [
         { label: "Catalog", href: "/catalog-management", icon: "box", permission: "invoice:read:all" },
-        { label: "Upgrades", href: "/upgrades", icon: "trendUp", permission: "catalog:write" },
+        // Gated on the permission the queue endpoint declares (service:read:all), not on
+        // catalog:write, which the GRAPH endpoint needs. A support agent holds the first and not
+        // the second, so gating the menu on catalog:write hid a queue they are entitled to read.
+        // Every catalog:write holder is an administrator and also holds service:read:all, so one
+        // permission covers both audiences and needs no extra field.
+        { label: "Upgrades", href: "/upgrades", icon: "trendUp", permission: "service:read:all" },
         { label: "Config options", href: "/config-options", icon: "sliders", permission: "config:write" },
         { label: "Tax rates", href: "/tax-rates", icon: "percent", permission: "tax:write" },
         { label: "Currencies", href: "/currencies", icon: "globe", permission: "currency:write" },

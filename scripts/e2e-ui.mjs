@@ -1559,8 +1559,17 @@ try {
 
       // The public read is what a storefront and a fresh panel use, so the brand must be there
       // and must be the values that were saved.
-      const api = await evaluate(`fetch('/api/v1/branding', { headers: { Accept: 'application/json' } })
-        .then((r) => r.json()).catch(() => null)`);
+      //
+      // `no-store` is required here and is not a detail: the endpoint is deliberately
+      // cacheable (`public, max-age=60`) because it is on the storefront's critical path, and
+      // the panel fetched it at startup — so a plain `fetch` would be answered from the HTTP
+      // cache with the *empty* brand the page loaded with, and the assertion would fail while
+      // the server was perfectly correct. The question here is what the server says, not what
+      // this browser remembered.
+      const api = await evaluate(`fetch('/api/v1/branding', {
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      }).then((r) => r.json()).catch(() => null)`);
       check("branding: the public brand read carries the saved name", api?.name === "Acme Hosting", JSON.stringify(api?.name));
       check("branding: the public brand read carries both accents", api?.accent_light === LIGHT && api?.accent_dark === DARK, JSON.stringify([api?.accent_light, api?.accent_dark]));
 

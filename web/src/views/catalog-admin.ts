@@ -45,6 +45,9 @@ interface Price {
   amount: Amount;
   setup: Amount;
   interval: string;
+  /** The customer-facing name of the interval, from `catalog.IntervalLabel`. Present on every
+   *  staff payload; optional here so a stale response cannot break the row. */
+  interval_label?: string;
   anchor_day: number;
   anchor_timezone: string;
   provision_plan: string;
@@ -136,6 +139,11 @@ const INTERVALS = [
   { value: "quarterly", label: "Quarterly" },
   { value: "semiannual", label: "Every six months" },
   { value: "annual", label: "Annual" },
+  // A sentinel, never sent to the API: the wire value of an arbitrary period is
+  // `every_<N>_days`, which the number input beside this select supplies. The select cannot
+  // offer 366 options, and a free-text interval field would let an operator type a value the
+  // server rejects without saying what it accepts.
+  { value: "every_days", label: "Every N days" },
 ];
 
 export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
@@ -257,6 +265,27 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
                   ),
           }),
           card({
+            title: "Servers",
+            sub: servers.length === 0 ? "None" : `${servers.length}`,
+            actions: canWrite
+              ? btn("New server", { size: "sm", icon: "plus", onclick: () => serverDialog(null) })
+              : null,
+            flush: true,
+            body:
+              servers.length === 0
+                ? emptyState({
+                    title: "No servers",
+                    body: "A server is a provisioner target: the node a product is sold onto. With none, every product provisions onto the region its plan names.",
+                    icon: "server",
+                    action: canWrite ? btn("Add a server", { onclick: () => serverDialog(null) }) : null,
+                  })
+                : h(
+                    "div",
+                    null,
+                    ...servers.map((server) => serverRow(server, canWrite)),
+                  ),
+          }),
+          card({
             title: "How pricing works",
             body: h(
               "div",
@@ -340,7 +369,7 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
               { class: "money" },
               h("span", { class: "money-code" }, current.currency),
               money(current.amount),
-              h("span", { class: "cat-interval" }, ` / ${current.interval}`),
+              h("span", { class: "cat-interval" }, ` / ${current.interval_label || current.interval}`),
             )
           : h("span", { class: "faint" }, "—"),
       ),
@@ -348,6 +377,14 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
         "div",
         { class: "cat-actions" },
         btn("Open", { href: `/catalog-management/${p.id}`, size: "sm" }),
+        ctx.can("catalog:write")
+          ? btn("Add price", {
+              size: "sm",
+              icon: "plus",
+              title: "Add a price version to this product",
+              onclick: () => priceDialog(p),
+            })
+          : null,
         ctx.can("catalog:write")
           ? h(
               "button",
@@ -465,6 +502,220 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
     }
     ctx.toast(fallback, { tone: "danger" });
   };
+
+  // --------------------------------------------------------------- servers --
+
+  // A server is a provisioner target: the node a product is sold onto. Creating one is the
+  // only way a product can name a target other than its plan's region, and until now the
+  // catalogue could list them and nothing else — a server created once could not be renamed
+  // and could not be removed.
+  const removeServer = async (server: Server) => {
+    const ok = await ctx.confirm({
+      title: `Delete “${server.name}”?`,
+      body:
+        server.product_count > 0
+          ? `${server.product_count} product${server.product_count === 1 ? " is" : "s are"} sold on this server. The server refuses the delete while that is true: those products would silently fall back to their plan's region, which is a provisioning change nobody asked for. Unassign them first, or disable the server instead.`
+          : "Nothing is sold on this server, so removing it changes no existing service. Products are assigned to a target when they are bought; a service already created keeps the target it was created with.",
+      confirmLabel: "Delete server",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await ctx.api.del(`/api/v1/staff/catalog/servers/${server.id}`);
+      ctx.toast("Server deleted", { tone: "success", detail: server.name });
+      await load();
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "in_use") {
+        ctx.toast("This server is still in use", {
+          tone: "danger",
+          detail: err.detail || "Move its products to another target, or disable it instead.",
+          duration: 0,
+        });
+        return;
+      }
+      report(err, "Could not delete the server");
+    }
+  };
+
+  const serverDialog = (existing: Server | null) => {
+    const name = input({ id: "srv-name", value: existing?.name ?? "", placeholder: "Hetzner eu-west", required: true });
+    const slug = input({
+      id: "srv-slug",
+      value: existing?.slug ?? "",
+      placeholder: "hetzner-eu-west",
+      class: "input--mono",
+      required: true,
+    });
+    const provider = input({
+      id: "srv-provider",
+      value: existing?.provider ?? "",
+      placeholder: "hetzner",
+      class: "input--mono",
+      autocomplete: "off",
+    });
+    const region = input({
+      id: "srv-region",
+      value: existing?.region ?? "",
+      placeholder: "eu-west",
+      class: "input--mono",
+      autocomplete: "off",
+    });
+    const node = input({
+      id: "srv-node",
+      value: existing?.node ?? "",
+      placeholder: "nbg1",
+      class: "input--mono",
+      autocomplete: "off",
+    });
+    const sortOrder = input({ id: "srv-sort", type: "number", value: existing?.sort_order ?? 0, min: 0 });
+    const enabled = h("input", { type: "checkbox", checked: existing?.enabled ?? true });
+
+    // The slug is derived from the name until it is edited, then left alone: it is stable and
+    // appears in reports, so silently rewriting it a second time is a rename nobody asked for.
+    let slugTouched = Boolean(existing);
+    name.addEventListener("input", () => {
+      if (slugTouched) return;
+      slug.value = name.value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 64);
+    });
+    slug.addEventListener("input", () => {
+      slugTouched = true;
+    });
+
+    const body = h(
+      "div",
+      { class: "form-grid" },
+      field({ label: "Name", control: name, id: "srv-name", required: true, class: "span-2" }),
+      field({ label: "Slug", control: slug, id: "srv-slug", required: true, hint: "Stable identifier, used in reports." }),
+      field({ label: "Sort order", control: sortOrder, id: "srv-sort", hint: "Lower shows first." }),
+      field({
+        label: "Provider",
+        control: provider,
+        id: "srv-provider",
+        hint: "The provisioning extension this target belongs to. Empty means the configured one.",
+      }),
+      field({
+        label: "Region",
+        control: region,
+        id: "srv-region",
+        hint: "What the adapter receives as the region for a new service.",
+      }),
+      field({
+        label: "Node",
+        control: node,
+        id: "srv-node",
+        hint: "The provider's own node or group label, when it addresses targets by node id.",
+      }),
+      h("div", { class: "span-2" }, h("label", { class: "switch" }, enabled, "Enabled — offer it for new products")),
+    );
+
+    const submit = btn(existing ? "Save server" : "Create server", { variant: "primary", type: "submit" });
+    const cancel = btn("Cancel", { variant: "ghost" });
+    const errorHost = h("div");
+    const form = h("form", { class: "stack", novalidate: true }, errorHost, body);
+
+    bindForm(form, submit);
+    const handle = openDialog({
+      title: existing ? "Edit server" : "New server",
+      subtitle: "A provisioner target: which node on the provider a product is sold onto.",
+      body: h("div", { class: "stack" }, form),
+      footer: h("div", { class: "row spacer" }, cancel, submit),
+      locked: () => submit instanceof HTMLButtonElement && submit.disabled,
+    });
+
+    cancel.addEventListener("click", () => handle.close());
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void (async () => {
+        errorHost.replaceChildren();
+        if (!name.value.trim() || !slug.value.trim()) {
+          swap(errorHost, h("div", { class: "banner banner--danger" }, "A name and a slug are required."));
+          return;
+        }
+        if (submit instanceof HTMLButtonElement) submit.disabled = true;
+        const payload = {
+          slug: slug.value.trim(),
+          name: name.value.trim(),
+          provider: provider.value.trim(),
+          region: region.value.trim(),
+          node: node.value.trim(),
+          enabled: enabled.checked,
+          sort_order: Number(sortOrder.value) || 0,
+        };
+        try {
+          if (existing) {
+            await ctx.api.put(`/api/v1/staff/catalog/servers/${existing.id}`, payload);
+          } else {
+            await ctx.api.post("/api/v1/staff/catalog/servers", payload);
+          }
+          ctx.toast(existing ? "Server saved" : "Server created", { tone: "success", detail: payload.name });
+          handle.close();
+          await load();
+        } catch (err) {
+          const message =
+            err instanceof ApiError
+              ? err.code === "slug_taken"
+                ? "That slug is already used by another server."
+                : err.code === "invalid_input"
+                  ? err.detail || "The server is not valid: check the slug and the name."
+                  : err.detail || "The server could not be saved."
+              : "The server could not be reached.";
+          swap(errorHost, h("div", { class: "banner banner--danger" }, message));
+        } finally {
+          if (submit instanceof HTMLButtonElement) submit.disabled = false;
+        }
+      })();
+    });
+  };
+
+  const serverRow = (server: Server, canWrite: boolean): HTMLElement =>
+    h(
+      "div",
+      { class: "cat-row" },
+      h(
+        "div",
+        { class: "cat-main" },
+        h(
+          "div",
+          { class: "cat-name" },
+          h("span", { class: "row-title" }, server.name),
+          server.enabled ? badge("Enabled", "success", { dot: true }) : badge("Disabled", "neutral", { dot: true }),
+          server.product_count > 0
+            ? badge(`${server.product_count} product${server.product_count === 1 ? "" : "s"}`, "info")
+            : null,
+        ),
+        h(
+          "div",
+          { class: "cat-meta" },
+          h("span", { class: "mono" }, server.slug),
+          server.provider ? h("span", { class: "dot-sep" }, "·") : null,
+          server.provider ? h("span", null, server.provider) : null,
+          server.region ? h("span", { class: "dot-sep" }, "·") : null,
+          server.region ? h("span", { class: "mono" }, server.region) : null,
+          server.node ? h("span", { class: "dot-sep" }, "·") : null,
+          server.node ? h("span", { class: "mono" }, server.node) : null,
+        ),
+      ),
+      canWrite
+        ? h(
+            "div",
+            { class: "row" },
+            btn("Edit", { size: "sm", icon: "edit", onclick: () => serverDialog(server) }),
+            btn("Delete", {
+              size: "sm",
+              variant: "danger",
+              icon: "trash",
+              // Not disabled when products reference it: the refusal is the server's, and a
+              // disabled button would hide the reason. The dialog says what will happen.
+              onclick: () => void removeServer(server),
+            }),
+          )
+        : null,
+    );
 
   // --------------------------------------------------------------- dialogs --
 
@@ -885,6 +1136,22 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
     const amount = input({ id: "price-amount", placeholder: "12.00", inputmode: "decimal", class: "input--mono", required: true });
     const setup = input({ id: "price-setup", placeholder: "0.00", inputmode: "decimal", class: "input--mono" });
     const interval = select(INTERVALS, { id: "price-interval", value: "monthly" });
+    // The day count for "Every N days". It is shown only when that interval is selected, and
+    // the field is hidden with the `hidden` attribute rather than left visible-but-ignored: a
+    // number that does nothing is a field an operator fills in and then wonders about.
+    const intervalDays = input({ id: "price-interval-days", type: "number", value: 30, min: 1, max: 366 });
+    const intervalDaysField = field({
+      label: "Days between bills",
+      control: intervalDays,
+      id: "price-interval-days",
+      hint: "1 to 366. A 45-day period bills on the 45th day, not on a calendar month.",
+    });
+    intervalDaysField.hidden = true;
+    const syncIntervalDays = () => {
+      intervalDaysField.hidden = interval.value !== "every_days";
+    };
+    interval.addEventListener("change", syncIntervalDays);
+    syncIntervalDays();
     const anchorDay = input({ id: "price-anchor-day", type: "number", value: 1, min: 1, max: 31 });
     const timezone = input({ id: "price-tz", value: "UTC", class: "input--mono", placeholder: "UTC" });
     const plan = input({ id: "price-plan", placeholder: "vps.small", class: "input--mono" });
@@ -905,6 +1172,7 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
       field({ label: "Amount", control: amount, id: "price-amount", required: true, hint: "In major units, e.g. 12.00" }),
       field({ label: "Setup fee", control: setup, id: "price-setup", hint: "Optional." }),
       field({ label: "Billing interval", control: interval, id: "price-interval" }),
+      intervalDaysField,
       field({ label: "Anchor day", control: anchorDay, id: "price-anchor-day", hint: "Day of the month the period starts." }),
       field({ label: "Anchor timezone", control: timezone, id: "price-tz", hint: "IANA name, e.g. Europe/Berlin." }),
       field({ label: "Provision plan", control: plan, id: "price-plan", hint: "Passed to the provisioning extension." }),
@@ -937,6 +1205,21 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
           swap(errorHost, h("div", { class: "banner banner--danger" }, "Amounts must be numbers, e.g. 12.00."));
           return;
         }
+        // An arbitrary period is `every_<N>_days` on the wire. The sentinel is never sent: a
+        // server that received it would have to guess the number, and guessing is how a price
+        // ends up billing on a schedule nobody chose.
+        let wireInterval = interval.value;
+        if (wireInterval === "every_days") {
+          const days = Number(intervalDays.value);
+          if (!Number.isInteger(days) || days < 1 || days > 366) {
+            swap(
+              errorHost,
+              h("div", { class: "banner banner--danger" }, "The number of days must be a whole number between 1 and 366."),
+            );
+            return;
+          }
+          wireInterval = `every_${days}_days`;
+        }
         if (submit instanceof HTMLButtonElement) submit.disabled = true;
         try {
           await ctx.api.post(`/api/v1/staff/catalog/products/${product.id}/prices`, {
@@ -944,7 +1227,7 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
             currency: currency.value.trim().toUpperCase(),
             amount_minor: minor,
             setup_minor: setupMinor,
-            interval: interval.value,
+            interval: wireInterval,
             anchor_day: Number(anchorDay.value) || 1,
             anchor_timezone: timezone.value.trim() || "UTC",
             provision_plan: plan.value.trim(),

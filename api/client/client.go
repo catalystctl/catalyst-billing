@@ -939,6 +939,18 @@ func (c *Client) GetPortalInvoicesById(ctx context.Context, id string, query url
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetPortalInvoicesByIdDocument calls GET /api/v1/portal/invoices/{id}/document.
+//
+// # The customer's view of a document's lifecycle facts
+//
+// Permission: invoice:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalInvoicesByIdDocument(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/invoices/{id}/document"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetPortalInvoicesByIdPaymentstatus calls GET /api/v1/portal/invoices/{id}/payment-status.
 //
 // # Poll the local state of an invoice's payment attempt

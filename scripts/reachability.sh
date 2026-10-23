@@ -402,13 +402,6 @@ RECORDED = {
     "api GET /api/v1/staff/refunds/{id}":
         "the refund is read from the payment it belongs to and rendered in the refund dialog; "
         "the standalone read is for API clients",
-    "api GET /api/v1/portal/credit-notes/{id}/pdf":
-        "GAP: a customer receives a credit note and cannot download it. The PDF endpoint exists "
-        "and nothing links to it. Recorded: the invoice/credit-note screens belong to another "
-        "package's files.",
-    "api GET /api/v1/staff/credit-notes/{id}/pdf":
-        "GAP: an operator issues a credit note from /invoices/:id and cannot download the PDF. "
-        "Recorded: web/src/views/invoice.ts is another package's file.",
     "api POST /api/v1/portal/impersonation/stop":
         "GAP: no screen starts or stops an impersonation, so the audited impersonation feature "
         "is API-only. Recorded: the customer screen is another package's file.",
@@ -433,20 +426,6 @@ RECORDED = {
         "GAP: an extension can contribute a service action and no screen renders it",
     "write POST /api/v1/portal/services/{id}/hooks/{extension}/{action}":
         "GAP: an extension can contribute a customer-facing service action and no screen renders it",
-    "write PUT /api/v1/staff/invoices/{id}/client-note":
-        "GAP: a client-visible note cannot be written from the panel; the invoice screen edits "
-        "the invoice, not the note. Recorded: web/src/views/invoice.ts is another package's file.",
-    "write POST /api/v1/staff/invoices/{id}/proforma":
-        "GAP: an operator cannot issue a proforma, although the document and the setting exist. "
-        "Recorded: web/src/views/invoice.ts is another package's file.",
-    "write PUT /api/v1/staff/catalog/servers/{id}":
-        "GAP: a catalog server can be created and listed, but not renamed or removed. Recorded: "
-        "the catalog screen is another package's file.",
-    "write DELETE /api/v1/staff/catalog/servers/{id}":
-        "GAP: a catalog server cannot be removed from the panel. Recorded: the catalog screen "
-        "is another package's file.",
-    "write DELETE /api/v1/portal/social-links/{id}":
-        "GAP: a linked sign-in provider can be listed and linked, but not unlinked",
     "api GET /api/v1/extensions/hooks":
         "the hook catalogue answers an extension asking what it may observe; the panel is not "
         "the caller",

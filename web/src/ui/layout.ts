@@ -45,7 +45,7 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
         // The way back to the shop, from inside the panel. The storefront is where a price is
         // checked and a product is previewed as the public sees it, so it belongs in the rail and
         // not only in the catalog screen's toolbar.
-        { label: "Storefront", href: "/dashboard", icon: "globe", exact: true },
+        { label: "Storefront", href: "/", icon: "globe", exact: true },
         { label: "Announcements", href: "/announcements", icon: "radio", permission: "announcement:write" },
       ],
     });
@@ -138,7 +138,7 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
     // their rail that is not about an existing subscription.
     groups.push({
       label: "Shop",
-      items: [{ label: "Storefront", href: "/dashboard", icon: "box", exact: true }],
+      items: [{ label: "Storefront", href: "/", icon: "box", exact: true }],
     });
     groups.push({
       label: "Your account",

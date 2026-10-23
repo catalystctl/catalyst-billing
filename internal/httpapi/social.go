@@ -260,7 +260,12 @@ func (s *Server) completeSocialSignIn(w http.ResponseWriter, r *http.Request, sv
 	}
 	s.setSessionCookies(w, session.Token, session.Session)
 	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, "/", http.StatusFound)
+	// A social sign-in lands on the account's own home, not on the storefront. `/` used to be
+	// "the panel for staff and the portal for a customer", decided in the browser; it is the
+	// shop now, so redirecting there would drop a freshly signed-in user on the product list with
+	// no sign that they had signed in at all. `landingPath` holds the rule (and is where it is
+	// tested), because this is the one redirect the client-side guard never sees.
+	http.Redirect(w, r, landingPath(session.User), http.StatusFound)
 }
 
 // completeSocialLink binds a provider identity to the signed-in account.

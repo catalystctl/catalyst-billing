@@ -421,7 +421,9 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       openPaletteNow();
       return;
     }
-    if (!typing && event.key === "/" && session) {
+    // `/` opens the palette, but only inside the shell: on the storefront there is no palette to
+    // open, and swallowing the key there would take the browser's own quick-find away for nothing.
+    if (!typing && event.key === "/" && session && shell) {
       event.preventDefault();
       openPaletteNow();
     }

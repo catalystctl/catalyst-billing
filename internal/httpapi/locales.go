@@ -42,6 +42,14 @@ func registerI18nRoutes(r *router) {
 	r.publicGet("/api/v1/i18n/locales", r.s.handlePublicLocales)
 	r.publicGet("/api/v1/i18n/messages", r.s.handleI18nMessages)
 
+	// The customer's own preference. It is registered here rather than in a customer file
+	// because it is the first branch of this package's resolution chain, and the chain is only
+	// real when the branch is writable: for as long as nothing stored it, a customer's language
+	// choice lived in one browser's localStorage and every other device — and every queued
+	// email — resolved through the header instead.
+	r.userGet("/api/v1/me/locale", r.s.handleGetMyLocale)
+	r.userMutation(http.MethodPut, "/api/v1/me/locale", false, r.s.handleSetMyLocale)
+
 	// The operator's half.
 	r.staffGet("/api/v1/staff/locales", authn.PermI18nWrite, r.s.handleListLocales)
 	r.staffMutation(http.MethodPost, "/api/v1/staff/locales", authn.PermI18nWrite, r.s.handleCreateLocale)
@@ -161,6 +169,72 @@ func localeCodes(locales []i18n.Locale) []string {
 		out = append(out, l.Code)
 	}
 	return out
+}
+
+// -------------------------------------------------------------- preference --
+
+// handleGetMyLocale answers the language this account chose, or "" when it never chose one.
+//
+// Empty is an answer rather than an absence: it is what tells a client to keep following the
+// browser's header for this person instead of pinning a language they never picked. The default
+// is included so a client can say "no preference, so English" without a second request.
+func (s *Server) handleGetMyLocale(w http.ResponseWriter, r *http.Request) {
+	if s.pool == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "storage_unavailable",
+			"language preferences need a database")
+		return
+	}
+	user, ok := userFrom(r.Context())
+	if !ok {
+		writeProblem(w, http.StatusUnauthorized, "authentication_required", "sign in to read your language")
+		return
+	}
+	store := s.i18nStore()
+	locale, err := store.UserLocale(r.Context(), user.ID)
+	if err != nil {
+		s.i18nError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"locale":  locale,
+		"default": store.Default(r.Context()),
+	})
+}
+
+// handleSetMyLocale stores the caller's language — the durable half of the switcher.
+//
+// PUT, not POST: an account has exactly one preference, so sending it twice is sending the same
+// value rather than adding a second one. An empty `locale` clears it, which is how a customer
+// goes back to following whichever browser they are sitting in front of.
+func (s *Server) handleSetMyLocale(w http.ResponseWriter, r *http.Request) {
+	if s.pool == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "storage_unavailable",
+			"language preferences need a database")
+		return
+	}
+	user, ok := userFrom(r.Context())
+	if !ok {
+		writeProblem(w, http.StatusUnauthorized, "authentication_required", "sign in to choose a language")
+		return
+	}
+	var in struct {
+		Locale string `json:"locale"`
+	}
+	if !s.decodeJSON(w, r, &in, 1<<10) {
+		return
+	}
+	// The store is what refuses a language the catalogue cannot render, so a locale the switcher
+	// would never offer cannot be written by hand either.
+	store := s.i18nStore()
+	stored, err := store.SetUserLocale(r.Context(), user.ID, in.Locale)
+	if err != nil {
+		s.i18nError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"locale":  stored,
+		"default": store.Default(r.Context()),
+	})
 }
 
 // ------------------------------------------------------------------- staff --
@@ -416,6 +490,10 @@ func (s *Server) i18nError(w http.ResponseWriter, r *http.Request, err error) {
 		writeProblem(w, http.StatusNotFound, "not_found", "no such locale or translation")
 	case errors.Is(err, i18n.ErrCodeTaken):
 		writeProblem(w, http.StatusConflict, "duplicate_locale", err.Error())
+	case errors.Is(err, i18n.ErrLocaleNotEnabled):
+		// A stable code rather than a validation sentence: the switcher branches on it, and the
+		// honest reading is "pick another language", not "your request was malformed".
+		writeProblem(w, http.StatusUnprocessableEntity, "locale_not_enabled", err.Error())
 	case errors.Is(err, i18n.ErrDefaultLocale):
 		// Well-formed request, impossible state. The operator's next action is to make another
 		// locale the default, so the message says that rather than restating the rule.

@@ -5,7 +5,9 @@
 // internal/i18n, and `GET /api/v1/i18n/messages?locale=…` answers with one flat map whose
 // fallback has *already been applied* — the locale's own text with the default's text merged
 // underneath it. This module is the missing half: it keeps that map for the session, decides
-// which locale the page is in, and gives a screen a function to call instead of a literal.
+// which locale the page is in, writes an explicit choice back to the account so the first branch
+// of that chain is reachable from a browser, and gives a screen a function to call instead of a
+// literal.
 //
 // ## The convention: `t()` at build time, not `data-i18n` attributes
 //
@@ -276,8 +278,9 @@ export async function initI18n(api: Api): Promise<LocaleOption[]> {
   // An explicit choice in this browser beats everything else. It is the most recent deliberate
   // action by this person on this device, and the alternative — letting the account's stored
   // preference flip a language the customer just picked — is a switcher that undoes itself on
-  // the next page load. (When a route for `SetUserLocale` lands, `setLocale` should also write
-  // the choice to the account so it follows the person to another browser.)
+  // the next page load. `resolved` is the fallback for a browser that has not chosen: the server
+  // has already walked preference → header → default, so a signed-in customer's account choice
+  // arrives here as `resolved` and is applied before the first screen is built, never after it.
   const offered = new Set(enabled.map((locale) => locale.code));
   const stored = readStored();
   const resolved = response.resolved?.locale ?? "";
@@ -303,12 +306,23 @@ export async function initI18n(api: Api): Promise<LocaleOption[]> {
  * in the new language rather than flashing the old one. A fetch that fails still switches: the
  * fallback chain and each call site's own sentence keep the page readable, and a switcher that
  * silently refused to move would be the bug this whole module exists to fix.
+ *
+ * The local choice is applied before the account is told about it, and the account write is
+ * allowed to fail. The two records answer different questions — "what does this browser show"
+ * and "what does this person read in their mail" — and only the second one can be lost without
+ * the customer seeing a switch that did not happen.
  */
 export async function setLocale(code: string): Promise<void> {
   const next = (code || "").trim();
   if (!next) return;
   if (enabled.length > 0 && !enabled.some((locale) => locale.code === next)) return;
-  if (next === current) return;
+  if (next === current) {
+    // Re-picking the language already in force is not a change, so nothing re-renders. It is
+    // still worth writing: a choice that survived only in this browser because an earlier write
+    // failed is healed by the next deliberate click rather than staying lost until sign-out.
+    await storeUserLocale(next);
+    return;
+  }
 
   if (client) await loadMessages(client, next);
   current = next;
@@ -321,6 +335,7 @@ export async function setLocale(code: string): Promise<void> {
       // One screen's failed re-render must not stop the others from translating.
     }
   }
+  await storeUserLocale(next);
 }
 
 /** Subscribes to locale changes. Returns the unsubscribe, so a page can clean up. */
@@ -432,6 +447,25 @@ function persist(code: string): void {
     globalThis.localStorage?.setItem(STORAGE_KEY, code);
   } catch {
     /* the choice still applies to this page */
+  }
+}
+
+/**
+ * Writes the choice to the account, so it follows the person to another browser and to their
+ * queued mail.
+ *
+ * Best effort, deliberately. A visitor with no session cannot store anything — the mutation is
+ * refused before the handler runs — and a request that fails must not undo a switch this browser
+ * has already applied: the customer watched the page change language, and reverting it because a
+ * background write did not land would look like the control was broken. The local choice stays,
+ * and picking it again is what retries the write.
+ */
+async function storeUserLocale(code: string): Promise<void> {
+  if (!client) return;
+  try {
+    await client.put("/api/v1/me/locale", { locale: code });
+  } catch {
+    /* the browser's copy is a UI preference; the account's is the durable record */
   }
 }
 

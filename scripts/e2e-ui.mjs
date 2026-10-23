@@ -853,6 +853,37 @@ try {
   });
   check("dashboard: renders the exception list or says it is clear", /Needs attention|Nothing is on fire/.test(staffHome));
 
+  // The storefront, as a signed-in operator.
+  //
+  // This is the regression the whole `/` vs `/dashboard` split exists for: while `/` was "the
+  // dashboard for staff and the storefront for a visitor", an administrator had no URL at all
+  // for their own shop, so "is the price on the site right?" could not be answered without
+  // signing out. Four assertions, because there are four ways to get it wrong again: the shop
+  // must render at `/`, it must render *in place* rather than redirecting, it must not be the
+  // panel, and it must carry a way back into the panel.
+  {
+    await goto("/");
+    const store = await evaluate(`(() => ({
+      path: location.pathname,
+      storefront: document.querySelector('.store-page') !== null,
+      shell: document.querySelector('.app') !== null,
+      back: [...document.querySelectorAll('.store-nav a, .store-hero-actions a')]
+        .map((a) => ({ href: a.getAttribute('href'), label: a.innerText.trim() }))
+        .filter((a) => a.href === '/dashboard'),
+      heading: document.querySelector('h1')?.innerText ?? '',
+    }))()`);
+    check("storefront: an operator sees the shop at /", store.storefront, JSON.stringify(store));
+    check("storefront: / is not redirected for an operator", store.path === "/", store.path);
+    check("storefront: the panel shell is not wrapped around the shop", !store.shell);
+    check("storefront: the shop renders its own heading", store.heading.length > 0, store.heading);
+    check("storefront: it offers a link back to the panel", store.back.length > 0, JSON.stringify(store.back));
+    if (store.back.length > 0) {
+      await click('.store-nav a[href="/dashboard"], .store-hero-actions a[href="/dashboard"]');
+      const backIn = await until("the panel after clicking the storefront's dashboard link", "location.pathname === '/dashboard' && document.querySelector('.app') !== null", 12_000).catch(() => false);
+      check("storefront: that link returns to the panel", Boolean(backIn));
+    }
+  }
+
   // The management writes. These are the ones an operator actually needs and the panel spent a
   // long time without: a button that opens a form, and a form with real fields in it. A list
   // screen with no create action is the defect this asserts against.
@@ -1029,7 +1060,7 @@ try {
     // 1. The shell says the account has no second factor, on the first screen the operator lands
     //    on. This is the "see at a glance" requirement, and it is a prompt rather than a lock-out
     //    because an operator on call must not be shut out of the panel by a warning.
-    await goto("/");
+    await goto("/dashboard");
     const prompt = await evaluate(`(() => {
       const el = document.querySelector('.mfa-prompt');
       return el ? { text: el.innerText, href: el.querySelector('a')?.getAttribute('href') ?? '' } : null;
@@ -1046,7 +1077,7 @@ try {
 
     // 2. Reachable by clicking the navigation, which is the acceptance criterion: an operator finds
     //    it without knowing the URL.
-    await goto("/");
+    await goto("/dashboard");
     await click('.nav-item[data-href="/settings"]');
     await until("the settings screen from the nav", "location.pathname === '/settings'", 8000);
     check("mfa: the account settings screen is in the navigation", (await evaluate("location.pathname")) === "/settings");
@@ -1201,7 +1232,7 @@ try {
     }
     // Return to the shell: the register screen is a full-page auth layout, and the rest of the
     // staff pass expects the shell to be mounted.
-    await goto("/");
+    await goto("/dashboard");
   }
 
   await assertNewScreen("coupons", {
@@ -1438,7 +1469,7 @@ try {
   await assertScreen("order-new", { expect: ["New order", "Billing account"] });
 
   // The command palette: opened by keyboard, searched, and used to navigate.
-  await goto("/");
+  await goto("/dashboard");
   await send("Input.dispatchKeyEvent", { type: "keyDown", key: "k", code: "KeyK", windowsVirtualKeyCode: 75, modifiers: 2 }, session);
   await send("Input.dispatchKeyEvent", { type: "keyUp", key: "k", code: "KeyK", windowsVirtualKeyCode: 75, modifiers: 2 }, session);
   const paletteOpen = await until("the palette", "document.querySelector('.palette') !== null", 4000).catch(() => false);
@@ -1453,7 +1484,7 @@ try {
   }
 
   // The theme toggle must actually change the theme, not just the icon.
-  await goto("/");
+  await goto("/dashboard");
   const before = await evaluate("document.documentElement.dataset.theme");
   await click("#theme-toggle");
   const after = await evaluate("document.documentElement.dataset.theme");
@@ -1498,7 +1529,7 @@ try {
   // The customer portal, as a customer. This is the surface with the least traffic in review
   // and the most distinct permissions, and it is where a null role list crashed the shell.
   if (customerEmail && customerPassword) {
-    await goto("/");
+    await goto("/dashboard");
     await click(".sidebar-foot .who");
     await click(".menu-item--danger");
     await until("the sign-in screen", "document.querySelector('.auth-panel') !== null", 8000);
@@ -1525,6 +1556,27 @@ try {
     })()`);
     check("portal: offers a way to the storefront", portalDoors.products, JSON.stringify(portalDoors));
     check("portal: offers a way to the cart", portalDoors.cart, JSON.stringify(portalDoors));
+
+    // The storefront, as a signed-in customer. The same four properties as the operator's pass
+    // above, with one difference that matters: a customer's way back is the portal, not the panel,
+    // because `/dashboard` is staff-only and would bounce them. A customer who could reach the shop
+    // but not return to their own invoices had traded one dead end for another.
+    {
+      await goto("/");
+      const shop = await evaluate(`(() => ({
+        path: location.pathname,
+        storefront: document.querySelector('.store-page') !== null,
+        shell: document.querySelector('.app') !== null,
+        back: [...document.querySelectorAll('.store-nav a, .store-hero-actions a')]
+          .map((a) => a.getAttribute('href'))
+          .filter((href) => href === '/portal' || href === '/dashboard'),
+      }))()`);
+      check("storefront: a customer sees the shop at /", shop.storefront, JSON.stringify(shop));
+      check("storefront: / is not redirected for a customer", shop.path === "/", shop.path);
+      check("storefront: no panel shell around a customer's shop", !shop.shell);
+      check("storefront: a customer's way back is the portal", shop.back.includes("/portal"), JSON.stringify(shop.back));
+      check("storefront: a customer is not sent to the staff panel", !shop.back.includes("/dashboard"), JSON.stringify(shop.back));
+    }
     for (const [name, path] of [
       ["portal-invoices", "/portal/invoices"],
       ["portal-services", "/portal/services"],
@@ -1809,7 +1861,7 @@ try {
       }
 
       // Sign out, the way a customer does.
-      await goto("/");
+      await goto("/dashboard");
       await click(".sidebar-foot .who");
       await click(".menu-item--danger");
       await until("the sign-in screen", "document.querySelector('.auth-panel') !== null", 8000);

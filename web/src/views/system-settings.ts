@@ -165,7 +165,7 @@ export default async function systemSettingsPage(ctx: Ctx): Promise<Node> {
           h("code", { class: "inline-code" }, "settings:write"),
           " permission. Reading is gated with writing on purpose: the SMTP host and the gateway configuration are reconnaissance, not support information.",
         ),
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }
@@ -253,7 +253,7 @@ export default async function systemSettingsPage(ctx: Ctx): Promise<Node> {
         h(
           "div",
           { class: "row" },
-          btn("Back to the dashboard", { href: "/", size: "sm", icon: "home" }),
+          btn("Back to the dashboard", { href: "/dashboard", size: "sm", icon: "home" }),
           btn("Open the catalog", { href: "/catalog-management", size: "sm", variant: "ghost", icon: "box" }),
         ),
       ),

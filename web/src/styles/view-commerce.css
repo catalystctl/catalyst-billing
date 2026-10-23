@@ -460,6 +460,17 @@
 
 /* ---------------------------------------------------------- announcements -- */
 
+/* The heading of the customer's feed. The cards below it are the staff screen's, unchanged — a
+ * notice should look to the reader like it looked to the author — so only the label above them
+ * is new. It sits on the dashboard and on the storefront, which is why it is a section heading
+ * and not a page head. */
+.ann-feed-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
 .ann-list {
   display: flex;
   flex-direction: column;

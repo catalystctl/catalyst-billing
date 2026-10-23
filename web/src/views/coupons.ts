@@ -115,7 +115,7 @@ export default async function couponsPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot read promotions",
         "Reading the coupon list needs the coupon:read:all permission. Ask an administrator if you should have it.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

@@ -106,7 +106,7 @@ export default async function holdsPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot read the holds register",
         "The register needs the service:read:all permission. Placing and lifting a hold needs service:hold.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

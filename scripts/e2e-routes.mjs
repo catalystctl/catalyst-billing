@@ -115,8 +115,18 @@ function arrayLiteral(name) {
 const publicPaths = new Set(setLiteral("PUBLIC_PATHS"));
 const customerPrefixes = arrayLiteral("CUSTOMER_PREFIXES");
 
-const isPublic = (path) => publicPaths.has(path) || path === "/products" || path.startsWith("/products/");
+const isPublic = (path) =>
+  publicPaths.has(path) || path === "/products" || path.startsWith("/products/");
 const isCustomer = (path) => customerPrefixes.some((p) => path === p || path.startsWith(`${p}/`));
+
+/** True for the storefront: `/`, `/products` and one product.
+ *
+ *  Read from routes.ts rather than re-derived, because the storefront is public for *every*
+ *  audience — a stranger, a customer and an operator — and it is therefore not "a public route"
+ *  in the sense the staff and customer phases care about. It is swept once, anonymously, and
+ *  skipped in the signed-in phases: `/` does not redirect for a signed-in user (that is the whole
+ *  point of the split), so it would pass there too, but asserting it once is the honest shape. */
+const isStorefront = (path) => path === "/" || path === "/products" || path.startsWith("/products/");
 
 // ------------------------------------------------------------- parameters --
 
@@ -351,9 +361,14 @@ async function signIn(email, password) {
   await until("the shell after sign-in", "document.querySelector('.app') !== null", 15_000);
 }
 
-/** Signs out through the menu, so the next phase starts with no session. */
-async function signOut() {
-  await visit("/");
+/** Signs out through the menu, so the next phase starts with no session.
+ *
+ *  `from` is the screen whose shell holds the user menu, and it must be a signed-in screen: the
+ *  storefront at `/` has no shell, so navigating there to sign out would look for a sidebar that
+ *  does not exist. That is exactly what this did after `/` became the shop, and the sweep failed
+ *  with "timed out waiting for .sidebar-foot .who" — a harness bug that reads like a panel bug. */
+async function signOut(from = "/dashboard") {
+  await visit(from);
   await click(".sidebar-foot .who");
   await click(".menu-item--danger");
   await until("the sign-in screen", "document.querySelector('.auth-panel') !== null", 10_000);
@@ -438,10 +453,10 @@ async function checkRoute(route, { strict, phase }) {
   const thrown = exceptions.slice(before.exceptions).filter((e) => e.route === route.path);
   const logged = consoleErrors.slice(before.console).filter((e) => e.route === route.path);
 
-  // A route that redirects is not necessarily broken — `/` means the dashboard to staff and
-  // the storefront to a visitor — but in this pass the audience and the path are known, so a
-  // redirect means the guard disagrees with the table. The comparison is on the pathname only:
-  // a screen is free to write a query string into its own URL.
+  // A route that redirects is not necessarily broken, and the two cases are named so the reason
+  // stays readable: a screen is free to write a query string into its own URL, and a detail route
+  // whose record does not exist may legitimately send the user back to its list. Anything else is
+  // the guard disagreeing with the table, which is a dead end with a redirect in front of it.
   const wanted = route.path.split("?")[0];
   const redirected = state.path !== wanted;
 
@@ -501,9 +516,11 @@ try {
     await checkRoute({ ...route, path }, { strict: strict && route.path.includes(":slug"), phase: "anonymous" });
   }
 
-  // 2. The staff routes, as an administrator.
+  // 2. The staff routes, as an administrator. The storefront is excluded: it is public for every
+  // audience, it was swept in phase 1, and it deliberately does not redirect a signed-in operator
+  // (that is the fix this sweep guards).
   await signIn(staffEmail, staffPassword);
-  for (const route of table.filter((r) => !isPublic(r.path) && !isCustomer(r.path))) {
+  for (const route of table.filter((r) => !isPublic(r.path) && !isCustomer(r.path) && !isStorefront(r.path))) {
     const { path, strict } = concretize(route.path);
     await checkRoute({ ...route, path }, { strict, phase: "staff" });
   }
@@ -512,7 +529,7 @@ try {
   if (customerEmail && customerPassword) {
     await signOut();
     await signIn(customerEmail, customerPassword);
-    for (const route of table.filter((r) => isCustomer(r.path))) {
+    for (const route of table.filter((r) => isCustomer(r.path) && !isStorefront(r.path))) {
       const { path, strict } = concretize(route.path);
       await checkRoute({ ...route, path }, { strict, phase: "customer" });
     }

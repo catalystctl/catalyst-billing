@@ -77,7 +77,7 @@ export default async function automationPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot see the automation list",
         "This screen needs the settings:write permission: it is the screen an operator uses to decide what to switch off, and that is a configuration decision.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

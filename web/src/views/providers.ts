@@ -105,7 +105,7 @@ export default async function providersPage(ctx: Ctx): Promise<Node> {
         "danger",
         "You cannot manage sign-in providers",
         "The registry holds client credentials, so it needs the oauth:manage permission.",
-        btn("Back to the dashboard", { href: "/", size: "sm", variant: "ghost" }),
+        btn("Back to the dashboard", { href: "/dashboard", size: "sm", variant: "ghost" }),
       ),
     );
   }

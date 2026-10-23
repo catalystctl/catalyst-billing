@@ -140,19 +140,13 @@ done here.
 | `GET /api/v1/staff/credit-notes/{id}/pdf` | download the credit note they just issued from `/invoices/:id` |
 | `GET /api/v1/portal/credit-notes/{id}/pdf` | download the credit note they were sent |
 | `POST /api/v1/portal/impersonation/stop` | — see the impersonation row below |
-| `GET /api/v1/announcements` | — see the announcement row below |
 
-Two of these are worth naming as *inert features* rather than missing screens:
+One of these is worth naming as an *inert feature* rather than a missing screen:
 
 * **Impersonation is API-only.** `POST /api/v1/staff/users/{id}/impersonate` and
   `POST /api/v1/portal/impersonation/stop` are audited and tested; no screen starts one and no
   banner offers to end one. The customer overview explains why an impersonated session cannot
   act, for a session nobody can enter.
-* **The announcement feed is read by nothing.** `GET /api/v1/announcements` is documented as
-  "the storefront and dashboard feed", and the `announcements.enabled` setting is described as
-  "whether the announcement feed is shown to customers" — but no screen calls the endpoint and
-  no Go code reads the setting. An operator publishes a maintenance notice and nobody sees it.
-
 ### Write endpoints with no UI affordance (17)
 
 | Surface | Verdict |

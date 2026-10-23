@@ -122,7 +122,7 @@ function renderForm(ctx: Ctx, meta: TicketMeta): Node {
         title: "Support tickets are switched off",
         body: "This installation is not taking tickets, including ones the team opens. Turn the desk back on in the ticket settings first.",
         icon: "lock",
-        action: btn("Back to the dashboard", { href: "/", size: "sm", icon: "home" }),
+        action: btn("Back to the dashboard", { href: "/dashboard", size: "sm", icon: "home" }),
       }),
     });
   }

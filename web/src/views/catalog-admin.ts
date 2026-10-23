@@ -218,7 +218,11 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
           sub: `${products.length} total`,
           actions: h(
             "a",
-            { class: "linkish", href: "/products", "data-native": "true" },
+            // A real navigation, not a router hop: the storefront is a whole-page layout with its
+            // own header, and `data-native` keeps the SPA router out of it so the catalog screen's
+            // state is not carried into a page that has no shell. `target` opens it beside the
+            // catalog, which is what "view the storefront" means while you are editing a product.
+            { class: "linkish", href: "/", target: "_blank", rel: "noopener", "data-native": "true" },
             "View storefront",
             icon("external", 12),
           ),

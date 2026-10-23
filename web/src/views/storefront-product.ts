@@ -142,7 +142,7 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
         h(
           "div",
           { class: "row" },
-          btn(tx("storefront.product.see_all", "See all products"), { href: "/products", variant: "primary" }),
+          btn(tx("storefront.product.see_all", "See all products"), { href: "/", variant: "primary" }),
         ),
       ),
       footer(),
@@ -167,10 +167,15 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
         h("a", { href: "/cart" }, tx("storefront.nav.cart", "Cart")),
         session ? null : h("a", { href: "/login" }, tx("storefront.nav.signin", "Sign in")),
         languageSelect(),
+        // The way back out. An operator gets the panel, a customer the portal, a visitor the
+        // sign-in page — the storefront is public for all three, so it has to know which one it
+        // is looking at.
         h(
           "a",
-          { class: "btn btn--primary btn--sm", href: "/portal" },
-          tx("storefront.nav.client_area", "Client area"),
+          { class: "btn btn--primary btn--sm", href: session && session.user.is_staff ? "/dashboard" : "/portal" },
+          session && session.user.is_staff
+            ? tx("storefront.nav.dashboard", "Dashboard")
+            : tx("storefront.nav.client_area", "Client area"),
         ),
       ),
     );

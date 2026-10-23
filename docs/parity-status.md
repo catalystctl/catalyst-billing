@@ -115,7 +115,7 @@ package that built it. Three states, and no fourth:
 | E5.5 CLI parity | OPS-17 | **built** | `create-user`, `create-customer`, `issue-invoice`, `purge-test-data`, `setting set` and `logs tail`; a setting write goes through the same validation the HTTP path uses and writes an audit row naming `BILLING_ADMIN_ACTOR`. |
 | E5.6 Dashboard and navigation | ADM-01, ADM-36, ADM-37 | **built** | Revenue from the ledger rather than invoice totals, the exception queue, a selectable period, and a nav grouped like Paymenter's. |
 | E5.7 Catalog polish | CAT-04, CAT-06 | **built** | A duplicate-product action copying price versions and config options with an audit row naming the source; a rich-text description with a `plain`/`html` format and a sanitising test that proves a hostile payload is neutralised. |
-| E6.1 Announcements | GRW-01 | **built** | Published/expiry computed server-side as `live`; staff publish and unpublish from `/announcements`. |
+| E6.1 Announcements | GRW-01 | **built** | Published/expiry computed server-side as `state` (draft, scheduled, expired, live) from the server's clock; staff publish and unpublish from `/announcements`, and the notice renders on the storefront and in the customer dashboard. `announcements.enabled` is **read** by the public feed and by the staff list, so switching it off empties the feed instead of leaving a toggle that changes nothing. |
 | E6.2 Affiliates | GRW-02, GRW-03 | **built** | Attribution and signup commission with exact rational arithmetic; **recurring** commission attributed to the referral on the customer, bounded by `affiliates.recurring_cycles`, written inside the settlement transaction and idempotent on the invoice, plus a payout report that reconciles. |
 | E6.3 Social login | IDN-07…IDN-10 | **built** | A generic OIDC provider row rather than three hardcoded implementations; signed single-use state; an existing account with the same email is **refused rather than silently merged**, which is the one decision that prevents an account takeover, and it has a test. |
 | E6.4 OAuth2 server | IDN-11 | **built** | Authorization-code grant with mandatory S256 PKCE for public clients, rotating refresh tokens, and a token that carries its owner's permissions as a **ceiling**: narrowed at issue time and again at use time, so a permission removed from a role narrows a token minted before the revocation. |
@@ -184,7 +184,8 @@ checked by running `bash scripts/browser-e2e.sh` rather than trusted.
 | Tickets (customer) | `/tickets` | **present** — seeded ticket, different columns |
 | New ticket | `/tickets/new` | **present** — fields render and are enabled |
 | Logs | `/logs` | **present** — three tabs; the email tab reads the real outbox |
-| Announcements | `/announcements` | **present** — seeded published announcement |
+| Announcements | `/announcements` | **present** — seeded published announcement, its state named (live/scheduled/expired), and a banner when the feed is switched off |
+| Announcement feed (customer) | `/portal`, `/products` | **present** — the seeded announcement renders for the customer and for a visitor; it disappears when `announcements.enabled` is off |
 | Cancellations | `/cancellations` | **present** — empty queue, correctly |
 | Credit (staff) | `/credits` | **not built** — placeholder module |
 | Credit (customer) | `/portal/credits` | **present** — balance derived from the seeded posting |

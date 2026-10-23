@@ -20,6 +20,12 @@ const result = await build({
     "lib/i18n": join(root, "src/lib/i18n.ts"),
     "lib/qr": join(root, "src/lib/qr.ts"),
     "lib/router": join(root, "src/lib/router.ts"),
+    // The route table and the "where does this session belong" rule are bundled too, so the
+    // split between the storefront (`/`) and the panel (`/dashboard`) is a unit test rather than
+    // a comment. Both modules are DOM-free: routes.ts only declares patterns, and session.ts
+    // touches `document` and `window` inside functions, never at import time.
+    routes: join(root, "src/routes.ts"),
+    "lib/session": join(root, "src/lib/session.ts"),
   },
   bundle: true,
   format: "esm",

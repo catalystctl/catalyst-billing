@@ -101,9 +101,19 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
     const token = ++routeToken;
     disposePage();
 
+    // The storefront is public, and it stays public for every audience — a visitor, a customer
+    // and an operator alike. This is checked before the session branch on purpose: `/` is the
+    // shop, and an administrator who cannot open their own shop cannot answer "is the price on
+    // the site right?". The page reads the identity itself (ctx.viewer) to offer the right
+    // door back into the panel; it never requires one.
+    if (isStorefrontPath(path)) {
+      await renderPublic(path, match);
+      return;
+    }
+
     if (!session) {
-      // The storefront is public; anything else asks for a session and remembers where you
-      // were going.
+      // Everything that is not the storefront asks for a session and remembers where you were
+      // going.
       if (isPublicPath(path)) {
         await renderPublic(path, match);
         return;
@@ -112,28 +122,10 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       return;
     }
 
-    // "/" means two things. A signed-in staff member gets the dashboard, so it must fall
-    // through to the authenticated render below rather than being treated as a public page —
-    // redirecting here would loop. A signed-in customer gets the portal, because a storefront
-    // is not where their invoices are.
-    if (path === "/" && !session.user.is_staff) {
-      router.navigate("/portal", { replace: true });
-      return;
-    }
-
-    // The storefront is the one public surface that stays open once you are signed in. It is
-    // where a customer buys from, and the shell has no place for it: it is a whole-page layout
-    // with its own header, not a screen inside the rail. Rendering it through the public path
-    // is what makes "product page -> cart" a step a signed-in customer can actually take;
-    // before this, every storefront URL bounced them to the portal, so nothing could be bought.
-    if (isStorefrontPath(path)) {
-      await renderPublic(path, match);
-      return;
-    }
-
-    // The other public pages (sign-in, reset, registration) are meaningless once you are
-    // signed in, so they send you home.
-    if (path !== "/" && isPublicPath(path)) {
+    // The remaining public pages (sign-in, reset, registration) are meaningless once you are
+    // signed in, so they send you home. The storefront is not one of them, which is why it was
+    // handled above rather than here.
+    if (isPublicPath(path)) {
       router.navigate(homeFor(session), { replace: true });
       return;
     }
@@ -208,7 +200,7 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
               ),
               h(
                 "a",
-                { class: "btn", href: "/", "data-link": "true" },
+                { class: "btn", href: "/dashboard", "data-link": "true" },
                 tx("app.chunk.back", "Back to the dashboard"),
               ),
             )
@@ -263,19 +255,21 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
   async function renderPublic(path: string, match: RouteMatch | null): Promise<void> {
     root.replaceChildren(skeletonPage());
     shell = null;
-    // "/" is the storefront for a visitor even though the route table maps it to the staff
-    // dashboard, because the dashboard needs a session and a visitor has none. Picking the
-    // module here rather than adding a second route keeps one URL with two audiences.
-    const storefront = routes.find((r) => r.pattern === "/products")!;
-    const resolved =
-      path === "/"
-        ? { route: storefront, params: {}, path, query: new URLSearchParams(window.location.search) }
-        : match;
-    const routeMatch = resolved ?? { route: routes[0]!, params: {}, path, query: new URLSearchParams(window.location.search) };
+    // `/` is the storefront and the route table says so, so `match` already points at the right
+    // module. The fallback exists for one case only: a storefront URL that matched nothing (a
+    // truncated product slug) still renders the shop rather than a 404, because the shop is a
+    // better answer than an error page for somebody who mistyped a link.
+    const storefront = routes.find((r) => r.pattern === "/")!;
+    const routeMatch =
+      match ?? { route: storefront, params: {}, path, query: new URLSearchParams(window.location.search) };
     const mod = (await routeMatch.route.load()) as { default: (ctx: AuthCtx) => Node | Promise<Node>; meta?: PageMeta };
     document.title = `${mod.meta?.title ?? "Sign in"} · Catalyst Billing`;
     const ctx: AuthCtx = {
       api,
+      // The identity, when there is one. A public page must not *require* a session, and must not
+      // pretend a signed-in visitor is a stranger either: the storefront's header uses this to
+      // offer an operator "Dashboard" instead of "Sign in".
+      viewer: session,
       query: new URLSearchParams(window.location.search),
       params: routeMatch.params,
       navigate: (p, o) => router.navigate(p, o),
@@ -427,7 +421,9 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       openPaletteNow();
       return;
     }
-    if (!typing && event.key === "/" && session) {
+    // `/` opens the palette, but only inside the shell: on the storefront there is no palette to
+    // open, and swallowing the key there would take the browser's own quick-find away for nothing.
+    if (!typing && event.key === "/" && session && shell) {
       event.preventDefault();
       openPaletteNow();
     }

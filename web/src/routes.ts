@@ -14,21 +14,26 @@ import { route, type Route } from "./lib/router";
 
 /** A path a signed-out visitor may load.
  *
- *  `/` is deliberately included: it is the storefront for a visitor and the dashboard for
- *  staff, and which one you get is decided by the session, not by the URL. A storefront
- *  behind a login is not a storefront. */
+ *  `/` is in this set because it *is* the storefront: the front door of the installation, the
+ *  page a stranger, a customer and an operator all land on. It used to be "the dashboard for
+ *  staff and the storefront for a visitor", decided by the session rather than by the URL, and
+ *  the cost of that was exactly what it sounds like: once you signed in, the storefront had no
+ *  address, so there was no way to look at the shop you were running. The dashboard lives at
+ *  `/dashboard` now and the storefront owns `/`. A storefront behind a login is not a storefront;
+ *  a storefront with no URL for its own operator is not one either. */
 export const PUBLIC_PATHS = new Set(["/", "/login", "/register", "/forgot-password", "/reset-password", "/verify", "/products"]);
 
-/** True when `path` is a storefront page: the product index or one product.
+/** True when `path` is a storefront page: the index at `/`, the `/products` alias, or one product.
  *
- *  This is a predicate of its own, not a detail of `isPublicPath`, because the two audiences
- *  differ in one way that matters: the storefront must stay reachable *after* signing in. It is
- *  the only place a customer can put something in their cart, so sending a signed-in customer
- *  "home" from `/products` — which is what "the public pages are meaningless once you are
- *  signed in" did — left the purchase funnel with no first step. Sign-in and registration are
- *  still redirected; a product page is not. */
+ *  This is a predicate of its own, not a detail of `isPublicPath`, because the storefront must stay
+ *  reachable *after* signing in — it is where a customer buys from and where an operator checks
+ *  what the catalog actually looks like to the public. Rendering it through the public path is
+ *  what keeps the shell out of it: the storefront is a whole-page layout with its own header, not
+ *  a screen inside the rail. `/products` is kept as an alias of `/` because years of links (the
+ *  cart's "keep shopping", the portal's "browse products", the product page's "see all") point
+ *  at it, and a 404 there would break the purchase funnel to save a route entry. */
 export function isStorefrontPath(path: string): boolean {
-  return path === "/products" || path.startsWith("/products/");
+  return path === "/" || path === "/products" || path.startsWith("/products/");
 }
 
 /** True when `path` is public, including the storefront's subtrees.
@@ -55,13 +60,20 @@ export function isCustomerPath(path: string): boolean {
 }
 
 export const routes: Route[] = [
-  route("/", () => import("./views/dashboard")),
+  // The storefront is the root. `/dashboard` is the panel, and it is a real address so an operator
+  // can bookmark it, paste it into a ticket, and reload it. The two used to be one URL chosen by
+  // the session, which left a signed-in operator with no way to look at the shop at all.
+  route("/", () => import("./views/storefront")),
+  route("/dashboard", () => import("./views/dashboard")),
+
   route("/login", () => import("./views/login")),
   route("/forgot-password", () => import("./views/forgot-password")),
   route("/reset-password", () => import("./views/reset-password")),
   route("/verify", () => import("./views/verify")),
 
-  // Public storefront. /products/:slug is a product page; / is the index (see above).
+  // `/products` and `/products/:slug` are the storefront's original addresses and stay live:
+  // `/` is the canonical index now, but the cart, the portal and the product page all link to
+  // `/products`, and breaking the funnel to save a route entry would be a poor trade.
   route("/products", () => import("./views/storefront")),
   route("/products/:slug", () => import("./views/storefront-product")),
 
@@ -164,6 +176,8 @@ export const routes: Route[] = [
   route("/upgrades", () => import("./views/upgrades")),
   route("/providers", () => import("./views/providers")),
   route("/ticket-fields", () => import("./views/ticket-fields")),
+  route("/portal/affiliate", () => import("./views/portal-affiliate")),
+  route("/branding", () => import("./views/branding")),
 ];
 
 /** True when a route for `path` is declared.
@@ -178,6 +192,7 @@ export function hasRoute(path: string): boolean {
 
 /** The labels a breadcrumb uses for a path segment. */
 export const SEGMENT_LABELS: Record<string, string> = {
+  dashboard: "Dashboard",
   customers: "Customers",
   invoices: "Invoices",
   services: "Services",
@@ -231,4 +246,6 @@ export const SEGMENT_LABELS: Record<string, string> = {
   upgrades: "Upgrades",
   providers: "Sign-in providers",
   "ticket-fields": "Ticket fields",
+  affiliate: "Affiliate",
+  branding: "Branding",
 };

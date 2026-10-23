@@ -543,7 +543,7 @@ export default async function ticketsPage(ctx: Ctx): Promise<Node> {
           title: "The support queue is empty",
           body: "Nothing is waiting for an answer. A ticket appears here the moment a customer opens one, and it stays until it is closed.",
           icon: "message",
-          action: btn("Back to overview", { href: "/", size: "sm", icon: "home" }),
+          action: btn("Back to overview", { href: "/dashboard", size: "sm", icon: "home" }),
         };
       }
       return {

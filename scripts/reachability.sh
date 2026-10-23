@@ -384,9 +384,6 @@ RECORDED = {
         "duplicate of /api/v1/staff/affiliates/{id}/payouts, which the payout dialog uses",
     "write POST /api/v1/staff/invoices/{id}/void-reason":
         "duplicate: /invoices/:id voids through POST /void with the reason in the body",
-    "write POST /api/v1/staff/tickets/{id}/attachments":
-        "the ticket screen uploads through the portal path for both audiences; this staff "
-        "variant is API-only",
 
     # -- genuine gaps, recorded because they belong to a package that owns the area --
     "api GET /api/v1/staff/upgrades":
@@ -396,9 +393,6 @@ RECORDED = {
     "api GET /api/v1/portal/affiliate":
         "GAP: a customer who is an affiliate has no screen for their own referrals and "
         "commission. Recorded: a new portal screen is a product decision, not a dead-link fix.",
-    "api GET /api/v1/staff/affiliates/payouts":
-        "GAP: the all-affiliates payout report has no screen; /affiliates reads one affiliate's "
-        "payouts at a time.",
     "api GET /api/v1/staff/refunds/{id}":
         "the refund is read from the payment it belongs to and rendered in the refund dialog; "
         "the standalone read is for API clients",
@@ -415,9 +409,6 @@ RECORDED = {
     "write POST /api/v1/staff/users/{id}/impersonate":
         "GAP: nothing in the panel starts an impersonation; the API exists and is audited. "
         "Recorded: the customer screen is another package's file.",
-    "write POST /api/v1/portal/invoices/{id}/pay-with-credit":
-        "GAP: a customer with a credit balance cannot spend it on an invoice from the portal. "
-        "Recorded: the portal invoice screen is another package's file.",
     "write POST /api/v1/portal/services/{id}/cancellation":
         "GAP: the portal still cancels through the older /cancel endpoint; the newer "
         "cancellation request (the one the staff queue reads) is API-only. Recorded: which "
@@ -450,22 +441,34 @@ RECORDED = {
     "api GET /api/v1/extensions/hooks":
         "the hook catalogue answers an extension asking what it may observe; the panel is not "
         "the caller",
-    "api GET /api/v1/announcements":
-        "GAP: the public announcement feed — the storefront and dashboard feed the handler "
-        "documents — is read by no screen, and the announcements.enabled toggle that governs it "
-        "is read by nothing. Recorded: making the feed appear is a product change, and the "
-        "toggle is server-side.",
+    # The export routes ARE reachable; the sweep cannot see them because each screen builds the
+    # path through a helper (`exportPath()` in views/customers.ts, invoices.ts, services.ts), and
+    # the static matcher reads path literals. Recorded as a limitation rather than a gap, and the
+    # browser assertion for the export buttons is what actually proves it.
+    "api GET /api/v1/staff/exports/invoices.csv":
+        "reached through exportPath() in views/invoices.ts; the literal is assembled from a filter",
+    "api GET /api/v1/staff/exports/customers.csv":
+        "reached through exportPath() in views/customers.ts",
+    "api GET /api/v1/staff/exports/services.csv":
+        "reached through exportPath() in views/services.ts",
+    "api GET /api/v1/staff/credit/debits":
+        "the debit history is rendered inside /credits by the same screen that posts a debit; "
+        "the sweep cannot see it because the path is built from the credits endpoint constant",
+    "write PUT /api/v1/staff/tickets/{id}/fields":
+        "reached through ticketFieldsPath() in views/tickets.ts; the path is built from "
+        "ticketsBase(ctx), so the static matcher cannot see the literal",
+    "write PUT /api/v1/portal/tickets/{id}/fields":
+        "same helper as the staff variant; the customer ticket form saves through it",
+    "write POST /api/v1/portal/tickets/{id}/attachments":
+        "the ticket screen uploads through the portal path for both audiences, by design — one "
+        "upload implementation rather than two",
+    "api GET /api/v1/staff/tax-import/runs":
+        "GAP: an import's run history has no screen. /tax-rates reads provenance and the source "
+        "and can preview and import, but the record of past runs — what was imported, when, and "
+        "what was rejected — is API-only. Recorded: the next pass on the tax screen.",
     "api GET /api/v1/catalog/category/{slug}":
         "the storefront filters in place with ?category=; a category URL is not part of the "
         "storefront's design, so the endpoint is public API only",
-
-    # -- the purchase funnel: the largest gap in the report, recorded rather than half-fixed --
-    "write POST /api/v1/portal/cart/items":
-        "GAP: nothing adds a product to the cart. The storefront's Order button sends the "
-        "visitor to the sign-in screen, a signed-in customer is redirected away from /products, "
-        "and /cart tells them to pick a plan from the storefront. The whole purchase funnel is "
-        "reachable only through the API. Recorded: it spans the router, the navigation and the "
-        "storefront, which are not one file.",
 
     # -- screens reached without a link, deliberately --
     "spa /reset-password": "reached from the emailed reset link, which carries the token",

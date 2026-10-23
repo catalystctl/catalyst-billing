@@ -111,6 +111,9 @@ const (
 	ReasonNothingDue = "nothing_due"
 	// ReasonSent means the telemetry payload was delivered.
 	ReasonSent = "sent"
+	// ReasonRecentlySent means a delivery was already recorded inside TelemetryMinimumGap, so this
+	// tick did nothing. It is what keeps a restart from becoming a second daily report.
+	ReasonRecentlySent = "recently_sent"
 )
 
 // Options are the dependencies a job needs that are not the database.

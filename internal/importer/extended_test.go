@@ -273,3 +273,48 @@ func TestBadCurrencyRowIsRejectedWithoutAborting(t *testing.T) {
 		t.Fatalf("%d customers were imported alongside a bad currency row", n)
 	}
 }
+
+// An existing account is adopted, never demoted.
+//
+// The most likely collision in a real migration is the operator's own address: they created their
+// administrator here before importing, and the old panel's dump says that person was "support".
+// Taking administrator away because of a dump would lock the operator out of the panel they are
+// importing into.
+func TestAdoptedAdminIsNotDemoted(t *testing.T) {
+	pool := storetest.DB(t)
+	ctx := context.Background()
+	var userID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO users (email, password_hash, display_name)
+		VALUES ('ops@example.test', '!existing', 'The Operator') RETURNING id::text`).Scan(&userID); err != nil {
+		t.Fatalf("seed operator: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO staff_roles (user_id, role) VALUES ($1, 'administrator')`, userID); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+
+	d := extendedDump().file(importer.FileAdmins,
+		"id,email,firstname,lastname,role",
+		"9,ops@example.test,Ops,Person,support")
+	if _, err := importer.Run(ctx, pool, d.run(true)); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	var role string
+	if err := pool.QueryRow(ctx,
+		`SELECT role FROM staff_roles WHERE user_id = $1`, userID).Scan(&role); err != nil {
+		t.Fatalf("read role: %v", err)
+	}
+	if role != "administrator" {
+		t.Fatalf("role = %q after the import, want administrator: an import must not demote a human", role)
+	}
+	// And the password is untouched: the account still signs in with the one it had.
+	var hash string
+	if err := pool.QueryRow(ctx, `SELECT password_hash FROM users WHERE id = $1`, userID).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	if hash != "!existing" {
+		t.Fatal("the import rewrote an existing account's password")
+	}
+}

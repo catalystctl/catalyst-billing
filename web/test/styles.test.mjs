@@ -160,6 +160,10 @@ const UNSTYLED_BY_DESIGN = new Map([
   ["menu-item--mfa", "a modifier on an <a class=\"menu-item\">; the base class does the styling"],
   ["flow-name", "text inside .flow-step, which sets colour, size and padding for the chip"],
   ["captcha-host", "mount point for a third-party widget; empty when none is configured, so it must"],
+  [
+    "portal-tickets-slot",
+    "mount point inside .stack, which already sets the gap; fillTicketWidget inserts a full card or removes the slot, so it is empty or holds a styled child and never needs rules of its own",
+  ],
 ]);
 
 test("classes used in markup are defined somewhere", () => {

@@ -18,6 +18,13 @@
 // the automation screen point at jobs that read settings from it. A second group for the same
 // subject would make an operator look in two places for one answer.
 //
+// One threshold the row names is deliberately *not* here: "invoice days" — how far before the period
+// ends a renewal invoice is issued. That is already a stored per-installation value in the renewal
+// policy (`invoice_lead_days`, alongside `payment_terms_days` and the catch-up limits), because it
+// changes the shape of a billing run rather than the escalation of one invoice. Duplicating it into
+// this group would give an operator two places to set one number, and the second would be the one
+// the renewal engine does not read.
+//
 // A note on `dunning_enabled`: the ladder needed an off switch before its numbers became
 // configurable, because "remind every 0 days" and "suspend after 0 days" are the readings that
 // harm a customer, and a stored zero is a plausible typo. With an explicit switch, a zero day

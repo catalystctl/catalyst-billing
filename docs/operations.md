@@ -39,16 +39,64 @@ work is cheap when there is nothing to do.
 |---|---|---|---|
 | payments | 5s | inbox → authoritative re-query → applied payment | `BILLING_DISABLE_PAYMENTS` |
 | provisioning | 5s | reaps expired leases, executes operations, reconciles unknowns | `BILLING_DISABLE_PROVISIONING` |
+| notifications | 15s | drains the durable message outbox | `BILLING_DISABLE_NOTIFICATIONS` |
 | dunning | 60s | escalates overdue invoices, resumes paid ones, decides suspensions | `BILLING_DISABLE_SUSPENSION` |
 | renewals | 60s | invoices due subscriptions | — |
+| ticket-piping | 60s | polls the support mailbox and turns new mail into ticket replies | — |
 | refund-reconcile | 2m | resolves refunds whose provider call timed out | `BILLING_DISABLE_REFUND_RECONCILE` |
-| notifications | 15s | drains the durable message outbox | `BILLING_DISABLE_NOTIFICATIONS` |
+| service-upgrades | 2m | applies paid upgrades, credits and applies downgrades, voids upgrade invoices nobody paid | `BILLING_DISABLE_SERVICE_UPGRADES` |
+| charge-agreements | 15m | charges the saved default card of an invoice that is due, after `cronjob.charge_retry_hours` | `BILLING_DISABLE_CHARGE_DUE` |
+| abandoned_carts | 30m | releases the stock held by carts nobody checked out | `BILLING_DISABLE_CART_ABANDON` |
+| order-cancel | 30m | cancels unpaid orders older than `cronjob.order_cancel_days`, voiding their invoices and restoring stock | `BILLING_DISABLE_ORDER_CANCEL` |
+| terminate-suspended | 30m | terminates services suspended longer than `cronjob.terminate_days`, through the operation queue | `BILLING_DISABLE_TERMINATION` |
 | retention | 6h | deletes bookkeeping rows past their policy | — |
-| service-upgrades | 60s | applies paid pending upgrades and cancels stale ones | `BILLING_DISABLE_SERVICE_UPGRADES` |
+| ticket-autoclose | 6h | closes tickets nobody replied to for `tickets.autoclose_days` | — |
+| tax-rate-refresh | 60m | fetches the configured tax-rate source; the source's own refresh interval decides whether a tick fetches | — |
+| telemetry-send | 24h | sends the opt-in anonymous usage report when `updates.telemetry` is on | `BILLING_DISABLE_TELEMETRY` |
 
 The kill switches are the emergency brake: a misbehaving gateway or provisioner can
 be stopped without a deploy. Stopping provisioning does not lose work — the
 operations stay queued and are picked up when the switch is cleared.
+
+A switched-off job is absent from `cron_runs` entirely rather than recorded as
+skipped, so "the job did not run" and "the job ran and did nothing" are different
+rows. The automation screen shows every job with its switch state, which is the only
+place a switched-off job is visible at all.
+
+`charge-agreements` is the one job that moves money with nobody in the room, so it is
+worth knowing exactly what its switch does. Stopping it stops unattended charging and
+nothing else: renewals still issue invoices, dunning still reminds and still decides
+suspensions on its own schedule, and a single invoice can still be charged by hand
+from the invoice screen. Nothing is queued either — a tick that does not run is a tick
+that did not happen, and the invoice stays due — so clearing the switch does not
+produce a burst of retroactive charges. Before turning it back on, read
+`GET /api/v1/staff/payments/charge-due`: it lists what the next tick would take, the
+amount per currency, and the invoices it would skip and why. It resolves no gateway,
+so asking it cannot charge anything.
+
+That job's safety does not depend on there being one worker. The attempt row is
+inserted before the provider is called and `payment_attempts.operation_key` is
+UNIQUE, so two workers scanning the same invoice produce one provider round-trip and
+one attempt row, and the loser is refused by the database rather than by an in-memory
+check. There is deliberately no cross-process lock: the loser's refusal is the only
+signal the panel has that two workers are running, and silencing it to tidy the run
+history would remove the one symptom. A decline goes to dunning and never straight to
+suspension.
+
+`telemetry-send` is off by default and doubly switched: `updates.telemetry` is the
+operator's consent on the settings screen, and `BILLING_DISABLE_TELEMETRY` is the
+process-level brake for a deployment that would rather hold it in the environment.
+Stopping it stops the daily report and nothing else — the update check is a separate
+action, and "send now" still works, because an operator who wants to send one report
+should not have to re-enable a schedule to do it. A delivery recorded inside twenty
+hours is not repeated, so restarting the worker cannot turn one day's report into
+three.
+
+`terminate-suspended` and `order-cancel` have their own switches because they are the
+two rules that destroy something a customer paid for, and `service-upgrades` has its
+own because it is the job that *voids documents*: an operator whose catalogue produced
+a burst of wrong upgrade prices needs to stop that without also stopping terminations
+or order cancellation.
 
 ## What to watch
 

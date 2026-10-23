@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/catalyst/billing/internal/settings"
 	"github.com/catalyst/billing/internal/store"
@@ -31,6 +32,24 @@ import (
 //   - `BuildPayload` returns no payload, which is the same as the first refusal stated by the
 //     builder rather than by this caller.
 //
+// # What leaves the installation
+//
+// Exactly the document `updates.Payload` marshals, and nothing else: the payload schema version, a
+// random per-installation id, the panel version and channel, the Go version, OS and architecture,
+// the highest applied migration number, a timestamp, and seven integer counts (customers, active
+// and suspended services, open invoices, invoices paid in the last 30 days, open tickets, installed
+// extensions). No customer name, address, email, invoice number, amount or ticket subject is in it,
+// and there is no "send more" tier to opt into: the anonymous document is the ceiling, which is the
+// safest shape for a thing that leaves the building by default-off.
+//
+// # Why the endpoint is configuration and not a constant
+//
+// There is no vendor endpoint compiled in. `update_config.telemetry_endpoint` is an operator-set
+// URL, treated as a credential on every read path, and this build cannot verify what a third
+// party's collector expects — so it makes no assumption beyond "POST this JSON, accept a 2xx". A
+// deployment that points it at a sink it controls sees exactly the bytes documented above, which is
+// also how the test proves the payload is anonymous: it reads them off a local server.
+//
 // # Why the sender is a parameter
 //
 // The delivery is an outbound POST to an operator-chosen host. A test must be able to point it at
@@ -43,6 +62,24 @@ type TelemetryRun struct {
 	Reason string
 	// Result is the recorded delivery, when one happened.
 	Result *updates.SendResult
+}
+
+// TelemetryMinimumGap is how close two recorded deliveries may be.
+//
+// Twenty hours rather than twenty-four: a daily tick that drifts by a restart should still send, and
+// the cost of an occasional early delivery is nothing next to a job that sends on every restart.
+const TelemetryMinimumGap = 20 * time.Hour
+
+// deliveredWithin reports whether a successful delivery was recorded inside the window.
+func deliveredWithin(ctx context.Context, pool *store.Pool, now time.Time, window time.Duration) (bool, error) {
+	var count int
+	err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM telemetry_sends
+		WHERE status = 'sent' AND sent_at > $1`, now.Add(-window)).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("operations: read the telemetry history: %w", err)
+	}
+	return count > 0, nil
 }
 
 // SendTelemetry delivers the payload when the operator has opted in and an endpoint is stored.
@@ -72,6 +109,19 @@ func SendTelemetry(ctx context.Context, pool *store.Pool, opts Options) (Telemet
 	}
 	if cfg.TelemetryEndpoint == "" {
 		return TelemetryRun{Reason: ReasonNotConfigured}, nil
+	}
+
+	// A restart must not become a second delivery. The worker ticks a job once on start and then
+	// every interval, so a deployment that restarts hourly would otherwise send hourly — the
+	// schedule is a promise about frequency, and a promise that depends on uptime is not one.
+	// The guard is a stored row, not an in-memory timestamp: two workers restarting together see
+	// the same history.
+	sentRecently, err := deliveredWithin(ctx, pool, opts.Now(), TelemetryMinimumGap)
+	if err != nil {
+		return TelemetryRun{}, err
+	}
+	if sentRecently {
+		return TelemetryRun{Reason: ReasonRecentlySent}, nil
 	}
 
 	payload, err := updateStore.BuildPayload(ctx, opts.Version, channel, true)

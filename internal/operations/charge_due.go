@@ -28,6 +28,17 @@ import (
 // about an invoice nothing has changed about — which is how the invoice that *just* became due
 // goes unnoticed in the noise.
 //
+// # Idempotency: the marker is a row, not a variable
+//
+// A re-run must not charge twice, and "the loop remembers what it did" is not a guarantee — the
+// process can restart between the provider call and the settlement. The marker is therefore the
+// database's: `payment_attempts.operation_key` is UNIQUE (0001_core.sql), and the charge path keys
+// the attempt `offsession:<invoice>:<method>`. One renewal invoice is one agreement's charge for
+// one period, so that key *is* the per-agreement-per-period marker: a second run finds the row and
+// either re-applies the recorded settlement (a crash after charging) or refuses to repeat a
+// declined one. Nothing in this file holds state between runs, and a test asserts the constraint
+// rather than the intention.
+//
 // So this sweep adds the one thing a ticker needs and a button does not: a per-invoice retry
 // window (`cronjob.charge_retry_hours`). It is not a safety guard. The guard is in
 // internal/payments, which refuses to re-charge an invoice whose attempt it has already recorded
@@ -85,8 +96,17 @@ func ChargeDue(ctx context.Context, pool *store.Pool, opts Options) (ChargeDueRu
 	}
 	charger, account, closeFn, err := factory(ctx)
 	if err != nil {
-		if errors.Is(err, gatewayconfig.ErrNotConfigured) || errors.Is(err, payments.ErrOffSessionUnsupported) {
+		switch {
+		case errors.Is(err, gatewayconfig.ErrNotConfigured), errors.Is(err, payments.ErrOffSessionUnsupported):
+			// No gateway, or one whose protocol cannot charge a saved method. Both are states of
+			// the installation, not failures of the run: a red cron row every fifteen minutes for
+			// a deployment that has not configured a gateway is how an operator learns to ignore
+			// red rows.
 			return ChargeDueRun{Reason: ReasonNotConfigured}, nil
+		case errors.Is(err, gatewayconfig.ErrDisabled):
+			// Configured and switched off on the integrations screen: the operator's decision, and
+			// the same answer as a missing gateway.
+			return ChargeDueRun{Reason: ReasonDisabled}, nil
 		}
 		return ChargeDueRun{}, fmt.Errorf("operations: resolve the payment gateway: %w", err)
 	}
@@ -137,13 +157,21 @@ func ChargeDue(ctx context.Context, pool *store.Pool, opts Options) (ChargeDueRu
 //
 // The predicates are the ones ChargeDue uses, plus the retry window, and they are in SQL for the
 // reason the dashboard's are: a sweep that loaded rows and filtered them in Go would change its
-// answer when the batch size changed.
+// answer when the batch size changed. The plan in preview.go re-reads the same conditions inverted
+// to say *why* an invoice is not on this list; a test asserts the two agree, because inverting a
+// predicate by hand is exactly where they would drift.
 func dueInvoices(ctx context.Context, pool *store.Pool, provider string, retryBefore time.Time, limit int) ([]string, error) {
 	rows, err := pool.Query(ctx, `
 		SELECT i.id
 		FROM invoices i
 		JOIN payment_methods pm
 		  ON pm.customer_id = i.customer_id AND pm.is_default AND pm.provider = $1
+		-- A method without an active mandate is a token this panel has no permission to use. The
+		-- charge path refuses it anyway (ErrNoAgreement), so offering it here would turn one
+		-- customer's unfinished mandate into a red cron row every fifteen minutes.
+		AND EXISTS (
+		    SELECT 1 FROM billing_agreements ag
+		    WHERE ag.payment_method_id = pm.id AND ag.status = 'active')
 		WHERE i.status = 'open'
 		  AND i.amount_paid_minor < i.total_minor
 		  AND i.due_at IS NOT NULL
@@ -189,6 +217,11 @@ func dueInvoices(ctx context.Context, pool *store.Pool, provider string, retryBe
 // It is the same launch internal/httpapi performs for the staff "charge saved method" button
 // (gatewayconfig.Launch), which is the point: a charge the worker makes and a charge an operator
 // makes must go through one adapter, or the two would disagree about what the gateway supports.
+//
+// It launches per run rather than holding a long-lived client the way the worker's own job list
+// does: this package is a library and cannot own the process lifecycle of a child that outlives a
+// request or a test. A process launch every fifteen minutes is the price, and it is the same price
+// the staff button pays per click.
 func gatewayCharger(pool *store.Pool) ChargerFactory {
 	return func(ctx context.Context) (payments.OffSessionCharger, string, func(), error) {
 		cfg, err := gatewayconfig.New(pool).Load(ctx, gatewayconfig.GatewayKind)

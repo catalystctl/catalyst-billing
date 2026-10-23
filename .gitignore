@@ -12,3 +12,4 @@ coverage.out
 # Written by scripts/browser-e2e.sh during a run; never committed.
 web/dist/e2e-driver.js
 web/dist/e2e.html
+/billing

@@ -36,6 +36,11 @@ package importer
 //     (`tblproductconfigoptions` plus its values and pricing) cannot be mapped without guessing
 //     which value priced which service, and a wrong mapping re-prices a live service on its next
 //     renewal.
+//   - **Product groups.** WHMCS groups products in `tblproductgroups`; this panel has one flat level
+//     (`categories`). The mapping is not a mapping, it is a decision about a storefront's
+//     navigation, so products import uncategorised and the operator files them on the catalog
+//     screen — which is a minute of work with the real catalogue in front of them, and cannot be
+//     got wrong by a guess.
 //   - **Ticket replies.** The ticket *header* is imported; the thread is a separate document whose
 //     shape (author attribution, staff flag, attachments) has no fixture here. Every imported
 //     ticket carries the `ticket_thread_not_imported` warning so an operator reads the subject and
@@ -309,11 +314,14 @@ func (r *run) applyAdmin(row *csvRow) error {
 		if err := r.recordMapping(entity, legacy, existing); err != nil {
 			return err
 		}
-		if err := r.grantRole(existing, role); err != nil {
+		// Never demote an account that already exists: the person may be the operator running the
+		// import, and "the dump said support" is not a reason to take administrator away from them.
+		// A role is granted only where there is none.
+		if err := r.grantRole(existing, role, false); err != nil {
 			return err
 		}
 		r.warn(file, row.row, legacy, WarnAdminMustResetPassword,
-			email+" already existed; its role was set to "+role+" and its password was left untouched")
+			email+" already existed; a role was granted only if it held none, and its password was left untouched")
 		r.written(entity, OutcomeUnchanged)
 		return nil
 	case !errors.Is(err, pgx.ErrNoRows):
@@ -332,7 +340,7 @@ func (r *run) applyAdmin(row *csvRow) error {
 		}
 		return fmt.Errorf("importer: create admin: %w", err)
 	}
-	if err := r.grantRole(userID, role); err != nil {
+	if err := r.grantRole(userID, role, true); err != nil {
 		return err
 	}
 	if err := r.recordMapping(entity, legacy, userID); err != nil {
@@ -344,11 +352,21 @@ func (r *run) applyAdmin(row *csvRow) error {
 	return nil
 }
 
-// grantRole attaches a staff role, doing nothing when the account already holds it.
-func (r *run) grantRole(userID, role string) error {
-	if _, err := r.tx.Exec(r.ctx, `
+// grantRole attaches a staff role.
+//
+// `overwrite` is true only for an account this run created, where there is nothing to lose. For an
+// account adopted by email the conflict clause does nothing: an import must never take a permission
+// away from a human, and the dump is not an authority on who should still be an administrator here.
+func (r *run) grantRole(userID, role string, overwrite bool) error {
+	query := `
 		INSERT INTO staff_roles (user_id, role) VALUES ($1, $2)
-		ON CONFLICT (user_id) DO UPDATE SET role = EXCLUDED.role`, userID, role); err != nil {
+		ON CONFLICT (user_id) DO NOTHING`
+	if overwrite {
+		query = `
+		INSERT INTO staff_roles (user_id, role) VALUES ($1, $2)
+		ON CONFLICT (user_id) DO UPDATE SET role = EXCLUDED.role`
+	}
+	if _, err := r.tx.Exec(r.ctx, query, userID, role); err != nil {
 		return fmt.Errorf("importer: grant role: %w", err)
 	}
 	return nil

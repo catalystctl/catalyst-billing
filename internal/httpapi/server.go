@@ -138,6 +138,11 @@ type Server struct {
 	routesMu sync.Mutex
 	routes   []Route
 
+	// logWriteFailures counts the error_logs and http_logs rows the database refused (see
+	// middleware.go). It is on /metrics because an empty /logs is otherwise ambiguous: it could
+	// mean nothing failed, or that the writer is losing everything.
+	logWriteFailures atomic.Int64
+
 	webhooksReceived  atomic.Int64
 	webhooksDuplicate atomic.Int64
 	webhooksRejected  atomic.Int64
@@ -242,16 +247,22 @@ func (s *Server) WithAuth(a *Auth) *Server {
 }
 
 // Handler returns the root handler.
-// Handler returns the root handler.
 //
 // The route table is built by the registrars (see routes.go), so this function does
 // not enumerate endpoints: it applies the outermost middleware and hands the mux to
 // the server. loadSession is deliberately global rather than per-route: public
 // endpoints must still work when a stale cookie is present, and a route that needs an
 // identity is guarded by its own declaration.
+//
+// Order matters, and two positions are load-bearing. withRequestLog is outermost so the row it
+// writes describes the request that actually happened: a panic recovered further in, and a
+// request refused by loadSession itself, are both requests this server served, and the log is
+// read precisely when something went wrong. noteRequestContext is innermost so it runs after
+// loadSession has resolved an identity and withCorrelation has minted an id — both facts exist
+// only in the context derived between the two.
 func (s *Server) Handler() http.Handler {
 	mux, _ := s.buildRoutes()
-	return s.withRecovery(s.withRequestLog(s.withCorrelation(s.loadSession(mux))))
+	return s.withRequestLog(s.withRecovery(s.withCorrelation(s.loadSession(s.noteRequestContext(mux)))))
 }
 
 // withCorrelation attaches a request id to the context and echoes it in the response,
@@ -326,6 +337,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "# HELP billing_uptime_seconds Seconds since this instance started.\n")
 	fmt.Fprintf(w, "# TYPE billing_uptime_seconds gauge\n")
 	fmt.Fprintf(w, "billing_uptime_seconds %.0f\n", time.Since(s.startedAt).Seconds())
+
+	// Log rows the database refused. Without this an empty /logs is ambiguous: it could mean
+	// nothing failed, or that the writer is losing everything.
+	fmt.Fprintf(w, "# HELP billing_log_rows_failed_total Log rows the database refused.\n")
+	fmt.Fprintf(w, "# TYPE billing_log_rows_failed_total counter\n")
+	fmt.Fprintf(w, "billing_log_rows_failed_total %d\n", s.logWriteFailures.Load())
 }
 
 // handleWebhook ingests one delivery.
@@ -428,22 +445,6 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, overview)
 }
 
-// withRequestLog logs one line per request with a duration, without the body.
-func (s *Server) withRequestLog(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		s.cfg.Logger.InfoContext(r.Context(), "http request",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", rec.status,
-			"duration_ms", time.Since(start).Milliseconds(),
-			"bytes", rec.written,
-		)
-	})
-}
-
 // withRecovery turns a panic into a 500 instead of dropping the connection, so a
 // single bad request cannot take the process down.
 func (s *Server) withRecovery(next http.Handler) http.Handler {
@@ -457,39 +458,6 @@ func (s *Server) withRecovery(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status  int
-	written int
-}
-
-// Flush forwards to the underlying writer.
-//
-// Without this, wrapping the ResponseWriter hides http.Flusher, and the SSE handler refuses
-// to stream ("this server cannot stream responses") even though the real writer can. The
-// type assertion in that handler is a deliberate guard against a wrapper that silently
-// buffers; the wrapper's job is therefore to forward, not to hide.
-func (r *statusRecorder) Flush() {
-	if f, ok := r.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-// Unwrap exposes the underlying writer to http.ResponseController, which is how a handler
-// reaches SetWriteDeadline or Hijack through a wrapper.
-func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
-
-func (r *statusRecorder) WriteHeader(status int) {
-	r.status = status
-	r.ResponseWriter.WriteHeader(status)
-}
-
-func (r *statusRecorder) Write(b []byte) (int, error) {
-	n, err := r.ResponseWriter.Write(b)
-	r.written += n
-	return n, err
 }
 
 // problem is an RFC 9457-style error body: a stable machine code plus a human
@@ -512,6 +480,9 @@ func writeProblem(w http.ResponseWriter, status int, code, detail string) {
 		Detail: detail,
 		Code:   code,
 	})
+	// After the response, never before: a log write must not be able to change the answer the
+	// caller receives.
+	recordProblem(w, status, code, detail)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

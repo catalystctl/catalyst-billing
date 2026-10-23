@@ -12,6 +12,7 @@ import (
 	"github.com/catalyst/billing/internal/register"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/catalyst/billing/internal/store/storetest"
+	"github.com/jackc/pgx/v5"
 )
 
 // Registration is the entry point the storefront was missing, so these tests drive the
@@ -471,6 +472,113 @@ func TestChangePasswordRevokesOtherSessions(t *testing.T) {
 	}
 	if events != 1 {
 		t.Fatalf("password_changed events = %d, want 1", events)
+	}
+}
+
+// ----------------------------------------------------------- referral signups --
+
+// The attribution's failure must not be the registration's failure.
+//
+// The interesting failure is not a bad code — that is a Go-side refusal and leaves the
+// transaction untouched — but a statement that fails: a timeout, a constraint, a
+// connection that dies mid-transaction. A failed statement aborts the whole PostgreSQL
+// transaction, so an attribution that is merely "ignored" still takes the account down
+// with it when the next write runs. This test proves the savepoint is load-bearing: the
+// attributor below raises a real division-by-zero, and the account must still exist.
+func TestReferralAttributionFailureDoesNotFailRegistration(t *testing.T) {
+	e := newEnv(t)
+	e.svc.WithReferralAttribution(func(ctx context.Context, tx pgx.Tx, code, customerID string) error {
+		if code != "PARTNER10" {
+			t.Fatalf("code = %q, want the normalised code", code)
+		}
+		if customerID == "" {
+			t.Fatal("attribution was given no customer")
+		}
+		_, err := tx.Exec(ctx, `SELECT 1/0`)
+		return err
+	})
+
+	res, err := e.svc.Register(context.Background(), register.Request{
+		Email:        "poisoned@example.test",
+		Password:     "correct horse battery",
+		DisplayName:  "Poisoned Savepoint",
+		ReferralCode: "PARTNER10",
+	})
+	if err != nil {
+		t.Fatalf("a failed attribution failed the registration: %v", err)
+	}
+	if res.ReferralRefusal == nil {
+		t.Fatal("a failed attribution was not reported to the caller")
+	}
+
+	// The whole graph committed, including the auth event written *after* the failed
+	// statement — which is the row that would be lost if the transaction were poisoned.
+	ctx := context.Background()
+	var (
+		linked int
+		events int
+	)
+	if err := e.pool.QueryRow(ctx, `
+		SELECT count(*) FROM customer_accounts ca
+		JOIN users u ON u.id = ca.user_id
+		WHERE u.id = $1 AND ca.customer_id = $2`, res.UserID, res.CustomerID).Scan(&linked); err != nil {
+		t.Fatalf("count links: %v", err)
+	}
+	if linked != 1 {
+		t.Fatalf("customer_accounts rows = %d, want 1", linked)
+	}
+	if err := e.pool.QueryRow(ctx, `
+		SELECT count(*) FROM auth_events WHERE user_id = $1 AND event = 'registered'`,
+		res.UserID).Scan(&events); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if events != 1 {
+		t.Fatalf("registered events = %d, want 1", events)
+	}
+}
+
+// A refusal (as opposed to a failure) is reported, not raised, and the account stands.
+func TestReferralRefusalKeepsTheAccount(t *testing.T) {
+	e := newEnv(t)
+	e.svc.WithReferralAttribution(func(ctx context.Context, tx pgx.Tx, code, customerID string) error {
+		return errors.New("unknown referral code")
+	})
+
+	res, err := e.svc.Register(context.Background(), register.Request{
+		Email:        "refused@example.test",
+		Password:     "correct horse battery",
+		DisplayName:  "Refused Code",
+		ReferralCode: "NOPE123",
+	})
+	if err != nil {
+		t.Fatalf("a refused referral failed the registration: %v", err)
+	}
+	if res.ReferralRefusal == nil {
+		t.Fatal("a refused code was not reported to the caller")
+	}
+	if res.CustomerID == "" {
+		t.Fatal("the account was not created")
+	}
+}
+
+// No code, no attribution: an ordinary registration must not consult the programme at all.
+func TestRegistrationWithoutACodeDoesNotAttribute(t *testing.T) {
+	e := newEnv(t)
+	e.svc.WithReferralAttribution(func(ctx context.Context, tx pgx.Tx, code, customerID string) error {
+		t.Fatalf("attribution ran for a registration with no code (%q)", code)
+		return nil
+	})
+
+	res, err := e.svc.Register(context.Background(), register.Request{
+		Email:       "plain@example.test",
+		Password:    "correct horse battery",
+		DisplayName: "Plain Signup",
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if res.ReferralRefusal != nil {
+		t.Fatalf("a registration with no code reported a refusal: %v", res.ReferralRefusal)
 	}
 }
 

@@ -27,8 +27,11 @@
 //
 //   - Attribution itself is not a route here. Registration is owned by the customer
 //     purchase package, so this file exports growth.AttributeSignup for that transaction
-//     to call, and the storefront captures the ?ref= code via ReferralCodeFromRequest (see
-//     the integrator note in the package report).
+//     to call, and the storefront captures the ?ref= code via ReferralCodeFromRequest so
+//     the code survives the visit between the landing page and the registration form.
+//     The two halves meet in internal/register: the handler hands the code to the
+//     service, and the service attributes it inside the transaction that creates the
+//     customer, so a referral can never outlive or precede the account it refers.
 package httpapi
 
 import (
@@ -36,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -853,32 +857,160 @@ func (s *Server) handlePortalAffiliate(w http.ResponseWriter, r *http.Request) {
 
 // --------------------------------------------------------------- storefront --
 
+const (
+	// referralCookieName is where a ?ref= code waits between the storefront visit and
+	// the registration that ends it.
+	//
+	// A cookie rather than a hidden field on the registration form, because the code
+	// arrives on the page the visitor *lands* on and registration is several navigations
+	// later: browse the catalog, open a product, choose a plan, then create the account.
+	// A hidden field would have to be threaded through every screen in between and
+	// re-emitted by the client on the last one, and the client here is a router that can
+	// reach the registration form by any number of routes. The browser carries a cookie
+	// across all of it for free, and presents it on the registration POST without the
+	// frontend knowing the affiliate programme exists.
+	referralCookieName = "billing_ref"
+	// referralCookieMaxAge is how long a click can still earn somebody a commission.
+	//
+	// Thirty days is the window in which a referral link plausibly remains the reason a
+	// signup happened. Shorter loses the commission on a customer who took their time;
+	// longer attributes a signup to a link nobody remembers clicking, which is paying for
+	// traffic the affiliate did not send.
+	referralCookieMaxAge = 30 * 24 * time.Hour
+	// maxReferralCodeLength bounds what is echoed back into a cookie. A code is short;
+	// anything longer is not one, and copying it onward would put attacker-controlled
+	// text on the wire.
+	maxReferralCodeLength = 64
+)
+
 // ReferralCodeFromRequest reads a ?ref= code from a public storefront request.
 //
 // The storefront is anonymous, so the code is not stored server-side here: it is echoed
-// back in the catalog response so the frontend can keep it (a cookie, or a query parameter
-// carried into registration) and present it to POST /api/v1/auth/register, which passes it
-// to growth.AttributeSignup. Echoing it rather than trusting it is deliberate — the code is
-// validated against the affiliates table only when attribution happens, inside the
-// registration transaction, where a forged code simply fails.
-//
-// This is exported so the catalog handler (owned by the commerce package) can add it in one
-// line without this package owning that file:
-//
-//	if code := ReferralCodeFromRequest(r); code != "" {
-//		body["referral_code"] = code
-//	}
-//
-// See the P12 report for the exact call site.
+// back to the visitor's browser, and it is validated against the affiliates table only
+// when attribution happens, inside the registration transaction, where a forged code
+// simply fails.
 func ReferralCodeFromRequest(r *http.Request) string {
-	raw := strings.TrimSpace(r.URL.Query().Get("ref"))
-	if raw == "" {
-		return ""
-	}
-	// A code is short; anything longer is not one, and echoing it back unbounded would put
-	// attacker-controlled text in a cached response.
-	if len(raw) > 64 {
+	return normalizeReferralCode(r.URL.Query().Get("ref"))
+}
+
+// normalizeReferralCode canonicalises a code and refuses a shape that cannot be one.
+//
+// Normalising on the way in is what lets a link that an email client lower-cased still
+// attribute: the codes are stored upper-case, and the reader does not get to assume the
+// writer kept them that way.
+func normalizeReferralCode(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > maxReferralCodeLength {
 		return ""
 	}
 	return growth.NormalizeCode(raw)
+}
+
+// captureReferralCode remembers the code a visitor arrived with.
+//
+// It runs on the storefront document — the request that carries the query string — and
+// never on an API read, because the browser only sends ?ref= where the link pointed it.
+// Setting it on the *document* response is what makes the intent survive everything a
+// visitor does between landing and signing up: a bounce to another page, a closed tab, a
+// second visit typed in by hand. Nothing has to run in the browser for it to work, which
+// is why this is a response header rather than a frontend concern.
+//
+// A second link overwrites the first: the most recent click is the one that brought this
+// visitor here, and keeping the older code would pay an affiliate for traffic somebody
+// else sent.
+func (s *Server) captureReferralCode(w http.ResponseWriter, r *http.Request) {
+	code := ReferralCodeFromRequest(r)
+	if code == "" {
+		return
+	}
+	http.SetCookie(w, s.referralCookie(code, s.now().UTC()))
+}
+
+// referralCodeForRegistration resolves the code a registration should attribute: the
+// explicit field first, the storefront cookie second.
+//
+// Both exist because the field is the contract for a client that carries the code itself
+// (an API consumer, or a frontend that kept it deliberately) while the cookie is what
+// makes the ordinary browser journey work without any frontend support at all.
+func (s *Server) referralCodeForRegistration(r *http.Request, field string) string {
+	if code := normalizeReferralCode(field); code != "" {
+		return code
+	}
+	cookie, err := r.Cookie(referralCookieName)
+	if err != nil {
+		return ""
+	}
+	return referralCodeFromCookie(cookie.Value, s.now().UTC())
+}
+
+// referralCookieValue stamps the code with the moment it was captured.
+//
+// The age is in the value, not only in the cookie's own expiry, because the browser is
+// not the authority on whether a referral is still current: a client that keeps a cookie
+// past its Max-Age (a jar in a script, a browser that ignores the attribute) would
+// otherwise attribute a signup to a link clicked an arbitrarily long time ago, and the
+// server would have no way to tell. The timestamp is not a signature — a forged cookie
+// gains nothing that presenting the code directly would not — so it needs none.
+func referralCookieValue(code string, now time.Time) string {
+	return strconv.FormatInt(now.Unix(), 10) + ":" + code
+}
+
+// referralCodeFromCookie returns the code in a stored value, or "" when it is malformed,
+// outside the window, or not a code at all.
+func referralCodeFromCookie(value string, now time.Time) string {
+	stamp, code, ok := strings.Cut(value, ":")
+	if !ok {
+		return ""
+	}
+	seconds, err := strconv.ParseInt(stamp, 10, 64)
+	if err != nil {
+		return ""
+	}
+	if now.Sub(time.Unix(seconds, 0).UTC()) > referralCookieMaxAge {
+		return ""
+	}
+	return normalizeReferralCode(code)
+}
+
+// clearReferralCode expires the cookie once the code has been used.
+//
+// A cookie that outlives its use attributes the *next* signup from the same browser to the
+// same affiliate: one click, two customers, a commission paid twice for one referral. The
+// code has therefore had its answer the moment a registration consumes it — attributed or
+// refused — and the browser stops carrying it.
+func (s *Server) clearReferralCode(w http.ResponseWriter) {
+	http.SetCookie(w, s.referralCookie("", s.now().UTC()))
+}
+
+// referralCookie builds the attribution cookie with the session cookie's transport policy,
+// so the two cannot disagree about whether this installation is served over TLS.
+//
+// An empty code is the expiry: Max-Age below zero plus a date in the past, because a client
+// that honours only one of the two still drops it.
+func (s *Server) referralCookie(code string, now time.Time) *http.Cookie {
+	cfg := CookieConfig{Path: "/"}
+	if s.auth != nil {
+		cfg = s.auth.Cookies.withDefaults()
+	}
+	cookie := &http.Cookie{
+		Name:   referralCookieName,
+		Value:  referralCookieValue(code, now),
+		Path:   cfg.Path,
+		Domain: cfg.Domain,
+		// HttpOnly: only the server reads it, and nothing in the client needs to. SameSite
+		// Lax: the cookie has to survive the top-level navigation a referral link performs
+		// — Strict would drop it on exactly the arrival that matters — while still staying
+		// off a cross-site POST.
+		HttpOnly: true,
+		Secure:   cfg.Secure,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  now.Add(referralCookieMaxAge),
+		MaxAge:   int(referralCookieMaxAge.Seconds()),
+	}
+	if code == "" {
+		cookie.Value = ""
+		cookie.MaxAge = -1
+		cookie.Expires = time.Unix(0, 0)
+	}
+	return cookie
 }

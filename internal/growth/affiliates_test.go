@@ -349,6 +349,50 @@ func TestAttributionUnknownCode(t *testing.T) {
 	}
 }
 
+// An affiliate cannot refer their own account.
+//
+// The registration flow cannot reach this case — it always creates a fresh user, and a
+// fresh user cannot already be an affiliate — so the guard is tested where it can be
+// reached: a customer account created for the affiliate's own login, which is what an
+// operator or a second purchase path produces. The rule matters because the commission
+// would be a discount the affiliate grants themselves at the business's expense.
+func TestAttributionRefusesSelfReferral(t *testing.T) {
+	w := newWorld(t, "10%")
+	ctx := context.Background()
+
+	// The affiliate's own billing account, created in the same transaction that
+	// attributes it, so the "account must be new" rule does not fire first.
+	var ownCustomer string
+	err := w.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO customers (email, name) VALUES ('affiliate+second@example.test', 'Affiliate')
+			RETURNING id`).Scan(&ownCustomer); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO customer_accounts (user_id, customer_id) VALUES ($1, $2)`,
+			w.affiliateUser, ownCustomer); err != nil {
+			return err
+		}
+		_, err := growth.AttributeSignup(ctx, tx, "PARTNER10", ownCustomer)
+		return err
+	})
+	if !errors.Is(err, growth.ErrSelfReferral) {
+		t.Fatalf("err = %v, want ErrSelfReferral", err)
+	}
+
+	// And nothing was written: the refusal is not a half-attribution.
+	var rows int
+	if err := w.pool.QueryRow(ctx, `
+		SELECT count(*) FROM affiliate_referrals WHERE customer_id = $1`, ownCustomer,
+	).Scan(&rows); err != nil {
+		t.Fatalf("count referrals: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("self-referral wrote %d attribution(s)", rows)
+	}
+}
+
 // -------------------------------------------------------------------- payout --
 
 // The payout settles the balance, marks the commissions paid, and a second call is

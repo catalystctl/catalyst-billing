@@ -118,6 +118,36 @@ type hookList struct {
 		Confirm    string `json:"confirm"`
 		Permission string `json:"permission"`
 	} `json:"service_actions"`
+	// The operator surface (GRW-05).
+	AdminResources []struct {
+		Extension  string `json:"extension"`
+		ID         string `json:"id"`
+		Plural     string `json:"plural"`
+		Path       string `json:"path"`
+		Permission string `json:"permission"`
+		Method     string `json:"method"`
+		Columns    []struct {
+			Key     string `json:"key"`
+			Type    string `json:"type"`
+			Primary bool   `json:"primary"`
+		} `json:"columns"`
+	} `json:"admin_resources"`
+	Pages []struct {
+		Extension  string `json:"extension"`
+		ID         string `json:"id"`
+		Path       string `json:"path"`
+		Permission string `json:"permission"`
+		Method     string `json:"method"`
+	} `json:"pages"`
+	CheckoutConfig struct {
+		Fields []struct {
+			Extension string   `json:"extension"`
+			Key       string   `json:"key"`
+			Type      string   `json:"type"`
+			Required  bool     `json:"required"`
+			Choices   []string `json:"choices"`
+		} `json:"fields"`
+	} `json:"checkout_config"`
 }
 
 func decodeHooks(t *testing.T, body []byte) hookList {

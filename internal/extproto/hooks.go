@@ -123,9 +123,19 @@ type UIDescribeParams struct {
 }
 
 // UIDescribeResult is what an extension would like the panel to show.
+//
+// The first two fields are the original surface (a menu entry and a service button). The rest
+// are the operator surface GRW-05 was missing — an admin resource, a page, and the inputs a
+// checkout asks for — declared in surface.go with the same rules.
 type UIDescribeResult struct {
 	NavItems       []NavItem       `json:"nav_items"`
 	ServiceActions []ServiceAction `json:"service_actions"`
+	AdminResources []AdminResource `json:"admin_resources"`
+	Pages          []Page          `json:"pages"`
+	// CheckoutFields is accepted as `checkout_config.fields` on the wire and as a bare
+	// `checkout_fields` list, because both readings of "checkout config" are natural to an
+	// extension author and refusing one would be a puzzle rather than a rule.
+	CheckoutFields []CheckoutField `json:"checkout_fields"`
 }
 
 // Validate refuses a declaration the panel cannot render safely.
@@ -165,6 +175,12 @@ func (r UIDescribeResult) Validate(advertised func(method string) bool, known fu
 			return fmt.Errorf("%w: service_actions[%d]: duplicate id %q", ErrInvalidParams, i, action.ID)
 		}
 		seen[key] = struct{}{}
+	}
+	// The operator surfaces are validated by the same call, so a declaration that is valid in
+	// one half and broken in the other is refused as a whole: a half-installed hook set is
+	// worse than none, because the operator cannot tell which half is live.
+	if _, err := r.ValidateSurface(advertised, known); err != nil {
+		return err
 	}
 	return nil
 }
@@ -345,6 +361,11 @@ type Extension struct {
 	NavItems []NavItem
 	// ServiceActions are the service actions it contributes.
 	ServiceActions []ServiceAction
+	// AdminResources, Pages and CheckoutFields are the operator surfaces it declares
+	// (GRW-05). They are data: the panel renders them, the extension ships no code to it.
+	AdminResources []AdminResource
+	Pages          []Page
+	CheckoutFields []CheckoutField
 	// Events are the lifecycle kinds it subscribed to.
 	Events []string
 }
@@ -397,6 +418,13 @@ type installed struct {
 	navItems []NavItem
 	actions  map[string]ServiceAction
 	kinds    map[string]struct{}
+	// The operator surfaces. They are held for the list endpoint and for nothing else: nothing
+	// in the core calls an admin resource or a page method today, because no web view renders
+	// them yet (see the report on GRW-05). Keeping them on the snapshot means the list endpoint
+	// answers from one read of the registry rather than a second call per extension.
+	resources []AdminResource
+	pages     []Page
+	checkout  []CheckoutField
 
 	queue     chan Event
 	delivered atomic.Int64
@@ -482,6 +510,9 @@ func (h *Hooks) Register(ctx context.Context, c *Client) error {
 		for _, action := range described.ServiceActions {
 			inst.actions[action.ID] = action
 		}
+		inst.resources = described.AdminResources
+		inst.pages = described.Pages
+		inst.checkout = described.CheckoutFields
 	}
 
 	if info.Version >= VersionTwo && info.HasCapability(MethodEventsSubscribe) {
@@ -560,6 +591,9 @@ func (h *Hooks) Extensions() []Extension {
 			Version:        inst.version,
 			NavItems:       append([]NavItem(nil), inst.navItems...),
 			ServiceActions: actions,
+			AdminResources: append([]AdminResource(nil), inst.resources...),
+			Pages:          append([]Page(nil), inst.pages...),
+			CheckoutFields: append([]CheckoutField(nil), inst.checkout...),
 			Events:         kinds,
 		})
 	}

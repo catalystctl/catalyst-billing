@@ -152,6 +152,10 @@ type serviceAction struct {
 	Permission string `json:"permission"`
 }
 
+// recordsMethod is the method the declared admin resource and page read from. It is a fixture
+// answer: what matters is that a declared surface names a method the extension advertised.
+const recordsMethod = "example.records"
+
 // actionResult is the answer to one service-action call, kept so a replay of the same
 // operation key returns the first result instead of acting twice.
 type actionResult struct {
@@ -263,6 +267,14 @@ func (s *server) handle(req *request) reply {
 	if req.Method == s.actionMethod {
 		return s.action(req)
 	}
+	if req.Method == recordsMethod {
+		// A fixture answer: the point of the conformance fixture is the *declaration* the panel
+		// accepts and the shape it can render, not a database round trip.
+		return reply{result: map[string]any{"records": []map[string]any{
+			{"name": "web-1", "status": "active"},
+			{"name": "web-2", "status": "suspended"},
+		}}}
+	}
 	return reply{rpcErr: &rpcError{Code: codeMethodNotFound, Message: "method not found: " + req.Method}}
 }
 
@@ -315,7 +327,7 @@ func (s *server) initialize(req *request) reply {
 func (s *server) capabilities() []string {
 	caps := []string{"health", "fixture.received", s.actionMethod}
 	if s.version >= 2 {
-		caps = append(caps, "ui.describe", "events.subscribe")
+		caps = append(caps, "ui.describe", "events.subscribe", recordsMethod)
 	}
 	return caps
 }
@@ -339,6 +351,38 @@ func (s *server) describe() reply {
 			Method:     s.actionMethod,
 			Confirm:    "Reboot this service? It will be unavailable for about a minute.",
 			Permission: s.actionPermission,
+		}},
+		// The operator surface (GRW-05). A resource is a record type the panel draws a table
+		// for, a page is a place in the menu, and a checkout field is an input the customer is
+		// asked for. None of them carries markup or SQL: they are declarations the panel renders
+		// with its own components.
+		"admin_resources": []map[string]any{{
+			"id":         "records",
+			"label":      "Example record",
+			"plural":     "Example records",
+			"path":       "/staff/extensions/example-hooks/records",
+			"icon":       "plug",
+			"permission": s.navPermission,
+			"method":     recordsMethod,
+			"columns": []map[string]any{
+				{"key": "name", "label": "Name", "type": "text", "primary": true},
+				{"key": "status", "label": "Status", "type": "status"},
+			},
+		}},
+		"pages": []map[string]any{{
+			"id":         "overview",
+			"label":      "Example overview",
+			"path":       "/staff/extensions/example-hooks/overview",
+			"icon":       "plug",
+			"permission": s.navPermission,
+			"method":     recordsMethod,
+		}},
+		"checkout_fields": []map[string]any{{
+			"key":      "example.hostname",
+			"label":    "Hostname",
+			"type":     "text",
+			"required": true,
+			"help":     "The name the server should answer to.",
 		}},
 	}}
 }

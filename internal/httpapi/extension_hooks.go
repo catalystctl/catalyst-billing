@@ -224,6 +224,66 @@ func hookActionJSON(extension string, action extproto.ServiceAction) map[string]
 	return out
 }
 
+// hookResourceJSON is the wire form of one admin resource.
+//
+// The columns travel as data — key, label, type — because that is the whole of what the panel
+// needs to draw a table it owns the styling of. There is no cell renderer, no URL and no markup
+// in the payload: an extension describes a record, it does not describe a screen.
+func hookResourceJSON(extension string, res extproto.AdminResource) map[string]any {
+	columns := make([]map[string]any, 0, len(res.Columns))
+	for _, col := range res.Columns {
+		column := map[string]any{"key": col.Key, "label": col.Label, "type": col.Type}
+		if col.Primary {
+			column["primary"] = true
+		}
+		columns = append(columns, column)
+	}
+	return map[string]any{
+		"extension":  extension,
+		"id":         res.ID,
+		"label":      res.Label,
+		"plural":     res.Plural,
+		"path":       res.Path,
+		"icon":       res.Icon,
+		"permission": res.Permission,
+		"method":     res.Method,
+		"columns":    columns,
+	}
+}
+
+// hookPageJSON is the wire form of one operator page.
+func hookPageJSON(extension string, page extproto.Page) map[string]any {
+	return map[string]any{
+		"extension":  extension,
+		"id":         page.ID,
+		"label":      page.Label,
+		"path":       page.Path,
+		"icon":       page.Icon,
+		"permission": page.Permission,
+		"method":     page.Method,
+	}
+}
+
+// hookCheckoutFieldJSON is the wire form of one checkout input.
+func hookCheckoutFieldJSON(extension string, field extproto.CheckoutField) map[string]any {
+	out := map[string]any{
+		"extension": extension,
+		"key":       field.Key,
+		"label":     field.Label,
+		"type":      field.Type,
+	}
+	if field.Required {
+		out["required"] = true
+	}
+	if field.Help != "" {
+		out["help"] = field.Help
+	}
+	if len(field.Choices) > 0 {
+		out["choices"] = field.Choices
+	}
+	return out
+}
+
 // handleExtensionHooks lists the hooks the caller may use.
 //
 // The filtering is per item, not per extension: one extension may contribute an operator
@@ -236,6 +296,9 @@ func (s *Server) handleExtensionHooks(w http.ResponseWriter, r *http.Request) {
 
 	nav := make([]map[string]any, 0, 4)
 	actions := make([]map[string]any, 0, 4)
+	resources := make([]map[string]any, 0, 2)
+	pages := make([]map[string]any, 0, 2)
+	checkout := make([]map[string]any, 0, 4)
 	for _, ext := range s.extensionHooks().Extensions() {
 		for _, item := range ext.NavItems {
 			if !holdsPermission(perms, item.Permission) {
@@ -249,11 +312,36 @@ func (s *Server) handleExtensionHooks(w http.ResponseWriter, r *http.Request) {
 			}
 			actions = append(actions, hookActionJSON(ext.Name, action))
 		}
+		// The operator surfaces (GRW-05) are filtered by the same rule: a declaration the
+		// caller cannot use is not shown, because a screen that renders and then refuses on
+		// save is a trap rather than a menu.
+		for _, res := range ext.AdminResources {
+			if !holdsPermission(perms, res.Permission) {
+				continue
+			}
+			resources = append(resources, hookResourceJSON(ext.Name, res))
+		}
+		for _, page := range ext.Pages {
+			if !holdsPermission(perms, page.Permission) {
+				continue
+			}
+			pages = append(pages, hookPageJSON(ext.Name, page))
+		}
+		// Checkout configuration is not permission-gated: it is what the customer is asked at
+		// checkout, so the person who needs to see it is a buyer, not an operator. The product
+		// it belongs to is the extension's own decision, carried in `applies_to` when the
+		// extension names one.
+		for _, field := range ext.CheckoutFields {
+			checkout = append(checkout, hookCheckoutFieldJSON(ext.Name, field))
+		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"nav_items":       nav,
 		"service_actions": actions,
+		"admin_resources": resources,
+		"pages":           pages,
+		"checkout_config": map[string]any{"fields": checkout},
 	})
 }
 

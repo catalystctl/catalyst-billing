@@ -89,6 +89,62 @@ func i18nOperations() map[string]Operation {
 				"rather than per-customer state.",
 		},
 
+		// -------------------------------------------------------- preference --
+
+		"GET /api/v1/me/locale": {
+			Summary: "The language this account chose, or the empty string if it never did",
+			Description: "The read-back half of the switcher. Empty is an answer rather than an absence: " +
+				"it means this account has no opinion, so the `Accept-Language` header decides for it. " +
+				"`default` is the installation's default locale, so a client can render \"no preference, " +
+				"so English\" without a second request.\n\n" +
+				"The same preference is what `GET /api/v1/i18n/locales` reports as `resolved.source = " +
+				"preference`, which is the resolution the storefront should render with.",
+			Responses: []Response{{
+				Status:      200,
+				Description: "The stored preference and the installation's default.",
+				Schema: map[string]any{
+					"type":     "object",
+					"required": []string{"locale", "default"},
+					"properties": map[string]any{
+						"locale":  map[string]any{"type": "string", "description": "A BCP-47 code, or `\"\"` when this account never chose one."},
+						"default": map[string]any{"type": "string", "description": "The locale a request with no usable preference resolves to."},
+					},
+				},
+			}},
+		},
+		"PUT /api/v1/me/locale": {
+			Summary: "Store the caller's language",
+			Description: "The durable half of the switcher: a choice made on one device follows the person " +
+				"to another and is what their queued mail is composed in. The code is normalised, so " +
+				"`DE` and `de` are one preference.\n\n" +
+				"An empty `locale` clears the preference, which is how a customer goes back to following " +
+				"the browser they are sitting in front of. A locale that is not enabled is refused with " +
+				"422 `locale_not_enabled` rather than stored: a preference for a language the catalogue " +
+				"cannot render is a customer whose every label falls through to the key itself.",
+			RequestSchema: map[string]any{
+				"type":     "object",
+				"required": []string{"locale"},
+				"properties": map[string]any{
+					"locale": map[string]any{
+						"type":        "string",
+						"description": "An enabled BCP-47 code, or `\"\"` to clear the preference.",
+					},
+				},
+			},
+			Responses: []Response{{
+				Status:      200,
+				Description: "The stored preference, echoed after normalisation, and the installation's default.",
+				Schema: map[string]any{
+					"type":     "object",
+					"required": []string{"locale", "default"},
+					"properties": map[string]any{
+						"locale":  map[string]any{"type": "string", "description": "What is now stored: the normalised code, or `\"\"` for no preference."},
+						"default": map[string]any{"type": "string", "description": "The locale a request with no usable preference resolves to."},
+					},
+				},
+			}},
+		},
+
 		// ------------------------------------------------------------- staff --
 
 		"GET /api/v1/staff/locales": {

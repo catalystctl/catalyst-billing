@@ -50,6 +50,14 @@ var (
 	ErrDefaultLocale = errors.New("i18n: the default locale cannot be disabled or removed")
 	// ErrKeyTaken is returned when a translation key already has a row for the locale.
 	ErrKeyTaken = errors.New("i18n: that key is already translated")
+	// ErrLocaleNotEnabled is returned when a preference names a language this installation does
+	// not offer — one that was never configured, or one an operator switched off.
+	//
+	// It is separate from ErrNotFound because the caller's situation is different: the account
+	// is fine, the locale they asked for is simply not on the menu, and the fix is to pick one
+	// that is. Storing it anyway is how a customer ends up with a page whose every label falls
+	// through to the key itself.
+	ErrLocaleNotEnabled = errors.New("i18n: that language is not offered by this installation")
 )
 
 // querier is the subset of pgx that both a pool and a transaction satisfy.
@@ -525,11 +533,16 @@ func (s *Store) SetUserLocale(ctx context.Context, userID, code string) (string,
 			return "", err
 		}
 		locale, err := s.Locale(ctx, normalized)
+		if errors.Is(err, ErrNotFound) {
+			// A language nobody configured and a language an operator disabled are the same
+			// answer to the customer: this installation does not offer it.
+			return "", fmt.Errorf("%w: %s", ErrLocaleNotEnabled, normalized)
+		}
 		if err != nil {
 			return "", err
 		}
 		if !locale.Enabled {
-			return "", invalid("%s is not offered", normalized)
+			return "", fmt.Errorf("%w: %s", ErrLocaleNotEnabled, normalized)
 		}
 	}
 	var value any

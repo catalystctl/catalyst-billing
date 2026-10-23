@@ -53,13 +53,17 @@ function fakeApi(options = {}) {
   ];
   const messages = options.messages ?? { en: EN, de: DE };
   const resolved = options.resolved ?? "en";
+  const source = options.source ?? "header";
   const calls = [];
+  /** Every account write the module made, so "the choice reached the server" is assertable. */
+  const writes = [];
   return {
     calls,
+    writes,
     async get(path, request = {}) {
       calls.push({ path, query: request.query ?? {} });
       if (path === "/api/v1/i18n/locales") {
-        return { locales, default: "en", resolved: { locale: resolved, source: "header" } };
+        return { locales, default: "en", resolved: { locale: resolved, source } };
       }
       if (path === "/api/v1/i18n/messages") {
         const code = request.query?.locale;
@@ -67,6 +71,11 @@ function fakeApi(options = {}) {
         return { locale: code, messages: messages[code] };
       }
       throw new Error(`unexpected request ${path}`);
+    },
+    async put(path, body) {
+      writes.push({ path, body });
+      if (options.failWrites) throw new Error("the account write failed");
+      return { locale: body?.locale ?? "", default: "en" };
     },
   };
 }
@@ -280,4 +289,69 @@ test("the catalogue is fetched once per locale and merged responses are used as 
   await loadMessages(api, "de");
   await loadMessages(api, "en");
   assert.equal(api.calls.length, before, "a cached catalogue must not be fetched again");
+});
+
+// ------------------------------------------------- the durable half of a switch --
+
+// The switch a customer makes is two records: what this browser shows, and what their account
+// says. Only the second one travels, so a client that writes just the first is a customer who
+// reads German here and English in their mail and on their phone.
+test("a switch is written to the account, not only to this browser", async () => {
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => store.get(key) ?? null,
+    setItem: (key, value) => store.set(key, String(value)),
+  };
+  try {
+    const api = await boot();
+    await setLocale("de");
+    assert.deepEqual(
+      api.writes,
+      [{ path: "/api/v1/me/locale", body: { locale: "de" } }],
+      "the account must be told which language the customer chose",
+    );
+    assert.equal(store.get("catalyst.locale"), "de");
+  } finally {
+    delete globalThis.localStorage;
+  }
+});
+
+test("a failed account write leaves the local choice in force", async () => {
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => store.get(key) ?? null,
+    setItem: (key, value) => store.set(key, String(value)),
+  };
+  try {
+    // The account write fails — a dropped connection, or a visitor whose session is gone. The
+    // switch has already happened on screen, so reverting it would look like a broken control.
+    const api = await boot({ failWrites: true });
+    const seen = [];
+    const off = onLocaleChange((locale) => seen.push(locale));
+
+    await setLocale("de");
+
+    assert.equal(api.writes.length, 1, "the write was attempted");
+    assert.equal(currentLocale(), "de");
+    assert.equal(t("storefront.nav.products"), "Produkte");
+    assert.equal(store.get("catalyst.locale"), "de");
+    assert.deepEqual(seen, ["de"], "the screen still re-rendered in the new language");
+    off();
+  } finally {
+    delete globalThis.localStorage;
+  }
+});
+
+test("the account's stored preference is applied before the first screen renders", async () => {
+  resetI18n();
+  // The server resolved from the account's stored preference rather than the browser's header.
+  const api = fakeApi({ resolved: "de", source: "preference" });
+  await initI18n(api);
+
+  assert.equal(currentLocale(), "de");
+  assert.equal(t("storefront.nav.products"), "Produkte", "the first render is already German");
+  // The catalogue for the resolved locale is the *first* one fetched. A client that painted the
+  // default and switched afterwards would fetch `en` first, and that first paint is the flash.
+  const first = api.calls.find((call) => call.path === "/api/v1/i18n/messages");
+  assert.equal(first.query.locale, "de");
 });

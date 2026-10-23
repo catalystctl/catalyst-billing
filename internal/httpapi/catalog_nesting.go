@@ -218,14 +218,16 @@ func (s *Server) handlePublicCategoryTree(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handlePublicCategory(w http.ResponseWriter, r *http.Request) {
-	node, products, err := s.catalogStore().PublicCategoryProducts(r.Context(), r.PathValue("slug"))
+	node, products, err := s.catalogStore().PublicCategoryProductsIn(r.Context(), r.PathValue("slug"),
+		currencyParam(r))
 	if err != nil {
 		s.catalogStructureError(w, r, err)
 		return
 	}
-	out := make([]map[string]any, 0, len(products))
-	for _, p := range products {
-		out = append(out, s.publicProductJSON(p))
+	out, err := s.publicProductList(r.Context(), products, s.storefrontSettings(r.Context()))
+	if err != nil {
+		s.staffError(w, r, err)
+		return
 	}
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -253,10 +255,14 @@ func publicCategoryNode(n catalog.CategoryNode) map[string]any {
 		"slug":        n.Slug,
 		"name":        n.Name,
 		"description": n.Description,
-		"sort_order":  n.SortOrder,
-		"parent_id":   n.ParentID,
-		"depth":       n.Depth,
-		"path":        n.Path,
+		// The category's own logo, served from the same media endpoint a product logo uses.
+		// Empty means "no image", which the storefront draws as a generated mark rather than
+		// a broken <img>.
+		"image_url":  n.ImageURL(),
+		"sort_order": n.SortOrder,
+		"parent_id":  n.ParentID,
+		"depth":      n.Depth,
+		"path":       n.Path,
 		// The branch total, which is what a filter click needs: a product in a child category
 		// has to be findable from the parent.
 		"product_count": n.SubtreeProductCount,

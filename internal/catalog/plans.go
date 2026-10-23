@@ -223,6 +223,11 @@ func (s *Store) ReorderPlansTx(ctx context.Context, q querier, productID string,
 //  3. **Config options and their per-version prices are copied too.** A product without its
 //     options is not a copy of the product: a hosting product's options are what the customer
 //     actually chooses. Their parent links are remapped, so a nested option tree stays a tree.
+//  4. **The row behind the presentation is copied as well.** That means the provisioner target
+//     (`server_id`), the stock and quantity policy, the activation snippet and the upgrade
+//     graph. A copy that lost its server would provision somewhere the source did not, and a
+//     copy that lost its upgrade edges is a variant nobody can move to — both are silent
+//     differences that only surface after a customer has paid.
 //
 // Price versions keep their version numbers, because those numbers are what an operator's
 // notes and the panel's history refer to. The copied rows are new rows with new ids, so nothing
@@ -232,18 +237,20 @@ func (s *Store) DuplicateProductTx(ctx context.Context, q querier, sourceID stri
 		Slug, Name, ShortDescription, Description, DescriptionFormat string
 		CategoryID, ImageID                                          *string
 		Stock, PerUserLimit                                          *int
+		ServerID                                                     *string
 		AllowQuantity, ServerExtension, EmailTemplate                string
+		Featured                                                     bool
 		SortOrder                                                    int
 	}
 	var src source
 	err := q.QueryRow(ctx, `
 		SELECT slug, name, short_description, description, description_format,
 		       category_id, image_id, stock, per_user_limit, allow_quantity,
-		       server_extension, email_template, sort_order
+		       server_extension, email_template, sort_order, server_id, featured
 		  FROM products WHERE id = $1`, sourceID).
 		Scan(&src.Slug, &src.Name, &src.ShortDescription, &src.Description, &src.DescriptionFormat,
 			&src.CategoryID, &src.ImageID, &src.Stock, &src.PerUserLimit, &src.AllowQuantity,
-			&src.ServerExtension, &src.EmailTemplate, &src.SortOrder)
+			&src.ServerExtension, &src.EmailTemplate, &src.SortOrder, &src.ServerID, &src.Featured)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return Product{}, ErrNotFound
@@ -260,12 +267,13 @@ func (s *Store) DuplicateProductTx(ctx context.Context, q querier, sourceID stri
 	err = q.QueryRow(ctx, `
 		INSERT INTO products (slug, name, short_description, description, description_format,
 		                      category_id, image_id, hidden, sort_order, stock, per_user_limit,
-		                      allow_quantity, server_extension, email_template)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11, $12, $13)
+		                      allow_quantity, server_extension, email_template, server_id, featured)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING id`,
 		slug, name, src.ShortDescription, src.Description, src.DescriptionFormat,
 		src.CategoryID, src.ImageID, src.SortOrder+1, src.Stock, src.PerUserLimit,
-		src.AllowQuantity, src.ServerExtension, src.EmailTemplate).Scan(&newID)
+		src.AllowQuantity, src.ServerExtension, src.EmailTemplate, src.ServerID,
+		src.Featured).Scan(&newID)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Product{}, ErrSlugTaken
@@ -413,6 +421,16 @@ func (s *Store) DuplicateProductTx(ctx context.Context, q querier, sourceID stri
 				return Product{}, fmt.Errorf("catalog: copy option price: %w", err)
 			}
 		}
+	}
+
+	// The upgrade graph is part of the product. A variant that cannot be upgraded to the same
+	// things its source could is a copy with a hole in it, and the hole only shows up when a
+	// customer asks to move — which is after the operator stopped looking.
+	if _, err := q.Exec(ctx, `
+		INSERT INTO product_upgrades (product_id, upgrade_to_id)
+		SELECT $1, upgrade_to_id FROM product_upgrades WHERE product_id = $2`,
+		newID, sourceID); err != nil {
+		return Product{}, fmt.Errorf("catalog: copy upgrade graph: %w", err)
 	}
 
 	return s.productTx(ctx, q, newID)

@@ -76,6 +76,15 @@ interface Product {
   active_subscriptions: number;
   created_at: string;
   updated_at: string;
+  /** The per-product activation snippet, rendered into the activation mail as
+   *  {{product_instructions}}. Staff-only: the public shape omits it. */
+  email_template?: string;
+  featured?: boolean;
+  stock?: number | null;
+  per_user_limit?: number | null;
+  allow_quantity?: string;
+  server_id?: string | null;
+  server_name?: string;
   prices: Price[];
 }
 
@@ -152,6 +161,10 @@ export const INTERVAL_OPTIONS: IntervalOption[] = [
   { value: "quarterly", label: "Quarterly" },
   { value: "semiannual", label: "Every six months" },
   { value: "annual", label: "Annual" },
+  // The two plan types that never renew (SF-13, CAT-03). The server has always accepted them;
+  // neither picker offered them, so a one-time or free plan could not be created from the panel.
+  { value: "one_time", label: "One-time (charged once)" },
+  { value: "free", label: "Free (no invoice)" },
   // A fixed number of days is a second kind of period, not a calendar one: it is counted in
   // civil days from the first period, so it lands on the right date across a month end, a leap
   // day and a daylight-saving change.
@@ -211,6 +224,9 @@ function plainToHTML(text: string): string {
 export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
   const id = ctx.route.params.id ?? "";
   const host = h("div", { class: "page" }, skeletonPage());
+  // The last product read, so a header action (delete) outside the render closure can name the
+  // record without a second request.
+  let latestProduct: Product | null = null;
 
   const load = async () => {
     try {
@@ -225,6 +241,7 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
           .get<ServersResponse>("/api/v1/staff/catalog/servers", { cache: false })
           .catch(() => ({ data: [] as Server[] })),
       ]);
+      latestProduct = product;
       swap(host, render(product, placement, servers.data ?? []));
     } catch (err) {
       swap(host, errorState(err, () => void load()));
@@ -239,6 +256,37 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
       ctx.toast("Copied. The copy is hidden until you publish it.", { tone: "success" });
       ctx.navigate(`/catalog-management/${copy.id}`);
     });
+  };
+
+  /** deleteProduct removes a product that was never sold, and explains the refusal when it was. */
+  const deleteProduct = async () => {
+    const product = latestProduct;
+    if (!product) return;
+    const ok = await ctx.confirm({
+      title: `Delete “${product.name}”?`,
+      body: "This removes the product and its price versions. It is refused while a service or an order still references it — hide it instead, which keeps everything that was sold exactly as it is.",
+      confirmLabel: "Delete product",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await ctx.api.del(`/api/v1/staff/catalog/products/${product.id}`);
+      ctx.toast("Product deleted", { tone: "success", detail: product.name });
+      ctx.navigate("/catalog-management");
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "in_use") {
+        ctx.toast("This product has been sold", {
+          tone: "danger",
+          detail: err.detail || "Hide it instead: a delete would orphan the services and orders that reference it.",
+          duration: 0,
+        });
+        return;
+      }
+      ctx.toast(err instanceof ApiError ? err.detail || "The product could not be deleted." : "The server could not be reached.", {
+        tone: "danger",
+        detail: err instanceof ApiError ? err.code : undefined,
+      });
+    }
   };
 
   const render = (p: Product, placement: ProductPlacement | null, servers: Server[]): Node => {
@@ -309,8 +357,11 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
           await ctx.api.post(`/api/v1/staff/catalog/products/${p.id}/prices`, {
             name: name.value.trim(),
             currency: currency.value.trim().toUpperCase(),
-            amount_minor: minor,
-            setup_minor: setupMinor,
+            // A free plan is zero by definition and the server refuses one that costs anything;
+            // sending zero is the honest reading of the operator's choice rather than an error
+            // about a field they did not think applied.
+            amount_minor: wireInterval === "free" ? 0 : minor,
+            setup_minor: wireInterval === "free" ? 0 : setupMinor,
             interval: wireInterval,
             anchor_day: Number(anchorDay.value) || 1,
             anchor_timezone: timezone.value.trim() || "UTC",
@@ -403,6 +454,161 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
           null,
           "A change here affects the next purchase. Services that already exist keep the region they were created with.",
         ),
+      });
+    };
+
+    // merchandisingCard is the presentation half of the product: how many there are, how many one
+    // customer may hold, whether a quantity is offered, and whether the shop pushes it. None of
+    // these existed as a control before, which meant `stock` could only be set through psql and a
+    // sold-out product could not be marked sold out.
+    //
+    // It is its own request rather than part of the product PUT because that PUT replaces the whole
+    // metadata record: the description editor and the hide toggle send it, and neither knows what
+    // stock is, so folding these fields in would mean every description save restocked the shop.
+    const merchandisingCard = (): HTMLElement => {
+      const stock = input({
+        id: "prod-stock",
+        type: "number",
+        min: 0,
+        value: p.stock ?? "",
+        placeholder: "Unlimited",
+        class: "input--mono",
+      });
+      const limit = input({
+        id: "prod-limit",
+        type: "number",
+        min: 1,
+        value: p.per_user_limit ?? "",
+        placeholder: "No limit",
+        class: "input--mono",
+      });
+      const policy = select(
+        [
+          { value: "disabled", label: "One per order" },
+          { value: "separated", label: "Quantity: each is its own service" },
+          { value: "combined", label: "Quantity: one service, more units" },
+        ],
+        { id: "prod-quantity", value: p.allow_quantity ?? "disabled" },
+      );
+      const featured = h("input", { type: "checkbox", checked: p.featured ?? false });
+      const errorHost = h("div");
+
+      const save = btn("Save merchandising", { size: "sm" });
+      save.addEventListener("click", () => {
+        void withBusy(ctx, save, async () => {
+          errorHost.replaceChildren();
+          const parsedStock = parseOptionalCount(stock.value);
+          const parsedLimit = parseOptionalCount(limit.value);
+          if (parsedStock === undefined || parsedLimit === undefined) {
+            swap(errorHost, h("div", { class: "banner banner--danger" }, "Stock and the limit must be whole numbers, or empty for no limit."));
+            return;
+          }
+          try {
+            await ctx.api.put(`/api/v1/staff/catalog/products/${p.id}/merchandising`, {
+              stock: parsedStock,
+              per_user_limit: parsedLimit,
+              allow_quantity: policy.value,
+              featured: featured.checked,
+            });
+            ctx.toast("Merchandising saved.", { tone: "success" });
+            await load();
+          } catch (err) {
+            const message =
+              err instanceof ApiError ? err.detail || "The change was refused." : "The server could not be reached.";
+            swap(errorHost, h("div", { class: "banner banner--danger" }, message));
+          }
+        });
+      });
+
+      return card({
+        title: "Merchandising",
+        sub: p.featured ? "featured" : "not featured",
+        body: h(
+          "div",
+          { class: "stack-sm" },
+          errorHost,
+          kv("Stock", p.stock === null || p.stock === undefined ? "Unlimited" : String(p.stock)),
+          kv("Per-customer limit", p.per_user_limit === null || p.per_user_limit === undefined ? "None" : String(p.per_user_limit)),
+          kv("Quantity", quantityPolicyLabel(p.allow_quantity ?? "disabled")),
+          kv("Featured", p.featured ? "Yes — shown first on the storefront" : "No"),
+          canWrite
+            ? h(
+                "div",
+                { class: "form-grid" },
+                field({ label: "Stock", control: stock, id: "prod-stock", hint: "Empty is unlimited; 0 marks it sold out." }),
+                field({ label: "Per-customer limit", control: limit, id: "prod-limit", hint: "Empty is no limit." }),
+                field({ label: "Quantity policy", control: policy, id: "prod-quantity", class: "span-2" }),
+                h("div", { class: "span-2" }, h("label", { class: "switch" }, featured, "Featured on the storefront")),
+              )
+            : null,
+          canWrite ? h("div", { class: "row" }, save) : null,
+        ),
+        foot: h(
+          "span",
+          null,
+          "Stock is decremented at checkout and restored when an unpaid order is cancelled. A sold-out product stays listed and cannot be ordered.",
+        ),
+      });
+    };
+
+    // activationCard edits the per-product activation snippet (CAT-08). It is staff-only prose —
+    // what the customer is told about how to use what they bought — rendered into the activation
+    // mail as {{product_instructions}}. The column and the mail existed; the editor did not, so the
+    // only way to set it was SQL.
+    const activationCard = (): HTMLElement => {
+      const snippet = h("textarea", {
+        class: "textarea",
+        id: "prod-instructions",
+        rows: 5,
+        placeholder: "Where the panel is, what to do first, which port to open…",
+      }) as HTMLTextAreaElement;
+      snippet.value = p.email_template ?? "";
+      const errorHost = h("div");
+      const save = btn("Save instructions", { size: "sm" });
+      save.addEventListener("click", () => {
+        void withBusy(ctx, save, async () => {
+          errorHost.replaceChildren();
+          try {
+            await ctx.api.put(`/api/v1/staff/catalog/products/${p.id}`, {
+              slug: p.slug,
+              name: p.name,
+              short_description: p.short_description,
+              description: p.description,
+              description_format: p.description_format ?? "plain",
+              category_id: p.category_id,
+              image_id: p.image_id,
+              hidden: p.hidden,
+              sort_order: p.sort_order,
+              email_template: snippet.value,
+            });
+            ctx.toast("Activation instructions saved.", { tone: "success" });
+            await load();
+          } catch (err) {
+            const message =
+              err instanceof ApiError ? err.detail || "The instructions were refused." : "The server could not be reached.";
+            swap(errorHost, h("div", { class: "banner banner--danger" }, message));
+          }
+        });
+      });
+
+      return card({
+        title: "Activation instructions",
+        sub: "what the customer is told after paying",
+        body: h(
+          "div",
+          { class: "stack-sm" },
+          errorHost,
+          canWrite
+            ? field({
+                label: "Instructions",
+                control: snippet,
+                id: "prod-instructions",
+                hint: "Plain text, up to 4000 bytes. Empty sends the default sentence.",
+              })
+            : h("p", { class: "field-hint" }, p.email_template || "None set: the default sentence is sent."),
+          canWrite ? h("div", { class: "row" }, save) : null,
+        ),
+        foot: h("span", null, "Rendered into the activation mail as {{product_instructions}}."),
       });
     };
 
@@ -563,6 +769,17 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
             : null,
           h("a", { class: "btn", href: `/products/${p.slug}`, "data-native": "true" }, icon("external", 14), "View in storefront"),
           btn("Back to catalog", { href: "/catalog-management" }),
+          // Deleting is the other half of "stop selling this" (ADM-03): hiding keeps a product
+          // sellable to the people who already bought it, deleting is for a draft that was never
+          // sold. The server refuses it while a service or an order references the product.
+          canWrite
+            ? btn("Delete", {
+                size: "sm",
+                variant: "danger",
+                icon: "trash",
+                onclick: () => void deleteProduct(),
+              })
+            : null,
         ),
       }),
 
@@ -603,6 +820,12 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
                 },
                 { label: "Server", value: placement?.server ? serverLabel(placement.server) : "Inherit from the plan" },
                 { label: "Sort order", value: String(p.sort_order) },
+                {
+                  label: "Stock",
+                  value: p.stock === null || p.stock === undefined ? "Unlimited" : String(p.stock),
+                },
+                { label: "Quantity", value: quantityPolicyLabel(p.allow_quantity ?? "disabled") },
+                { label: "Featured", value: p.featured ? "Yes" : "No" },
                 { label: "Active subscriptions", value: String(p.active_subscriptions) },
                 { label: "Created", value: dateTime(p.created_at) },
                 { label: "Updated", value: relative(p.updated_at) },
@@ -612,7 +835,11 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
 
           placementCard(),
 
+          merchandisingCard(),
+
           descriptionCard(),
+
+          activationCard(),
 
           card({
             title: "Price versions",
@@ -785,4 +1012,29 @@ function serverLabel(server: Server): string {
 /** pathText renders a slash-joined category path as a breadcrumb. */
 function pathText(path: string): string {
   return path.split("/").filter(Boolean).join(" › ");
+}
+
+/** parseOptionalCount reads a whole number that may be left empty.
+ *
+ *  `undefined` is "the text is not a number", `null` is "empty means no limit", and a number is
+ *  the number. The distinction is the whole point: a helper that returned null for both would
+ *  turn a typo into "unlimited stock", which is the one direction a stock field must never fail
+ *  in. */
+function parseOptionalCount(raw: string): number | null | undefined {
+  const text = raw.trim();
+  if (text === "") return null;
+  if (!/^\d+$/.test(text)) return undefined;
+  return Number(text);
+}
+
+/** quantityPolicyLabel says what the storefront does with a quantity, in the customer's terms. */
+function quantityPolicyLabel(policy: string): string {
+  switch (policy) {
+    case "separated":
+      return "Quantity allowed — each unit is its own service";
+    case "combined":
+      return "Quantity allowed — one service with more units";
+    default:
+      return "One per order";
+  }
 }

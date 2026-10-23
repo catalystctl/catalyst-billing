@@ -148,8 +148,8 @@ func (s *Store) categoryTreeWith(ctx context.Context, q querier) ([]CategoryNode
 			  JOIN tree t ON c.parent_id = t.id
 			 WHERE t.depth < 64
 		)
-		SELECT c.id, c.slug, c.name, c.description, c.sort_order, c.hidden, c.created_at,
-		       c.updated_at, c.parent_id, COALESCE(t.depth, 1),
+		SELECT c.id, c.slug, c.name, c.description, c.image_id, c.sort_order, c.hidden,
+		       c.created_at, c.updated_at, c.parent_id, COALESCE(t.depth, 1),
 		       (SELECT count(*) FROM products p WHERE p.category_id = c.id) AS product_count
 		  FROM categories c
 		  LEFT JOIN tree t ON t.id = c.id
@@ -162,8 +162,8 @@ func (s *Store) categoryTreeWith(ctx context.Context, q querier) ([]CategoryNode
 	flat := make([]CategoryNode, 0, 16)
 	for rows.Next() {
 		var n CategoryNode
-		if err := rows.Scan(&n.ID, &n.Slug, &n.Name, &n.Description, &n.SortOrder, &n.Hidden,
-			&n.CreatedAt, &n.UpdatedAt, &n.ParentID, &n.Depth, &n.ProductCount); err != nil {
+		if err := rows.Scan(&n.ID, &n.Slug, &n.Name, &n.Description, &n.ImageID, &n.SortOrder,
+			&n.Hidden, &n.CreatedAt, &n.UpdatedAt, &n.ParentID, &n.Depth, &n.ProductCount); err != nil {
 			return nil, fmt.Errorf("catalog: scan category node: %w", err)
 		}
 		n.Children = nil
@@ -626,6 +626,14 @@ func (s *Store) SetProductServerTx(ctx context.Context, q querier, productID str
 // express: a product whose *ancestor* is hidden is not offered, because hiding a branch means
 // hiding what is under it.
 func (s *Store) PublicCategoryProducts(ctx context.Context, slug string) (CategoryNode, []Product, error) {
+	return s.PublicCategoryProductsIn(ctx, slug, "")
+}
+
+// PublicCategoryProductsIn is PublicCategoryProducts restricted to one currency, so a category
+// page renders the same shopping as the index the visitor arrived from. A product with no price
+// in the selected currency is not offered on the branch page either.
+func (s *Store) PublicCategoryProductsIn(ctx context.Context, slug, currency string) (CategoryNode, []Product, error) {
+	currency = strings.ToUpper(strings.TrimSpace(currency))
 	node, err := s.categoryNodeBySlugWith(ctx, s.pool, slug)
 	if err != nil {
 		return CategoryNode{}, nil, err
@@ -660,17 +668,19 @@ func (s *Store) PublicCategoryProducts(ctx context.Context, slug string) (Catego
 		)
 		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
 		       p.category_id, c.name, c.slug, p.image_id, p.hidden, p.sort_order,
-		       p.created_at, p.updated_at, 0, p.email_template
+		       p.created_at, p.updated_at, 0, p.email_template,
+		       p.stock, p.per_user_limit, p.allow_quantity, p.featured, NULL::uuid, ''::text
 		  FROM products p
 		  JOIN categories c ON c.id = p.category_id AND NOT c.hidden
 		 WHERE p.category_id IN (SELECT id FROM branch)
 		   AND NOT p.hidden
-		   AND EXISTS (SELECT 1 FROM price_versions pv WHERE pv.product_id = p.id)
-		 ORDER BY c.sort_order, c.name, p.sort_order, p.name`, slug)
+		   AND EXISTS (SELECT 1 FROM price_versions pv WHERE pv.product_id = p.id
+		                AND ($2 = '' OR upper(pv.currency) = $2))
+		 ORDER BY c.sort_order, c.name, p.sort_order, p.name`, slug, currency)
 	if err != nil {
 		return CategoryNode{}, nil, err
 	}
-	return node, products, nil
+	return node, inCurrency(products, currency), nil
 }
 
 // ----------------------------------------------------------------- sqlstate --

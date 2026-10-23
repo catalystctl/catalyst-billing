@@ -59,6 +59,12 @@ func (s *Server) registerCatalogRoutes(r *router) {
 	r.staffMutation(http.MethodPut, "/api/v1/staff/catalog/products/{id}", authn.PermCatalogWrite, s.handleUpdateProduct)
 	r.staffMutation(http.MethodDelete, "/api/v1/staff/catalog/products/{id}", authn.PermCatalogWrite, s.handleDeleteProduct)
 	r.staffMutation(http.MethodPost, "/api/v1/staff/catalog/products/{id}/prices", authn.PermCatalogWrite, s.handleAddPrice)
+	// Merchandising: stock, the per-customer limit, the quantity policy and the featured flag.
+	// It is its own route rather than fields on the product PUT, because that PUT replaces the
+	// whole metadata record and its other callers (the description editor, the hide toggle) know
+	// nothing about stock — a description save would restock a sold-out product.
+	r.staffMutation(http.MethodPut, "/api/v1/staff/catalog/products/{id}/merchandising",
+		authn.PermCatalogWrite, s.handleSetMerchandising)
 
 	// A logo upload is a staff mutation with a raw body, not JSON. It still needs CSRF and an
 	// idempotency key; the dedupe by digest makes a retry harmless anyway.
@@ -275,44 +281,243 @@ func (s *Server) handleUploadImage(w http.ResponseWriter, r *http.Request) {
 
 // ------------------------------------------------------------------- public --
 
-func (s *Server) handlePublicCatalog(w http.ResponseWriter, r *http.Request) {
-	products, err := s.catalogStore().Public(r.Context())
-	if err != nil {
-		s.staffError(w, r, err)
-		return
+// storefrontSettings is the handful of operator choices the storefront reads.
+//
+// A failed settings read falls back to the defaults rather than failing the shop: settings are
+// configuration, and a storefront that refuses to render because one row is unreadable is a
+// worse outcome than one that shows stock it was told to hide. The defaults are the behaviour
+// this handler had before the keys existed, so a degraded read is invisible.
+type storefrontSettings struct {
+	// HomeCategories is "top_level" (Paymenter's rule) or "all".
+	HomeCategories string
+	// ShowStock says whether a remaining count is published at all.
+	ShowStock bool
+	// LowStockThreshold is the number under which "only N left" is worth saying.
+	LowStockThreshold int
+}
+
+func (s *Server) storefrontSettings(ctx context.Context) storefrontSettings {
+	out := storefrontSettings{
+		HomeCategories:    "top_level",
+		ShowStock:         true,
+		LowStockThreshold: catalog.LowStockThreshold,
 	}
-	cats, err := s.catalogStore().Categories(r.Context())
-	if err != nil {
-		s.staffError(w, r, err)
-		return
+	store := s.settingsStore()
+	if v, err := store.String(ctx, "storefront", "home_categories"); err == nil && v != "" {
+		out.HomeCategories = v
 	}
-	visible := make([]catalog.Category, 0, len(cats))
-	for _, c := range cats {
-		if !c.Hidden {
-			visible = append(visible, c)
+	if v, err := store.Bool(ctx, "storefront", "show_stock"); err == nil {
+		out.ShowStock = v
+	}
+	if v, err := store.Int(ctx, "storefront", "low_stock_threshold"); err == nil && v >= 0 {
+		out.LowStockThreshold = int(v)
+	}
+	return out
+}
+
+// currencyParam reads the storefront's `?currency=`, upper-cased and bounded to the code shape a
+// price row uses. A malformed value is ignored rather than refused: the storefront is anonymous
+// and a bad query string must not be an error page.
+func currencyParam(r *http.Request) string {
+	code := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("currency")))
+	if len(code) < 2 || len(code) > 12 {
+		return ""
+	}
+	for _, c := range code {
+		if !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') {
+			return ""
 		}
 	}
-	out := make([]map[string]any, 0, len(products))
-	for _, p := range products {
-		out = append(out, s.publicProductJSON(p))
+	return code
+}
+
+func (s *Server) handlePublicCatalog(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	// The switcher is only honest if it changes what is offered, so the currency travels into
+	// the read: a product sold only in USD is not on the shelf of a EUR visitor, and a EUR
+	// visitor is never quoted a converted amount.
+	currency := currencyParam(r)
+	products, err := s.catalogStore().PublicIn(ctx, currency)
+	if err != nil {
+		s.staffError(w, r, err)
+		return
+	}
+	// The category strip is the tree, pruned to what a visitor can actually reach (SF-01). It
+	// is one read rather than two: the branch totals the strip needs are the tree's own counts.
+	nodes, err := s.catalogStore().CategoryTree(ctx)
+	if err != nil {
+		s.staffError(w, r, err)
+		return
+	}
+	prefs := s.storefrontSettings(ctx)
+	// The strip is built from the products the visitor was actually offered, so a branch whose
+	// goods are all priced in another currency is not a tab that opens an empty page.
+	strip := catalog.HomeCategories(nodes, products, prefs.HomeCategories)
+	out, err := s.publicProductList(ctx, products, prefs)
+	if err != nil {
+		s.staffError(w, r, err)
+		return
 	}
 	// A short cache is deliberate: the storefront is anonymous, and a price change should be
-	// visible within a minute without every visitor hitting the database.
+	// visible within a minute without every visitor hitting the database. It is keyed by the
+	// query string by any shared cache, so a euro visitor cannot be served a dollar page.
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	writeJSON(w, http.StatusOK, map[string]any{
-		"categories": visible,
-		"products":   out,
+		"currency":          currency,
+		"currency_switcher": s.currencySwitcherEnabled(ctx),
+		"categories":        publicCategoryTree(strip),
+		"products":          out,
 	})
 }
 
+// currencySwitcherEnabled reports whether the storefront offers the currency control. A failed
+// read means "yes": an unreadable settings row must not remove a control the shop has.
+func (s *Server) currencySwitcherEnabled(ctx context.Context) bool {
+	enabled, err := s.settingsStore().Bool(ctx, "storefront", "currency_switcher")
+	if err != nil {
+		return true
+	}
+	return enabled
+}
+
+// handlePublicProduct resolves one storefront slug to *either* a product or a category.
+//
+// Paymenter's URLs are `/products/{category}/{product}`, and a category therefore has its own
+// shareable, crawlable address. One route serving both is what makes `/products/{slug}` a real
+// URL for a category without a second SPA route: the server decides which record the slug names,
+// and the response says which (`kind`). A product wins a collision, because a visitor following
+// a product link meant the product.
 func (s *Server) handlePublicProduct(w http.ResponseWriter, r *http.Request) {
-	p, err := s.catalogStore().PublicProduct(r.Context(), r.PathValue("slug"))
+	ctx := r.Context()
+	slug := r.PathValue("slug")
+	currency := currencyParam(r)
+	p, err := s.catalogStore().PublicProductIn(ctx, slug, currency)
+	if err == nil {
+		options, err := s.publicConfigOptions(ctx, p)
+		if err != nil {
+			s.staffError(w, r, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		body := s.publicProductJSON(p, s.storefrontSettings(ctx), options)
+		body["kind"] = "product"
+		writeJSON(w, http.StatusOK, body)
+		return
+	}
+	if !errors.Is(err, catalog.ErrNotFound) {
+		s.catalogError(w, r, err)
+		return
+	}
+
+	node, products, catErr := s.catalogStore().PublicCategoryProductsIn(ctx, slug, currency)
+	if catErr != nil {
+		s.catalogStructureError(w, r, catErr)
+		return
+	}
+	prefs := s.storefrontSettings(ctx)
+	out, err := s.publicProductList(ctx, products, prefs)
+	if err != nil {
+		s.staffError(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kind":              "category",
+		"currency":          currency,
+		"currency_switcher": s.currencySwitcherEnabled(ctx),
+		"category":          publicCategoryNode(node),
+		"products":          out,
+	})
+}
+
+// publicProductList shapes a list of products for a visitor, reading their config options once
+// each. Every storefront list goes through it, so the index, a product page and a category page
+// cannot return different shapes for the same product.
+func (s *Server) publicProductList(ctx context.Context, products []catalog.Product,
+	prefs storefrontSettings) ([]map[string]any, error) {
+	out := make([]map[string]any, 0, len(products))
+	for _, p := range products {
+		options, err := s.publicConfigOptions(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s.publicProductJSON(p, prefs, options))
+	}
+	return out, nil
+}
+
+// publicConfigOptions reads a product's options, hiding the ones an operator marked hidden and
+// keeping the parent link so the client can nest a dependent option under its parent. The
+// amounts stay in the plan's own currency: an option is priced per price version, and this read
+// does not convert anything.
+func (s *Server) publicConfigOptions(ctx context.Context, p catalog.Product) ([]map[string]any, error) {
+	options, err := s.catalogStore().ConfigOptions(ctx, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	currencies := make(map[string]string, len(p.Prices))
+	for _, price := range p.Prices {
+		currencies[price.ID] = price.Currency
+	}
+	out := make([]map[string]any, 0, len(options))
+	for _, o := range options {
+		if o.Hidden {
+			continue
+		}
+		prices := make([]map[string]any, 0, len(o.OptionPrices))
+		for _, op := range o.OptionPrices {
+			// A price version the visitor is not shopping in is not offered, so its option
+			// amounts are not either.
+			currency, visible := currencies[op.PriceVersionID]
+			if !visible {
+				continue
+			}
+			prices = append(prices, map[string]any{
+				"price_id": op.PriceVersionID,
+				"choice":   op.Choice,
+				"amount":   s.priceAmount(op.AmountMinor, currency),
+				"setup":    s.priceAmount(op.SetupMinor, currency),
+			})
+		}
+		out = append(out, map[string]any{
+			"id":          o.ID,
+			"name":        o.Name,
+			"description": o.Description,
+			"type":        o.OptionType,
+			"choices":     o.Choices,
+			"required":    o.Required,
+			"parent_id":   o.ParentID,
+			"prices":      prices,
+		})
+	}
+	return out, nil
+}
+
+// handleSetMerchandising writes the presentation fields of a product.
+func (s *Server) handleSetMerchandising(w http.ResponseWriter, r *http.Request) {
+	var in catalog.Merchandising
+	if !s.decodeJSON(w, r, &in, 16<<10) {
+		return
+	}
+	id := r.PathValue("id")
+	var p catalog.Product
+	err := s.withCatalogAudit(r, "catalog.product.merchandising", "product", id,
+		map[string]any{
+			"stock":          in.Stock,
+			"per_user_limit": in.PerUserLimit,
+			"allow_quantity": in.AllowQuantity,
+			"featured":       in.Featured,
+		},
+		func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			p, err = s.catalogStore().SetMerchandisingTx(ctx, tx, id, in)
+			return err
+		})
 	if err != nil {
 		s.catalogError(w, r, err)
 		return
 	}
-	w.Header().Set("Cache-Control", "public, max-age=60")
-	writeJSON(w, http.StatusOK, s.publicProductJSON(p))
+	writeJSON(w, http.StatusOK, s.productJSON(p))
 }
 
 // handleMedia serves a stored logo.
@@ -371,14 +576,24 @@ func (s *Server) productJSON(p catalog.Product) map[string]any {
 		// The per-product activation snippet. It is staff-only by construction: this shape is
 		// the panel's, and publicProductJSON below deliberately omits it. An operator writes it
 		// for someone who has already bought the product, not for a visitor deciding whether to.
-		"email_template":       p.EmailTemplate,
-		"category_id":          p.CategoryID,
-		"category_name":        p.CategoryName,
-		"category_slug":        p.CategorySlug,
-		"image_id":             p.ImageID,
-		"image_url":            p.ImageURL(),
-		"hidden":               p.Hidden,
-		"sort_order":           p.SortOrder,
+		"email_template": p.EmailTemplate,
+		"category_id":    p.CategoryID,
+		"category_name":  p.CategoryName,
+		"category_slug":  p.CategorySlug,
+		"image_id":       p.ImageID,
+		"image_url":      p.ImageURL(),
+		"hidden":         p.Hidden,
+		"sort_order":     p.SortOrder,
+		"featured":       p.Featured,
+		// The merchandising fields. They are here because an operator has to be able to see,
+		// and therefore edit, what the storefront is enforcing.
+		"stock":          p.Stock,
+		"per_user_limit": p.PerUserLimit,
+		"allow_quantity": p.AllowQuantity,
+		// Where the product is sold from. It is staff-only: publicProductJSON below omits it,
+		// because a node name tells a visitor which host a customer lands on.
+		"server_id":            p.ServerID,
+		"server_name":          p.ServerName,
 		"active_subscriptions": p.ActiveSubscriptions,
 		"created_at":           p.CreatedAt.UTC(),
 		"updated_at":           p.UpdatedAt.UTC(),
@@ -394,7 +609,13 @@ func (s *Server) productJSON(p catalog.Product) map[string]any {
 // publicProductJSON is the visitor shape. It omits hidden state (always false here), the
 // active-subscription count (business internals) and provision plan/region (infrastructure
 // details that tell an attacker which node a customer lands on).
-func (s *Server) publicProductJSON(p catalog.Product) map[string]any {
+//
+// What it adds is what a buyer needs in order to decide: whether the product is in stock, how
+// many are left (when the operator publishes that), whether a quantity may be chosen, whether it
+// is promoted, and the config options with the amounts for each plan. Without the last one a
+// product with a required option renders a plan nobody can buy.
+func (s *Server) publicProductJSON(p catalog.Product, prefs storefrontSettings,
+	options []map[string]any) map[string]any {
 	// Display order, not history order: a visitor sees the plans in the order the operator
 	// arranged them, and `sort_order` is the only thing that decides it.
 	ordered := catalog.Plans(p.Prices)
@@ -410,22 +631,37 @@ func (s *Server) publicProductJSON(p catalog.Product) map[string]any {
 			"interval": price.Interval,
 			// A visitor needs to know whether a plan bills again, and asking them to
 			// interpret the interval name is how a one-time product gets rendered as a
-			// monthly one.
+			// monthly one. The label is the server's, so a new period is not a client
+			// release (SF-14).
 			"interval_label": catalog.IntervalLabel(price.Interval),
 			"recurring":      price.Recurring(),
 			"sort_order":     price.SortOrder,
 		})
 	}
+	// The stock count is published only when the operator wants it published; `in_stock` is
+	// always present, because refusing to sell a sold-out product is correctness rather than
+	// display. A nil stock is unlimited, which is not zero and must not render as "sold out".
+	var stock any
+	if prefs.ShowStock {
+		stock = p.Stock
+	}
 	return map[string]any{
-		"slug":               p.Slug,
-		"name":               p.Name,
-		"short_description":  p.ShortDescription,
-		"description":        p.Description,
-		"description_format": p.DescriptionFormat,
-		"category_name":      p.CategoryName,
-		"category_slug":      p.CategorySlug,
-		"image_url":          p.ImageURL(),
-		"prices":             prices,
+		"slug":                p.Slug,
+		"name":                p.Name,
+		"short_description":   p.ShortDescription,
+		"description":         p.Description,
+		"description_format":  p.DescriptionFormat,
+		"category_name":       p.CategoryName,
+		"category_slug":       p.CategorySlug,
+		"image_url":           p.ImageURL(),
+		"prices":              prices,
+		"featured":            p.Featured,
+		"stock":               stock,
+		"in_stock":            p.InStock(),
+		"low_stock":           prefs.ShowStock && p.LowStock(prefs.LowStockThreshold),
+		"low_stock_threshold": prefs.LowStockThreshold,
+		"allow_quantity":      p.AllowQuantity,
+		"config_options":      options,
 	}
 }
 

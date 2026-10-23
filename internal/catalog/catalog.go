@@ -98,15 +98,28 @@ func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
 // Category groups products for the storefront.
 type Category struct {
-	ID           string    `json:"id"`
-	Slug         string    `json:"slug"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description"`
+	ID          string `json:"id"`
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// ImageID is the category's logo, in the same deduped store a product logo lives in. It
+	// is a pointer because "no image" and "the empty id" are the same thing to a renderer
+	// and different things to SQL.
+	ImageID      *string   `json:"image_id"`
 	SortOrder    int       `json:"sort_order"`
 	Hidden       bool      `json:"hidden"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 	ProductCount int       `json:"product_count,omitempty"`
+}
+
+// ImageURL is the path a category image is served from, derived the same way a product's is:
+// the URL is a function of the id, so there is nothing to keep in sync.
+func (c Category) ImageURL() string {
+	if c.ImageID == nil {
+		return ""
+	}
+	return "/api/v1/media/" + *c.ImageID
 }
 
 // Image is a stored logo.
@@ -166,6 +179,21 @@ type Product struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 	Prices              []Price   `json:"prices"`
 	ActiveSubscriptions int       `json:"active_subscriptions"`
+	// Featured is a promotion flag, not a visibility grant: the storefront reads apply the
+	// hidden/category/priced predicates first, so a featured hidden product is still hidden.
+	Featured bool `json:"featured"`
+	// Stock is units available; nil is unlimited and 0 is sold out. It is a pointer because
+	// "unlimited" and "none left" are different answers and a visitor is told which one it is.
+	Stock *int `json:"stock"`
+	// PerUserLimit caps how many of this product one customer may hold, nil for no cap.
+	PerUserLimit *int `json:"per_user_limit"`
+	// AllowQuantity is the quantity policy: disabled, separated or combined.
+	AllowQuantity string `json:"allow_quantity"`
+	// ServerID is the provisioner target the product is sold onto, and ServerName is its
+	// label for the panel. Both are staff-only: the public shape omits them, because a node
+	// name tells a visitor which host a customer lands on.
+	ServerID   *string `json:"server_id,omitempty"`
+	ServerName string  `json:"server_name,omitempty"`
 }
 
 // ImageURL is the path the panel and the storefront put in an <img src>. It is derived, not
@@ -240,12 +268,12 @@ func (s *Store) CreateCategoryTx(ctx context.Context, q querier, c Category) (Ca
 	}
 	var out Category
 	err := q.QueryRow(ctx, `
-		INSERT INTO categories (slug, name, description, sort_order, hidden)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, slug, name, description, sort_order, hidden, created_at, updated_at`,
-		c.Slug, strings.TrimSpace(c.Name), c.Description, c.SortOrder, c.Hidden,
-	).Scan(&out.ID, &out.Slug, &out.Name, &out.Description, &out.SortOrder, &out.Hidden,
-		&out.CreatedAt, &out.UpdatedAt)
+		INSERT INTO categories (slug, name, description, image_id, sort_order, hidden)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, slug, name, description, image_id, sort_order, hidden, created_at, updated_at`,
+		c.Slug, strings.TrimSpace(c.Name), c.Description, c.ImageID, c.SortOrder, c.Hidden,
+	).Scan(&out.ID, &out.Slug, &out.Name, &out.Description, &out.ImageID, &out.SortOrder,
+		&out.Hidden, &out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return Category{}, ErrSlugTaken
@@ -272,12 +300,12 @@ func (s *Store) UpdateCategoryTx(ctx context.Context, q querier, id string, c Ca
 	var out Category
 	err := q.QueryRow(ctx, `
 		UPDATE categories
-		   SET slug = $2, name = $3, description = $4, sort_order = $5, hidden = $6
+		   SET slug = $2, name = $3, description = $4, image_id = $5, sort_order = $6, hidden = $7
 		 WHERE id = $1
-		RETURNING id, slug, name, description, sort_order, hidden, created_at, updated_at`,
-		id, c.Slug, strings.TrimSpace(c.Name), c.Description, c.SortOrder, c.Hidden,
-	).Scan(&out.ID, &out.Slug, &out.Name, &out.Description, &out.SortOrder, &out.Hidden,
-		&out.CreatedAt, &out.UpdatedAt)
+		RETURNING id, slug, name, description, image_id, sort_order, hidden, created_at, updated_at`,
+		id, c.Slug, strings.TrimSpace(c.Name), c.Description, c.ImageID, c.SortOrder, c.Hidden,
+	).Scan(&out.ID, &out.Slug, &out.Name, &out.Description, &out.ImageID, &out.SortOrder,
+		&out.Hidden, &out.CreatedAt, &out.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Category{}, ErrNotFound
 	}
@@ -327,7 +355,8 @@ func (s *Store) DeleteCategoryTx(ctx context.Context, q querier, id string) erro
 // Categories lists categories with a product count, ordered for display.
 func (s *Store) Categories(ctx context.Context) ([]Category, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT c.id, c.slug, c.name, c.description, c.sort_order, c.hidden, c.created_at, c.updated_at,
+		SELECT c.id, c.slug, c.name, c.description, c.image_id, c.sort_order, c.hidden,
+		       c.created_at, c.updated_at,
 		       (SELECT count(*) FROM products p WHERE p.category_id = c.id) AS product_count
 		  FROM categories c
 		 ORDER BY c.sort_order, c.name`)
@@ -338,8 +367,8 @@ func (s *Store) Categories(ctx context.Context) ([]Category, error) {
 	out := make([]Category, 0, 8)
 	for rows.Next() {
 		var c Category
-		if err := rows.Scan(&c.ID, &c.Slug, &c.Name, &c.Description, &c.SortOrder, &c.Hidden,
-			&c.CreatedAt, &c.UpdatedAt, &c.ProductCount); err != nil {
+		if err := rows.Scan(&c.ID, &c.Slug, &c.Name, &c.Description, &c.ImageID, &c.SortOrder,
+			&c.Hidden, &c.CreatedAt, &c.UpdatedAt, &c.ProductCount); err != nil {
 			return nil, fmt.Errorf("catalog: scan category: %w", err)
 		}
 		out = append(out, c)
@@ -634,9 +663,11 @@ func (s *Store) List(ctx context.Context) ([]Product, error) {
 		       (SELECT count(*) FROM subscriptions sub
 		          JOIN price_versions pv ON pv.id = sub.price_version_id
 		         WHERE pv.product_id = p.id) AS active_subscriptions,
-		       p.email_template
+		       p.email_template, p.stock, p.per_user_limit, p.allow_quantity, p.featured,
+		       p.server_id, COALESCE(srv.name, '')
 		  FROM products p
 		  LEFT JOIN categories c ON c.id = p.category_id
+		  LEFT JOIN servers srv ON srv.id = p.server_id
 		 ORDER BY c.sort_order NULLS LAST, p.sort_order, p.name`)
 }
 
@@ -650,34 +681,61 @@ func (s *Store) List(ctx context.Context) ([]Product, error) {
 // visible child under a hidden parent would keep selling a branch an operator had stopped
 // offering. The fragment lives in nesting.go so this read and `PublicProduct` cannot drift.
 func (s *Store) Public(ctx context.Context) ([]Product, error) {
-	return s.query(ctx, hiddenBranchesCTE+`
+	return s.PublicIn(ctx, "")
+}
+
+// PublicIn is Public restricted to one currency when `currency` is set.
+//
+// The storefront's currency switcher is only honest if it changes what the shop offers: a price
+// is denominated per currency and this installation has no exchange rate, so a visitor looking
+// at EUR must see the products that are *sold* in EUR, at their EUR prices, and not a USD price
+// rendered with a euro sign. An empty currency is "everything", which is what the API did before
+// the switcher existed and what a caller that does not care still gets.
+func (s *Store) PublicIn(ctx context.Context, currency string) ([]Product, error) {
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	rows, err := s.query(ctx, hiddenBranchesCTE+`
 		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
 		       p.category_id, c.name, c.slug, p.image_id, p.hidden, p.sort_order,
-		       p.created_at, p.updated_at, 0, p.email_template
+		       p.created_at, p.updated_at, 0, p.email_template,
+		       p.stock, p.per_user_limit, p.allow_quantity, p.featured, NULL::uuid, ''::text
 		  FROM products p
 		  JOIN categories c ON c.id = p.category_id AND NOT c.hidden
 		 WHERE NOT p.hidden
 		   AND p.category_id NOT IN (SELECT id FROM hidden_branches)
-		   AND EXISTS (SELECT 1 FROM price_versions pv WHERE pv.product_id = p.id)
-		 ORDER BY c.sort_order, c.name, p.sort_order, p.name`)
+		   AND EXISTS (SELECT 1 FROM price_versions pv WHERE pv.product_id = p.id
+		                AND ($1 = '' OR upper(pv.currency) = $1))
+		 ORDER BY c.sort_order, c.name, p.sort_order, p.name`, currency)
+	if err != nil {
+		return nil, err
+	}
+	return inCurrency(rows, currency), nil
 }
 
 // PublicProduct reads one visible product by slug, or ErrNotFound. The predicate is the same
 // as Public's: a hidden product is indistinguishable from a missing one to a visitor, and so is
 // a product under a hidden branch.
 func (s *Store) PublicProduct(ctx context.Context, slug string) (Product, error) {
+	return s.PublicProductIn(ctx, slug, "")
+}
+
+// PublicProductIn is PublicProduct restricted to one currency, for the same reason PublicIn is.
+func (s *Store) PublicProductIn(ctx context.Context, slug, currency string) (Product, error) {
+	currency = strings.ToUpper(strings.TrimSpace(currency))
 	rows, err := s.query(ctx, hiddenBranchesCTE+`
 		SELECT p.id, p.slug, p.name, p.short_description, p.description, p.description_format,
 		       p.category_id, c.name, c.slug, p.image_id, p.hidden, p.sort_order,
-		       p.created_at, p.updated_at, 0, p.email_template
+		       p.created_at, p.updated_at, 0, p.email_template,
+		       p.stock, p.per_user_limit, p.allow_quantity, p.featured, NULL::uuid, ''::text
 		  FROM products p
 		  JOIN categories c ON c.id = p.category_id AND NOT c.hidden
 		 WHERE NOT p.hidden AND lower(p.slug) = lower($1)
 		   AND p.category_id NOT IN (SELECT id FROM hidden_branches)
-		   AND EXISTS (SELECT 1 FROM price_versions pv WHERE pv.product_id = p.id)`, slug)
+		   AND EXISTS (SELECT 1 FROM price_versions pv WHERE pv.product_id = p.id
+		                AND ($2 = '' OR upper(pv.currency) = $2))`, slug, currency)
 	if err != nil {
 		return Product{}, err
 	}
+	rows = inCurrency(rows, currency)
 	if len(rows) == 0 {
 		return Product{}, ErrNotFound
 	}
@@ -699,9 +757,11 @@ func (s *Store) productTx(ctx context.Context, q querier, id string) (Product, e
 		       (SELECT count(*) FROM subscriptions sub
 		          JOIN price_versions pv ON pv.id = sub.price_version_id
 		         WHERE pv.product_id = p.id) AS active_subscriptions,
-		       p.email_template
+		       p.email_template, p.stock, p.per_user_limit, p.allow_quantity, p.featured,
+		       p.server_id, COALESCE(srv.name, '')
 		  FROM products p
 		  LEFT JOIN categories c ON c.id = p.category_id
+		  LEFT JOIN servers srv ON srv.id = p.server_id
 		 WHERE p.id = $1`, id)
 	if err != nil {
 		return Product{}, err
@@ -731,7 +791,8 @@ func (s *Store) queryWith(ctx context.Context, q querier, stmt string, args ...a
 		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.ShortDescription, &p.Description,
 			&p.DescriptionFormat, &p.CategoryID, &p.CategoryName, &p.CategorySlug, &p.ImageID,
 			&p.Hidden, &p.SortOrder, &p.CreatedAt, &p.UpdatedAt, &p.ActiveSubscriptions,
-			&p.EmailTemplate); err != nil {
+			&p.EmailTemplate, &p.Stock, &p.PerUserLimit, &p.AllowQuantity, &p.Featured,
+			&p.ServerID, &p.ServerName); err != nil {
 			return nil, fmt.Errorf("catalog: scan product: %w", err)
 		}
 		out = append(out, p)

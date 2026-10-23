@@ -69,6 +69,11 @@ interface Product {
   hidden: boolean;
   sort_order: number;
   active_subscriptions: number;
+  featured?: boolean;
+  /** Units available: null is unlimited, 0 is sold out. */
+  stock?: number | null;
+  per_user_limit?: number | null;
+  allow_quantity?: string;
   prices: Price[];
 }
 
@@ -77,9 +82,18 @@ interface Category {
   slug: string;
   name: string;
   description: string;
+  /** The category's logo, in the same deduped store a product logo lives in (SF-06). NULL means
+   *  no image, which the storefront draws as a generated mark. */
+  image_id: string | null;
   sort_order: number;
   hidden: boolean;
   product_count?: number;
+}
+
+/** mediaURL is the path an uploaded image is served from: the id names one byte sequence, so the
+ *  URL is a function of it and there is nothing to keep in sync. */
+function mediaURL(id: string | null | undefined): string {
+  return id ? `/api/v1/media/${id}` : "";
 }
 
 // CategoryNode is a category plus its place in the tree. The panel renders the tree rather than
@@ -139,6 +153,11 @@ const INTERVALS = [
   { value: "quarterly", label: "Quarterly" },
   { value: "semiannual", label: "Every six months" },
   { value: "annual", label: "Annual" },
+  // The two plan types that do not renew (SF-13, CAT-03). They were accepted by the server and
+  // offered by the product screen but missing here, so a one-time or free plan could only be
+  // created from one of the two price dialogs.
+  { value: "one_time", label: "One-time (charged once)" },
+  { value: "free", label: "Free (no invoice)" },
   // A sentinel, never sent to the API: the wire value of an arbitrary period is
   // `every_<N>_days`, which the number input beside this select supplies. The select cannot
   // offer 366 options, and a free-text interval field would let an operator type a value the
@@ -346,6 +365,14 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
           h("a", { href: `/catalog-management/${p.id}`, class: "row-title" }, p.name),
           p.hidden ? badge("Hidden", "neutral", { dot: true }) : badge("Published", "success", { dot: true }),
           p.prices.length === 0 ? badge("No price", "warning", { dot: true }) : null,
+          p.featured ? badge("Featured", "accent") : null,
+          // Stock is a merchandising fact an operator has to be able to see from the list: it is
+          // the one field that decides whether a published product can actually be bought.
+          p.stock === null || p.stock === undefined
+            ? null
+            : p.stock === 0
+              ? badge("Sold out", "danger", { dot: true })
+              : badge(`${p.stock} in stock`, "neutral"),
         ),
         h(
           "div",
@@ -402,6 +429,23 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
               icon(p.hidden ? "eye" : "eye", 14),
             )
           : null,
+        // Deleting is not hiding (ADM-03). Hiding keeps the product sellable to anyone who
+        // already bought it; deleting is for a draft that was never sold. The server refuses a
+        // delete while a service or an order references it, and that refusal is the honest
+        // answer rather than a rule hidden in the UI.
+        ctx.can("catalog:write")
+          ? h(
+              "button",
+              {
+                class: "btn btn--ghost btn--icon btn--sm",
+                type: "button",
+                title: "Delete product",
+                "aria-label": "Delete product",
+                onclick: () => void deleteProduct(p),
+              },
+              icon("trash", 13),
+            )
+          : null,
       ),
     );
   };
@@ -409,15 +453,20 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
   const categoryRow = (c: CategoryNode, depth: number): HTMLElement =>
     h(
       "div",
-      { class: "cat-row cat-row--compact" },
+      { class: "cat-row cat-row--compact", dataset: { depth: String(depth) } },
       h(
         "div",
-        { class: "cat-main", style: depth > 1 ? `padding-left: ${(depth - 1) * 18}px` : undefined },
+        { class: "cat-main" },
         h(
           "div",
           { class: "cat-name" },
+          // The depth is drawn as a repeated mark rather than as padding: an inline `style`
+          // attribute is refused by the CSP (`style-src 'self'`, no `unsafe-inline`), so the old
+          // padding silently did nothing and every category looked like a root.
+          depth > 1 ? h("span", { class: "faint mono" }, `${"— ".repeat(depth - 1)}`) : null,
           h("span", { class: "row-title" }, c.name),
           c.hidden ? badge("Hidden", "neutral", { dot: true }) : null,
+          c.image_id ? badge("Image", "info") : null,
           c.children && c.children.length > 0 ? badge(`${c.children.length} sub`, "neutral") : null,
         ),
         h(
@@ -496,6 +545,36 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
       await load();
     } catch (err) {
       report(err, "Could not delete the category");
+    }
+  };
+
+  /** deleteProduct is the other half of "stop selling this".
+   *
+   *  Hiding is the right answer for a product anyone has already bought; deleting is for a draft
+   *  that was never sold. The server refuses the delete while a service or an order references
+   *  it, so the only thing the dialog has to do is say what the two words mean. */
+  const deleteProduct = async (p: Product) => {
+    const ok = await ctx.confirm({
+      title: `Delete “${p.name}”?`,
+      body: "This removes the product and its price versions. It is refused while a service or an order still references it — hide it instead, which keeps everything that was sold exactly as it is.",
+      confirmLabel: "Delete product",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await ctx.api.del(`/api/v1/staff/catalog/products/${p.id}`);
+      ctx.toast("Product deleted", { tone: "success", detail: p.name });
+      await load();
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "in_use") {
+        ctx.toast("This product has been sold", {
+          tone: "danger",
+          detail: err.detail || "Hide it instead: a delete would orphan the services and orders that reference it.",
+          duration: 0,
+        });
+        return;
+      }
+      report(err, "Could not delete the product");
     }
   };
 
@@ -740,6 +819,15 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
     const sortOrder = input({ id: "cat-sort", type: "number", value: existing?.sort_order ?? 0, min: 0 });
     const hidden = h("input", { type: "checkbox", checked: existing?.hidden ?? false });
 
+    // The category's logo (CAT-01 / SF-06). It uses the same upload route and the same picker as
+    // a product logo, because it is the same deduped image store and the same 256 KiB cap — a
+    // second uploader would be a second allowlist to keep in step.
+    const imageHost = h("div", { class: "logo-picker" });
+    let imageId: string | null = existing?.image_id ?? null;
+    renderLogoPicker(imageHost, mediaURL(existing?.image_id), (next) => {
+      imageId = next;
+    });
+
     // The parent control. A category cannot be moved under itself or under one of its own
     // descendants, and the database refuses both; offering them in a dropdown would be an
     // invitation to a 409, so they are not offered. Depth is capped at four by the database too,
@@ -785,6 +873,13 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
         class: "span-2",
       }),
       field({ label: "Description", control: description, id: "cat-desc", class: "span-2" }),
+      field({
+        label: "Image",
+        control: imageHost,
+        id: "cat-image",
+        class: "span-2",
+        hint: "Shown in the storefront's category strip. PNG, JPEG, WebP or SVG, up to 256 KiB.",
+      }),
       h("div", { class: "span-2" }, h("label", { class: "switch" }, hidden, "Hide from the storefront")),
     );
 
@@ -824,6 +919,7 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
           slug: slug.value.trim(),
           name: name.value.trim(),
           description: description.value.trim(),
+          image_id: imageId,
           sort_order: Number(sortOrder.value) || 0,
           hidden: hidden.checked,
         };
@@ -1175,7 +1271,12 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
       field({ label: "Currency", control: currency, id: "price-currency", required: true }),
       field({ label: "Amount", control: amount, id: "price-amount", required: true, hint: "In major units, e.g. 12.00" }),
       field({ label: "Setup fee", control: setup, id: "price-setup", hint: "Optional." }),
-      field({ label: "Billing interval", control: interval, id: "price-interval" }),
+      field({
+        label: "Billing interval",
+        control: interval,
+        id: "price-interval",
+        hint: "One-time and free plans never renew; the server refuses a free plan that costs anything.",
+      }),
       intervalDaysField,
       field({ label: "Anchor day", control: anchorDay, id: "price-anchor-day", hint: "Day of the month the period starts." }),
       field({ label: "Anchor timezone", control: timezone, id: "price-tz", hint: "IANA name, e.g. Europe/Berlin." }),
@@ -1224,13 +1325,18 @@ export default async function catalogAdminPage(ctx: Ctx): Promise<Node> {
           }
           wireInterval = `every_${days}_days`;
         }
+        // A free plan is zero by definition, and the server refuses one that costs anything. Sending
+        // zero rather than failing is the honest reading of the operator's choice: they asked for a
+        // free plan, not for a free plan with a price they forgot to clear.
+        const finalMinor = wireInterval === "free" ? 0 : minor;
+        const finalSetup = wireInterval === "free" ? 0 : setupMinor;
         if (submit instanceof HTMLButtonElement) submit.disabled = true;
         try {
           await ctx.api.post(`/api/v1/staff/catalog/products/${product.id}/prices`, {
             name: name.value.trim(),
             currency: currency.value.trim().toUpperCase(),
-            amount_minor: minor,
-            setup_minor: setupMinor,
+            amount_minor: finalMinor,
+            setup_minor: finalSetup,
             interval: wireInterval,
             anchor_day: Number(anchorDay.value) || 1,
             anchor_timezone: timezone.value.trim() || "UTC",

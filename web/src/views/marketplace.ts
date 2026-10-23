@@ -17,6 +17,16 @@
 //  - **A failure leaves nothing.** A refused install produces a problem document with a stable
 //    code and no row; the page reloads the installed list after every attempt rather than
 //    optimistically adding a row that the server refused.
+//
+// Two more things the screen can now say, because "installed" was doing two jobs (ADM-12, OPS-14):
+//
+//  - **Enabled is a separate fact from installed.** An artifact kept for rollback is still on disk
+//    and still verified; it is not the gateway the deployment should use. The switch is per row and
+//    the row shows both, so a support engineer can answer "which of these four is live".
+//  - **An offline installation can still install.** Upload takes the artifact from the operator's
+//    machine, hashes it here, and records the digest — the same verification with the operator as
+//    the source of truth. Scaffold generates a runnable starting point so an internal extension does
+//    not begin as an empty file.
 
 import { ApiError } from "../lib/api";
 import { h, swap } from "../lib/dom";
@@ -75,6 +85,8 @@ interface Installed {
   staged_path: string;
   installed_at: string;
   status: "verified";
+  /** Whether the deployment should use this artifact. False keeps it installed for rollback. */
+  enabled: boolean;
 }
 
 interface MarketplaceState {
@@ -177,7 +189,9 @@ function renderState(ctx: Ctx, state: MarketplaceState, reload: () => void): Nod
   );
 
   out.appendChild(indexCard(ctx, state, reload));
-  out.appendChild(installedCard(ctx, state));
+  out.appendChild(installedCard(ctx, state, reload));
+  out.appendChild(uploadCard(ctx, reload));
+  out.appendChild(scaffoldCard(ctx));
   return out;
 }
 
@@ -398,7 +412,7 @@ function refusal(err: unknown, ext: IndexExtension): HTMLElement {
 
 // ---------------------------------------------------------------- installed --
 
-function installedCard(ctx: Ctx, state: MarketplaceState): HTMLElement {
+function installedCard(ctx: Ctx, state: MarketplaceState, reload: () => void): HTMLElement {
   if (state.installed.length === 0) {
     return card({
       title: "Installed",
@@ -421,6 +435,48 @@ function installedCard(ctx: Ctx, state: MarketplaceState): HTMLElement {
       );
     });
 
+    // The enable switch. It is a PATCH of one field, and the response is the stored row, so the
+    // screen shows what the database holds rather than what was clicked.
+    const toggle = btn(row.enabled ? "Disable" : "Enable", { size: "sm", icon: "eye" });
+    toggle.addEventListener("click", () => {
+      void withBusy(ctx, toggle, async () => {
+        await ctx.api.patch(
+          `/api/v1/staff/marketplace/installed/${encodeURIComponent(row.name)}/${encodeURIComponent(row.version)}`,
+          { enabled: !row.enabled },
+        );
+        ctx.toast(row.enabled ? `${row.name} is disabled` : `${row.name} is enabled`, {
+          tone: "success",
+          detail: row.enabled
+            ? "The artifact stays installed and verified; the deployment should stop using it."
+            : "The deployment will use it once its environment names the path and the worker restarts.",
+        });
+        reload();
+      });
+    });
+
+    // The upgrade. It is the ordinary indexed install of the newer version: the index entry is
+    // verified and stored as a second row, and the operator disables the old one when they cut over.
+    const newer = newestAvailable(state.index, row.name, row.version);
+    const upgrade = newer
+      ? btn(`Update to ${newer.version}`, { size: "sm", icon: "arrowUpRight" })
+      : null;
+    if (upgrade && newer) {
+      const target = newer;
+      upgrade.addEventListener("click", () => {
+        void withBusy(ctx, upgrade, async () => {
+          await ctx.api.post("/api/v1/staff/marketplace/install", {
+            name: target.name,
+            version: target.version,
+          });
+          ctx.toast(`${target.name} ${target.version} is installed`, {
+            tone: "success",
+            detail: `Disable ${row.version} when you are ready to switch; both artifacts stay verified.`,
+          });
+          reload();
+        });
+      });
+    }
+
     rows.appendChild(
       h(
         "div",
@@ -437,6 +493,7 @@ function installedCard(ctx: Ctx, state: MarketplaceState): HTMLElement {
               h("strong", null, row.name),
               mono(row.version),
               badge("verified", "success", { dot: true }),
+              row.enabled ? badge("enabled", "accent", { dot: true }) : badge("disabled", "neutral"),
               row.pinned ? badge("pinned", "info") : null,
             ),
             h("p", { class: "faint" }, "sha256 ", code(row.sha256)),
@@ -446,9 +503,12 @@ function installedCard(ctx: Ctx, state: MarketplaceState): HTMLElement {
               `installed ${relative(row.installed_at)} · ${row.size_bytes} bytes · `,
               row.staged_path ? mono(row.staged_path) : "stored in the panel",
             ),
+            newer
+              ? h("p", { class: "field-hint" }, `The index lists ${target_version(newer)}, which is newer than this one.`)
+              : null,
           ),
           h("div", { class: "spacer" }),
-          download,
+          h("div", { class: "row" }, upgrade, toggle, download),
         ),
       ),
     );
@@ -456,9 +516,171 @@ function installedCard(ctx: Ctx, state: MarketplaceState): HTMLElement {
 
   return card({
     title: "Installed",
-    sub: "Verified and stored. Not running: the core starts only what its environment names.",
+    sub: "Verified and stored. `enabled` is the operator's intent; the process starts only what its environment points at.",
     body: rows,
   });
+}
+
+// ---------------------------------------------------------------- local install --
+
+/** The artifact upload (OPS-14).
+ *
+ *  The bytes go up as they are, with the metadata in headers: a JSON envelope around a binary would
+ *  cost a third more and buffer the artifact twice. The expected digest is optional and is what
+ *  makes an upload from a build machine checkable at the receiving end. */
+function uploadCard(ctx: Ctx, reload: () => void): HTMLElement {
+  const name = input({ id: "upload-name", placeholder: "internalgw", autocomplete: "off" });
+  const version = input({ id: "upload-version", placeholder: "1.0.0", autocomplete: "off" });
+  const kind = h(
+    "select",
+    { class: "input", id: "upload-kind" },
+    ...Object.entries(KIND_LABEL).map(([value, label]) => h("option", { value }, label)),
+  ) as HTMLSelectElement;
+  const publisher = input({ id: "upload-publisher", placeholder: "Your team", autocomplete: "off" });
+  const sha = input({ id: "upload-sha", placeholder: "optional: 64 hex characters to require", autocomplete: "off" });
+  const fileInput = h("input", { class: "input", id: "upload-file", type: "file" }) as HTMLInputElement;
+  const submit = btn("Upload and verify", { variant: "primary", size: "sm", icon: "arrowUpRight" });
+
+  submit.addEventListener("click", () => {
+    const file = fileInput.files?.[0];
+    if (!file) {
+      ctx.toast("Choose a file", { tone: "danger", detail: "The artifact is what gets verified." });
+      return;
+    }
+    if (!name.value.trim() || !version.value.trim()) {
+      ctx.toast("Name and version are required", {
+        tone: "danger",
+        detail: "They become the directory and the row; a digest with no name cannot be recognised later.",
+      });
+      return;
+    }
+    void withBusy(ctx, submit, async () => {
+      const result = await ctx.api.postRaw<InstallResult>("/api/v1/staff/marketplace/upload", file, {
+        contentType: "application/octet-stream",
+        headers: {
+          "X-Extension-Name": name.value.trim(),
+          "X-Extension-Version": version.value.trim(),
+          "X-Extension-Kind": kind.value,
+          "X-Extension-Publisher": publisher.value.trim(),
+          "X-Extension-Sha256": sha.value.trim(),
+        },
+      });
+      ctx.toast(`${result.name} ${result.version} verified`, {
+        tone: "success",
+        detail: result.sha256,
+      });
+      fileInput.value = "";
+      sha.value = "";
+      reload();
+    });
+  });
+
+  return card({
+    title: "Upload an artifact",
+    sub: "For an installation with no index. The digest is computed here, from the bytes you upload.",
+    body: h(
+      "div",
+      { class: "stack-sm" },
+      h("div", { class: "grid-2" }, field({ label: "Name", control: name }), field({ label: "Version", control: version })),
+      h("div", { class: "grid-2" }, field({ label: "Kind", control: kind }), field({ label: "Publisher", control: publisher })),
+      field({ label: "Expected sha256 (optional)", control: sha }),
+      field({ label: "Artifact", control: fileInput }),
+      h(
+        "div",
+        { class: "row-wrap" },
+        submit,
+        h(
+          "span",
+          { class: "field-hint" },
+          "Uploading proves the stored bytes are the bytes you have. It does not prove who built them — there is no index to check a publisher against.",
+        ),
+      ),
+    ),
+  });
+}
+
+/** The scaffold (ADM-12).
+ *
+ *  A generated zip rather than a template in the repository, because it carries the operator's name,
+ *  kind and version. The download is a plain link: it is a GET that stores nothing, and an operator
+ *  who is starting an extension wants a file, not a fetch wrapper. */
+function scaffoldCard(ctx: Ctx): HTMLElement {
+  const name = input({ id: "scaffold-name", placeholder: "internalgw", autocomplete: "off" });
+  const version = input({ id: "scaffold-version", placeholder: "0.1.0", value: "0.1.0", autocomplete: "off" });
+  const kind = h(
+    "select",
+    { class: "input", id: "scaffold-kind" },
+    ...Object.entries(KIND_LABEL).map(([value, label]) => h("option", { value }, label)),
+  ) as HTMLSelectElement;
+  const download = btn("Download starter zip", { size: "sm", icon: "download" });
+  download.addEventListener("click", () => {
+    const wanted = name.value.trim();
+    if (!wanted) {
+      ctx.toast("Name your extension", { tone: "danger", detail: "It becomes the directory and the manifest." });
+      return;
+    }
+    const query = new URLSearchParams({ name: wanted, version: version.value.trim() || "0.1.0", kind: kind.value });
+    window.location.assign(`/api/v1/staff/marketplace/scaffold?${query.toString()}`);
+  });
+
+  return card({
+    title: "Start an extension",
+    sub: "A manifest, a runnable stdio stub and a README that names the handshake",
+    body: h(
+      "div",
+      { class: "stack-sm" },
+      h("div", { class: "grid-2" }, field({ label: "Name", control: name }), field({ label: "Version", control: version })),
+      field({ label: "Kind", control: kind }),
+      h(
+        "div",
+        { class: "row-wrap" },
+        download,
+        h(
+          "span",
+          { class: "field-hint" },
+          "The stub answers initialize and health and refuses everything else, so the panel reports what is missing instead of hanging.",
+        ),
+      ),
+    ),
+  });
+}
+
+/** newestAvailable returns the newest index entry for name that is strictly newer than version. */
+function newestAvailable(index: MarketplaceIndex, name: string, version: string): IndexExtension | null {
+  let best: IndexExtension | null = null;
+  for (const ext of index.extensions ?? []) {
+    if (ext.name !== name) continue;
+    if (compareVersions(ext.version, version) <= 0) continue;
+    if (!best || compareVersions(ext.version, best.version) > 0) best = ext;
+  }
+  return best;
+}
+
+/** compareVersions orders two semantic versions by major, minor, patch.
+ *
+ *  Pre-release ordering is deliberately not implemented: the index is the panel's own listing, and a
+ *  screen that mis-ordered "1.0.0-rc1" and "1.0.0" would offer the wrong upgrade. The server's
+ *  update parser is the authority for releases; this only decides whether to *offer* an update, and
+ *  the installer verifies whatever it installs anyway. */
+function compareVersions(a: string, b: string): number {
+  const parse = (raw: string): number[] => {
+    const core = raw.trim().replace(/^v/, "").split("-")[0] ?? "";
+    const parts = core.split(".").map((part) => Number.parseInt(part, 10));
+    return [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
+  };
+  const left = parse(a);
+  const right = parse(b);
+  for (let i = 0; i < 3; i += 1) {
+    const l = left[i] ?? 0;
+    const r = right[i] ?? 0;
+    if (l !== r) return l > r ? 1 : -1;
+  }
+  return 0;
+}
+
+/** target_version names a version for a sentence without repeating the field accesses. */
+function target_version(ext: IndexExtension): string {
+  return `${ext.name} ${ext.version}`;
 }
 
 // ------------------------------------------------------------------ helpers --

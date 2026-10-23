@@ -77,8 +77,14 @@ func Sources() []string { return []string{"paymenter", "whmcs"} }
 // export services". The importer cannot tell those apart from the data, so it insists on
 // being told.
 func (p *profile) checkFiles(files map[string]string) error {
-	known := make(map[string]struct{}, len(Files))
+	known := make(map[string]struct{}, len(Files)+len(OptionalFiles))
 	for _, name := range Files {
+		known[name] = struct{}{}
+	}
+	// The optional documents are named but not required: a dump that carries tickets must not be
+	// refused for omitting currencies, and one that carries neither is imported as far as it goes
+	// (the report says which documents it did not see).
+	for _, name := range OptionalFiles {
 		known[name] = struct{}{}
 	}
 	for _, name := range Files {
@@ -88,8 +94,8 @@ func (p *profile) checkFiles(files map[string]string) error {
 	}
 	for name := range files {
 		if _, ok := known[name]; !ok {
-			return fmt.Errorf("%w: %q is not one of the documents this importer reads (%s)",
-				ErrInvalidInput, name, strings.Join(Files, ", "))
+			return fmt.Errorf("%w: %q is not one of the documents this importer reads (%s, %s)",
+				ErrInvalidInput, name, strings.Join(Files, ", "), strings.Join(OptionalFiles, ", "))
 		}
 	}
 	return nil
@@ -140,6 +146,41 @@ func whmcsProfile() *profile {
 				{key: "billing_cycle", aliases: []string{"billingcycle"}},
 				{key: "created_at", aliases: []string{"regdate"}},
 				{key: "next_due_at", aliases: []string{"nextduedate"}},
+			},
+			FileCurrencies: {
+				{key: "code", aliases: []string{"code", "currency_code"}, required: true},
+				{key: "name", aliases: []string{"name", "currency_name"}},
+				{key: "symbol", aliases: []string{"symbol", "prefix"}},
+				{key: "symbol_position", aliases: []string{"symbol_position", "format"}},
+				// WHMCS stores the number of decimal places; this panel calls it the scale.
+				{key: "scale", aliases: []string{"scale", "decimal_places", "decimals"}, required: true},
+				{key: "enabled", aliases: []string{"enabled", "active"}},
+			},
+			FileAdmins: {
+				{key: "id", aliases: []string{"id", "adminid"}, required: false},
+				{key: "email", aliases: []string{"email", "emailaddress"}, required: true},
+				{key: "first_name", aliases: []string{"first_name", "firstname"}},
+				{key: "last_name", aliases: []string{"last_name", "lastname"}},
+				{key: "name", aliases: []string{"name", "full_name"}},
+				{key: "role", aliases: []string{"role", "role_name", "staff_role"}, required: true},
+			},
+			FileProducts: {
+				{key: "id", aliases: []string{"id", "productid", "pid"}},
+				{key: "name", aliases: []string{"name", "product_name"}, required: true},
+				{key: "slug", aliases: []string{"slug", "product_slug"}},
+				{key: "price", aliases: []string{"price", "amount"}},
+				{key: "currency", aliases: []string{"currency", "currency_code"}},
+				{key: "interval", aliases: []string{"interval", "billing_cycle", "billingcycle"}},
+			},
+			FileTickets: {
+				{key: "id", aliases: []string{"id", "ticketid"}, required: true},
+				{key: "number", aliases: []string{"number", "ticket_number", "tid"}},
+				{key: "client_id", aliases: []string{"client_id", "userid", "user_id"}, required: true},
+				{key: "subject", aliases: []string{"subject", "title"}, required: true},
+				{key: "department", aliases: []string{"department", "dept"}},
+				{key: "priority", aliases: []string{"priority", "urgency"}},
+				{key: "status", aliases: []string{"status"}, required: true},
+				{key: "created_at", aliases: []string{"created_at", "date", "datecreated"}},
 			},
 			FileTransactions: {
 				{key: "id", aliases: []string{"id", "accountid"}, required: true},
@@ -198,6 +239,40 @@ func paymenterProfile() *profile {
 				{key: "billing_cycle", aliases: []string{"billing_cycle", "plan_interval"}},
 				{key: "created_at", aliases: []string{"created_at"}},
 				{key: "next_due_at", aliases: []string{"expires_at", "next_due_at"}},
+			},
+			FileCurrencies: {
+				{key: "code", aliases: []string{"code"}, required: true},
+				{key: "name", aliases: []string{"name"}},
+				{key: "symbol", aliases: []string{"symbol"}},
+				{key: "symbol_position", aliases: []string{"symbol_position"}},
+				{key: "scale", aliases: []string{"scale", "decimal_places"}, required: true},
+				{key: "enabled", aliases: []string{"enabled"}},
+			},
+			FileAdmins: {
+				{key: "id", aliases: []string{"id", "user_id"}},
+				{key: "email", aliases: []string{"email"}, required: true},
+				{key: "first_name", aliases: []string{"first_name"}},
+				{key: "last_name", aliases: []string{"last_name"}},
+				{key: "name", aliases: []string{"name"}},
+				{key: "role", aliases: []string{"role"}, required: true},
+			},
+			FileProducts: {
+				{key: "id", aliases: []string{"id", "product_id"}},
+				{key: "name", aliases: []string{"name"}, required: true},
+				{key: "slug", aliases: []string{"slug"}},
+				{key: "price", aliases: []string{"price", "amount"}},
+				{key: "currency", aliases: []string{"currency", "currency_code"}},
+				{key: "interval", aliases: []string{"interval", "billing_cycle"}},
+			},
+			FileTickets: {
+				{key: "id", aliases: []string{"id", "ticket_id"}, required: true},
+				{key: "number", aliases: []string{"number"}},
+				{key: "client_id", aliases: []string{"client_id", "user_id"}, required: true},
+				{key: "subject", aliases: []string{"subject", "title"}, required: true},
+				{key: "department", aliases: []string{"department"}},
+				{key: "priority", aliases: []string{"priority"}},
+				{key: "status", aliases: []string{"status"}, required: true},
+				{key: "created_at", aliases: []string{"created_at"}},
 			},
 			FileTransactions: {
 				{key: "id", aliases: []string{"transaction_id", "id"}, required: true},

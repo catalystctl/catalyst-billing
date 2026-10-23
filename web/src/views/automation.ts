@@ -17,6 +17,14 @@
 //
 // The worker's heartbeat is read from the cron surface when the operator holds log:read. It is
 // the other half of the same question: a job list with no heartbeat is a list of intentions.
+//
+// The third section is the run history *per job* — how often each has failed, when it last
+// succeeded, and a retry (OPS-09, OPS-13). A list of intentions plus a heartbeat still cannot
+// answer "which job is broken", and `cron_runs` could: it is written by the worker and by the retry
+// itself, so the two are one history. The retry can only run the jobs this process can construct
+// (the lifecycle rules and the maintenance rules); a job that lives in the worker answers
+// `job_not_retryable` rather than disappearing from the button list, because "you cannot do this
+// from the panel" is information an operator should have before they go looking.
 
 import { ApiError } from "../lib/api";
 import { h, swap } from "../lib/dom";
@@ -47,6 +55,41 @@ interface AutomationResponse {
   data: AutomationJob[];
   kill_switches: { mechanism: string; read_only: boolean; note: string };
   worker: { embedded_switch: string; embedded: boolean };
+}
+
+/** One job's aggregate, from `handleCronStatistics` in internal/httpapi/cron_failures.go. */
+interface JobStatistics {
+  job: string;
+  runs: number;
+  failures: number;
+  running: number;
+  skipped: number;
+  avg_duration_ms: number;
+  max_duration_ms: number;
+  last_run_at: string | null;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_outcome: string;
+  last_detail: string;
+}
+
+interface StatisticsResponse {
+  window_days: number;
+  since: string;
+  data: JobStatistics[];
+  note: string;
+}
+
+/** One failed run, from the same file's failure list. */
+interface FailedRun {
+  id: string;
+  job: string;
+  started_at: string;
+  finished_at: string | null;
+  outcome: string;
+  detail: string;
+  items: number;
+  duration_ms: number | null;
 }
 
 /** The worker heartbeat, from `handleHeartbeat` in internal/httpapi/cron.go. A worker that has
@@ -99,12 +142,23 @@ export default async function automationPage(ctx: Ctx): Promise<Node> {
     // not an error to render.
     let heartbeat: HeartbeatResponse | null = null;
     let heartbeatDenied = false;
+    let statistics: StatisticsResponse | null = null;
+    let failures: FailedRun[] = [];
     if (canReadLogs) {
       try {
         heartbeat = await ctx.api.get<HeartbeatResponse>("/api/v1/staff/cron/heartbeat", {
           cache: false,
           signal,
         });
+        statistics = await ctx.api.get<StatisticsResponse>("/api/v1/staff/cron/statistics?days=7", {
+          cache: false,
+          signal,
+        });
+        const page = await ctx.api.get<{ data: FailedRun[] }>("/api/v1/staff/cron/failures?limit=10", {
+          cache: false,
+          signal,
+        });
+        failures = page.data ?? [];
       } catch (err) {
         if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
           heartbeatDenied = true;
@@ -113,7 +167,7 @@ export default async function automationPage(ctx: Ctx): Promise<Node> {
         }
       }
     }
-    return { body, heartbeat, heartbeatDenied, canReadLogs };
+    return { body, heartbeat, heartbeatDenied, canReadLogs, statistics, failures };
   };
 
   paint();
@@ -131,7 +185,8 @@ export default async function automationPage(ctx: Ctx): Promise<Node> {
 
   function pageBody(): Node {
     return resource(ctx, load, (data) =>
-      render(data.body, data.heartbeat, data.heartbeatDenied, data.canReadLogs),
+      render(ctx, data.body, data.heartbeat, data.heartbeatDenied, data.canReadLogs,
+        data.statistics, data.failures, () => paint()),
     );
   }
 }
@@ -139,10 +194,14 @@ export default async function automationPage(ctx: Ctx): Promise<Node> {
 // ------------------------------------------------------------------ render --
 
 function render(
+  ctx: Ctx,
   body: AutomationResponse,
   heartbeat: HeartbeatResponse | null,
   heartbeatDenied: boolean,
   canReadLogs: boolean,
+  statistics: StatisticsResponse | null,
+  failures: FailedRun[],
+  reload: () => void,
 ): Node {
   if (body.data.length === 0) {
     return card({
@@ -173,8 +232,154 @@ function render(
         )
       : null,
     heartbeatCard(heartbeat, heartbeatDenied, canReadLogs, body),
+    runsCard(ctx, statistics, failures, reload),
     jobsCard(body.data),
   );
+}
+
+/** runsCard reports each job's recent history and offers a retry.
+ *
+ *  Two lists, because they answer two questions: the aggregate says "this job fails every tick", and
+ *  the rows say what the last failures actually said. A screen with only the aggregate sends an
+ *  operator to the logs; a screen with only the rows hides the pattern.
+ *
+ *  The failures are rendered even when nothing has failed: "no failures in seven days" is the answer
+ *  to the question, and an empty card that says nothing would look like a screen that did not
+ *  load. */
+function runsCard(
+  ctx: Ctx,
+  statistics: StatisticsResponse | null,
+  failures: FailedRun[],
+  reload: () => void,
+): HTMLElement {
+  if (statistics === null) {
+    return card({
+      title: "Recent runs",
+      body: emptyState({
+        title: "The run history is not visible to you",
+        body: "Reading it needs log:read. The job list below is complete; only the history is withheld.",
+        icon: "clock",
+      }),
+    });
+  }
+
+  const failing = statistics.data.filter((row) => row.failures > 0 || row.running > 0);
+
+  return card({
+    title: "Recent runs",
+    sub: `last ${statistics.window_days} days · ${statistics.data.length} job${statistics.data.length === 1 ? "" : "s"} with history`,
+    body: h(
+      "div",
+      { class: "stack-sm" },
+      failing.length === 0
+        ? h(
+            "p",
+            { class: "field-hint" },
+            "No job has failed or is still running inside the window. A job that has not run at all is not listed here — " +
+              "the table below says which jobs are registered.",
+          )
+        : h(
+            "div",
+            { class: "stack-xs" },
+            ...failing.map((row) =>
+              h(
+                "div",
+                { class: "card card--flat" },
+                h(
+                  "div",
+                  { class: "row-wrap" },
+                  h(
+                    "div",
+                    { class: "stack-sm" },
+                    h(
+                      "div",
+                      { class: "row" },
+                      h("strong", null, row.job),
+                      row.running > 0
+                        ? badge("running", "info", { dot: true })
+                        : badge(`${row.failures} failed`, "danger", { dot: true }),
+                      row.last_success_at
+                        ? h("span", { class: "field-hint faint" }, `last success ${relative(row.last_success_at)}`)
+                        : h("span", { class: "field-hint faint" }, "no successful run in the window"),
+                    ),
+                    h(
+                      "p",
+                      { class: "faint" },
+                      `${row.runs} run${row.runs === 1 ? "" : "s"} · avg ${row.avg_duration_ms}ms · max ${row.max_duration_ms}ms` +
+                        (row.skipped > 0 ? ` · ${row.skipped} skipped` : ""),
+                    ),
+                    row.last_detail ? h("p", { class: "faint" }, row.last_detail) : null,
+                  ),
+                  h("div", { class: "spacer" }),
+                  retryButton(ctx, row.job, reload),
+                ),
+              ),
+            ),
+          ),
+      failures.length > 0
+        ? h(
+            "div",
+            { class: "stack-xs" },
+            h("span", { class: "field-label" }, "Failures"),
+            ...failures.map((run) =>
+              h(
+                "div",
+                { class: "row-wrap" },
+                h(
+                  "div",
+                  { class: "cell-main" },
+                  h("div", { class: "primary" }, run.job),
+                  h("div", { class: "secondary" }, run.detail || "no detail was recorded"),
+                ),
+                h(
+                  "span",
+                  { class: "field-hint faint nowrap" },
+                  `${dateTime(run.started_at)} · ${run.duration_ms ?? 0}ms`,
+                ),
+              ),
+            ),
+          )
+        : null,
+    ),
+  });
+}
+
+/** retryButton runs one job now.
+ *
+ *  It exists for the jobs this process can build. The others answer `job_not_retryable` with a
+ *  sentence naming the worker; the button is offered anyway so the refusal is explained rather than
+ *  the control silently missing. */
+function retryButton(ctx: Ctx, job: string, reload: () => void): HTMLElement {
+  const button = btn("Run now", { size: "sm", icon: "refresh" });
+  button.addEventListener("click", () => {
+    void (async () => {
+      if (button instanceof HTMLButtonElement) button.disabled = true;
+      try {
+        const result = await ctx.api.post<{ outcome: string; detail: string; duration_ms: number }>(
+          `/api/v1/staff/cron/${encodeURIComponent(job)}/retry`,
+          {},
+        );
+        ctx.toast(
+          result.outcome === "ok" ? `${job} ran` : `${job} failed`,
+          {
+            tone: result.outcome === "ok" ? "success" : "danger",
+            detail: result.detail || `${result.duration_ms}ms`,
+          },
+        );
+        reload();
+      } catch (err) {
+        if (err instanceof ApiError) {
+          // `job_not_retryable` is not a failure of the screen: it says where the job lives.
+          ctx.toast(err.detail || err.code, { tone: err.status === 422 ? "info" : "danger", detail: err.code });
+        } else if (!(err instanceof DOMException && err.name === "AbortError")) {
+          ctx.toast("The job could not be run", { tone: "danger", detail: String(err) });
+        }
+      } finally {
+        if (button instanceof HTMLButtonElement) button.disabled = false;
+      }
+    })();
+  });
+  return button;
 }
 
 /** heartbeatCard reports the worker's own liveness.

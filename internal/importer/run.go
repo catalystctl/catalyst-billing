@@ -160,6 +160,12 @@ func (r *run) execute() error {
 			return err
 		}
 	}
+	// The optional documents (currencies, admins, products, tickets) run after the required ones
+	// because they depend on them: a ticket needs its customer and a product may be named by a
+	// service. See whmcs_extended.go for what is deliberately not imported from a dump.
+	if err := r.runExtended(); err != nil {
+		return err
+	}
 	if err := r.issueInvoices(); err != nil {
 		return err
 	}
@@ -237,7 +243,7 @@ func (r *run) reserveInvoiceSeries() error {
 // does not stop the run: the other four documents are still worth importing, and the report
 // says exactly which file was unreadable.
 func (r *run) file(name string) error {
-	idx := r.rep.fileIndex(name)
+	idx := r.rep.ensureFile(name)
 	rd, err := newReader(name, r.in.Files[name], r.prof)
 	if err != nil {
 		r.rep.Files[idx].Error = errorDetail(err)
@@ -272,6 +278,9 @@ func (r *run) file(name string) error {
 
 // dispatch routes one row to its entity rules.
 func (r *run) dispatch(file string, row *csvRow) error {
+	if handled, err := r.dispatchExtended(file, row); handled {
+		return err
+	}
 	switch file {
 	case FileClients:
 		return r.applyClient(row)
@@ -301,7 +310,7 @@ func entityFor(file string) string {
 	case FileTransactions:
 		return EntityPayment
 	}
-	return ""
+	return entityForFile(file)
 }
 
 // ------------------------------------------------------------------ report --

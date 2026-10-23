@@ -634,8 +634,11 @@ func TestInvalidRequestsAreRefused(t *testing.T) {
 	if _, err := importer.Run(ctx, pool, in); !errors.Is(err, importer.ErrMissingFile) {
 		t.Fatalf("missing file: err = %v, want ErrMissingFile", err)
 	}
+	// A document this build does not read is refused rather than ignored. `tickets` used to be
+	// this test's example and is now a *supported* optional document (OPS-10), so the example had
+	// to become one nothing reads.
 	in = fullDump().run(false)
-	in.Files["tickets"] = "id,subject"
+	in.Files["sage50_ledger"] = "id,amount"
 	if _, err := importer.Run(ctx, pool, in); !errors.Is(err, importer.ErrInvalidInput) {
 		t.Fatalf("unknown file: err = %v, want ErrInvalidInput", err)
 	}

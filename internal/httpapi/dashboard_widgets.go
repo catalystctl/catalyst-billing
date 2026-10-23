@@ -32,10 +32,12 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/catalyst/billing/internal/authn"
+	"github.com/catalyst/billing/internal/ledger"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/staff"
 )
@@ -98,6 +100,66 @@ type dashboardWidgetsBody struct {
 	// PaidNotProvisioned is the exception queue the ops overview alerts on: invoices that are
 	// settled while the thing they bought is not running.
 	PaidNotProvisioned *dashboardExceptionQueue `json:"paid_not_provisioned"`
+
+	// Series is the revenue chart: one point per bucket per currency, in the *same* ledger the
+	// Revenue figure comes from. It is a chart rather than a second figure because a total hides
+	// the shape: an operator deciding whether the month is fine needs to see the week of zero
+	// that a quiet total would average away.
+	Series []dashboardSeries `json:"revenue_series"`
+	// Previous is the same window immediately before this one, with the deltas. It is what turns
+	// "€4,120" into a number an operator can act on — the same figure was €9,800 last month, and
+	// the three-count "new customers" was nine.
+	Previous *dashboardPrevious `json:"previous_period"`
+	// SupportTickets is the support queue itself, not a count of it. A count tells an operator
+	// there is work; a table tells them which work, so the dashboard can link to the ticket that
+	// has been open for nine days.
+	SupportTickets []dashboardTicket `json:"support_tickets"`
+}
+
+// dashboardSeries is one currency's revenue over the period, bucketed.
+type dashboardSeries struct {
+	Currency string `json:"currency"`
+	// Points are oldest first and every bucket in the window is present, including the empty
+	// ones: a chart that skips a day with no revenue draws a line that says the shop earned
+	// money on that day.
+	Points []dashboardPoint `json:"points"`
+}
+
+// dashboardPoint is one bucket of the chart.
+type dashboardPoint struct {
+	// At is the bucket's start, in UTC, midnight-aligned for a day bucket and Monday-aligned for
+	// a week bucket.
+	At    time.Time `json:"at"`
+	Minor int64     `json:"minor"`
+}
+
+// dashboardPrevious is the comparison window and its figures.
+type dashboardPrevious struct {
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
+	// Revenue is per currency, like the current period. A currency with no revenue in the previous
+	// period is absent rather than zero-valued, so the client can say "new" instead of "+100%".
+	Revenue         []dashboardRevenue `json:"revenue"`
+	ActiveCustomers *int               `json:"active_customers"`
+	NewCustomers    *int               `json:"new_customers"`
+	TicketsOpened   *int               `json:"tickets_opened"`
+}
+
+// dashboardTicket is one row of the support queue.
+type dashboardTicket struct {
+	ID         string    `json:"id"`
+	Number     string    `json:"number"`
+	Subject    string    `json:"subject"`
+	Department string    `json:"department"`
+	Priority   string    `json:"priority"`
+	Status     string    `json:"status"`
+	CustomerID string    `json:"customer_id"`
+	Email      string    `json:"email"`
+	AssignedTo string    `json:"assigned_to"`
+	CreatedAt  time.Time `json:"created_at"`
+	// WaitingSince is the last activity: a ticket nobody has touched for a week is the one that
+	// needs attention, and `created_at` cannot say that.
+	WaitingSince time.Time `json:"waiting_since"`
 }
 
 // dashboardOverdue is the overdue-invoice widget.
@@ -216,6 +278,21 @@ func (s *Server) handleDashboardWidgets(w http.ResponseWriter, r *http.Request) 
 		fail("paid_not_provisioned", err)
 	} else {
 		body.PaidNotProvisioned = queue
+	}
+	if series, err := s.widgetRevenueSeries(r.Context(), from, to); err != nil {
+		fail("revenue_series", err)
+	} else {
+		body.Series = series
+	}
+	if prev, err := s.widgetPrevious(r.Context(), from, to); err != nil {
+		fail("previous_period", err)
+	} else {
+		body.Previous = prev
+	}
+	if tickets, err := s.widgetSupportQueue(r.Context()); err != nil {
+		fail("support_tickets", err)
+	} else {
+		body.SupportTickets = tickets
 	}
 
 	w.Header().Set("Cache-Control", "no-store")
@@ -465,4 +542,207 @@ func (s *Server) widgetPaidNotProvisioned(ctx context.Context) (*dashboardExcept
 		out.Money = append(out.Money, revenueOf(code, minor))
 	}
 	return out, moneyRows.Err()
+}
+
+// widgetBucket picks the chart bucket for a window.
+//
+// A 90-day window bucketed by day is ninety points on a card that is 300px wide — a smear, not a
+// trend. Weeks for anything longer than a quarter of the dashboard's range, days otherwise, and
+// the boundary is a constant so the client can label the axis without re-deriving it.
+func widgetBucket(days int) (unit string, label string) {
+	if days > 45 {
+		return "week", "week"
+	}
+	return "day", "day"
+}
+
+// widgetRevenueSeries reads the revenue chart from the ledger.
+//
+// It is the same account and the same net-of-credits arithmetic as the Revenue figure above, in
+// one query that groups by bucket, so the chart's points add up to the total it is drawn beside.
+// A chart that disagreed with its own headline number is worse than no chart.
+func (s *Server) widgetRevenueSeries(ctx context.Context, from, to time.Time) ([]dashboardSeries, error) {
+	unit, _ := widgetBucket(int(to.Sub(from).Hours() / 24))
+	// date_trunc's argument is a literal here, chosen from the two allowed values above; it is
+	// formatted into the statement rather than bound because PostgreSQL does not accept a
+	// parameter there. The value cannot come from a request.
+	trunc := "day"
+	if unit == "week" {
+		trunc = "week"
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT currency,
+		       date_trunc('`+trunc+`', created_at) AS bucket,
+		       COALESCE(SUM(credit_minor), 0) - COALESCE(SUM(debit_minor), 0) AS net_minor
+		FROM journal_entries
+		WHERE account_code = $1
+		  AND created_at >= $2
+		  AND created_at <= $3
+		GROUP BY currency, bucket
+		ORDER BY currency, bucket`, ledger.AccountRevenue, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// A dense series: every bucket in the window exists, even with no revenue. The fill happens
+	// here rather than in the chart because "no row" and "zero" are the same number on a graph and
+	// different facts in a query, and only this side knows which buckets are missing.
+	byCurrency := map[string]map[time.Time]int64{}
+	for rows.Next() {
+		var (
+			code   string
+			bucket time.Time
+			minor  int64
+		)
+		if err := rows.Scan(&code, &bucket, &minor); err != nil {
+			return nil, err
+		}
+		if byCurrency[code] == nil {
+			byCurrency[code] = map[time.Time]int64{}
+		}
+		byCurrency[code][bucket.UTC()] = minor
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	codes := make([]string, 0, len(byCurrency))
+	for code := range byCurrency {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+
+	out := make([]dashboardSeries, 0, len(codes))
+	for _, code := range codes {
+		points := make([]dashboardPoint, 0, 32)
+		for at := widgetBucketStart(from, unit); !at.After(to); at = widgetNextBucket(at, unit) {
+			points = append(points, dashboardPoint{At: at, Minor: byCurrency[code][at]})
+		}
+		out = append(out, dashboardSeries{Currency: code, Points: points})
+	}
+	return out, nil
+}
+
+// widgetBucketStart aligns a window's start to the bucket it falls in.
+//
+// A day bucket starts at midnight UTC and a week bucket on Monday, which is what date_trunc
+// returns; the arithmetic mirrors it so the fill lines up with the sums rather than drifting by
+// the part of the day the window happens to start in.
+func widgetBucketStart(from time.Time, unit string) time.Time {
+	utc := from.UTC()
+	start := time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+	if unit == "week" {
+		// Go's Weekday is Sunday=0; date_trunc('week') is ISO, which starts on Monday.
+		offset := (int(start.Weekday()) + 6) % 7
+		start = start.AddDate(0, 0, -offset)
+	}
+	return start
+}
+
+// widgetNextBucket advances one bucket.
+func widgetNextBucket(at time.Time, unit string) time.Time {
+	if unit == "week" {
+		return at.AddDate(0, 0, 7)
+	}
+	return at.AddDate(0, 0, 1)
+}
+
+// widgetPrevious reads the window immediately before this one.
+//
+// The previous window is the same length, ending where this one starts: a "month" is compared
+// with the previous month rather than with "the 30 days before today", because an operator
+// comparing a calendar month expects the calendar.
+//
+// It is a separate query rather than a second bucket in the same one because the comparison is of
+// *figures* (net revenue per currency, how many customers were active, how many tickets opened),
+// and mixing the two windows in one row would make every predicate a conditional.
+func (s *Server) widgetPrevious(ctx context.Context, from, to time.Time) (*dashboardPrevious, error) {
+	span := to.Sub(from)
+	prevFrom, prevTo := from.Add(-span), from
+	out := &dashboardPrevious{From: prevFrom, To: prevTo, Revenue: []dashboardRevenue{}}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT currency,
+		       COALESCE(SUM(credit_minor), 0) - COALESCE(SUM(debit_minor), 0) AS net_minor
+		FROM journal_entries
+		WHERE account_code = $1
+		  AND created_at >= $2
+		  AND created_at < $3
+		GROUP BY currency
+		ORDER BY currency`, ledger.AccountRevenue, prevFrom, prevTo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			code  string
+			minor int64
+		)
+		if err := rows.Scan(&code, &minor); err != nil {
+			return nil, err
+		}
+		out.Revenue = append(out.Revenue, revenueOf(code, minor))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if n, err := s.widgetActiveCustomers(ctx, prevFrom, prevTo); err != nil {
+		return nil, err
+	} else {
+		out.ActiveCustomers = &n
+	}
+	if n, err := s.widgetCount(ctx,
+		`SELECT count(*) FROM customers WHERE created_at >= $1 AND created_at < $2`,
+		prevFrom, prevTo); err != nil {
+		return nil, err
+	} else {
+		out.NewCustomers = &n
+	}
+	if n, err := s.widgetCount(ctx,
+		`SELECT count(*) FROM tickets WHERE created_at >= $1 AND created_at < $2`,
+		prevFrom, prevTo); err != nil {
+		return nil, err
+	} else {
+		out.TicketsOpened = &n
+	}
+	return out, nil
+}
+
+// widgetSupportQueue reads the rows behind the support count.
+//
+// Oldest waiting first rather than newest: the count above this table says "there are nine open
+// tickets", and the useful next sentence is "and one of them has been waiting nine days". A queue
+// sorted by creation date would put the newest at the top, which is the opposite of what needs a
+// human.
+func (s *Server) widgetSupportQueue(ctx context.Context) ([]dashboardTicket, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT t.id::text, COALESCE(t.number, ''), t.subject, t.department, t.priority,
+		       t.status, t.customer_id::text, COALESCE(c.email, ''),
+		       COALESCE(t.assigned_to::text, ''), t.created_at,
+		       COALESCE(t.last_reply_at, t.created_at)
+		FROM tickets t
+		JOIN customers c ON c.id = t.customer_id
+		WHERE t.status <> 'closed'
+		ORDER BY COALESCE(t.last_reply_at, t.created_at), t.created_at
+		LIMIT $1`, widgetQueueLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]dashboardTicket, 0, widgetQueueLimit)
+	for rows.Next() {
+		var ticket dashboardTicket
+		if err := rows.Scan(&ticket.ID, &ticket.Number, &ticket.Subject, &ticket.Department,
+			&ticket.Priority, &ticket.Status, &ticket.CustomerID, &ticket.Email,
+			&ticket.AssignedTo, &ticket.CreatedAt, &ticket.WaitingSince); err != nil {
+			return nil, err
+		}
+		out = append(out, ticket)
+	}
+	return out, rows.Err()
 }

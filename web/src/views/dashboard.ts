@@ -23,6 +23,7 @@ import {
   skeletonPage,
   statusBadge,
 } from "../ui/kit";
+import { sparkline } from "../ui/charts";
 import { createTable, type Column } from "../ui/table";
 
 export const meta = { title: "Dashboard", crumb: "Dashboard" };
@@ -87,6 +88,34 @@ interface DashboardWidgets {
     oldest_due_at: string | null;
     money: Amount[];
   } | null;
+  /** The revenue chart: one dense series per currency, from the same ledger as `revenue`. */
+  revenue_series: Array<{
+    currency: string;
+    points: Array<{ at: string; minor: number }>;
+  }>;
+  /** The window immediately before this one, so a figure can be read as up or down. */
+  previous_period: {
+    from: string;
+    to: string;
+    revenue: Amount[];
+    active_customers: number | null;
+    new_customers: number | null;
+    tickets_opened: number | null;
+  } | null;
+  /** The support queue itself, oldest waiting first. */
+  support_tickets: Array<{
+    id: string;
+    number: string;
+    subject: string;
+    department: string;
+    priority: "low" | "normal" | "high";
+    status: string;
+    customer_id: string;
+    email: string;
+    assigned_to: string;
+    created_at: string;
+    waiting_since: string;
+  }>;
   paid_not_provisioned: {
     code: string;
     title: string;
@@ -367,6 +396,7 @@ export default async function dashboardPage(ctx: Ctx): Promise<Node> {
         `Customers with a live service, an invoice or a payment in the ${widgets.days} days`,
         "users",
         unavailable.has("active_customers"),
+        trendOf(widgets.active_customers, widgets.previous_period?.active_customers),
       ),
       widgetStat(
         "New customers",
@@ -374,15 +404,20 @@ export default async function dashboardPage(ctx: Ctx): Promise<Node> {
         "Signed up in the period",
         "plus",
         unavailable.has("new_customers"),
+        trendOf(widgets.new_customers, widgets.previous_period?.new_customers),
       ),
       widgetStat(
         "Open tickets",
         widgets.open_tickets,
+        // The queue is a current state, so it has no previous-period figure; what *does* compare
+        // is how many were opened, and that is the sentence the hint carries.
         widgets.tickets_opened === null
           ? "The queue right now"
-          : `${widgets.tickets_opened} opened in the period`,
+          : `${widgets.tickets_opened} opened in the period` +
+            trendHint(trendOf(widgets.tickets_opened, widgets.previous_period?.tickets_opened)),
         "message",
         unavailable.has("open_tickets"),
+        null,
       ),
       widgetStat(
         "Overdue invoices",
@@ -395,7 +430,13 @@ export default async function dashboardPage(ctx: Ctx): Promise<Node> {
       ),
     );
 
-    widgetHost.replaceChildren(revenue, counts, exceptionQueueCard(widgets));
+    // The chart and the support table are optional: a period with no revenue has no series, and
+    // an empty queue has no table. They are filtered rather than rendered empty, because a card
+    // that says "no tickets" twice (once here, once in the exception list) is noise.
+    widgetHost.replaceChildren(
+      ...[revenueChartCard(widgets), revenue, counts, supportQueueCard(ctx, widgets), exceptionQueueCard(widgets)]
+        .filter((node): node is HTMLElement => node !== null),
+    );
   };
 
   const render = (overview: Overview): Node => {
@@ -686,15 +727,169 @@ function widgetStat(
   hint: string,
   iconName: IconName,
   unavailable: boolean,
+  trend: Trend | null = null,
 ): HTMLElement {
   const missing = unavailable || value === null;
   return h(
     "section",
     { class: "card stat" },
     h("span", { class: "stat-label" }, icon(iconName, 12), label),
-    h("span", { class: "stat-value" }, missing ? "—" : value.toLocaleString("en-US")),
+    h(
+      "span",
+      { class: "stat-value" },
+      missing ? "—" : value.toLocaleString("en-US"),
+      ...(missing || !trend ? [] : [trendBadge(trend)].filter((node): node is HTMLElement => node !== null)),
+    ),
     h("span", { class: "stat-hint" }, missing ? "Could not be read" : hint),
   );
+}
+
+/** `Trend` is a change against the previous window.
+ *
+ *  `previous === null` means the previous figure could not be read, and `previous === 0` means
+ *  there was nothing to compare with — both of which must render as nothing rather than as
+ *  "+1000%", which is what dividing by a missing or zero baseline produces. */
+interface Trend {
+  current: number;
+  previous: number;
+  delta: number;
+  percent: number | null;
+}
+
+function trendOf(current: number | null, previous: number | null | undefined): Trend | null {
+  if (current === null || previous === null || previous === undefined) return null;
+  const delta = current - previous;
+  // A percentage of zero is not infinity, it is undefined: "up 3 from nothing" is the honest
+  // sentence, and it is the one `trendBadge` renders when percent is null.
+  const percent = previous === 0 ? null : (delta / previous) * 100;
+  return { current, previous, delta, percent };
+}
+
+function trendHint(trend: Trend | null): string {
+  if (!trend || trend.delta === 0) return "";
+  if (trend.percent === null) return ` (${trend.delta > 0 ? "+" : ""}${trend.delta} on a period with none)`;
+  const sign = trend.delta > 0 ? "+" : "";
+  return ` (${sign}${Math.round(trend.percent)}% vs the previous period)`;
+}
+
+/** Renders a delta as a badge: up is good for customers, and never coloured for revenue, where
+ *  direction is not the same as health. */
+function trendBadge(trend: Trend): HTMLElement | null {
+  if (trend.delta === 0) return null;
+  const up = trend.delta > 0;
+  const label = trend.percent === null
+    ? `${up ? "+" : ""}${trend.delta}`
+    : `${up ? "+" : ""}${Math.round(trend.percent)}%`;
+  return h(
+    "span",
+    { class: "stat-trend", title: `Previous period: ${trend.previous.toLocaleString("en-US")}` },
+    icon(up ? "chevronUp" : "chevronDown", 11),
+    label,
+  );
+}
+
+/** The revenue chart.
+ *
+ *  One sparkline per currency from the ledger series the server returns, with the change against
+ *  the previous period. There is no combined line: adding dollars to euros is arithmetic on
+ *  unrelated quantities, which is the same reason the revenue card has no total. */
+function revenueChartCard(widgets: DashboardWidgets): HTMLElement | null {
+  const series = widgets.revenue_series ?? [];
+  if (series.length === 0) return null;
+  const previous = new Map((widgets.previous_period?.revenue ?? []).map((amount) => [amount.currency, amount]));
+
+  return card({
+    title: "Revenue over the period",
+    sub: `${widgets.days} days · ${dateOnly(widgets.from)} → ${dateOnly(widgets.to)}`,
+    body: h(
+      "div",
+      { class: "stack-sm" },
+      ...series.map((line) => {
+        const before = previous.get(line.currency);
+        const trend = trendOf(
+          line.points.reduce((sum, point) => sum + point.minor, 0),
+          before === undefined ? null : before.minor,
+        );
+        return h(
+          "div",
+          { class: "stack-xs" },
+          h(
+            "div",
+            { class: "row-between" },
+            h("span", { class: "field-hint" }, line.currency),
+            h(
+              "span",
+              { class: "row gap-xs" },
+              trend ? trendBadge(trend) : null,
+              h("span", { class: "field-hint faint" }, `previous ${money(before)}`),
+            ),
+          ),
+          // The sparkline is scaled to its own min and max, so an all-zero series draws nothing
+          // rather than a flat line at the bottom, which would read as "revenue collapsed".
+          h(
+            "div",
+            { class: "spark-wrap" },
+            sparkline(line.points.map((point) => point.minor), { width: 320, height: 44 }),
+          ),
+        );
+      }),
+      h(
+        "span",
+        { class: "field-hint" },
+        "Per currency and never summed. Each bucket is a day (a week for a 90-day window), and a day with no revenue is drawn as zero rather than skipped.",
+      ),
+    ),
+  });
+}
+
+/** The support queue: the rows behind the open-tickets count, oldest waiting first. */
+function supportQueueCard(ctx: Ctx, widgets: DashboardWidgets): HTMLElement | null {
+  const tickets = widgets.support_tickets ?? [];
+  if (tickets.length === 0) return null;
+  return card({
+    title: "Waiting on support",
+    sub: widgets.open_tickets === null
+      ? undefined
+      : `${widgets.open_tickets} open${widgets.open_tickets > tickets.length ? `, the ${tickets.length} oldest below` : ""}`,
+    flush: true,
+    body: h(
+      "div",
+      null,
+      ...tickets.map((ticket) =>
+        h(
+          "a",
+          { class: "card-link", href: `/tickets/${ticket.id}` },
+          h("span", { class: "search-hit-icon" }, icon("message", 13)),
+          h(
+            "div",
+            { class: "cell-main" },
+            h("div", { class: "primary" }, ticket.subject),
+            h(
+              "div",
+              { class: "secondary" },
+              ticket.email,
+              " · ",
+              ticket.number || "no number",
+              " · ",
+              ticket.department,
+            ),
+          ),
+          h(
+            "div",
+            { class: "cell-main" },
+            badge(humanStatus(ticket.priority), ticket.priority === "high" ? "danger" : ticket.priority === "low" ? "info" : "neutral"),
+            h("div", { class: "secondary nowrap" }, `waiting ${age(ticket.waiting_since)}`),
+          ),
+        ),
+      ),
+    ),
+    foot: h(
+      "div",
+      { class: "row-wrap" },
+      h("span", { class: "field-hint" }, "Oldest first: the ticket nobody has touched is the one that needs a reply."),
+      btn("All tickets", { href: "/tickets", size: "sm", variant: "ghost" }),
+    ),
+  });
 }
 
 /** The paid-not-provisioned queue: settled invoices whose order bought nothing that runs.

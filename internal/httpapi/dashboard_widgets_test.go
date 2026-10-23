@@ -404,3 +404,154 @@ func TestDashboardWidgetsRequireReportRead(t *testing.T) {
 		t.Fatalf("anonymous: status %d, want 401", rec.Code)
 	}
 }
+
+// The revenue chart, the previous-period comparison and the support table (ADM-01).
+//
+// The dashboard had the figures and not the shape: no chart, so a week of zero was averaged into a
+// healthy-looking total; no previous period, so "€4,120" could not be read as up or down; and the
+// support queue as a count, so an operator knew there were nine tickets and not that one of them
+// had been waiting nine days.
+
+// The chart's points add up to the headline revenue figure, and every bucket in the window is
+// present even when nothing was earned in it.
+func TestDashboardRevenueSeriesMatchesTheTotal(t *testing.T) {
+	env := newStaffEnv(t)
+	now := time.Now().UTC()
+	// Two days of revenue, in one currency, with an empty day between them.
+	env.postRevenue(t, "EUR", 1000, now.AddDate(0, 0, -6))
+	env.postRevenue(t, "EUR", 2500, now.AddDate(0, 0, -4))
+
+	rec := env.get(t, "/api/v1/staff/dashboard/widgets?period=7d", env.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Revenue []struct {
+			Currency string `json:"currency"`
+			Minor    int64  `json:"minor"`
+		} `json:"revenue"`
+		Series []struct {
+			Currency string `json:"currency"`
+			Points   []struct {
+				At    time.Time `json:"at"`
+				Minor int64     `json:"minor"`
+			} `json:"points"`
+		} `json:"revenue_series"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v\n%s", err, rec.Body)
+	}
+	if len(body.Series) != 1 || body.Series[0].Currency != "EUR" {
+		t.Fatalf("series = %+v, want one EUR series", body.Series)
+	}
+	if len(body.Series[0].Points) < 7 {
+		t.Fatalf("points = %d, want a dense week", len(body.Series[0].Points))
+	}
+	var sum int64
+	for _, point := range body.Series[0].Points {
+		sum += point.Minor
+		if point.At.Hour() != 0 || point.At.Minute() != 0 {
+			t.Fatalf("bucket %s is not midnight-aligned", point.At)
+		}
+	}
+	if len(body.Revenue) != 1 || sum != body.Revenue[0].Minor {
+		t.Fatalf("series sums to %d, the headline says %+v: the chart must agree with its own total",
+			sum, body.Revenue)
+	}
+	if sum != 3500 {
+		t.Fatalf("series total = %d, want 3500", sum)
+	}
+}
+
+// The previous period is the same length, immediately before this one, and carries its figures.
+func TestDashboardPreviousPeriod(t *testing.T) {
+	env := newStaffEnv(t)
+	now := time.Now().UTC()
+	// Inside the current 7-day window, and inside the 7 days before it.
+	env.postRevenue(t, "EUR", 500, now.AddDate(0, 0, -1))
+	env.postRevenue(t, "EUR", 1500, now.AddDate(0, 0, -9))
+
+	rec := env.get(t, "/api/v1/staff/dashboard/widgets?period=7d", env.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		From     time.Time `json:"from"`
+		Previous *struct {
+			From    time.Time `json:"from"`
+			To      time.Time `json:"to"`
+			Revenue []struct {
+				Currency string `json:"currency"`
+				Minor    int64  `json:"minor"`
+			} `json:"revenue"`
+			ActiveCustomers *int `json:"active_customers"`
+			NewCustomers    *int `json:"new_customers"`
+		} `json:"previous_period"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v\n%s", err, rec.Body)
+	}
+	if body.Previous == nil {
+		t.Fatal("no previous period was reported, so no figure can say whether it went up or down")
+	}
+	if !body.Previous.To.Equal(body.From) {
+		t.Fatalf("previous period ends at %s, this one starts at %s: the windows must be adjacent",
+			body.Previous.To, body.From)
+	}
+	if got := body.Previous.To.Sub(body.Previous.From).Hours(); got < 167 || got > 169 {
+		t.Fatalf("previous period is %0.0f hours long, want seven days", got)
+	}
+	if len(body.Previous.Revenue) != 1 || body.Previous.Revenue[0].Minor != 1500 {
+		t.Fatalf("previous revenue = %+v, want the 1500 posted nine days ago", body.Previous.Revenue)
+	}
+	if body.Previous.ActiveCustomers == nil || body.Previous.NewCustomers == nil {
+		t.Fatalf("previous counts = %+v, want the customer figures", body.Previous)
+	}
+}
+
+// The support queue is a table: oldest waiting first, with the ticket an operator would open.
+func TestDashboardSupportQueueIsATable(t *testing.T) {
+	env := newStaffEnv(t)
+	customerID, _ := env.seedCustomer(t, "waiting@example.test", "Waiting Customer")
+	ctx := context.Background()
+	// Two open tickets: one waiting nine days, one waiting an hour.
+	if _, err := env.pool.Exec(ctx, `
+		INSERT INTO tickets (number, customer_id, subject, department, priority, status,
+		                     created_at, last_reply_at)
+		VALUES ('T-1', $1, 'Nine days old', 'technical', 'high', 'open',
+		        now() - interval '10 days', now() - interval '9 days'),
+		       ('T-2', $1, 'An hour old', 'billing', 'normal', 'open',
+		        now() - interval '2 hours', now() - interval '1 hour')`, customerID); err != nil {
+		t.Fatalf("insert tickets: %v", err)
+	}
+
+	rec := env.get(t, "/api/v1/staff/dashboard/widgets?period=7d", env.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		SupportTickets []struct {
+			ID           string    `json:"id"`
+			Number       string    `json:"number"`
+			Subject      string    `json:"subject"`
+			Email        string    `json:"email"`
+			Priority     string    `json:"priority"`
+			WaitingSince time.Time `json:"waiting_since"`
+		} `json:"support_tickets"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v\n%s", err, rec.Body)
+	}
+	if len(body.SupportTickets) != 2 {
+		t.Fatalf("tickets = %d, want both open tickets", len(body.SupportTickets))
+	}
+	if body.SupportTickets[0].Subject != "Nine days old" {
+		t.Fatalf("first ticket = %q, want the one waiting longest", body.SupportTickets[0].Subject)
+	}
+	if body.SupportTickets[0].Email != "waiting@example.test" {
+		t.Fatalf("email = %q, want the customer's address", body.SupportTickets[0].Email)
+	}
+	if body.SupportTickets[0].ID == "" {
+		t.Fatal("the table row has no id, so the dashboard cannot link to the ticket")
+	}
+}

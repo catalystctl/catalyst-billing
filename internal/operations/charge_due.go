@@ -1,0 +1,211 @@
+package operations
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/catalyst/billing/internal/fulfilment"
+	"github.com/catalyst/billing/internal/gatewayconfig"
+	"github.com/catalyst/billing/internal/payments"
+	"github.com/catalyst/billing/internal/settings"
+	"github.com/catalyst/billing/internal/store"
+)
+
+// Charging a saved payment method for invoices that are due (OPS-01).
+//
+// `payments.Agreements.ChargeDue` exists and its own doc comment says it "is the entry point a
+// cron calls after the renewal scan". No cron called it, so the setting it obeys
+// (`gateway.off_session_enabled`) promised a customer that their card would be charged for the
+// renewal and nothing ever attempted it — the invoice simply aged into dunning.
+//
+// # Why this is a scan of its own rather than a call to ChargeDue
+//
+// ChargeDue's query excludes invoices with a *live* attempt but not with a *declined* one, which is
+// right for an operator pressing "charge due now" once and wrong for a ticker: a declined card
+// would be re-offered on every tick, and the run's history would be one line per fifteen minutes
+// about an invoice nothing has changed about — which is how the invoice that *just* became due
+// goes unnoticed in the noise.
+//
+// So this sweep adds the one thing a ticker needs and a button does not: a per-invoice retry
+// window (`cronjob.charge_retry_hours`). It is not a safety guard. The guard is in
+// internal/payments, which refuses to re-charge an invoice whose attempt it has already recorded
+// as failed ("a new attempt needs a new decision"), so the provider is never asked twice for a
+// card that said no. This file only decides which invoices to *offer*, and then hands each one to
+// the same `ChargeInvoice` the per-invoice staff button calls: the amount, the method, the
+// mandate and the settlement are all internal/payments'.
+
+// ChargerFactory resolves the adapter that can charge a saved method.
+//
+// It returns the charger, the provider account the settlement is recorded against, and a close
+// function for the resources it opened (a launched extension process, in production). The factory
+// is a seam rather than a direct call because a test must be able to charge with a fake adapter,
+// and because the deployment may attach a long-lived one instead of launching per tick.
+type ChargerFactory func(ctx context.Context) (payments.OffSessionCharger, string, func(), error)
+
+// ChargeDueRun is what one sweep did.
+type ChargeDueRun struct {
+	// Reason is set when the run did nothing, and names why. It is empty when work was done.
+	Reason string
+	// Outcomes is one entry per invoice the sweep offered to the charge path.
+	Outcomes []payments.ChargeOutcome
+	// Settled and Declined are the counts an operator reads first.
+	Settled  int
+	Declined int
+}
+
+// ChargeDue charges every open, past-due invoice that has a default saved method and has not been
+// attempted inside the retry window.
+func ChargeDue(ctx context.Context, pool *store.Pool, opts Options) (ChargeDueRun, error) {
+	opts = opts.withDefaults()
+	if disabled(ChargeDueKillSwitch) {
+		return ChargeDueRun{Reason: ReasonKillSwitch}, nil
+	}
+
+	values := settings.New(pool)
+	enabled, err := values.Bool(ctx, "gateway", "off_session_enabled")
+	if err != nil {
+		return ChargeDueRun{}, fmt.Errorf("operations: read gateway.off_session_enabled: %w", err)
+	}
+	if !enabled {
+		// The setting is the permission. Without it nothing is charged, and the answer is a
+		// skip rather than an error: this is the default state of an installation.
+		return ChargeDueRun{Reason: ReasonDisabled}, nil
+	}
+
+	retry := DefaultChargeRetry
+	if hours, err := values.Int(ctx, settings.GroupCronjob, settings.KeyChargeRetryHours); err == nil && hours > 0 {
+		retry = time.Duration(hours) * time.Hour
+	}
+
+	factory := opts.ChargerOverride
+	if factory == nil {
+		factory = gatewayCharger(pool)
+	}
+	charger, account, closeFn, err := factory(ctx)
+	if err != nil {
+		if errors.Is(err, gatewayconfig.ErrNotConfigured) || errors.Is(err, payments.ErrOffSessionUnsupported) {
+			return ChargeDueRun{Reason: ReasonNotConfigured}, nil
+		}
+		return ChargeDueRun{}, fmt.Errorf("operations: resolve the payment gateway: %w", err)
+	}
+	defer closeFn()
+
+	agreements := payments.NewAgreements(pool).
+		WithCharger(charger).
+		WithApplier(fulfilment.NewApplier(pool)).
+		WithAccount(account)
+
+	ids, err := dueInvoices(ctx, pool, charger.Name(), opts.Now().Add(-retry), Batch)
+	if err != nil {
+		return ChargeDueRun{}, err
+	}
+	if len(ids) == 0 {
+		return ChargeDueRun{Reason: ReasonNothingDue}, nil
+	}
+
+	run := ChargeDueRun{Outcomes: make([]payments.ChargeOutcome, 0, len(ids))}
+	var failures []error
+	for _, id := range ids {
+		out, err := agreements.ChargeInvoice(ctx, id)
+		run.Outcomes = append(run.Outcomes, out)
+		switch {
+		case err == nil:
+		case errors.Is(err, payments.ErrDeclined):
+			// A decline is an outcome. It is recorded on the invoice, the attempt and the
+			// method, and dunning escalates from there; reporting it as a run failure would make
+			// the cron's history red every time a card expires.
+			run.Declined++
+		case errors.Is(err, payments.ErrOffSessionDisabled):
+			// The operator switched the setting off between the read above and this call. Stop the
+			// sweep rather than logging the same refusal once per invoice.
+			return run, nil
+		default:
+			// One invoice's transport failure must not stop the rest of the batch, and it must be
+			// visible: it is joined and returned so the run is recorded as failed.
+			failures = append(failures, fmt.Errorf("invoice %s: %w", id, err))
+		}
+		if out.Status == payments.ChargeSettled {
+			run.Settled++
+		}
+	}
+	return run, joinErr(failures)
+}
+
+// dueInvoices lists the invoices this sweep may offer to the charge path, oldest first.
+//
+// The predicates are the ones ChargeDue uses, plus the retry window, and they are in SQL for the
+// reason the dashboard's are: a sweep that loaded rows and filtered them in Go would change its
+// answer when the batch size changed.
+func dueInvoices(ctx context.Context, pool *store.Pool, provider string, retryBefore time.Time, limit int) ([]string, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT i.id
+		FROM invoices i
+		JOIN payment_methods pm
+		  ON pm.customer_id = i.customer_id AND pm.is_default AND pm.provider = $1
+		WHERE i.status = 'open'
+		  AND i.amount_paid_minor < i.total_minor
+		  AND i.due_at IS NOT NULL
+		  AND i.due_at <= now()
+		  -- A customer with a checkout session open is about to pay by hand. Skipping is the
+		  -- difference between one charge and two.
+		  AND NOT EXISTS (
+		      SELECT 1 FROM payment_attempts pa
+		      WHERE pa.invoice_id = i.id
+		        AND pa.status IN ('created', 'pending', 'requires_action')
+		        AND pa.operation_key NOT LIKE 'offsession:%')
+		  -- The retry window. A declined card is not re-offered until it has expired: the
+		  -- provider's refusal is a statement about the card, and repeating it every tick is how
+		  -- a customer's bank starts refusing everything from this merchant.
+		  AND NOT EXISTS (
+		      SELECT 1 FROM payment_attempts pa
+		      WHERE pa.invoice_id = i.id
+		        AND pa.operation_key LIKE 'offsession:%'
+		        AND pa.created_at > $2)
+		ORDER BY i.due_at
+		LIMIT $3`, provider, retryBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("operations: scan invoices to charge: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("operations: scan invoice id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("operations: read invoices to charge: %w", err)
+	}
+	return ids, nil
+}
+
+// gatewayCharger launches the configured gateway extension and adapts it to the charge protocol.
+//
+// It is the same launch internal/httpapi performs for the staff "charge saved method" button
+// (gatewayconfig.Launch), which is the point: a charge the worker makes and a charge an operator
+// makes must go through one adapter, or the two would disagree about what the gateway supports.
+func gatewayCharger(pool *store.Pool) ChargerFactory {
+	return func(ctx context.Context) (payments.OffSessionCharger, string, func(), error) {
+		cfg, err := gatewayconfig.New(pool).Load(ctx, gatewayconfig.GatewayKind)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		if !cfg.Configured() {
+			return nil, "", nil, gatewayconfig.ErrNotConfigured
+		}
+		if !cfg.Enabled {
+			return nil, "", nil, gatewayconfig.ErrDisabled
+		}
+		client, err := gatewayconfig.Launch(ctx, cfg, 30*time.Second)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		return payments.ExtensionCharger{Caller: client, Provider: cfg.Provider}, cfg.Provider,
+			func() { _ = client.Close() }, nil
+	}
+}

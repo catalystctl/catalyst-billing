@@ -40,6 +40,11 @@
 //     and refuses to cancel; the termination path asks whether the customer still owes
 //     anything at all, which is the same question dunning's resume rule asks in reverse.
 //
+// It also registers two maintenance jobs from internal/operations — charging billing agreements and
+// delivering the telemetry payload — because `Jobs` below is the seam the worker already iterates
+// and cmd/billing cannot be edited to add them. Those rules are not lifecycle rules; see
+// operations_jobs.go for why they are converted here rather than written into this package.
+//
 // The integrator wires this package in cmd/billing/jobs.go with one line per job:
 //
 //	for _, job := range lifecycle.Jobs(pool, logger) {
@@ -276,6 +281,12 @@ func Jobs(pool *store.Pool, logger *slog.Logger) []Job {
 	// The price-change queue: it finishes a change the customer already asked for, and it is
 	// guarded by its own switch because it is the job that voids documents.
 	jobs = append(jobs, ServiceJobs(pool, logger)...)
+
+	// The maintenance rules from internal/operations: charging the cards customers left on file
+	// and delivering the opted-in telemetry payload. They are registered through this function
+	// because it is the seam the worker iterates (see operations_jobs.go) — the rules themselves
+	// are not lifecycle rules and do not live here.
+	jobs = append(jobs, OperationsJobs(pool, logger)...)
 	return jobs
 }
 

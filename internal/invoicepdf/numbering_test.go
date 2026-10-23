@@ -79,20 +79,31 @@ func TestInvoiceSeriesExpandsTokens(t *testing.T) {
 	}
 }
 
-// A pattern that puts text after {number} cannot be expressed by
-// billing.NumberSeries, and must be refused rather than silently mangled.
-func TestSuffixAfterNumberIsRefused(t *testing.T) {
-	n := Numbering{InvoicePrefix: "INV-{number}/{year}", InvoicePadding: 6}
-	_, err := n.InvoiceSeries(numberingAt)
-	if err == nil {
-		t.Fatal("a suffix after {number} was accepted")
+// A pattern that puts text after {number} becomes a suffix, because that is the
+// format Paymenter documents ("{number}/{year}") and the one an operator will
+// type first.
+func TestSuffixAfterNumberIsRendered(t *testing.T) {
+	n := Numbering{InvoicePrefix: "{number}/{year}", InvoicePadding: 6}
+	series, err := n.InvoiceSeries(numberingAt)
+	if err != nil {
+		t.Fatalf("series: %v", err)
 	}
-	if !errors.Is(err, ErrSuffixAfterNumber) {
-		t.Fatalf("error = %v, want ErrSuffixAfterNumber", err)
+	if series.Prefix != "" || series.Suffix != "/2026" {
+		t.Fatalf("prefix %q suffix %q, want \"\" and /2026", series.Prefix, series.Suffix)
 	}
-	// The message must tell an operator what to do.
-	if !strings.Contains(err.Error(), "before {number}") {
-		t.Fatalf("the error does not suggest the fix: %v", err)
+	got := (billing.InvoiceNumber{Value: 7, Prefix: series.Prefix, Width: series.Width,
+		Suffix: series.Suffix}).Format()
+	if got != "000007/2026" {
+		t.Fatalf("formatted = %q, want 000007/2026", got)
+	}
+}
+
+// A brace placeholder this package does not know is refused rather than printed
+// literally on every document.
+func TestUnknownPlaceholderIsRefused(t *testing.T) {
+	n := Numbering{InvoicePrefix: "INV-{yaer}-", InvoicePadding: 6}
+	if _, err := n.InvoiceSeries(numberingAt); !errors.Is(err, ErrMissingNumberToken) {
+		t.Fatalf("error = %v, want ErrMissingNumberToken", err)
 	}
 }
 

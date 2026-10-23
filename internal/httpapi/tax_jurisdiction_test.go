@@ -9,6 +9,7 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/portal"
 	"github.com/catalyst/billing/internal/store"
+	"github.com/catalyst/billing/internal/tax"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -457,5 +459,58 @@ func TestIssuerForPricesAtTheCustomersJurisdiction(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("issue with tax off: %v", err)
+	}
+}
+
+// A refusal refuses the invoice too, not just the cart: `IssuerFor` returns the *tax.Refusal and no
+// issuer, so there is no path from "the rules could not decide" to a document charged at zero.
+//
+// The failure this guards against is the expensive one: silently charging 0% VAT because a VAT ID
+// could not be checked turns a bug into a tax liability, and an issuer that fell back to
+// FixedTaxPricer would do exactly that.
+func TestIssuerForRefusesAnUnverifiableSupply(t *testing.T) {
+	env := newStaffEnv(t)
+	resetJurisdictionSettings(t, env.pool)
+	addGermanAndFrenchRates(t, env)
+	setTaxSetting(t, env.pool, "enabled", "true")
+	setTaxSetting(t, env.pool, "seller_country", "DE")
+	setTaxSetting(t, env.pool, "reverse_charge", "true")
+	// No validation service: the identifier cannot be checked, so reverse charge cannot be granted
+	// and the destination rate must not be charged either.
+	setTaxSetting(t, env.pool, "vat_validation_url", "")
+
+	customerID, _ := env.seedCommerceCustomer(t, "unverifiable-issuer@example.test")
+	if _, err := env.pool.Exec(context.Background(), `
+		INSERT INTO billing_profiles (customer_id, country_code, tax_id)
+		VALUES ($1, 'FR', 'FR40303265045')`, customerID); err != nil {
+		t.Fatalf("billing profile: %v", err)
+	}
+
+	issuer, err := env.srv.IssuerFor(context.Background(), customerID)
+	var refusal *tax.Refusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("err = %v, want a *tax.Refusal", err)
+	}
+	if issuer != nil {
+		t.Fatal("an issuer was returned for a refused supply, which invites a zero-tax document")
+	}
+	if refusal.Code != tax.CodeVATIDUnverified {
+		t.Fatalf("code = %q, want %s", refusal.Code, tax.CodeVATIDUnverified)
+	}
+	if !errors.Is(err, tax.ErrRefused) {
+		t.Fatal("the refusal must be recognisable with errors.Is(err, tax.ErrRefused)")
+	}
+	if len(refusal.Missing) == 0 || !strings.Contains(strings.Join(refusal.Missing, ","), "vat_validation_url") {
+		t.Fatalf("missing = %v, want it to name tax.vat_validation_url", refusal.Missing)
+	}
+
+	// And nothing was written: a refusal creates no invoice and no draft.
+	var invoices int
+	if err := env.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM invoices WHERE customer_id = $1`, customerID).Scan(&invoices); err != nil {
+		t.Fatal(err)
+	}
+	if invoices != 0 {
+		t.Fatalf("invoices = %d, want 0", invoices)
 	}
 }

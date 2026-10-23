@@ -411,14 +411,22 @@ RECORDED = {
     "api GET /api/v1/staff/refunds/{id}":
         "the refund is read from the payment it belongs to and rendered in the refund dialog; "
         "the standalone read is for API clients",
-    "write POST /api/v1/portal/services/{id}/cancellation":
-        "GAP: the portal still cancels through the older /cancel endpoint; the newer "
-        "cancellation request (the one the staff queue reads) is API-only. Recorded: which "
-        "endpoint is canonical is a backend decision.",
-    "write POST /api/v1/staff/services/{id}/hooks/{extension}/{action}":
-        "GAP: an extension can contribute a service action and no screen renders it",
     "write POST /api/v1/portal/services/{id}/hooks/{extension}/{action}":
         "GAP: an extension can contribute a customer-facing service action and no screen renders it",
+    # -- reached through template literals, which the static matcher cannot resolve --
+    "write POST /api/v1/portal/services/{id}/cancel":
+        "the portal cancels through .../cancellation, which is the newer request the staff queue "
+        "reads; the older /cancel remains for API clients and is not linked from any screen",
+    "write POST /api/v1/portal/services/{id}/upgrade":
+        "the portal requests a plan change through .../change-plan, which supersedes the older "
+        "/upgrade; /upgrade remains for API clients and is not linked from any screen",
+    "write POST /api/v1/staff/orders/{id}/cancel-subscription":
+        "GAP: cancelling a legacy external subscription from an order has no button. The order "
+        "screen shows the subscription id and nothing acts on it. Recorded: next pass on /orders.",
+    # -- reached through a template literal built from a row id --
+    "api POST /api/v1/staff/upgrades/apply":
+        "reached from web/src/views/upgrades.ts as POST /staff/upgrades/{id}/apply, which the "
+        "sweep normalises to /apply and then cannot match; the screen posts it per pending row",
     # -- exports: a helper appends a query string, so the path has no clean literal --
     "api GET /api/v1/staff/exports/invoices.csv":
         "built by the export helper in web/src/views/invoices.ts, which appends ?status=… to the "
@@ -437,9 +445,6 @@ RECORDED = {
         "import but not the run history. Recorded: web/src/views/tax-rates.ts is another "
         "package's file.",
 
-    "api GET /api/v1/extensions/hooks":
-        "the hook catalogue answers an extension asking what it may observe; the panel is not "
-        "the caller",
     # The export routes ARE reachable; the sweep cannot see them because each screen builds the
     # path through a helper (`exportPath()` in views/customers.ts, invoices.ts, services.ts), and
     # the static matcher reads path literals. Recorded as a limitation rather than a gap, and the

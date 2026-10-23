@@ -58,8 +58,10 @@ import (
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/calendar"
 	"github.com/catalyst/billing/internal/credit"
+	"github.com/catalyst/billing/internal/invoicepdf"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/notify"
+	"github.com/catalyst/billing/internal/settings"
 	"github.com/catalyst/billing/internal/store"
 	"github.com/jackc/pgx/v5"
 )
@@ -700,6 +702,22 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 		return CheckoutResult{}, err
 	}
 
+	// The payment terms and the number format are read here, inside the transaction that
+	// issues, rather than taken from the caller: `invoices.due_days` and
+	// `invoices.invoice_number_prefix` are operator settings (INV-03, INV-17), and a checkout
+	// that hard-coded 30 days and the compiled-in series would be the one path that ignored
+	// them. Reading them in the transaction also means a concurrent settings change cannot
+	// apply to half a document.
+	dueAt := now.AddDate(0, 0, settings.InvoiceDueDays(ctx, tx))
+	numbering, err := invoicepdf.LoadNumbering(ctx, tx)
+	if err != nil {
+		return CheckoutResult{}, err
+	}
+	series, err := numbering.InvoiceSeries(now)
+	if err != nil {
+		return CheckoutResult{}, err
+	}
+
 	invoiceID, _, snap, err := s.issuer.CreateDraft(ctx, tx, billing.IssueRequest{
 		CustomerID:      customerID,
 		OrderID:         orderID,
@@ -709,8 +727,8 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 		Merchant:        s.merchant,
 		Customer:        customer,
 		Terms:           s.terms,
-		DueAt:           now.AddDate(0, 0, 30),
-		Series:          s.series,
+		DueAt:           dueAt,
+		Series:          series,
 		PriceVersionIDs: priceVersionIDs(lines),
 	})
 	if err != nil {
@@ -729,7 +747,7 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 		}
 	}
 
-	issued, err := s.issuer.Issue(ctx, tx, invoiceID, s.series)
+	issued, err := s.issuer.Issue(ctx, tx, invoiceID, series)
 	if err != nil {
 		return CheckoutResult{}, err
 	}
@@ -741,7 +759,7 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 		return CheckoutResult{}, fmt.Errorf("checkout: set order total: %w", err)
 	}
 	if err := s.queueInvoice(ctx, tx, invoiceID, customerID, issued.Number,
-		issued.Totals.Total, now.AddDate(0, 0, 30)); err != nil {
+		issued.Totals.Total, dueAt); err != nil {
 		return CheckoutResult{}, err
 	}
 

@@ -31,6 +31,7 @@ import (
 	"github.com/catalyst/billing/internal/events"
 	"github.com/catalyst/billing/internal/orders"
 	"github.com/catalyst/billing/internal/portal"
+	"github.com/catalyst/billing/internal/settings"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -133,10 +134,11 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 			CustomPrice:    customPrice,
 			Merchant:       s.merchant,
 			Terms:          s.terms,
-			Series:         s.series,
+			// No series: the order service reads the configured number format itself, so a
+			// staff order and a storefront checkout cannot number documents differently.
 			// Terms of sale: the document is payable on issue. The renewal engine owns
 			// the lead time for *renewal* invoices, which is a different decision.
-			DueAt: now.AddDate(0, 0, 30),
+			DueAt: now.AddDate(0, 0, settings.InvoiceDueDays(ctx, tx)),
 			Now:   now,
 		})
 		if err != nil {

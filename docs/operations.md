@@ -44,6 +44,7 @@ work is cheap when there is nothing to do.
 | refund-reconcile | 2m | resolves refunds whose provider call timed out | `BILLING_DISABLE_REFUND_RECONCILE` |
 | notifications | 15s | drains the durable message outbox | `BILLING_DISABLE_NOTIFICATIONS` |
 | retention | 6h | deletes bookkeeping rows past their policy | — |
+| service-upgrades | 60s | applies paid pending upgrades and cancels stale ones | `BILLING_DISABLE_SERVICE_UPGRADES` |
 
 The kill switches are the emergency brake: a misbehaving gateway or provisioner can
 be stopped without a deploy. Stopping provisioning does not lose work — the

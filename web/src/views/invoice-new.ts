@@ -413,12 +413,15 @@ export default async function invoiceNewPage(ctx: Ctx): Promise<Node> {
     h("span", null, "Issue immediately (allocate a number and post to the ledger)"),
   );
 
+  // Empty means "the configured term" (invoices.due_days), which is what the server applies.
+  // The form used to default to 30 and send it, which is how the manual path ignored the
+  // setting INV-17 records.
   const dueDays = input({
     id: "invoice-due-days",
     type: "number",
     min: 1,
     step: 1,
-    value: 30,
+    placeholder: "Configured terms",
     inputmode: "numeric",
     class: "input--mono",
   });
@@ -427,6 +430,31 @@ export default async function invoiceNewPage(ctx: Ctx): Promise<Node> {
     placeholder: "Anything the customer should read on the document. Optional.",
     maxlength: 500,
   });
+
+  // Two decisions that belong with "issue immediately": whether the customer is emailed, and
+  // whether the operator leaves with the document in hand. Both start on, and both are
+  // disabled while the invoice stays a draft — a draft has no number to email or print.
+  const sendEmailBox = h("input", { type: "checkbox", id: "invoice-send-email", checked: true });
+  const sendEmailField = h(
+    "label",
+    { class: "checkbox" },
+    sendEmailBox,
+    h("span", null, "Email the customer the issued invoice (uses the installation's template)"),
+  );
+  const openPDFBox = h("input", { type: "checkbox", id: "invoice-open-pdf", checked: true });
+  const openPDFField = h(
+    "label",
+    { class: "checkbox" },
+    openPDFBox,
+    h("span", null, "Download the PDF as soon as it is issued"),
+  );
+  const syncIssueOptions = () => {
+    const issuing = issueBox.checked;
+    sendEmailBox.disabled = !issuing;
+    openPDFBox.disabled = !issuing;
+  };
+  issueBox.addEventListener("change", syncIssueOptions);
+  syncIssueOptions();
 
   const errorHost = h("div");
   const submit = btn("Create draft", { variant: "primary", type: "submit", icon: "invoice" });
@@ -483,6 +511,9 @@ export default async function invoiceNewPage(ctx: Ctx): Promise<Node> {
       customer_id: selected.id,
       issue_now: issueBox.checked,
       due_in_days: dueInDays(dueDays.value),
+      // Only meaningful when the document is issued in this request; the server ignores it for
+      // a draft, which has nothing to send.
+      send_email: issueBox.checked ? sendEmailBox.checked : undefined,
       memo: memo.value.trim(),
       lines: rows.map((row) => ({
         description: row.desc.value.trim(),
@@ -503,6 +534,11 @@ export default async function invoiceNewPage(ctx: Ctx): Promise<Node> {
         tone: "success",
         detail: created.number ? `${created.number} · ${created.status}` : "No number until it is issued.",
       });
+      // ADM-31 asked for the PDF at creation. A draft has none — the document route answers 409
+      // for one — so this only opens an issued document, and only when asked.
+      if (created.status !== "draft" && openPDFBox.checked) {
+        window.open(`/api/v1/staff/invoices/${encodeURIComponent(created.id)}/pdf`, "_blank", "noopener");
+      }
       ctx.navigate(`/invoices/${created.id}`);
     } catch (err) {
       const message =
@@ -576,6 +612,8 @@ export default async function invoiceNewPage(ctx: Ctx): Promise<Node> {
           class: "span-2",
         }),
         h("div", { class: "span-2" }, issueField),
+        h("div", { class: "span-2" }, sendEmailField),
+        h("div", { class: "span-2" }, openPDFField),
       ),
     }),
     h(

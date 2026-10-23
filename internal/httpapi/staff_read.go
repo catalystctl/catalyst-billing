@@ -541,15 +541,21 @@ func refundMap(rf staff.RefundRow) map[string]any {
 
 func creditNoteMap(cn staff.CreditNoteRow) map[string]any {
 	out := map[string]any{
-		"id":         cn.ID,
-		"number":     cn.Number,
-		"currency":   cn.Currency,
-		"total":      amountMap(staff.Amount{Minor: cn.TotalMinor, Currency: mustCurrency(cn.Currency)}),
-		"tax":        amountMap(staff.Amount{Minor: cn.TaxMinor, Currency: mustCurrency(cn.Currency)}),
-		"reason":     cn.Reason,
-		"status":     cn.Status,
-		"issued_at":  timeOrNil(cn.IssuedAt),
-		"created_at": cn.CreatedAt.UTC(),
+		"id":       cn.ID,
+		"number":   cn.Number,
+		"kind":     cn.Kind,
+		"currency": cn.Currency,
+		"total":    amountMap(staff.Amount{Minor: cn.TotalMinor, Currency: mustCurrency(cn.Currency)}),
+		"tax":      amountMap(staff.Amount{Minor: cn.TaxMinor, Currency: mustCurrency(cn.Currency)}),
+		"reason":   cn.Reason,
+		"status":   cn.Status,
+		// voidable is the screen's affordance: only an issued note that has not been spent can
+		// be cancelled, and the server re-checks that under a lock.
+		"voidable":    cn.Status == "issued",
+		"void_reason": cn.VoidReason,
+		"voided_at":   timeOrNil(cn.VoidedAt),
+		"issued_at":   timeOrNil(cn.IssuedAt),
+		"created_at":  cn.CreatedAt.UTC(),
 	}
 	if cn.InvoiceID != "" {
 		out["invoice_id"] = cn.InvoiceID

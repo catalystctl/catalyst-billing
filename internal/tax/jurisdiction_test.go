@@ -48,7 +48,14 @@ func newRulesEnv(t *testing.T) *rulesEnv {
 	store.Now = func() time.Time { return rulesNow }
 	rules := tax.NewRules(pool)
 	rules.Now = func() time.Time { return rulesNow }
-	return &rulesEnv{pool: pool, rules: rules, store: store}
+	env := &rulesEnv{pool: pool, rules: rules, store: store}
+	// The code-side default for tax.vat_validation_url is the real VIES endpoint. Deleting the row
+	// would therefore re-enable it, and a test that forgot to wire its fake would make an outbound
+	// call — a suite that needs egress fails on a plane, and worse, it silently validates against
+	// production. An explicit empty value keeps the default off in tests; every test that wants a
+	// validation wires its own httptest server.
+	env.set(t, "vat_validation_url", "")
+	return env
 }
 
 // resetJurisdictionSettings restores the five keys this package writes. `settings` is reference
@@ -515,6 +522,30 @@ func TestEmptyRateTableChargesNoTax(t *testing.T) {
 	}
 	if evidence.Policy != tax.PolicyNoTax {
 		t.Fatalf("policy = %q, want %q", evidence.Policy, tax.PolicyNoTax)
+	}
+
+	// The same installation with tax switched *on* and no rates: a pricer exists, it charges
+	// nothing, and it says so as no-tax. This is the upgrade case the orchestrator asked about —
+	// an installation that never configured a rate must not start failing at checkout.
+	env.set(t, "enabled", "true")
+	emptyPricer, err := env.rules.PricerForCustomer(context.Background(), customerID, rulesNow)
+	if err != nil {
+		t.Fatalf("pricer with tax on and no rates: %v", err)
+	}
+	if emptyPricer == nil {
+		t.Fatal("tax is switched on, so a pricer must exist even when the table is empty")
+	}
+	_, emptyTotals, emptyEvidence, err := emptyPricer.Price(context.Background(),
+		[]billing.Line{{Description: "Hosting", QuantityMilli: 1000, UnitPrice: money.New(10000, cur)}}, cur)
+	if err != nil {
+		t.Fatalf("price with tax on and no rates: %v", err)
+	}
+	if emptyTotals.Tax.Minor() != 0 || emptyTotals.Total.Minor() != 10000 {
+		t.Fatalf("empty table totals = tax %d total %d, want no tax and no failure",
+			emptyTotals.Tax.Minor(), emptyTotals.Total.Minor())
+	}
+	if emptyEvidence.Policy != tax.PolicyNoTax || emptyEvidence.Rate != "0" {
+		t.Fatalf("empty table evidence = %+v, want no-tax and rate 0", emptyEvidence)
 	}
 
 	// Tax being switched off must yield no pricer at all: a pricer that charges nothing would

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/catalyst/billing/internal/invoicepdf"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/portal"
+	"github.com/catalyst/billing/internal/settings"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -110,6 +110,14 @@ func (s *Server) handleSetClientNote(w http.ResponseWriter, r *http.Request) {
 		if status == "void" {
 			return errInvoiceVoid
 		}
+		// INV-05: an issued document is immutable by default. The database trigger
+		// deliberately leaves `client_note` writable, because a note is an annotation
+		// rather than a money fact — but a customer holding a PDF must not be able to
+		// be shown a different annotation later. An installation that wants the soft
+		// edit sets `invoices.immutable` off, and then this is allowed.
+		if status != "draft" && settings.InvoiceImmutable(ctx, tx) {
+			return errDocumentImmutable
+		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE invoices SET client_note = $2 WHERE id = $1`, id, note); err != nil {
 			return err
@@ -129,6 +137,10 @@ func (s *Server) handleSetClientNote(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusConflict, "invoice_void",
 			"a void document cannot carry a client note")
 		return
+	case errors.Is(err, errDocumentImmutable):
+		writeProblem(w, http.StatusConflict, "invoice_immutable",
+			"an issued invoice cannot be annotated; turn invoices.immutable off to allow it")
+		return
 	default:
 		s.staffError(w, r, err)
 		return
@@ -143,8 +155,9 @@ func (s *Server) handleSetClientNote(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	errDocumentNotFound = errors.New("httpapi: document not found")
-	errInvoiceVoid      = errors.New("httpapi: invoice is void")
+	errDocumentNotFound  = errors.New("httpapi: document not found")
+	errInvoiceVoid       = errors.New("httpapi: invoice is void")
+	errDocumentImmutable = errors.New("httpapi: document is immutable")
 )
 
 // ------------------------------------------------ document state on the reads --
@@ -257,7 +270,7 @@ func (s *Server) handlePortalInvoiceDocument(w http.ResponseWriter, r *http.Requ
 func (s *Server) portalInvoiceCreditNotes(ctx context.Context, userID, invoiceID string) ([]map[string]any, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT cn.id, COALESCE(cn.number, ''), cn.currency, cn.total_minor, cn.tax_minor,
-		       cn.reason, cn.status, cn.issued_at
+		       cn.reason, cn.status, cn.kind, COALESCE(cn.void_reason, ''), cn.issued_at
 		FROM credit_notes cn
 		JOIN customer_accounts ca ON ca.customer_id = cn.customer_id
 		WHERE cn.invoice_id = $1 AND ca.user_id = $2
@@ -270,22 +283,24 @@ func (s *Server) portalInvoiceCreditNotes(ctx context.Context, userID, invoiceID
 	out := make([]map[string]any, 0, 4)
 	for rows.Next() {
 		var (
-			id, number, currency, reason, status string
-			totalMinor, taxMinor                 int64
-			issuedAt                             *time.Time
+			id, number, currency, reason, status, kind, voidReason string
+			totalMinor, taxMinor                                   int64
+			issuedAt                                               *time.Time
 		)
 		if err := rows.Scan(&id, &number, &currency, &totalMinor, &taxMinor,
-			&reason, &status, &issuedAt); err != nil {
+			&reason, &status, &kind, &voidReason, &issuedAt); err != nil {
 			return nil, fmt.Errorf("httpapi: scan invoice credit note: %w", err)
 		}
 		out = append(out, map[string]any{
-			"id":        id,
-			"number":    number,
-			"total":     amountJSON(money.New(totalMinor, moneyFor(currency))),
-			"tax":       amountJSON(money.New(taxMinor, moneyFor(currency))),
-			"reason":    reason,
-			"status":    status,
-			"issued_at": timeOrNil(issuedAt),
+			"id":          id,
+			"number":      number,
+			"kind":        kind,
+			"total":       amountJSON(money.New(totalMinor, moneyFor(currency))),
+			"tax":         amountJSON(money.New(taxMinor, moneyFor(currency))),
+			"reason":      reason,
+			"status":      status,
+			"void_reason": voidReason,
+			"issued_at":   timeOrNil(issuedAt),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -479,23 +494,14 @@ func (s *Server) handleIssueProforma(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// dueDays reads the configured payment terms.
+// dueDays reads the configured payment terms (INV-17).
 //
-// It falls back to seven days, which is both Paymenter's default and the interval
-// billing.Issuer.Issue applies when an invoice has no due date.
+// The parse and the fallback live in the settings package so the manual create path, the
+// checkout path and this one cannot disagree about what "7 days" means. Seven is both
+// Paymenter's default and the interval billing.Issuer.Issue applies when an invoice has no due
+// date.
 func (s *Server) dueDays(ctx context.Context) int {
-	const fallback = 7
-	var raw string
-	if err := s.pool.QueryRow(ctx, `
-		SELECT value FROM settings WHERE group_key = 'invoices' AND key = 'due_days'`).
-		Scan(&raw); err != nil {
-		return fallback
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || n <= 0 || n > 3650 {
-		return fallback
-	}
-	return n
+	return settings.InvoiceDueDays(ctx, s.pool)
 }
 
 // clientNotesVisible reports whether client-visible notes are enabled.

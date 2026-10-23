@@ -35,7 +35,7 @@ import (
 // here means the *integrator* decides: read the series inside the transaction
 // that issues, and pass it to Issuer.Issue.
 //
-// # Tokens, and one honest limitation
+// # Tokens
 //
 // A prefix may contain {year}, {month} and {day}. They are expanded against the
 // issuance date — the date the number is consumed, not the date the draft was
@@ -43,18 +43,10 @@ import (
 // issued on 1 February belongs to February's format, and only the issuance date
 // says so.
 //
-// {number} marks where the digits go. billing.InvoiceNumber.Format renders
-// "prefix + zero-padded value", so a pattern is expressible exactly when
-// {number} is the last token or absent: "INV-{number}", "INV-{year}-{number}",
-// "INV-" all reduce to a prefix that Format completes. A pattern that puts text
-// *after* {number} — "INV-{number}/2026" — cannot be expressed by
-// billing.NumberSeries at all, because Format has no suffix. Such a pattern is
-// rejected here with an error naming the alternative, rather than silently
-// producing "INV-{number}/2026000042" on a customer's document.
-//
-// Expressing a suffix needs a Suffix field on billing.NumberSeries and a change
-// to InvoiceNumber.Format, both in internal/billing/invoice.go, which this
-// package does not own. That is recorded in the package report.
+// {number} marks where the digits go. Text before it is the prefix and text after
+// it is the suffix, so both "INV-{year}-{number}" and "{number}/{year}" are
+// expressible: billing.NumberSeries renders prefix + zero-padded value + suffix.
+// Text with no {number} at all is a prefix, which is the pre-INV-03 behaviour.
 
 // Setting keys, as seeded by migration 0020.
 const (
@@ -66,6 +58,10 @@ const (
 	SettingCreditNotePrefix = "credit_note_prefix"
 	// SettingCreditNotePadding is `invoices.credit_note_padding`.
 	SettingCreditNotePadding = "credit_note_padding"
+	// SettingDebitNotePrefix is `invoices.debit_note_prefix`.
+	SettingDebitNotePrefix = "debit_note_prefix"
+	// SettingDebitNotePadding is `invoices.debit_note_padding`.
+	SettingDebitNotePadding = "debit_note_padding"
 	// SettingProforma is `invoices.proforma`: whether issuance produces a
 	// provisional, unnumbered document.
 	SettingProforma = "proforma"
@@ -81,11 +77,16 @@ const (
 	DefaultInvoicePadding    = 6
 	DefaultCreditNotePrefix  = "CN-"
 	DefaultCreditNotePadding = 6
+	DefaultDebitNotePrefix   = "DN-"
+	DefaultDebitNotePadding  = 6
 
 	// CreditNoteScope is the persisted sequence credit notes allocate from. It
 	// matches creditnote.CreditSeries.Scope; forking it would restart numbering
 	// at 1 and let two notes share a number.
 	CreditNoteScope = "credit_note"
+	// DebitNoteScope is the persisted sequence debit notes allocate from, for the same
+	// reason on the other side of the ledger.
+	DebitNoteScope = "debit_note"
 
 	// maxPadding bounds a configured width. A width of 10^9 would ask the
 	// formatter to build a gigabyte of zeros; a document number is never wider
@@ -102,9 +103,10 @@ var (
 	// ErrInvalidSeries is returned for a pattern that cannot be expressed as a
 	// billing.NumberSeries.
 	ErrInvalidSeries = errors.New("invoicepdf: invalid number series")
-	// ErrSuffixAfterNumber is returned when text follows {number}. It is a
-	// distinct error so a settings screen can explain the fix precisely.
-	ErrSuffixAfterNumber = errors.New("invoicepdf: text after {number} needs a suffix, which billing.NumberSeries cannot express; move it before {number} or drop it")
+	// ErrMissingNumberToken is returned for a pattern that contains a brace
+	// placeholder this package does not know. It is a distinct error so a settings
+	// screen can say which token is wrong rather than refusing the whole pattern.
+	ErrMissingNumberToken = errors.New("invoicepdf: unknown placeholder in the number pattern")
 )
 
 // Numbering is the configured document numbering.
@@ -113,6 +115,8 @@ type Numbering struct {
 	InvoicePadding    int
 	CreditNotePrefix  string
 	CreditNotePadding int
+	DebitNotePrefix   string
+	DebitNotePadding  int
 	// Proforma reports whether a new document is provisional by default.
 	Proforma bool
 }
@@ -124,6 +128,8 @@ func DefaultNumbering() Numbering {
 		InvoicePadding:    DefaultInvoicePadding,
 		CreditNotePrefix:  DefaultCreditNotePrefix,
 		CreditNotePadding: DefaultCreditNotePadding,
+		DebitNotePrefix:   DefaultDebitNotePrefix,
+		DebitNotePadding:  DefaultDebitNotePadding,
 	}
 }
 
@@ -150,7 +156,8 @@ func LoadNumbering(ctx context.Context, q SettingsQuerier) (Numbering, error) {
 		SELECT key, value FROM settings
 		WHERE group_key = 'invoices'
 		  AND key IN ('invoice_number_prefix', 'invoice_number_padding',
-		              'credit_note_prefix', 'credit_note_padding', 'proforma')`)
+		              'credit_note_prefix', 'credit_note_padding',
+		              'debit_note_prefix', 'debit_note_padding', 'proforma')`)
 	if err != nil {
 		return out, fmt.Errorf("invoicepdf: read numbering settings: %w", err)
 	}
@@ -178,6 +185,14 @@ func LoadNumbering(ctx context.Context, q SettingsQuerier) (Numbering, error) {
 		case SettingCreditNotePadding:
 			if n, ok := parsePadding(value); ok {
 				out.CreditNotePadding = n
+			}
+		case SettingDebitNotePrefix:
+			if p, err := NormalisePrefix(value); err == nil {
+				out.DebitNotePrefix = p
+			}
+		case SettingDebitNotePadding:
+			if n, ok := parsePadding(value); ok {
+				out.DebitNotePadding = n
 			}
 		case SettingProforma:
 			out.Proforma = value == "true" || value == "1"
@@ -227,7 +242,7 @@ func NormalisePrefix(p string) (string, error) {
 //
 // now is the issuance date, used to expand {year}/{month}/{day}.
 func (n Numbering) InvoiceSeries(now time.Time) (billing.NumberSeries, error) {
-	prefix, err := seriesPrefix(n.InvoicePrefix, now)
+	prefix, suffix, err := splitPattern(n.InvoicePrefix, now)
 	if err != nil {
 		return billing.NumberSeries{}, err
 	}
@@ -235,7 +250,8 @@ func (n Numbering) InvoiceSeries(now time.Time) (billing.NumberSeries, error) {
 	if width <= 0 || width > maxPadding {
 		width = DefaultInvoicePadding
 	}
-	return billing.NumberSeries{Scope: billing.DefaultSeries.Scope, Prefix: prefix, Width: width}, nil
+	return billing.NumberSeries{Scope: billing.DefaultSeries.Scope, Prefix: prefix,
+		Suffix: suffix, Width: width}, nil
 }
 
 // CreditNoteSeries returns the series the credit-note issue path must use.
@@ -246,7 +262,7 @@ func (n Numbering) InvoiceSeries(now time.Time) (billing.NumberSeries, error) {
 // so that giving creditnote.Issue a series parameter — a change in a package this
 // one does not own — is a one-line call at the issue site.
 func (n Numbering) CreditNoteSeries(now time.Time) (billing.NumberSeries, error) {
-	prefix, err := seriesPrefix(n.CreditNotePrefix, now)
+	prefix, suffix, err := splitPattern(n.CreditNotePrefix, now)
 	if err != nil {
 		return billing.NumberSeries{}, err
 	}
@@ -254,35 +270,56 @@ func (n Numbering) CreditNoteSeries(now time.Time) (billing.NumberSeries, error)
 	if width <= 0 || width > maxPadding {
 		width = DefaultCreditNotePadding
 	}
-	return billing.NumberSeries{Scope: CreditNoteScope, Prefix: prefix, Width: width}, nil
+	return billing.NumberSeries{Scope: CreditNoteScope, Prefix: prefix, Suffix: suffix, Width: width}, nil
 }
 
-// seriesPrefix turns a configured pattern into the prefix a NumberSeries carries.
+// DebitNoteSeries returns the series the debit-note issue path must use (INV-10).
 //
-// It expands the date tokens, then reduces a trailing {number} to nothing, which
-// is what makes "INV-{year}-{number}" render as "INV-2026-000042" through
+// It is the mirror of CreditNoteSeries: same rendering rules, its own persisted scope, so a
+// debit note never takes a number a credit note would have had.
+func (n Numbering) DebitNoteSeries(now time.Time) (billing.NumberSeries, error) {
+	prefix, suffix, err := splitPattern(n.DebitNotePrefix, now)
+	if err != nil {
+		return billing.NumberSeries{}, err
+	}
+	width := n.DebitNotePadding
+	if width <= 0 || width > maxPadding {
+		width = DefaultDebitNotePadding
+	}
+	return billing.NumberSeries{Scope: DebitNoteScope, Prefix: prefix, Suffix: suffix, Width: width}, nil
+}
+
+// splitPattern turns a configured pattern into the prefix and suffix a NumberSeries
+// carries.
+//
+// It expands the date tokens, then splits on {number}: everything before it is the
+// prefix and everything after it is the suffix, which is what makes both
+// "INV-{year}-{number}" and "{number}/{year}" render through
 // billing.InvoiceNumber.Format.
-func seriesPrefix(pattern string, now time.Time) (string, error) {
+func splitPattern(pattern string, now time.Time) (prefix, suffix string, err error) {
 	if pattern == "" {
-		return "", nil
+		return "", "", nil
 	}
 	if _, err := NormalisePrefix(pattern); err != nil {
-		return "", err
+		return "", "", err
 	}
 	expanded := expandDateTokens(pattern, now)
 	idx := strings.Index(expanded, "{number}")
 	if idx < 0 {
-		return expanded, nil
+		if strings.ContainsAny(expanded, "{}") {
+			// A brace that survived expansion is a typo: "{yaer}" would otherwise be
+			// printed literally on every invoice, which looks like a formatting decision
+			// rather than a mistake.
+			return "", "", fmt.Errorf("%w: pattern %q", ErrMissingNumberToken, pattern)
+		}
+		return expanded, "", nil
 	}
-	if idx != len(expanded)-len("{number}") {
-		return "", fmt.Errorf("%w: pattern %q", ErrSuffixAfterNumber, pattern)
-	}
-	return expanded[:idx], nil
+	return expanded[:idx], expanded[idx+len("{number}"):], nil
 }
 
 // expandDateTokens substitutes {year}, {month} and {day}.
 //
-// {number} is deliberately left alone: it is not a date, and seriesPrefix decides
+// {number} is deliberately left alone: it is not a date, and splitPattern decides
 // what to do with it.
 func expandDateTokens(pattern string, now time.Time) string {
 	if !strings.ContainsRune(pattern, '{') {

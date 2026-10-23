@@ -439,3 +439,17 @@ func samePosting(ctx context.Context, tx pgx.Tx, transactionID string, p Posting
 	}
 	return nil
 }
+
+// The adjustment-note references added with debit notes (INV-10).
+const (
+	// RefDebit is a debit note: the charge-side counter-document.
+	RefDebit ReferenceType = "debit_note"
+	// RefCreditVoid is the reversal of a cancelled credit note. It is a distinct reference
+	// type from RefCredit because the posting's uniqueness key is
+	// (kind, reference_type, reference_id): voiding a note must post a second transaction for
+	// the same document id, and sharing the type would make the reversal look like a replay
+	// of the note itself and silently post nothing.
+	RefCreditVoid ReferenceType = "credit_note_void"
+	// RefDebitVoid is the reversal of a cancelled debit note, for the same reason.
+	RefDebitVoid ReferenceType = "debit_note_void"
+)

@@ -20,6 +20,7 @@
 // so a double click is two of the same thing rather than two lines of one.
 
 import { ApiError } from "../lib/api";
+import { appliedBrand, applyBrandChrome } from "../lib/brand";
 import { h, swap } from "../lib/dom";
 import { money, type Amount } from "../lib/format";
 import { currentLocale, enabledLocales, languageSwitcher, onLocaleChange, setLocale, tx } from "../lib/i18n";
@@ -106,6 +107,10 @@ export default async function storefrontProductPage(ctx: AuthCtx): Promise<Node>
       latest = product;
       session = me;
       swap(host, render(product));
+      // The header is part of this page, so it is decorated with the tenant's brand here: the
+      // shell applied the brand before this view fetched its data, and this swap replaced the
+      // markup it had decorated.
+      applyBrandChrome(host, appliedBrand());
       if (pendingAdd) {
         const wanted = pendingAdd;
         pendingAdd = null;

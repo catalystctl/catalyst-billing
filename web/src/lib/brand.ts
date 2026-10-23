@@ -191,6 +191,7 @@ export function applyBrand(
   mode: "light" | "dark",
   root: HTMLElement = document.documentElement,
 ): string[] {
+  applied = brand ?? NO_BRAND;
   const paint = paintFor(brand, mode);
   // Clear first, always: switching from a branded installation to an unbranded one, or from
   // light to dark with only a light accent configured, has to remove the previous override.
@@ -206,6 +207,18 @@ export function applyBrand(
   ];
   for (const [property, value] of written) root.style.setProperty(property, value);
   return written.map(([property]) => property);
+}
+
+/**
+ * The brand last applied to the document.
+ *
+ * A view that re-renders its own header after the shell decorated it — the storefront swaps its
+ * whole page when the catalogue arrives — needs the value to decorate the new markup. It is a
+ * read of what `applyBrand` was given, not a second source of truth: there is one brand and this
+ * is the one the panel is currently painted with.
+ */
+export function appliedBrand(): Brand {
+  return applied;
 }
 
 /** Removes every brand property from the root. */
@@ -332,6 +345,9 @@ export function readableHex(c: Rgb, bg: Rgb, min = 4.5): string {
  * brand therefore has to be able to *undo* itself, and that needs the original children.
  */
 const originalChrome = new WeakMap<Element, Node[]>();
+
+/** The brand `applyBrand` was last given. See `appliedBrand`. */
+let applied: Brand = NO_BRAND;
 
 /** Remembers an element's children the first time it is decorated. */
 function remember(el: Element): void {

@@ -16,6 +16,7 @@
 // is unchanged on an installation that never publishes one.
 
 import type { Api } from "../lib/api";
+import { appliedBrand, applyBrandChrome } from "../lib/brand";
 import { h, swap } from "../lib/dom";
 import { money, type Amount } from "../lib/format";
 import { currentLocale, enabledLocales, languageSwitcher, onLocaleChange, setLocale, tx } from "../lib/i18n";
@@ -112,6 +113,10 @@ export default async function storefrontPage(ctx: AuthCtx): Promise<Node> {
       });
       latest = data;
       swap(host, render(data));
+      // The header is part of this page, so it is decorated with the tenant's brand here: the
+      // shell applied the brand before this view fetched its data, and this swap replaced the
+      // markup it had decorated.
+      applyBrandChrome(host, appliedBrand());
     } catch (err) {
       if (controller.signal.aborted) return;
       swap(

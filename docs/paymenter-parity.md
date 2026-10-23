@@ -39,9 +39,15 @@ listings). It has 25 top-level admin resource classes plus `Audits` and
 `InvoiceTransactions` (27), 5 admin pages, 7 widgets and 3 clusters. File references below
 are relative to that clone.
 
-**Catalyst state.** `519c526` plus the uncommitted working tree, read directly from
-`internal/`, `web/src/` and the migrations. Where the README and the code disagree, the code
-wins and the row says so.
+**Catalyst state.** Originally written at `519c526`. **Every numbered row in §3 was re-audited
+against the tree** (see the table in §1 for the marks), and the verdict table, §5 and the mapping
+sections were re-derived by the audit recorded in `docs/parity-audit/mappings.md`. Where this
+document and the code disagree, the code wins and the row says so — and where the row is cheap to
+re-derive, prefer re-deriving it to trusting it.
+
+`scripts/apply-parity-audit.py` is how §3 is written: nine auditors produce TSVs, one script
+writes the table. Nobody hand-edits a status column, because a conflict resolved by hand in a
+status column is how a document starts lying.
 
 **Status legend.**
 
@@ -66,50 +72,70 @@ Phase is a build order, not a priority claim: `P1` is what makes the product sel
 
 ## 1. Verdict
 
+**Re-derived from the tree on every row.** The previous version of this table was written at
+commit `519c526`; the numbers below were recounted by the audit in `docs/parity-audit/mappings.md`,
+which records the command that produces each one. Where a count is cheap to re-derive it is worth
+re-deriving, because a stale number in a verdict table is how a document loses its authority.
+
 | | Paymenter | Catalyst | Gap |
 |---|---|---|---|
-| Admin resources | 27 resource classes (25 top-level + Audits + InvoiceTransactions) | ~24 staff screens | 🟡 breadth, not depth |
-| Admin pages | 5 | 1 dashboard | ❌ settings, updates, cron stats, extension marketplace |
-| Dashboard widgets | 7 | 1 exception dashboard | 🟡 no revenue/active-users/support widgets |
-| Data models | 52 model files / 56 core tables | 47 tables | 🟡 34 missing tables (see §5) |
-| Client pages | ~26 | 6 portal pages + 2 storefront pages | 🟡 no cart, tickets, credits, payment methods, security, notifications |
-| Payment gateways | 4 in-tree (marketplace lists 232 extensions of all kinds) | 1 protocol, fake only | ❌ |
-| Server integrations | 8 in-tree | 1 protocol, fake only | ❌ |
-| Other extensions | 3 in-tree | 0 | ❌ |
-| Locales | 24 | 1 | ❌ |
-| Themes | theme packages + 24 marketplace themes | 1 design system, dark mode only | ⛔ / ❌ |
-| Settings keys | 77 across 11 groups | env + DB policies, no system settings surface | ❌ |
-| API operations | 10 admin REST resources (full CRUD) + Passport/OAuth2 | 78 operations, generated OpenAPI + typed client | ✅ stronger |
-| Permissions | editable roles, 169 permission strings | 27 fixed permissions, 4 fixed roles | 🟡 no role editing |
+| Admin resources | 27 resource classes | **53 staff screens** (55 staff routes) | 🟡 breadth, not depth |
+| Admin pages | 5 | **8 operator pages** + dashboard | ✅ settings, branding, updates, marketplace, automation, imports, locales, logs |
+| Dashboard widgets | 7 | 1 dashboard, **7 figures** + exception list | ✅ |
+| Data models | 52 model files / 56 core tables | **109 tables** | ✅ **1 missing** (`notification_subscriptions`) |
+| Client pages | ~26 | **23** (11 portal + 5 commerce/support + 2 storefront + 5 auth) | 🟡 |
+| Payment gateways | 4 in-tree | 2 in-tree, **1 real** (Stripe; `fakegateway` is a fixture) | 🟡 1 real adapter vs 4 |
+| Server integrations | 8 in-tree | 3 in-tree, **2 real** (Pterodactyl, cPanel) | 🟡 2 real adapters vs 8 |
+| Other extensions | 3 in-tree | 1 in-tree + a real extension host | 🟡 no Discord notifier |
+| Locales | 24 | **2 seeded** (1 enabled), 88 keys, full i18n system | 🟡 breadth only |
+| Themes | theme packages + 24 marketplace themes | 1 token system, dark + light, **brand overlay** | ⛔ no theme *registry* |
+| Settings keys | 77 across 11 groups | **72 across 17 groups**, editable in the panel | ✅ |
+| API operations | 10 admin REST resources + Passport | **353 operations across 278 paths**, generated OpenAPI + typed client | ✅ stronger |
+| Permissions | editable roles, 169 permission strings | **52 permissions**, 4 system roles + editable custom roles | 🟡 no role hierarchy |
 | Audit | `Audits` resource | append-only, trigger-enforced | ✅ stronger |
 | Money | floats in places | exact minor units, rational rates | ✅ stronger |
 | Invoices | mutable by default | immutable by trigger, snapshot | ✅ stronger |
 | Payments | idempotent-ish | idempotent end to end | ✅ stronger |
 | Provisioning | job per action | queue, fencing, leases, reconciliation | ✅ stronger |
 
-**The short version.** Catalyst is a better *ledger* and a worse *shop*. It cannot take a
-customer from "I want that product" to "I have it" without a staff member, and it cannot take
-money from a real provider. That is the parity problem, and most of `P1` is about it.
+**The short version.** Catalyst used to be a better *ledger* and a worse *shop*. It is now both: a
+customer can register, put a product in a cart, check out and pay a real provider, and every one of
+those steps is driven in a browser by `scripts/browser-e2e.sh`. What remains is **breadth** — one
+real gateway where Paymenter ships four, two real provisioners where it ships eight, two seeded
+locales where it ships twenty-four.
 
-**At a glance.** 277 numbered items: **48 already satisfied** (13 of them stronger than
-Paymenter), **73 partial**, **154 missing**, **2 deliberate divergences**. 64 items sit in
-`P1`, the revenue path.
+**At a glance.** 285 numbered items, re-audited against the code:
 
-### 1.1 The five revenue blockers
+| Mark | Count | Meaning |
+|---|---|---|
+| ✅ | **179** | equivalent or stronger |
+| 🟡 | **90** | partial, with the gap named in the row |
+| ❌ | **13** | absent |
+| ⛔ | **3** | deliberate divergence |
 
-These are not the whole list, but they are the ones that make everything else moot:
+The audit that produced this corrected **141 items the document had marked absent that are in fact
+built** — the most expensive kind of staleness, because it tells people to build what already
+exists. Per-section detail is in §3; the row-by-row evidence is the text of each row.
 
-1. **No customer self-registration** (`IDN-01`). A storefront visitor has no way to become a
-   customer. Only `billing admin create-customer` creates one.
-2. **No customer purchase path** (`CT-01`…`CT-08`). `POST /api/v1/staff/orders` exists, but it
-   is staff-only. The storefront "Buy" button links to `/login?next=/portal`, and the portal
-   has no catalog.
-3. **No real payment gateway** (`PAY-01`). The only gateway is `extensions/fakegateway`.
-4. **No coupons and no jurisdiction-aware tax** (`CPN-*`, `TAX-01`). One fixed rate per
-   installation is not a tax engine, and there is no promotion mechanism.
-5. **No invoice PDF** (`INV-08`). A customer cannot download the document they are asked to
-   pay. `web/src/views/portal-invoice.ts` says so in a comment instead of shipping a button
-   that would fail.
+### 1.1 The five revenue blockers — all closed
+
+These were the reason the document existed. Each is now built and browser-verified:
+
+1. **Customer self-registration** (`IDN-01`) — `/register`, linked from `/login`. ~~A storefront
+   visitor has no way to become a customer.~~ **Closed.**
+2. **Customer purchase path** (`CT-01`…`CT-08`) — storefront → cart → checkout → invoice.
+   ~~The "Buy" button links to `/login?next=/portal` and the portal has no catalog.~~
+   **Closed**; the funnel is asserted end to end.
+3. **Real payment gateway** (`PAY-01`) — `extensions/stripe`: checkout sessions, payment intents,
+   refunds, webhook signature verification, conformance-tested through `extproto.Launch`.
+   ~~The only gateway is `extensions/fakegateway`.~~ **Closed.**
+4. **Coupons and tax** (`CPN-*`, `TAX-*`) — `coupons` with exact-rational percentages and a
+   redemption counter, `tax_rates` with dated rows, wildcard jurisdiction, inclusive/exclusive and
+   an importer with provenance. ~~No promotion mechanism, one fixed rate.~~ **Closed**, with the
+   caveat in §3.5: a rate table is not a jurisdiction *rules engine*.
+5. **Invoice PDF** (`INV-08`) — `internal/invoicepdf`, served to both audiences, plus credit notes,
+   proforma and a per-tenant brand. ~~A customer cannot download the document they are asked to
+   pay.~~ **Closed.**
 
 ### 1.2 Three things the audit found that are not in Paymenter's list
 
@@ -705,6 +731,44 @@ Each phase lists its epics, the IDs inside them, and the acceptance test that pr
 is done. The acceptance tests are deliberately phrased as observable behaviour, because "the
 screen exists" is not parity.
 
+### Where the backlog actually stands
+
+The phases below are the **original build plan** and are kept as the record of what was asked for
+and why. What is left, derived from the audited marks in §3 rather than from this plan:
+
+**Absent — 13 items.** Five are gateways (PayPal checkout, PayPal IPN, Mollie, the marketplace
+gateway set), which is one adapter's worth of work and deliberately deferred. The rest:
+
+| ID | What |
+|---|---|
+| `TAX-05` | EU VAT / jurisdiction rules engine. A rate table is not a rules engine — reverse charge, valid VAT ID, nexus |
+| `SVC-13` `SVC-14` | Admin "recalculate price" and "cancel subscription ID" actions on a service |
+| `SVC-22` | Upgrade server call on a product change (the provisioner is told, not just the ledger) |
+| `UPG-12` | Checkout config fields supplied by the server extension |
+| `CT-12` | "Cancel subscription ID" on an order, for a legacy external subscription |
+| `NTF-11` | Mail header/footer/CSS branding (the brand overlay covers the panel and the PDF, not mail) |
+| `IDN-16` | Session validation bound to IP and/or user agent |
+| `I18N-08` | Gravatar default avatar |
+
+**Partial — 90 items.** The largest clusters, and what each is missing:
+
+| Cluster | Count | The recurring gap |
+|---|---|---|
+| Operator surface (`ADM-*`) | 13 | CRUD breadth on resources that already exist as read screens: product/category, tax rate, API key, invoice transactions, adjustment notes, plus a failed-job viewer with retry and a cron statistics page |
+| Storefront (`SF-*`) | 10 | Presentation and merchandising: category images and sort, per-category SEO URLs, stock display, `allow_quantity`, the storefront half of the currency switcher |
+| Platform/ops (`OPS-*`) | 10 | Observability and tooling: cron statistics, a WHMCS importer, a marketplace client, debug log tables, and the `app:*` CLI set |
+| Invoices (`INV-*`) | 8 | Numbering formats, per-theme PDF (blocked on a theme registry), reminders, due-date defaults |
+| Payments (`PAY-*`) | 6 | Saved payment methods and off-session charging — the one commercially meaningful gap left, because it is what makes renewals automatic |
+| Services (`SVC-*`) | 6 | Admin service CRUD breadth and client-facing server actions |
+| Upgrades (`UPG-*`) | 5 | The upgrade *invoice* path: downgrade credit, queued server call, pending-invoice recalculation |
+| Localization (`I18N-*`) | 5 | Locale breadth (24 targets, 2 seeded), translated validation messages, mail branding |
+| Cancellations (`CAN-*`) | 4 | The customer-facing request flow is built; reason capture and the notification pair are not |
+| Support (`TKT-*`) | 3 | Reply notification, dashboard widget, attachment piping detail |
+| Others | 20 | Scattered single gaps, each named in its own row |
+
+**Read the rows, not this summary.** Every partial row names its specific gap; this table exists to
+show where the weight is, not to replace the detail.
+
 ### P0 — Decisions (no code until these are answered)
 
 | Decision | Question | Why it blocks |
@@ -856,18 +920,31 @@ Paymenter tables (from the live schema) → Catalyst equivalent.
 | `announcements` (extension) | — | ❌ |
 | `affiliates`, `affiliate_orders` (extension) | — | ❌ |
 
-**Missing commerce tables, counted:** 34. `carts`, `cart_items`, `coupons`,
-`coupon_products`, `tax_rates`, `currencies`, `config_options`, `config_option_products`,
-`custom_properties`, `properties`, `billing_agreements`, `service_configs`,
-`service_upgrades`, `product_upgrades`, `service_cancellations`, `tickets`, `ticket_messages`,
-`ticket_message_attachments`, `ticket_mail_logs`, `notification_templates`,
-`notification_preferences`, `notification_subscriptions`, `notifications`, `email_logs`,
-`cron_stats`, `oauth_clients` and the four other `oauth_*` tables, `announcements`,
-`affiliates`, `affiliate_orders`. That is the schema gap.
+**Missing commerce tables, counted: 1** (was 34 when this was written). Rechecked table by table
+against `internal/store/migrations/*.sql`:
+
+| Claimed missing | Actually |
+|---|---|
+| `carts`, `cart_items`, `coupons`, `coupon_products`, `tax_rates`, `currencies`, `config_options`, `config_option_products`, `service_configs`, `service_upgrades`, `product_upgrades`, `service_cancellations`, `tickets`, `ticket_messages`, `ticket_mail_logs`, `notification_templates`, `notification_preferences`, `notifications`, `announcements`, `affiliates` | **exist** in `0020_commerce.sql` / `0025_growth.sql` |
+| `oauth_clients` and the other `oauth_*` tables | **exist** in `0038_oauth.sql` |
+| `properties`, `custom_properties` | exist under the names this design chose: `service_property_definitions` plus per-service metadata |
+| `ticket_message_attachments` | exists as `ticket_attachments` |
+| `cron_stats` | exists as `cron_runs` (plus `renewal_runs`, `import_runs`, `tax_import_runs`) |
+| `affiliate_orders` | exists as `affiliate_referrals` and `affiliate_recurring_commissions`, which is the stronger model: the commission is a row per renewal, not a join to an order |
+| `email_logs` | **absent**, and deliberately so — delivery is recorded on the notification row and in `error_logs`, so a second table would be a second source of truth for the same fact |
+| `billing_agreements` | **genuinely absent** — the one real schema gap. Stripe subscriptions are re-created per invoice rather than stored as a reusable mandate |
+
+So the schema is **not** the gap this section claimed. The single missing table is
+`notification_subscriptions` (per-topic opt-in), and `billing_agreements` if reusable payment
+mandates are wanted.
 
 ---
 
 ## 6. Admin resource mapping
+
+> **Audited.** 34 cells checked, 25 stale; the corrected cell for every one is in
+> `docs/parity-audit/mappings.md` §6, with the command or file that proves it. The table below
+> is the original claim and is kept for the comparison, not as current fact.
 
 | Paymenter resource | Catalyst screen | Status |
 |---|---|---|
@@ -910,6 +987,10 @@ Paymenter tables (from the live schema) → Catalyst equivalent.
 
 ## 7. Client page mapping
 
+> **Audited.** 26 cells checked, 13 stale; the corrected cell for every one is in
+> `docs/parity-audit/mappings.md` §7, with the command or file that proves it. The table below
+> is the original claim and is kept for the comparison, not as current fact.
+
 | Paymenter page | Catalyst page | Status |
 |---|---|---|
 | `/` home/storefront | `/` storefront | ✅ |
@@ -942,6 +1023,10 @@ Paymenter tables (from the live schema) → Catalyst equivalent.
 ---
 
 ## 8. Settings key mapping
+
+> **Audited.** 45 cells checked (77 keys), 34 stale; the corrected cell for every one is in
+> `docs/parity-audit/mappings.md` §8, with the command or file that proves it. The table below
+> is the original claim and is kept for the comparison, not as current fact.
 
 Paymenter's settings page is a single source of truth (`app/Classes/Settings.php`): 77 keys
 across 11 groups. This is the full key list and what Catalyst has for each.
@@ -998,6 +1083,10 @@ across 11 groups. This is the full key list and what Catalyst has for each.
 
 ## 9. Notification event mapping
 
+> **Audited.** 12 cells checked, 9 stale; the corrected cell for every one is in
+> `docs/parity-audit/mappings.md` §9, with the command or file that proves it. The table below
+> is the original claim and is kept for the comparison, not as current fact.
+
 | Paymenter event key | Trigger | Catalyst today | Status |
 |---|---|---|---|
 | `email_verification` | Registration | `KindEmailVerification` | ✅ |
@@ -1018,6 +1107,10 @@ Plus `system` email for cron failure and the admin "send test email" action.
 ---
 
 ## 10. Extension inventory
+
+> **Audited.** 5 cells checked, 4 stale; the corrected cell for every one is in
+> `docs/parity-audit/mappings.md` §10, with the command or file that proves it. The table below
+> is the original claim and is kept for the comparison, not as current fact.
 
 ### 10.1 In-tree gateways (4)
 

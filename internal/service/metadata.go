@@ -48,6 +48,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/catalyst/billing/internal/calendar"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -877,6 +878,13 @@ func intervalPhrase(interval string) string {
 	case "annual":
 		return "billed annually"
 	default:
+		// A day-count period ("every_45_days") is a real billing period, so a description
+		// that omitted it would describe a service as "billed" with no cycle at all. The
+		// parse comes from internal/calendar, which is the package that decides what a
+		// period is: a second parser here would be a second answer to the same question.
+		if days, ok := calendar.ParseDayInterval(interval); ok {
+			return fmt.Sprintf("billed every %d days", days)
+		}
 		return ""
 	}
 }

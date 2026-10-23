@@ -3,17 +3,22 @@
 //
 // # The period vocabulary
 //
-// A price is sold in one of six ways. Four of them are recurring periods, one is charged once,
-// and one costs nothing. The distinction that shapes the rest of the codebase is *recurring or
-// not*: only a recurring price produces a subscription, and only a subscription can be renewed.
-// `Recurring` is the single predicate for that, so a new caller cannot invent its own list and
-// forget a value.
+// A price is sold in one of seven ways. Four of them are calendar periods, one is a fixed
+// number of days, one is charged once, and one costs nothing. The distinction that shapes the
+// rest of the codebase is *recurring or not*: only a recurring price produces a subscription,
+// and only a subscription can be renewed. `Recurring` is the single predicate for that, so a
+// new caller cannot invent its own list and forget a value.
 //
-// Arbitrary `N day/week/month/year` periods are deliberately absent. They need a period model
-// that measures by days, prorates by days and still lands on a stable boundary across DST;
-// `internal/calendar` is anchored to a day-of-month and to calendar months. Adding a number to
-// this file would be a rewrite of that package, not a new constant (see 0028's header and
-// SF-14 in docs/paymenter-parity.md).
+// # Calendar periods and day-count periods
+//
+// `monthly`, `quarterly`, `semiannual` and `annual` are *calendar* periods: they hang off a
+// day-of-month, which is what makes a month end and a leap day come out right. A day-count
+// period — "every 45 days" — is a different model, and `internal/calendar` keeps the two
+// apart rather than blending them: a day count has no month to hang from, so it is counted in
+// civil days from an explicit origin. The stored form is the self-describing string
+// `every_<N>_days` with N in 1..366, produced and parsed by `calendar.DayInterval` and
+// `calendar.ParseDayInterval` — this package does not re-implement that parsing, because two
+// parsers would eventually disagree about what a valid period is.
 package catalog
 
 import (
@@ -22,6 +27,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/catalyst/billing/internal/calendar"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -41,7 +47,9 @@ const (
 	IntervalFree = "free"
 )
 
-// Intervals is the closed set, in the order a plan editor offers them.
+// Intervals is the closed set of *calendar* intervals, in the order a plan editor offers them.
+// The day-count form `every_<N>_days` is valid too but is not enumerated here: it has 366
+// possible values, and a plan editor offers it as one choice plus a number.
 var Intervals = []string{
 	IntervalMonthly, IntervalQuarterly, IntervalSemiannual, IntervalAnnual,
 	IntervalOneTime, IntervalFree,
@@ -51,24 +59,28 @@ var Intervals = []string{
 //
 // This is the predicate the rest of the system asks, rather than comparing against a list of
 // its own: `one_time` and `free` are the two values that do not recur, and a caller that
-// hard-codes the four recurring names will one day be handed a fifth.
+// hard-codes the four calendar names will one day be handed a fifth.
 func Recurring(interval string) bool {
 	switch interval {
 	case IntervalMonthly, IntervalQuarterly, IntervalSemiannual, IntervalAnnual:
 		return true
-	default:
-		return false
 	}
+	_, dayCount := calendar.ParseDayInterval(interval)
+	return dayCount
 }
 
-// ValidateInterval rejects anything outside the closed set.
+// ValidateInterval rejects anything outside the closed set, including the day-count form.
 func ValidateInterval(interval string) error {
 	for _, known := range Intervals {
 		if interval == known {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: interval must be one of %s", ErrInvalidInput, strings.Join(Intervals, ", "))
+	if _, dayCount := calendar.ParseDayInterval(interval); dayCount {
+		return nil
+	}
+	return fmt.Errorf("%w: interval must be one of %s, or %s for 1..%d days",
+		ErrInvalidInput, strings.Join(Intervals, ", "), calendar.DayInterval(45), calendar.MaxDayInterval)
 }
 
 // IntervalLabel is the customer-facing name of an interval, used where a page has to render
@@ -88,6 +100,9 @@ func IntervalLabel(interval string) string {
 	case IntervalFree:
 		return "free"
 	default:
+		if days, ok := calendar.ParseDayInterval(interval); ok {
+			return fmt.Sprintf("every %d days", days)
+		}
 		return interval
 	}
 }

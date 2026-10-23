@@ -115,8 +115,23 @@ const INTERVAL_LABEL: Record<string, string> = {
   free: "Free",
 };
 
-const intervalText = (price: Price): string =>
-  price.interval_label || INTERVAL_LABEL[price.interval] || price.interval;
+// dayIntervalDays reads the stored day-count interval ("every_45_days") and returns the
+// number of days, or 0 when the interval is a calendar one. It mirrors
+// calendar.ParseDayInterval on the server — one canonical spelling, 1..366 days — so the
+// screen cannot render a period the server would refuse.
+function dayIntervalDays(interval: string): number {
+  const match = /^every_([1-9][0-9]{0,2})_days$/.exec(interval);
+  if (!match) return 0;
+  const days = Number(match[1]);
+  return days >= 1 && days <= 366 ? days : 0;
+}
+
+const intervalText = (price: Price): string => {
+  if (price.interval_label) return price.interval_label;
+  const days = dayIntervalDays(price.interval);
+  if (days > 0) return `Every ${days} days`;
+  return INTERVAL_LABEL[price.interval] || price.interval;
+};
 
 // plansInOrder is the display order: the operator's plan order, then the newest version within
 // one position. It mirrors catalog.Plans on the server, so the preview here and the storefront
@@ -578,7 +593,15 @@ export default async function catalogProductPage(ctx: Ctx): Promise<Node> {
                     "div",
                     null,
                     kv("Setup fee", current.setup.minor > 0 ? money(current.setup) : "None"),
-                    kv("Anchor day", String(current.anchor_day)),
+                    kv(
+                      "Anchor day",
+                      // A day-count period is counted from this day for its first
+                      // period only; after that the period is a fixed number of days
+                      // and the day-of-month drifts by design.
+                      dayIntervalDays(current.interval) > 0
+                        ? `${current.anchor_day} (first period only)`
+                        : String(current.anchor_day),
+                    ),
                     kv("Timezone", h("span", { class: "mono" }, current.anchor_timezone)),
                     kv("Provision plan", current.provision_plan || "—"),
                     kv("Provision region", current.provision_region || "—"),

@@ -158,6 +158,43 @@ var serverProviders = []Provider{
 		},
 	},
 	{
+		// CatalystCTL. Listed here for the reason the cPanel entry above spells out: an adapter that
+		// `serverProviders` does not name has no form, its environment variables never reach the
+		// child, and it is dead code that looks alive in `git ls-files`.
+		ID:        "catalystctl",
+		Name:      "CatalystCTL",
+		Extension: "catalystctl",
+		Note: "Game servers through a Catalyst panel. Customers see live state, their address and " +
+			"the power buttons in the portal, and never have to open the panel to restart a server.",
+		// Only the panel's address and key are stored here. Which template, location, node and size a
+		// server gets is a property of the product being sold, set per service from the adapter's own
+		// provisioning fields (whose dropdowns are filled from the panel) or from a product's config
+		// option. One adapter deployment therefore serves a whole catalogue.
+		Fields: []Field{
+			{
+				Key: "panel_url", Label: "Panel URL", Env: "CCTL_PANEL_URL",
+				Hint: "The panel's origin, e.g. https://panel.example.com. No /api suffix: the adapter adds it.",
+			},
+			{
+				Key: "api_key", Label: "Panel API key", Env: "CCTL_API_KEY", Secret: true,
+				Hint: "catalyst_…. Write-only: it is never returned, only reported as set. Create it on the " +
+					"panel's API keys screen with server read/create/delete and console permissions.",
+			},
+		},
+		EnvOnly: []EnvKnob{
+			{Env: "CCTL_TEMPLATE_ID", Hint: "Optional default template, for an installation whose products all use one. A service's template field wins."},
+			{Env: "CCTL_LOCATION_ID", Hint: "Optional default location. A service's location field wins."},
+			{Env: "CCTL_NODE_ID", Hint: "Optional node override. Leave unset to let the adapter load-balance inside the chosen location."},
+			{Env: "CCTL_OWNER_ID", Hint: "Optional panel user that owns new servers. A service's owner field wins."},
+			{Env: "CCTL_PLANS", Hint: "Optional id:memory_mb:disk_mb:cpu_cores bundles, so a billing plan id maps to a size. Unset sizes come from the service's fields."},
+			{Env: "CCTL_NETWORK_MODE", Hint: "Optional default network mode; a service's network mode field wins."},
+			{Env: "CCTL_PANEL_PATH", Hint: "The customer-facing path of a server, default /servers/{id}. Point it at / to turn the deep link off."},
+			{Env: "CCTL_TIMEOUT_MS", Hint: "Per-call HTTP timeout, default 30000."},
+			{Env: "CCTL_STATE_FILE", Hint: "The adapter's operation ledger; defaults to /var/lib/catalyst/catalystctl/operations.json."},
+			{Env: "CCTL_VERIFY_TLS", Hint: "Default on. Setting it off prints a warning on the adapter's stderr."},
+		},
+	},
+	{
 		ID:        "fake",
 		Name:      "Fixture provisioner",
 		Extension: "fakeprov",

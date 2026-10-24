@@ -1245,6 +1245,18 @@ func (c *Client) GetPortalServicesByIdPlanoptions(ctx context.Context, id string
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetPortalServicesByIdServer calls GET /api/v1/portal/services/{id}/server.
+//
+// # Your service's live server state
+//
+// Permission: service:read:self.
+// id is the id path parameter.
+func (c *Client) GetPortalServicesByIdServer(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/services/{id}/server"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetPortalServicesByIdUpgradeoptions calls GET /api/v1/portal/services/{id}/upgrade-options.
 //
 // # Products this service can move to
@@ -2397,6 +2409,18 @@ func (c *Client) GetStaffServicesByIdProvisioningfields(ctx context.Context, id 
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffServicesByIdServer calls GET /api/v1/staff/services/{id}/server.
+//
+// # Any service's live server state, for support
+//
+// Permission: service:read:all. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffServicesByIdServer(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/services/{id}/server"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffServicesByIdSuspensioneligibility calls GET /api/v1/staff/services/{id}/suspension-eligibility.
 //
 // # Evaluate suspension eligibility
@@ -3075,6 +3099,20 @@ func (c *Client) PostPortalServicesByIdHooksByExtensionByAction(ctx context.Cont
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	path = strings.ReplaceAll(path, "{extension}", url.PathEscape(extension))
 	path = strings.ReplaceAll(path, "{action}", url.PathEscape(action))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostPortalServicesByIdServerPower calls POST /api/v1/portal/services/{id}/server/power.
+//
+// # Start, stop, restart or kill your own server
+//
+// Permission: service:write:self.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostPortalServicesByIdServerPower(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/portal/services/{id}/server/power"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
@@ -4026,6 +4064,20 @@ func (c *Client) PostStaffServicesByIdRecalculateprice(ctx context.Context, id s
 // id is the id path parameter.
 func (c *Client) PostStaffServicesByIdResume(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/services/{id}/resume"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffServicesByIdServerPower calls POST /api/v1/staff/services/{id}/server/power.
+//
+// # Power any service's server, as staff
+//
+// Permission: service:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffServicesByIdServerPower(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/services/{id}/server/power"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }

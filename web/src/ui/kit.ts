@@ -97,6 +97,11 @@ export interface ButtonOptions {
   block?: boolean;
   onclick?: (event: MouseEvent) => void;
   id?: string;
+  /** target for a link button. Used by "open in another product", where the other origin owns its own
+   *  session and the billing page should survive the visit. */
+  target?: string;
+  /** rel for a link button. A cross-origin link opened in a new tab needs noopener. */
+  rel?: string;
 }
 
 export function btn(label: Child, opts: ButtonOptions = {}): HTMLButtonElement | HTMLAnchorElement {
@@ -110,7 +115,7 @@ export function btn(label: Child, opts: ButtonOptions = {}): HTMLButtonElement |
     .join(" ");
   const children: Child[] = [opts.icon ? icon(opts.icon, 14) : null, label, opts.iconAfter ? icon(opts.iconAfter, 14) : null];
   if (opts.href) {
-    return h("a", { class: cls, href: opts.href, title: opts.title }, ...children);
+    return h("a", { class: cls, href: opts.href, title: opts.title, target: opts.target, rel: opts.rel }, ...children);
   }
   return h(
     "button",

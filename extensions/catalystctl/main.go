@@ -41,6 +41,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,10 +125,11 @@ type config struct {
 
 // configFromEnv reads and validates the configuration.
 //
-// Every missing required value is a startup failure. A provisioner that starts without them would
-// fail every operation, and a queue full of failures looks like a broken worker rather than a
-// missing setting — which is the exact confusion the cPanel adapter's first production run
-// produced.
+// Only the credentials are required. A provisioner that starts without its panel address would fail
+// every operation, and a queue full of failures looks like a broken worker rather than a missing
+// setting — which is the exact confusion the cPanel adapter's first production run produced. The
+// placement settings that follow are optional *defaults*, because where a server goes belongs to the
+// service being sold, not to the adapter.
 func configFromEnv(environ []string) (config, error) {
 	env := make(map[string]string, len(environ))
 	for _, kv := range environ {
@@ -156,13 +158,14 @@ func configFromEnv(environ []string) (config, error) {
 		cfg.stateFile = "/var/lib/catalyst/catalystctl/operations.json"
 	}
 
+	// Only the panel's address and key are required. Everything else — template, location, node,
+	// size — is a property of the *service* being sold, resolved per purchase from the adapter's own
+	// provisioning fields or from a product's config option. Requiring them here would mean one
+	// adapter deployment per product, which is the opposite of a catalogue.
 	var missing []string
 	for _, required := range []struct{ name, value string }{
 		{"CCTL_PANEL_URL", cfg.panelURL},
 		{"CCTL_API_KEY", cfg.apiKey},
-		{"CCTL_TEMPLATE_ID", cfg.templateID},
-		{"CCTL_NODE_ID", cfg.nodeID},
-		{"CCTL_LOCATION_ID", cfg.locationID},
 	} {
 		if required.value == "" {
 			missing = append(missing, required.name)
@@ -369,6 +372,8 @@ func (s *server) handle(req *request) reply {
 		return s.resume(req)
 	case "provisioner.terminate":
 		return s.terminate(req)
+	case "provisioner.fields":
+		return s.fields(req)
 	case "provisioner.resource":
 		return s.resource(req)
 	case "provisioner.power":
@@ -426,6 +431,7 @@ func (s *server) capabilities() []string {
 		"provisioner.suspend",
 		"provisioner.resume",
 		"provisioner.terminate",
+		"provisioner.fields",
 		"provisioner.resource",
 		"provisioner.power",
 	}
@@ -447,7 +453,13 @@ func (s *server) describe() reply {
 	return reply{result: map[string]any{"name": "catalystctl", "plans": plans}}
 }
 
-// validate checks a prospective purchase without creating anything.
+// validate is a pre-flight, not a plan lookup.
+//
+// `plan_id` is the *billing* catalogue's identifier, which this adapter has no opinion about: sizes
+// come from the service's own provisioning fields. What can be checked without a purchase is whether
+// the panel is reachable and has anything sellable — which is the question that actually prevents a
+// checkout that fails five minutes later. A panel that is down reports it as a problem rather than an
+// error so the checkout can decide whether to block.
 func (s *server) validate(req *request) reply {
 	var p struct {
 		PlanID   string `json:"plan_id"`
@@ -457,25 +469,52 @@ func (s *server) validate(req *request) reply {
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "validate params: " + err.Error()}}
 	}
-	if _, ok := s.planFor(p.PlanID); !ok {
+	if p.Quantity < 0 {
+		return reply{result: map[string]any{"valid": false, "problems": []string{"quantity cannot be negative"}}}
+	}
+
+	ctx, done := contextFor(req)
+	defer done()
+	locations, err := s.client.locations(ctx)
+	if err != nil {
 		return reply{result: map[string]any{
 			"valid":    false,
-			"problems": []string{fmt.Sprintf("unknown plan %q; this adapter sells %s", p.PlanID, s.planIDs())},
+			"problems": []string{"the server panel could not be reached: " + err.Error()},
+		}}
+	}
+	if len(locations) == 0 {
+		return reply{result: map[string]any{
+			"valid":    false,
+			"problems": []string{"the server panel has no locations; add one before selling a server"},
 		}}
 	}
 	return reply{result: map[string]any{"valid": true}}
 }
 
-// planFor resolves a plan, defaulting when the caller names none.
+// planFor resolves a size bundle.
+//
+// An unknown id is *not* a refusal: the core sends the billing catalogue's plan id here, and this
+// adapter's bundles are an optional shorthand. A caller that names nothing, or names something this
+// adapter has never heard of, falls back to the built-in size and the service's own fields — the
+// purchase is still explicit about what it wants.
 func (s *server) planFor(id string) (plan, bool) {
-	if strings.TrimSpace(id) == "" {
-		if len(s.cfg.plans) == 1 {
-			return s.cfg.plans[0], true
+	if id = strings.TrimSpace(id); id != "" {
+		if p, ok := s.cfg.plansByID[id]; ok {
+			return p, true
 		}
-		return plan{}, false
 	}
-	p, ok := s.cfg.plansByID[id]
-	return p, ok
+	if len(s.cfg.plans) == 1 {
+		return s.cfg.plans[0], true
+	}
+	return plan{}, false
+}
+
+// sizeDefaults is the size a purchase gets when neither a bundle nor a field names one.
+func (s *server) sizeDefaults() plan {
+	if p, ok := s.planFor(""); ok {
+		return p
+	}
+	return plan{ID: "default", MemoryMB: 2048, DiskMB: 10240, CPUCores: 1}
 }
 
 // planIDs lists the sellable plan ids, for an error message.
@@ -512,10 +551,12 @@ func (s *server) create(req *request) reply {
 	if err := validateKey(p.OperationKey); err != nil {
 		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: err.Error()}}
 	}
-	pl, ok := s.planFor(p.PlanID)
-	if !ok {
-		return reply{rpcErr: &rpcError{Code: codeRejected,
-			Message: fmt.Sprintf("unknown plan %q; this adapter sells %s", p.PlanID, s.planIDs())}}
+	// The billing catalogue's plan id is recorded for the ledger and otherwise advisory: the size
+	// a server actually gets comes from the service's placement fields, which are explicit about it.
+	// A plan id this adapter has never heard of is therefore normal, not an error.
+	pl, _ := s.planFor(p.PlanID)
+	if pl.ID == "" {
+		pl = s.sizeDefaults()
 	}
 
 	ctx, done := contextFor(req)
@@ -538,38 +579,55 @@ func (s *server) create(req *request) reply {
 
 	name := serverName(p.Metadata, p.SubscriptionID)
 
-	// 2. Intent first: an adapter that cannot record what it is about to do must not do it.
+	// 2. Resolve placement *before* recording intent. A create that cannot say where the server goes
+	// must not be written down as in flight: the ledger's job is to record an act that may have
+	// happened, and nothing has happened yet.
+	//
+	// Placement comes from the service, not the adapter: which location, node and template a server
+	// needs is a fact about the thing being sold. This adapter holds the panel's address and key and
+	// nothing else about the catalogue.
+	place, err := s.resolvePlacement(ctx, p.Metadata)
+	if err != nil {
+		return reply{rpcErr: &rpcError{Code: codeRejected, Message: err.Error(),
+			Data: map[string]any{"problems": []string{err.Error()}}}}
+	}
+	if place.Name != "" {
+		name = place.Name
+	}
+
+	// 3. Intent first: an adapter that cannot record what it is about to do must not do it.
 	if err := s.ledger.put(operationRecord{
 		OperationKey: p.OperationKey,
 		Name:         name,
 		PlanID:       pl.ID,
-		Region:       p.Region,
+		Region:       place.LocationName,
 		State:        recordCreating,
 	}); err != nil {
 		return reply{rpcErr: internalError(err)}
 	}
 
-	allocation, err := s.client.freeAllocation(ctx, s.cfg.nodeID)
+	allocation, err := s.claimAllocation(ctx, place)
 	if err != nil {
-		return reply{rpcErr: internalError(err)}
+		return reply{rpcErr: &rpcError{Code: codeRejected, Message: err.Error()}}
 	}
 
 	createReq := createRequest{
 		Name:              name,
 		Description:       markerFor(p.OperationKey),
-		TemplateID:        s.cfg.templateID,
-		NodeID:            s.cfg.nodeID,
-		LocationID:        s.cfg.locationID,
-		OwnerID:           s.cfg.ownerID,
+		TemplateID:        place.TemplateID,
+		NodeID:            place.NodeID,
+		LocationID:        place.LocationID,
+		OwnerID:           s.ownerID(p.Metadata),
 		PrimaryPort:       allocation.Port,
+		PrimaryIP:         allocation.IP,
 		AllocationID:      allocation.ID,
-		AllocatedMemoryMb: pl.MemoryMB,
-		AllocatedCpuCores: pl.CPUCores,
-		AllocatedDiskMb:   pl.DiskMB,
+		AllocatedMemoryMb: place.MemoryMB,
+		AllocatedCpuCores: place.CPUCores,
+		AllocatedDiskMb:   place.DiskMB,
 		Environment:       environmentFor(p.Metadata),
 	}
-	if s.cfg.networkMode != "" {
-		mode := s.cfg.networkMode
+	if place.NetworkMode != "" {
+		mode := place.NetworkMode
 		createReq.NetworkMode = &mode
 	}
 
@@ -591,12 +649,33 @@ func (s *server) create(req *request) reply {
 		ExternalID:   srv.ID,
 		Name:         srv.Name,
 		PlanID:       pl.ID,
-		Region:       p.Region,
+		Region:       place.LocationName,
 		State:        recordCreated,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "catalystctl: server %s was created but the ledger could not be updated: %v\n", srv.ID, err)
 	}
-	return reply{result: createResult(srv, pl.ID, p.Region)}
+	return reply{result: createResult(srv, pl.ID, place.LocationName)}
+}
+
+// claimAllocation takes the port this server will listen on.
+//
+// If the service asked for a specific port it gets that port or a refusal; otherwise the first free
+// allocation on the node is taken. Either way the allocation id is passed to create, which is what
+// stops two concurrent creates from racing for the same port: the panel reserves it.
+func (s *server) claimAllocation(ctx context.Context, place placement) (panelAllocation, error) {
+	if place.Port > 0 {
+		return s.client.allocationOnPort(ctx, place.NodeID, place.Port)
+	}
+	return s.client.freeAllocation(ctx, place.NodeID)
+}
+
+// ownerID decides which panel user owns the new server.
+//
+// The per-service value wins, because a reseller product creates servers under a different panel
+// account. `CCTL_OWNER_ID` is the installation-wide default, and an empty answer lets the panel
+// fall back to the API key's own owner.
+func (s *server) ownerID(metadata map[string]string) string {
+	return s.setting(metadata, "owner", "OWNER_ID", s.cfg.ownerID)
 }
 
 // createResult renders the create reply.
@@ -608,6 +687,42 @@ func createResult(srv panelServer, planID, region string) map[string]any {
 		"region":      region,
 		"created_at":  srv.CreatedAt,
 	}
+}
+
+// fields answers `provisioner.fields`: what this service must say about where its server goes.
+//
+// The answer is taken from the panel on every call, so the dropdowns an operator sees are the
+// templates, locations and nodes that exist right now. That is the whole point of the method: a
+// placement chosen from a list cannot be a typo, and a list kept in the billing panel would be stale
+// the first time somebody added a node.
+//
+// It is a pure read: no panel state changes, and a panel that cannot be reached yields text fields
+// rather than a failure, so an operator with a known id is never blocked by a listing outage.
+func (s *server) fields(req *request) reply {
+	ctx, done := contextFor(req)
+	defer done()
+
+	fields := s.declaredFields(ctx)
+	out := make([]map[string]any, 0, len(fields))
+	for _, f := range fields {
+		entry := map[string]any{
+			"key":      f.Key,
+			"label":    f.Label,
+			"type":     string(f.Type),
+			"required": f.Required,
+		}
+		if len(f.Choices) > 0 {
+			entry["choices"] = f.Choices
+		}
+		if f.Secret {
+			entry["secret"] = true
+		}
+		if f.Hint != "" {
+			entry["hint"] = f.Hint
+		}
+		out = append(out, entry)
+	}
+	return reply{result: map[string]any{"fields": out}}
 }
 
 // inspect reports one resource's protocol-level state.
@@ -1009,12 +1124,22 @@ func serverName(metadata map[string]string, subscriptionID string) string {
 // This is the UPG-12 contract: a product's config options reach the adapter as metadata, and the
 // prefix is how they are distinguished from the panel bookkeeping. Passing the bookkeeping through
 // as environment variables would put a subscription id in a game server's process environment.
+//
+// Placement options are *consumed*, not forwarded. A product that declares a LOCATION config option
+// is telling this adapter where to build the server, not asking for a `LOCATION` variable in the game
+// process — and a game process full of `LOCATION`, `TEMPLATE` and `CPU_CORES` is both noise and, for
+// a game that reads a variable of the same name, a genuine conflict.
 func environmentFor(metadata map[string]string) map[string]string {
 	out := map[string]string{}
 	for key, value := range metadata {
-		if name, ok := strings.CutPrefix(key, "env."); ok && name != "" {
-			out[name] = value
+		name, ok := strings.CutPrefix(key, "env.")
+		if !ok || name == "" {
+			continue
 		}
+		if isPlacementOption(name) {
+			continue
+		}
+		out[name] = value
 	}
 	if len(out) == 0 {
 		return nil

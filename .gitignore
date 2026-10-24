@@ -16,3 +16,8 @@ coverage.out
 web/dist/e2e-driver.js
 web/dist/e2e.html
 /billing
+
+# Built by `go build ./extensions/catalystctl`. A 9 MB binary in the tree is not source, and a
+# committed one goes stale silently: the copy everybody runs is the one from their last build,
+# while the repository says something else.
+/catalystctl

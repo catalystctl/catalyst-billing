@@ -558,6 +558,100 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
     });
   };
 
+  /**
+   * Charge the customer's saved card for this invoice.
+   *
+   * The endpoint is idempotent on the invoice, so a second press for an invoice that is already paid
+   * or already has a payment in flight returns that payment instead of taking the money twice. The
+   * response says which happened, and this quotes it rather than claiming a charge either way.
+   *
+   * A decline is a 402 and the invoice is unchanged — that is a refusal, not a failure of the panel,
+   * so it is reported with the provider's own words.
+   */
+  const chargeSavedMethod = async (): Promise<void> => {
+    const ok = await ctx.confirm({
+      title: "Charge the saved card?",
+      body: `This charges the customer's saved default card ${moneyWithCode(inv.due)} for invoice ${inv.number || "this invoice"}. If the card is declined nothing is taken and the invoice is unchanged.`,
+      confirmLabel: "Charge the card",
+    });
+    if (!ok) return;
+    try {
+      const out = await ctx.api.post<{
+        status?: string;
+        detail?: string;
+        payment_id?: string;
+        amount?: Amount;
+      }>(`/api/v1/staff/invoices/${encodeURIComponent(inv.id)}/charge-saved-method`, {});
+      const detail = out.detail
+        ? out.detail
+        : out.amount
+          ? moneyWithCode(out.amount)
+          : undefined;
+      ctx.toast(out.status === "settled" ? "Card charged" : "Charge accepted", {
+        tone: "success",
+        detail,
+      });
+      await reload();
+    } catch (err) {
+      // 402 is the provider declining: the invoice is untouched, and the sentence explains why.
+      const reason = err instanceof ApiError ? err.detail || err.message : "The gateway did not answer.";
+      ctx.toast("The card was not charged", { tone: "danger", detail: reason });
+    }
+  };
+
+  /**
+   * Move the due date later.
+   *
+   * The server accepts either an absolute `due_at` or a `due_in_days` offset, and refuses anything
+   * that is not strictly later than the current date. Offering the absolute date keeps this dialog
+   * honest about what will be stored, and the minimum is set from the invoice so the date picker
+   * cannot propose a value the server would reject.
+   */
+  const extendDueDate = async (): Promise<void> => {
+    const current = inv.due_at ? inv.due_at.slice(0, 10) : "";
+    const next = input({ id: "invoice-due-date", type: "date", value: current });
+    if (current) next.min = current;
+    await ctx.formDialog({
+      title: "Change the due date",
+      subtitle: "Later only. An earlier date is refused rather than silently rewound.",
+      submitLabel: "Save due date",
+      body: h(
+        "div",
+        { class: "stack" },
+        field({
+          label: "Due date",
+          control: next,
+          id: "invoice-due-date",
+          hint: current
+            ? `Currently ${dateOnly(inv.due_at as string)}. The new date must be later than this.`
+            : "This invoice has no due date yet.",
+        }),
+      ),
+      onSubmit: async () => {
+        const value = next.value.trim();
+        if (!value) return "Choose a date.";
+        // Noon UTC rather than midnight: a date-only value parsed at midnight shifts a day in any
+        // timezone behind UTC, which turns "extend by one day" into "extend by zero".
+        const dueAt = new Date(`${value}T12:00:00Z`);
+        if (Number.isNaN(dueAt.getTime())) return "That is not a date.";
+        if (inv.due_at && dueAt.getTime() <= new Date(inv.due_at).getTime()) {
+          return "The new due date must be later than the current one.";
+        }
+        try {
+          await ctx.api.put(`/api/v1/staff/invoices/${encodeURIComponent(inv.id)}/due-date`, {
+            due_at: dueAt.toISOString(),
+          });
+          ctx.toast("Due date changed", { tone: "success", detail: dateOnly(dueAt.toISOString()) });
+          await reload();
+          return;
+        } catch (err) {
+          const reason = err instanceof ApiError ? err.detail || err.message : "The due date was not changed.";
+          return reason;
+        }
+      },
+    });
+  };
+
   const applyCredit = async () => {
     const amountInput = input({
       id: "apply-credit-amount",
@@ -1040,6 +1134,30 @@ function render(ctx: Ctx, detail: Detail, reload: () => void): Node[] {
         icon: "wallet",
         title: "Record a bank transfer, cash or cheque that arrived outside the gateway",
         onclick: () => void recordPayment(),
+      }),
+    );
+    // The unattended charger takes one invoice at a time too, and this is the manual spelling of
+    // exactly that path. It is offered only while something is owed, because charging a settled
+    // invoice is how a customer gets debited twice.
+    actions.push(
+      btn("Charge saved card", {
+        size: "sm",
+        icon: "card",
+        title: "Charge the customer's saved default card for the amount outstanding",
+        onclick: () => void chargeSavedMethod(),
+      }),
+    );
+  }
+  // A due date is part of what was agreed, so it is editable only while the document is a
+  // worksheet or an unpaid invoice, and only ever pushed later — the server refuses an earlier
+  // date rather than silently rewinding it.
+  if (canWrite && inv.status !== "paid" && inv.status !== "void" && inv.status !== "refunded") {
+    actions.push(
+      btn("Due date", {
+        size: "sm",
+        icon: "calendar",
+        title: "Move this invoice's due date later",
+        onclick: () => void extendDueDate(),
       }),
     );
   }

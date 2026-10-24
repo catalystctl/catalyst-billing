@@ -1459,13 +1459,132 @@ export default async function taxRatesPage(ctx: Ctx): Promise<Node> {
     });
   }
 
+  /**
+   * Ask the VAT validation service about one identifier, and show what was recorded.
+   *
+   * This is the surface for two routes that existed with no screen: `validate-vat` performs the
+   * check, `validations` returns the history for the same identifier. They are one flow because the
+   * question an operator has is not "what does the service say right now" but "what has it said, and
+   * when" — a reverse-charge decision rests on the answer that was recorded at the time, not on one
+   * that has since changed.
+   *
+   * A malformed identifier is refused before anything is sent (422 `vat_id_malformed`), and a
+   * service that cannot be reached is a 502 carrying the sentence the decision recorded. Both are
+   * reported as they arrive rather than guessed at.
+   */
+  const checkVATID = async (): Promise<void> => {
+    const country = input({ id: "vat-check-country", value: "DE", maxlength: 2, class: "input--mono" });
+    const vatID = input({ id: "vat-check-id", placeholder: "DE123456789", class: "input--mono" });
+    const result = h("div", { class: "stack-sm" });
+    const dialog = openDialog({
+      title: "Check a VAT ID",
+      subtitle: "Recorded whatever the answer is. A refusal is an answer, not a failure.",
+      body: h(
+        "div",
+        { class: "stack" },
+        h(
+          "div",
+          { class: "row" },
+          field({ label: "Country", control: country, id: "vat-check-country" }),
+          field({ label: "VAT ID", control: vatID, id: "vat-check-id" }),
+        ),
+        result,
+      ),
+      footer: h(
+        "div",
+        { class: "row" },
+        btn("Close", { variant: "ghost", onclick: () => dialog.close() }),
+        btn("Check", {
+          variant: "primary",
+          onclick: () => void runVATCheck(country, vatID, result),
+        }),
+      ),
+    });
+  };
+
+  const runVATCheck = async (
+    country: HTMLInputElement,
+    vatID: HTMLInputElement,
+    result: HTMLElement,
+  ): Promise<void> => {
+    const cc = country.value.trim().toUpperCase();
+    const id = vatID.value.trim();
+    if (cc.length !== 2) {
+      result.replaceChildren(h("p", { class: "field-hint" }, "Use the two-letter country code."));
+      return;
+    }
+    if (!id) {
+      result.replaceChildren(h("p", { class: "field-hint" }, "Enter the VAT ID to check."));
+      return;
+    }
+    result.replaceChildren(h("p", { class: "field-hint" }, "Asking the validation service\u2026"));
+    try {
+      const out = await ctx.api.post<VATValidation>(
+        "/api/v1/staff/tax-jurisdiction/validate-vat",
+        { country: cc, vat_id: id },
+      );
+      const rows: Array<{ label: string; value: Node | string }> = [
+        { label: "Status", value: badge(out.status) },
+        { label: "Checked", value: dateTime(out.checked_at) },
+        { label: "From cache", value: out.cached ? "Yes" : "No, just now" },
+      ];
+      if (out.trader_name) rows.push({ label: "Trader", value: out.trader_name });
+      if (out.detail) rows.push({ label: "Detail", value: out.detail });
+      result.replaceChildren(
+        h("div", { class: "stack-sm" }, ...rows.map((r) => h("div", { class: "row-between" }, h("span", { class: "field-hint" }, r.label), h("span", null, r.value)))),
+        h("p", { class: "field-hint" }, "History for this identifier:"),
+        await vatHistory(cc, out.vat_id || id),
+      );
+    } catch (err) {
+      // 422 malformed, 502 the service could not be reached. Both are the honest answer, and the
+      // sentence is the server's rather than one invented here.
+      const reason = err instanceof ApiError ? err.detail || err.message : "The check did not answer.";
+      result.replaceChildren(
+        banner("warning", "The identifier was not validated", reason),
+        h("p", { class: "field-hint" }, "Nothing was assumed: an unvalidated identifier refuses reverse charge rather than charging zero."),
+      );
+    }
+  };
+
+  /** The recorded checks for one identifier, newest first. */
+  const vatHistory = async (country: string, vatID: string): Promise<Node> => {
+    try {
+      const out = await ctx.api.get<{ data: VATValidation[] }>(
+        `/api/v1/staff/tax-jurisdiction/validations?country=${encodeURIComponent(country)}&vat_id=${encodeURIComponent(vatID)}`,
+      );
+      const rows = out.data ?? [];
+      if (rows.length === 0) {
+        return h("p", { class: "field-hint" }, "No checks recorded for this identifier.");
+      }
+      return h(
+        "div",
+        { class: "stack-xs" },
+        ...rows.map((row) =>
+          h(
+            "div",
+            { class: "row-between" },
+            h("span", null, badge(row.status)),
+            h("span", { class: "field-hint" }, dateTime(row.checked_at)),
+          ),
+        ),
+      );
+    } catch (err) {
+      return h("p", { class: "field-hint" }, "The recorded checks could not be read.");
+    }
+  };
+
   return h(
     "div",
     { class: "page" },
     pageHead({
       title: "Tax rates",
       sub: "One dated row per jurisdiction. The pricer resolves the most specific rate that applies on the invoice date; a closed row keeps applying to the period it covered.",
-      actions: btn("New rate", { variant: "primary", icon: "plus", onclick: () => rateDialog(null) }),
+      actions: h(
+        "div",
+        { class: "row" },
+        btn("Check a VAT ID", { icon: "search", onclick: () => void checkVATID() }),
+        btn("New rate", { variant: "primary", icon: "plus", onclick: () => rateDialog(null) }),
+      ),
     }),
     banner(
       "info",

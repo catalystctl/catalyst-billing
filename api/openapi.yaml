@@ -7265,6 +7265,265 @@ paths:
             summary: The plans this service could move to
             x-permission: service:upgrade:self
             x-rate-class: read
+    /api/v1/portal/services/{id}/server:
+        get:
+            description: |-
+                The live state of the machine behind a service, read from the provider at request time. `Cache-Control: no-store`, because it is a question about now.
+
+                A failed provider read is a **200 with a sentence in `detail`**, not a 5xx: the billing page must stay usable while a game panel is down, and the card has to be able to say "we could not ask" instead of rendering an empty box that reads as a bug in this software. `available: false` plus `detail` is that state; `available: true` means every field was reported. `provisioned: false` is a third, entirely normal state: a service ordered a minute ago has no server yet, and the card says so rather than failing.
+
+                The service id is resolved in SQL against the caller's own account, so another customer's service is a 404 with the same body as one that never existed.
+            operationId: GetPortalServicesByIdServer
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    address:
+                                        description: What a player connects to, when the provider gives one.
+                                        type: string
+                                    available:
+                                        description: True only when the provider actually reported. False with `detail` set says why not.
+                                        type: boolean
+                                    can_power:
+                                        description: The actions this server currently offers. A button the provider would refuse is not rendered.
+                                        items:
+                                            type: string
+                                        type: array
+                                    detail:
+                                        description: A sentence for a human, set when there is nothing live to show. Present is not an error condition.
+                                        type: string
+                                    extension:
+                                        description: The extension that answered, when one did.
+                                        type: string
+                                    host:
+                                        type: string
+                                    name:
+                                        type: string
+                                    observed_at:
+                                        format: date-time
+                                        type: string
+                                    panel_url:
+                                        description: The provider's own control panel for this server, if any.
+                                        type: string
+                                    plan_id:
+                                        type: string
+                                    port:
+                                        type: integer
+                                    provider:
+                                        description: The provisioner that owns the resource.
+                                        type: string
+                                    provisioned:
+                                        description: 'False for a service with no resource yet. Not an error: the card renders a sentence.'
+                                        type: boolean
+                                    region:
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    service_status:
+                                        description: The billing state of the service, not the machine's state.
+                                        type: string
+                                    state:
+                                        description: The machine's own state word, as the provider spells it.
+                                        type: string
+                                    stats:
+                                        description: 'Live metrics. Every field is optional and a missing one renders as a dash: "0 MB" and "no figure" are different statements and only one of them is true.'
+                                        properties:
+                                            cpu_percent:
+                                                type: number
+                                            disk_limit_mb:
+                                                type: number
+                                            disk_used_mb:
+                                                type: number
+                                            memory_limit_mb:
+                                                type: number
+                                            memory_used_mb:
+                                                type: number
+                                            network_rx_mb:
+                                                type: number
+                                            network_tx_mb:
+                                                type: number
+                                            uptime_seconds:
+                                                type: number
+                                        type: object
+                                    status:
+                                        description: 'The normalised state: running, stopped, starting and so on.'
+                                        type: string
+                                required:
+                                    - service_id
+                                    - service_status
+                                    - provisioned
+                                    - available
+                                type: object
+                    description: The live card, or a sentence explaining why there is nothing live to show.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No session
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service for this caller
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Your service's live server state
+            x-permission: service:read:self
+            x-rate-class: read
+    /api/v1/portal/services/{id}/server/power:
+        post:
+            description: |-
+                Performs one power action against the provider and records it in the append-only audit log. The audit row is written after the remote effect has happened, because there is no local transaction to join and a power action nobody can attribute is exactly what that log exists to prevent.
+
+                Requires an `Idempotency-Key`, which is folded into the extension's operation key: a retried press and a replayed response describe the same act rather than two. `changed: false` means the server was already in the requested state, which is a success and not a refusal.
+
+                The error codes deliberately separate **"this cannot be done"** from **"we could not ask"**. `power_rejected` and `power_unsupported` are the first: a retry will not help, so the customer should stop. `power_timeout` and `power_failed` are the second: retrying is exactly right. Reporting the second as the first teaches people the button is broken; reporting the first as the second invites a retry that can never work.
+
+                `can_power` on the read route lists what this server currently offers; a client should render only those buttons rather than discovering a refusal after the press.
+            operationId: PostPortalServicesByIdServerPower
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    action:
+                                        enum:
+                                            - start
+                                            - stop
+                                            - restart
+                                            - kill
+                                        type: string
+                                    changed:
+                                        description: False when the server was already in the requested state, which is a success rather than a refusal.
+                                        type: boolean
+                                    provider:
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    state:
+                                        type: string
+                                    status:
+                                        type: string
+                                required:
+                                    - service_id
+                                    - action
+                                    - changed
+                                type: object
+                    description: The action was performed and audited.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`invalid_action`: not one of start, stop, restart, kill.'
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service for this caller, or the provider does not recognise it.
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`not_provisioned` (no server yet), `provider_not_configured`, or `power_unsupported`.'
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`power_rejected`: the provider refused. Retrying will not help.'
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`power_failed`: the provider could not perform it. Retrying may help.'
+                "504":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`power_timeout`: the provider did not answer in time. Retrying may help.'
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Start, stop, restart or kill your own server
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:write:self
+            x-rate-class: mutation
     /api/v1/portal/services/{id}/upgrade:
         post:
             description: Prices the change against the remainder of the current period using exact rational arithmetic — never a float, never a "30 days per month" assumption. A higher price issues an invoice for the prorated amount; the service keeps its current price until that invoice is paid, which is what makes a half-applied upgrade visible. A lower price records the credit owed and reports `credit_pending`. The target must be reachable from the service's product, in the same currency and on the same billing interval.
@@ -31781,6 +32040,267 @@ paths:
                 header: Idempotency-Key
                 required: true
             x-permission: service:suspend
+            x-rate-class: mutation
+            x-staff-only: true
+    /api/v1/staff/services/{id}/server:
+        get:
+            description: |-
+                The live state of the machine behind a service, read from the provider at request time. `Cache-Control: no-store`, because it is a question about now.
+
+                A failed provider read is a **200 with a sentence in `detail`**, not a 5xx: the billing page must stay usable while a game panel is down, and the card has to be able to say "we could not ask" instead of rendering an empty box that reads as a bug in this software. `available: false` plus `detail` is that state; `available: true` means every field was reported. `provisioned: false` is a third, entirely normal state: a service ordered a minute ago has no server yet, and the card says so rather than failing.
+
+                The operator's view of the same read, so support can answer "is it running" without opening the game panel. It is one handler, not two, so a customer and an operator cannot be told different things about the same machine.
+            operationId: GetStaffServicesByIdServer
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    address:
+                                        description: What a player connects to, when the provider gives one.
+                                        type: string
+                                    available:
+                                        description: True only when the provider actually reported. False with `detail` set says why not.
+                                        type: boolean
+                                    can_power:
+                                        description: The actions this server currently offers. A button the provider would refuse is not rendered.
+                                        items:
+                                            type: string
+                                        type: array
+                                    detail:
+                                        description: A sentence for a human, set when there is nothing live to show. Present is not an error condition.
+                                        type: string
+                                    extension:
+                                        description: The extension that answered, when one did.
+                                        type: string
+                                    host:
+                                        type: string
+                                    name:
+                                        type: string
+                                    observed_at:
+                                        format: date-time
+                                        type: string
+                                    panel_url:
+                                        description: The provider's own control panel for this server, if any.
+                                        type: string
+                                    plan_id:
+                                        type: string
+                                    port:
+                                        type: integer
+                                    provider:
+                                        description: The provisioner that owns the resource.
+                                        type: string
+                                    provisioned:
+                                        description: 'False for a service with no resource yet. Not an error: the card renders a sentence.'
+                                        type: boolean
+                                    region:
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    service_status:
+                                        description: The billing state of the service, not the machine's state.
+                                        type: string
+                                    state:
+                                        description: The machine's own state word, as the provider spells it.
+                                        type: string
+                                    stats:
+                                        description: 'Live metrics. Every field is optional and a missing one renders as a dash: "0 MB" and "no figure" are different statements and only one of them is true.'
+                                        properties:
+                                            cpu_percent:
+                                                type: number
+                                            disk_limit_mb:
+                                                type: number
+                                            disk_used_mb:
+                                                type: number
+                                            memory_limit_mb:
+                                                type: number
+                                            memory_used_mb:
+                                                type: number
+                                            network_rx_mb:
+                                                type: number
+                                            network_tx_mb:
+                                                type: number
+                                            uptime_seconds:
+                                                type: number
+                                        type: object
+                                    status:
+                                        description: 'The normalised state: running, stopped, starting and so on.'
+                                        type: string
+                                required:
+                                    - service_id
+                                    - service_status
+                                    - provisioned
+                                    - available
+                                type: object
+                    description: The live card, or a sentence explaining why there is nothing live to show.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request is malformed
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Any service's live server state, for support
+            x-permission: service:read:all
+            x-rate-class: read
+            x-staff-only: true
+    /api/v1/staff/services/{id}/server/power:
+        post:
+            description: |-
+                Performs one power action against the provider and records it in the append-only audit log. The audit row is written after the remote effect has happened, because there is no local transaction to join and a power action nobody can attribute is exactly what that log exists to prevent.
+
+                Requires an `Idempotency-Key`, which is folded into the extension's operation key: a retried press and a replayed response describe the same act rather than two. `changed: false` means the server was already in the requested state, which is a success and not a refusal.
+
+                The error codes deliberately separate **"this cannot be done"** from **"we could not ask"**. `power_rejected` and `power_unsupported` are the first: a retry will not help, so the customer should stop. `power_timeout` and `power_failed` are the second: retrying is exactly right. Reporting the second as the first teaches people the button is broken; reporting the first as the second invites a retry that can never work.
+
+                The audit row names the operator, not the customer: an action taken by support on somebody's behalf has to be attributable to the person who took it.
+            operationId: PostStaffServicesByIdServerPower
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                    type: string
+            responses:
+                2XX:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    action:
+                                        enum:
+                                            - start
+                                            - stop
+                                            - restart
+                                            - kill
+                                        type: string
+                                    changed:
+                                        description: False when the server was already in the requested state, which is a success rather than a refusal.
+                                        type: boolean
+                                    provider:
+                                        type: string
+                                    service_id:
+                                        format: uuid
+                                        type: string
+                                    state:
+                                        type: string
+                                    status:
+                                        type: string
+                                required:
+                                    - service_id
+                                    - action
+                                    - changed
+                                type: object
+                    description: The action was performed and audited.
+                "400":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`invalid_action`: not one of start, stop, restart, kill.'
+                "401":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: Authentication is required
+                "403":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The caller lacks the permission, or the CSRF token is missing
+                "404":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: No such service, or the provider does not recognise it.
+                "409":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`not_provisioned` (no server yet), `provider_not_configured`, or `power_unsupported`.'
+                "422":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`power_rejected`: the provider refused. Retrying will not help.'
+                "429":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: The request budget for this route class is exhausted
+                "500":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: An internal error occurred
+                "502":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`power_failed`: the provider could not perform it. Retrying may help.'
+                "504":
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Problem'
+                    description: '`power_timeout`: the provider did not answer in time. Retrying may help.'
+            security:
+                - sessionCookie: []
+                - bearerKey: []
+            summary: Power any service's server, as staff
+            x-csrf-required: true
+            x-idempotency:
+                header: Idempotency-Key
+                required: true
+            x-permission: service:write:all
             x-rate-class: mutation
             x-staff-only: true
     /api/v1/staff/services/{id}/suspend:

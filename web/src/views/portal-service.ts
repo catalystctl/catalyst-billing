@@ -48,6 +48,7 @@ import {
   textarea,
   withBusy,
 } from "../ui/kit";
+import { mountServerCard } from "../ui/game-server";
 import type { PortalService } from "./portal";
 
 export const meta = { title: "Service", crumb: "Service" };
@@ -661,6 +662,15 @@ export default async function portalServicePage(ctx: Ctx): Promise<Node> {
           "div",
           { class: "stack" },
           serviceCard(svc, md),
+          // One card, shared with the staff page: a support agent has to see what the customer
+          // sees, and two implementations drift into a conversation about a screen the agent
+          // cannot reproduce.
+          mountServerCard(ctx, {
+            serviceId: svc.id,
+            basePath: "/api/v1/portal/services",
+            canPower: true,
+            pendingNote: "This service has no server yet. It appears here once it has been provisioned.",
+          }),
           planCard(),
           options,
           actionCard(svc, requestCancellation),

@@ -219,3 +219,6 @@ func trimNewline(b []byte) []byte {
 	}
 	return b
 }
+
+// defaultTestTimeout bounds a fake-panel call in tests.
+const defaultTestTimeout = 5 * time.Second

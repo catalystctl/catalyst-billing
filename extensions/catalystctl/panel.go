@@ -158,8 +158,35 @@ func (f flexInt64) Int64() int64 { return int64(f) }
 type panelNode struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
+	LocationID    string `json:"locationId"`
 	PublicAddress string `json:"publicAddress"`
 	IsOnline      bool   `json:"isOnline"`
+	MaxMemoryMb   int64  `json:"maxMemoryMb"`
+	MaxCpuCores   int64  `json:"maxCpuCores"`
+}
+
+// panelLocation is one datacenter.
+type panelLocation struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// panelTemplate is one sellable game/service definition.
+type panelTemplate struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// panelNodeStats is what a node has and has not allocated.
+type panelNodeStats struct {
+	NodeID    string `json:"nodeId"`
+	IsOnline  bool   `json:"isOnline"`
+	Resources struct {
+		MaxMemoryMb       int64 `json:"maxMemoryMb"`
+		MaxCpuCores       int64 `json:"maxCpuCores"`
+		AllocatedMemoryMb int64 `json:"allocatedMemoryMb"`
+		AllocatedCpuCores int64 `json:"allocatedCpuCores"`
+	} `json:"resources"`
 }
 
 // panelConnection is where a player connects.
@@ -334,7 +361,11 @@ func (c *panelClient) listServers(ctx context.Context, each func(panelServer) bo
 				return nil
 			}
 		}
-		if len(out.Data) < pageSize {
+		// An *empty* page is the only reliable end-of-list signal. Comparing against the requested
+		// page size is not: a panel that caps its own page size below what was asked for would look
+		// like the end of the list, and concluding that is how a lookup reports "not found" for a
+		// server that exists on page two.
+		if len(out.Data) == 0 {
 			return nil
 		}
 	}
@@ -394,6 +425,65 @@ func (c *panelClient) freeAllocation(ctx context.Context, nodeID string) (panelA
 	}
 	return panelAllocation{}, fmt.Errorf(
 		"no free port allocation on node %s; add ports on the panel's node screen", nodeID)
+}
+
+// allocationOnPort finds the free allocation carrying a specific port.
+//
+// A customer who asked for a port gets that port or a clear refusal. Silently handing them a
+// different one would be worse than failing: the address is what they paste into their game client
+// and give to their players.
+func (c *panelClient) allocationOnPort(ctx context.Context, nodeID string, port int32) (panelAllocation, error) {
+	var out envelope[[]panelAllocation]
+	if err := c.do(ctx, http.MethodGet, "/nodes/"+url.PathEscape(nodeID)+"/allocations", nil, &out); err != nil {
+		return panelAllocation{}, err
+	}
+	for _, alloc := range out.Data {
+		if alloc.Port == port && alloc.free() {
+			return alloc, nil
+		}
+	}
+	return panelAllocation{}, fmt.Errorf(
+		"port %d is not free on node %s; leave the port empty to take any free one", port, nodeID)
+}
+
+// locations lists the panel's datacenters.
+func (c *panelClient) locations(ctx context.Context) ([]panelLocation, error) {
+	var out envelope[[]panelLocation]
+	if err := c.do(ctx, http.MethodGet, "/locations", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Data, nil
+}
+
+// templates lists the panel's sellable templates.
+//
+// The panel paginates this endpoint and its default page is small, so the listing asks for the
+// panel's own maximum. A template missing from the dropdown is a product an operator cannot sell,
+// and "it was on page two" is not an answer they can act on.
+func (c *panelClient) templates(ctx context.Context) ([]panelTemplate, error) {
+	var out envelope[[]panelTemplate]
+	if err := c.do(ctx, http.MethodGet, "/templates?limit=100", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Data, nil
+}
+
+// nodes lists the panel's nodes. The endpoint is unpaginated.
+func (c *panelClient) nodes(ctx context.Context) ([]panelNode, error) {
+	var out envelope[[]panelNode]
+	if err := c.do(ctx, http.MethodGet, "/nodes", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Data, nil
+}
+
+// nodeStats reads a node's allocated capacity, which is what load balancing compares.
+func (c *panelClient) nodeStats(ctx context.Context, nodeID string) (panelNodeStats, error) {
+	var out envelope[panelNodeStats]
+	if err := c.do(ctx, http.MethodGet, "/nodes/"+url.PathEscape(nodeID)+"/stats", nil, &out); err != nil {
+		return panelNodeStats{}, err
+	}
+	return out.Data, nil
 }
 
 // createRequest is the POST /api/servers payload.

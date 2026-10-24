@@ -25,6 +25,7 @@ import { ApiError } from "../lib/api";
 import { h, type Child } from "../lib/dom";
 import { dateTime, humanStatus, relative, shortId, titleCase, truncate } from "../lib/format";
 import type { Amount } from "../lib/format";
+import { mountServerCard } from "../ui/game-server";
 import { icon, type IconName } from "../lib/icons";
 import type { Ctx } from "../lib/types";
 import {
@@ -1572,7 +1573,22 @@ export default async function servicePage(ctx: Ctx): Promise<Node> {
     return h(
       "div",
       { class: "split" },
-      h("div", { class: "stack" }, facts, lastError, subscription, serviceActionsCard(), extensionActionsCard()),
+      h(
+        "div",
+        { class: "stack" },
+        facts,
+        mountServerCard(ctx, {
+          serviceId: detail?.service.id ?? id,
+          basePath: "/api/v1/staff/services",
+          canPower: ctx.can("service:write:all"),
+          pendingNote:
+            "This service has no server yet. It appears here once the provisioning queue has created it.",
+        }),
+        lastError,
+        subscription,
+        serviceActionsCard(),
+        extensionActionsCard(),
+      ),
       h("div", { class: "stack" }, metadataPanel, provisioningCard(), related),
     );
   };

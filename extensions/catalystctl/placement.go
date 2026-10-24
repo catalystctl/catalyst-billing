@@ -413,18 +413,24 @@ func (s *server) declaredFields(ctx context.Context) []extproto.ProvisionField {
 	fields = append(fields, choiceField(fieldTemplate, "Template", templateChoices, tplErr, true,
 		"The game or service this server runs, e.g. Paper for Minecraft."))
 
+	// The three sizes carry defaults, so none of them is required.
+	//
+	// Marking one required while the adapter happily defaults it makes an operator's screen show
+	// "required, not set" for a configuration that provisions perfectly — a red state on a valid input
+	// teaches people to ignore red states. The hint names the default, so leaving it empty is an
+	// informed choice rather than an accident.
 	fields = append(fields,
 		extproto.ProvisionField{
-			Key: fieldMemoryMB, Label: "Memory (MB)", Type: extproto.FieldNumber, Required: true,
-			Hint: "At least 512. A Minecraft server wants 2048 or more.",
+			Key: fieldMemoryMB, Label: "Memory (MB)", Type: extproto.FieldNumber,
+			Hint: "At least 512. Defaults to 2048; a Minecraft server wants 2048 or more.",
 		},
 		extproto.ProvisionField{
-			Key: fieldDiskMB, Label: "Disk (MB)", Type: extproto.FieldNumber, Required: true,
-			Hint: "At least 1024. 10240 is 10 GB.",
+			Key: fieldDiskMB, Label: "Disk (MB)", Type: extproto.FieldNumber,
+			Hint: "At least 1024. Defaults to 10240 (10 GB).",
 		},
 		extproto.ProvisionField{
-			Key: fieldCPUCores, Label: "CPU cores", Type: extproto.FieldNumber, Required: true,
-			Hint: "Whole cores, at least 1.",
+			Key: fieldCPUCores, Label: "CPU cores", Type: extproto.FieldNumber,
+			Hint: "Whole cores, at least 1. Defaults to 1.",
 		},
 		extproto.ProvisionField{
 			Key: fieldServerName, Label: "Server name", Type: extproto.FieldText,

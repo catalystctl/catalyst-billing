@@ -1895,6 +1895,69 @@ try {
       await assertScreen(name, { path, expect: [] });
     }
 
+    // ------------------------------------------- the live server card (SVC-13) --
+    //
+    // The card is mounted empty and filled by a second request, so "the page rendered" proves
+    // nothing about it. Same for the power buttons: they are built from `can_power`, and a card
+    // that failed to load shows none. So this waits for the card to settle and then asserts that it
+    // says one of the three true things — a live state, "no server yet", or a sentence explaining
+    // that the provider could not be asked — because an empty box is the failure this guards.
+    {
+      await goto("/portal/services");
+      const href = await evaluate(`(() => {
+        const a = document.querySelector('a[href^="/portal/services/"]');
+        return a ? a.getAttribute('href') : null;
+      })()`);
+      if (href) {
+        await goto(href);
+        const card = await evaluate(`(async () => {
+          const deadline = Date.now() + 8000;
+          let body = null;
+          while (Date.now() < deadline) {
+            const titles = [...document.querySelectorAll('h2, h3, .card-title')];
+            const head = titles.find((t) => /^Server$/i.test((t.textContent || '').trim()));
+            if (head) {
+              const el = head.closest('.card') || head.parentElement;
+              const text = el ? el.textContent || '' : '';
+              if (!/Checking the server/i.test(text)) { body = text; break; }
+            }
+            await new Promise((r) => setTimeout(r, 150));
+          }
+          return body;
+        })()`);
+        if (card === null) {
+          check("portal service: a Server card settles instead of sitting on 'Checking'", false);
+        } else {
+          check(
+            "portal service: the Server card states a fact, not a blank box",
+            /State|has no server yet|could not be read|not available|does not offer power|does not recognise/i.test(card),
+            card.replace(/\s+/g, " ").slice(0, 240),
+          );
+          // "The server panel does not recognise this service" is one of the settled, truthful
+          // answers, not a failure: the seeded service carries a provider id the fixture does not
+          // know, so this exercises the path where the panel asked and was told no — which the card
+          // must report rather than render as an empty box or a 5xx.
+          //
+          // Whatever buttons it does show must be actions the API accepts. A "Reboot" would be a
+          // button whose only outcome is a 400.
+          const labels = await evaluate(`(() => {
+            const titles = [...document.querySelectorAll('h2, h3, .card-title')];
+            const head = titles.find((t) => /^Server$/i.test((t.textContent || '').trim()));
+            const el = head ? (head.closest('.card') || head.parentElement) : null;
+            return el ? [...el.querySelectorAll('button')].map((b) => b.textContent.trim()) : [];
+          })()`);
+          const allowed = ["Start", "Restart", "Stop", "Force stop", "Retry"];
+          const bad = labels.filter((l) => !allowed.includes(l));
+          check(
+            "portal service: the Server card offers only actions the API accepts",
+            bad.length === 0,
+            JSON.stringify(labels),
+          );
+        }
+      }
+      await goto("/portal");
+    }
+
     // ------------------------------------------------ the customer's new screens --
     //
     // The cart and checkout are seeded with a line by the shell script, so "Your cart is

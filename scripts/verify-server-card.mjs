@@ -181,20 +181,20 @@ const main = async () => {
   await until(
     "the server card to have content",
     `(() => {
-       const titles = [...document.querySelectorAll('.card__title, h2, h3')];
-       const card = titles.find((t) => t.textContent.trim() === 'Server');
+       const card = [...document.querySelectorAll('section.card')]
+         .find((c) => c.querySelector('.card-title')?.textContent.trim().startsWith('Server'));
        if (!card) return false;
-       const body = card.closest('.card')?.querySelector('.card__body, .stack, .stack-sm');
-       return !!body && body.textContent.trim().length > 20;
+       const body = card.querySelector('.card-body');
+       return !!body && body.innerText.trim().length > 20;
      })()`,
     30_000,
   );
 
   // Read the card's text once, and assert against it: this is what the customer sees.
   const cardText = await evaluate(`(() => {
-     const titles = [...document.querySelectorAll('.card__title, h2, h3')];
-     const card = titles.find((t) => t.textContent.trim() === 'Server');
-     return card?.closest('.card')?.innerText ?? document.body.innerText;
+     const card = [...document.querySelectorAll('section.card')]
+       .find((c) => c.querySelector('.card-title')?.textContent.trim().startsWith('Server'));
+     return card?.innerText ?? document.body.innerText;
    })()`);
   const links = await evaluate(`[...document.querySelectorAll('a')].map(a => a.getAttribute('href') || '')`);
   const buttons = await evaluate(`[...document.querySelectorAll('button')].map(b => b.innerText.trim())`);

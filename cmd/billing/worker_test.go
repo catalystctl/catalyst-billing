@@ -63,7 +63,17 @@ func startWorker(t *testing.T, pool *store.Pool, jobs []jobSpec, heartbeatEvery 
 // waitFor polls cond until it holds, so a test never depends on a sleep being long enough.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	waitForWithin(t, 15*time.Second, what, cond)
+}
+
+// waitForWithin is waitFor with an explicit budget, for the checks whose deadline is a property of
+// the system rather than of a test's convenience. The shutdown check below is one: the drain is
+// bounded at five seconds, so on an unloaded machine every run is closed long before fifteen — but a
+// loaded machine can leave a goroutine descheduled past it, and a test that fails on scheduling is a
+// test people learn to re-run rather than read.
+func waitForWithin(t *testing.T, within time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -171,7 +181,7 @@ func TestTheWorkerRecordsEveryRunWithItsOutcome(t *testing.T) {
 	// newest row per job, and a mutation check proved that vacuous: leaving an older run open
 	// forever still passed, because the next tick opened and closed a newer one and "latest" looked
 	// healthy. A job that abandons a run and carries on is precisely the failure this guards.
-	waitFor(t, "every run to close after shutdown", func() bool { return openRuns(t, pool) == 0 })
+	waitForWithin(t, 45*time.Second, "every run to close after shutdown", func() bool { return openRuns(t, pool) == 0 })
 
 	for _, want := range []struct{ job, outcome, detail string }{
 		{"test-ok", "ok", ""},

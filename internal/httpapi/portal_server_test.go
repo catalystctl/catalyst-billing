@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/catalyst/billing/internal/authn"
@@ -81,10 +82,16 @@ func seedServerClient(t *testing.T, s *Server, externalID string) serverClient {
 	}
 
 	var serviceID string
+	// The placement lives on the service, in `services.config.fields` — the same place the adapter's
+	// own `provisioner.fields` declaration writes to. That is the design under test: the adapter holds
+	// the panel's address and key, and the service says where its server goes.
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO services (customer_id, product_id, status, external_id, generation)
-		VALUES ($1, $2, 'active', $3, 1)
-		RETURNING id`, customerID, productID, externalID).Scan(&serviceID); err != nil {
+		INSERT INTO services (customer_id, product_id, status, external_id, generation, config)
+		VALUES ($1, $2, 'active', $3, 1, $4)
+		RETURNING id`,
+		customerID, productID, externalID,
+		`{"fields":{"location":"US East 1","template":"Paper","memory_mb":"1024"}}`,
+	).Scan(&serviceID); err != nil {
 		t.Fatalf("seed service: %v", err)
 	}
 
@@ -96,46 +103,127 @@ func seedServerClient(t *testing.T, s *Server, externalID string) serverClient {
 	}
 }
 
-// configureFixtureProvisioner points the servers integration at the fixture adapter.
+// panelStub is a minimal Catalyst panel, enough for the card and its power route.
 //
-// The binary is built once per test run, the way internal/extproto's fixtures are, so this test drives
-// a separate process over the real protocol rather than an in-process stub.
-func configureFixtureProvisioner(t *testing.T, s *Server, extraEnv ...string) {
-	t.Helper()
-	bin := buildFixtureProvisioner(t)
+// It exists so this test drives the **real** adapter — a separate process, the real protocol, real HTTP
+// — without reaching a real panel. What it deliberately does not do is reimplement the panel: it serves
+// the handful of endpoints the adapter touches, so a change in the adapter's HTTP behaviour shows up
+// here as a failure rather than as agreement between two mocks.
+type panelStub struct {
+	mu sync.Mutex
+	// status is the server's live state, mutated by power calls.
+	status string
+	// powerCalls records every action that reached the stub.
+	powerCalls []string
+}
 
-	resolver := gatewayconfig.New(s.pool)
-	// Only what the test sets: an inherited BILLING_PROVISIONER_EXTENSION would silently override the
-	// fixture path and the card would read somebody else's installation.
-	resolver.LookupEnv = func(key string) (string, bool) {
-		for _, kv := range extraEnv {
-			if k, v, ok := strings.Cut(kv, "="); ok && k == key {
-				if k == "FAKE_PROV_POWER_STATE" || k == "FAKE_PROV_NO_METRICS" {
-					continue
-				}
-				return v, true
-			}
-		}
-		return "", false
+// newPanelURL starts a stub panel and returns only its address.
+func newPanelURL(t *testing.T) string {
+	t.Helper()
+	_, url := newPanelStub(t)
+	return url
+}
+
+func newPanelStub(t *testing.T) (*panelStub, string) {
+	t.Helper()
+	stub := &panelStub{status: "running"}
+	srv := httptest.NewServer(http.HandlerFunc(stub.serve))
+	t.Cleanup(srv.Close)
+	return stub, srv.URL
+}
+
+func (p *panelStub) serve(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if r.Header.Get("Authorization") != "Bearer catalyst_test" {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"Invalid API key"}`))
+		return
 	}
-	// The binary's location is not a stored setting: it comes from BILLING_PROVISIONER_EXTENSION, or
-	// from the installation's bin directory. Setting the variable is exactly what a deployment does,
-	// and it is the only thing that reaches the resolver the request path builds for itself.
-	t.Setenv("BILLING_PROVISIONER_EXTENSION", bin)
-	if _, err := resolver.Save(context.Background(), gatewayconfig.ServerKind, map[string]string{
-		"provider": "fake",
-	}, "", nil); err != nil {
-		t.Fatalf("configure the fixture provisioner: %v", err)
+	ok := func(data any) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": data})
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api")
+
+	switch {
+	case r.Method == http.MethodGet && path == "/locations":
+		ok([]map[string]any{{"id": "loc-1", "name": "US East 1"}})
+	case r.Method == http.MethodGet && path == "/templates":
+		ok([]map[string]any{{"id": "tpl-paper", "name": "Paper"}})
+	case r.Method == http.MethodGet && path == "/nodes":
+		ok([]map[string]any{{"id": "node-1", "name": "node one", "locationId": "loc-1", "isOnline": true}})
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/allocations"):
+		ok([]map[string]any{{"id": "alloc-1", "nodeId": "node-1", "ip": "10.0.0.1", "port": 25565, "serverId": nil}})
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/stats"):
+		ok(map[string]any{
+			"cpuPercent": 12.5, "memoryUsageMb": 512, "memoryAllocatedMb": 1024,
+			"diskUsageMb": 1024, "networkRxBytes": "1234", "networkTxBytes": "5678",
+			"timestamp": "2026-10-16T02:15:59.851Z",
+		})
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/servers/"):
+		ok(map[string]any{
+			"id": "srv-1", "name": "Fixture server", "status": p.status,
+			"nodeId": "node-1", "locationId": "loc-1", "templateId": "tpl-paper",
+			"allocatedMemoryMb": 1024, "allocatedDiskMb": 10240, "primaryPort": 25565,
+			"createdAt":  "2026-10-01T00:00:00Z",
+			"connection": map[string]any{"host": "play.example.test", "port": 25565},
+		})
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/servers/"):
+		action := path[strings.LastIndex(path, "/")+1:]
+		p.powerCalls = append(p.powerCalls, action)
+		switch action {
+		case "start":
+			p.status = "running"
+		case "stop", "kill":
+			p.status = "stopped"
+		case "restart":
+			p.status = "starting"
+		}
+		ok(map[string]any{"id": "srv-1", "status": p.status})
+	default:
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"no such endpoint","code":"NOT_FOUND"}`))
 	}
 }
 
-// buildFixtureProvisioner builds extensions/fakeprov once per run.
-func buildFixtureProvisioner(t *testing.T) string {
+// configureCatalystctl points the servers integration at the real CatalystCTL adapter and a panel stub.
+//
+// The adapter binary is built once per test, and the panel's address and key are stored settings — the
+// two things an operator actually saves. Everything about *where a server goes* comes from the
+// service's own provisioning fields, which is what seedServerClient writes.
+func configureCatalystctl(t *testing.T, s *Server, panelURL string) {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "fakeprov")
-	cmd := exec.Command("go", "build", "-o", out, "../../extensions/fakeprov")
+	bin := buildAdapter(t)
+	// The binary's location is not a stored setting: it comes from BILLING_PROVISIONER_EXTENSION, or
+	// from the installation's bin directory. Setting the variable is exactly what a deployment does.
+	t.Setenv("BILLING_PROVISIONER_EXTENSION", bin)
+
+	resolver := gatewayconfig.New(s.pool)
+	// Only what the test sets: an inherited extension path would silently override the adapter.
+	resolver.LookupEnv = func(key string) (string, bool) {
+		if key == "BILLING_PROVISIONER_EXTENSION" {
+			return bin, true
+		}
+		return "", false
+	}
+	if _, err := resolver.Save(context.Background(), gatewayconfig.ServerKind, map[string]string{
+		"provider":  "catalystctl",
+		"panel_url": panelURL,
+		"api_key":   "catalyst_test",
+	}, "", nil); err != nil {
+		t.Fatalf("configure catalystctl: %v", err)
+	}
+}
+
+// buildAdapter builds extensions/catalystctl once per test.
+func buildAdapter(t *testing.T) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "catalystctl")
+	cmd := exec.Command("go", "build", "-o", out, "../../extensions/catalystctl")
 	if b, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build fakeprov: %v\n%s", err, b)
+		t.Fatalf("build catalystctl: %v\n%s", err, b)
 	}
 	return out
 }
@@ -168,7 +256,7 @@ func do(s *Server, method, path string, user *authn.User, body string, headers m
 func TestPortalServerViewRendersTheLiveServer(t *testing.T) {
 	s := testServer(t)
 	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
-	configureFixtureProvisioner(t, s)
+	configureCatalystctl(t, s, newPanelURL(t))
 	client := seedServerClient(t, s, "resource-card-1")
 
 	rec := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &client.user, "", nil)
@@ -221,7 +309,7 @@ func TestPortalServerViewRendersTheLiveServer(t *testing.T) {
 func TestPortalServerViewHidesAnotherCustomersService(t *testing.T) {
 	s := testServer(t)
 	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
-	configureFixtureProvisioner(t, s)
+	configureCatalystctl(t, s, newPanelURL(t))
 	client := seedServerClient(t, s, "resource-card-2")
 
 	// A different, signed-in customer.
@@ -240,7 +328,7 @@ func TestPortalServerViewHidesAnotherCustomersService(t *testing.T) {
 func TestPortalServerViewIsASentenceWhenTheProviderCannotBeReached(t *testing.T) {
 	s := testServer(t)
 	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
-	configureFixtureProvisioner(t, s)
+	configureCatalystctl(t, s, newPanelURL(t))
 	client := seedServerClient(t, s, "resource-card-3")
 
 	// Point the integration at a binary that does not exist: the launch fails, which is the same class
@@ -285,7 +373,7 @@ func TestPortalServerViewIsASentenceWhenTheProviderCannotBeReached(t *testing.T)
 func TestPortalServerViewSaysSoWhenNoServerExistsYet(t *testing.T) {
 	s := testServer(t)
 	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
-	configureFixtureProvisioner(t, s)
+	configureCatalystctl(t, s, newPanelURL(t))
 	// An empty external id is a service that has not been provisioned: the normal state a minute
 	// after a purchase.
 	client := seedServerClient(t, s, "")
@@ -312,10 +400,11 @@ func TestPortalServerViewSaysSoWhenNoServerExistsYet(t *testing.T) {
 func TestPortalServerPowerPerformsTheAction(t *testing.T) {
 	s := testServer(t)
 	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products", "audit_events")
-	configureFixtureProvisioner(t, s)
+	stub, panelURL := newPanelStub(t)
+	configureCatalystctl(t, s, panelURL)
 	client := seedServerClient(t, s, "resource-card-4")
 
-	// The fixture starts "running", so stop is the action that changes something.
+	// The stub starts "running", so stop is the action that changes something.
 	rec := do(s, http.MethodPost, "/api/v1/portal/services/"+client.serviceID+"/server/power",
 		&client.user, `{"action":"stop"}`, nil)
 	if rec.Code != http.StatusOK {
@@ -332,7 +421,15 @@ func TestPortalServerPowerPerformsTheAction(t *testing.T) {
 		t.Fatalf("expected a changed stop, got %+v", out)
 	}
 
-	// The action reaches the provider.
+	// The action reached the provider, not just this process.
+	stub.mu.Lock()
+	calls := strings.Join(stub.powerCalls, ",")
+	stub.mu.Unlock()
+	if calls != "stop" {
+		t.Fatalf("the panel saw %q, want one stop", calls)
+	}
+
+	// And the card now reports the new state, because the buttons follow the provider.
 	read := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &client.user, "", nil)
 	var view struct {
 		CanPower []string `json:"can_power"`
@@ -360,7 +457,7 @@ func TestPortalServerPowerPerformsTheAction(t *testing.T) {
 func TestPortalServerPowerRejectsAnUnknownAction(t *testing.T) {
 	s := testServer(t)
 	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
-	configureFixtureProvisioner(t, s)
+	configureCatalystctl(t, s, newPanelURL(t))
 	client := seedServerClient(t, s, "resource-card-5")
 
 	rec := do(s, http.MethodPost, "/api/v1/portal/services/"+client.serviceID+"/server/power",
@@ -373,7 +470,7 @@ func TestPortalServerPowerRejectsAnUnknownAction(t *testing.T) {
 func TestPortalServerPowerRefusesAServiceWithNoServer(t *testing.T) {
 	s := testServer(t)
 	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
-	configureFixtureProvisioner(t, s)
+	configureCatalystctl(t, s, newPanelURL(t))
 	client := seedServerClient(t, s, "")
 
 	rec := do(s, http.MethodPost, "/api/v1/portal/services/"+client.serviceID+"/server/power",
@@ -388,7 +485,7 @@ func TestPortalServerPowerRefusesAServiceWithNoServer(t *testing.T) {
 func TestStaffServerViewRequiresTheStaffPermission(t *testing.T) {
 	s := testServer(t)
 	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
-	configureFixtureProvisioner(t, s)
+	configureCatalystctl(t, s, newPanelURL(t))
 	client := seedServerClient(t, s, "resource-card-6")
 
 	// A plain customer has no service:read:all, so the staff route is refused even for a service they
@@ -402,7 +499,7 @@ func TestStaffServerViewRequiresTheStaffPermission(t *testing.T) {
 func TestStaffServerViewServesAnOperator(t *testing.T) {
 	s := testServer(t)
 	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
-	configureFixtureProvisioner(t, s)
+	configureCatalystctl(t, s, newPanelURL(t))
 	client := seedServerClient(t, s, "resource-card-7")
 
 	admin := adminUser()
@@ -425,7 +522,7 @@ func TestStaffServerViewServesAnOperator(t *testing.T) {
 func TestTheCardIsNotCached(t *testing.T) {
 	s := testServer(t)
 	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
-	configureFixtureProvisioner(t, s)
+	configureCatalystctl(t, s, newPanelURL(t))
 	client := seedServerClient(t, s, "resource-card-8")
 
 	rec := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &client.user, "", nil)

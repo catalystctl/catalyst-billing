@@ -129,3 +129,33 @@ The fixtures are complete working examples, and they implement the failure modes
 end-to-end tests drive — `create_then_timeout`, `duplicate`, `crash`, `hang`,
 `oversized` — because those are impossible to trigger on demand against a real
 provider and are exactly where an integration silently breaks.
+
+## Showing a resource to the customer
+
+Four calls are about the resource itself rather than the billing of it, and they are
+what makes a hosting product usable without a second tab:
+
+| Method | What it does |
+| --- | --- |
+| `provisioner.fields` | What this service must say before it can be provisioned — template, location, size — with choices filled from the provider, so a placement is picked from a list and cannot be a typo |
+| `provisioner.resource` | The live view: name, state, address, a deep link to the provider's own console, and metrics |
+| `provisioner.power` | `start`, `stop`, `restart`, `kill` — idempotent on the operation key |
+| `provisioner.inspect` | The protocol-level lifecycle state, unchanged |
+
+All four are optional capabilities. An adapter that declares none of them is asked
+none of them: the customer's server card says the integration cannot report live
+state rather than showing an empty box, and the queue never calls them.
+
+Two rules make the card trustworthy:
+
+- **Report nothing rather than a zero.** A provider that cannot measure a stopped
+  server omits its metrics; the card renders a dash. `0%` and "not measured" are
+  different statements and only one of them is true.
+- **Report the actions you would accept now.** `can_power` is the provider's own
+  answer, so the page never renders a button that exists only to fail. A suspended
+  resource offers nothing, and a transitional one offers only `kill`.
+
+A worked implementation, with the placement fields, the load balancing and the
+state-file problem that Catalyst's API creates, is documented in
+[catalystctl.md](catalystctl.md). Read it alongside `extensions/catalystctl/` when
+writing a provisioner for a real panel.

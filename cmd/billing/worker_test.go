@@ -90,16 +90,29 @@ type runSummary struct {
 	finished bool
 }
 
-// openRuns counts runs that were started and never closed.
+// openRuns counts runs of THESE jobs that were started and never closed.
 //
-// Counting all of them rather than inspecting the newest row per job is what makes the shutdown
-// assertion meaningful: a job that abandons a run and carries on to the next tick looks healthy
-// from the newest row alone, and abandoning runs is the failure being guarded.
-func openRuns(t *testing.T, pool *store.Pool) int {
+// Two scoping decisions, both learned from getting them wrong:
+//
+//   - Every run of every named job, not the newest row per job. A job that abandons a run and then
+//     closes the next one looks perfectly healthy from the newest row alone, and abandoning runs is
+//     the failure being guarded — a mutation removing `closeRun` from the success branch passed the
+//     newest-row version of this check.
+//   - Restricted to the jobs under test, because the package's other tests deliberately leave runs
+//     open. `TestTheHeartbeatBeatsWhileAJobIsStuck` starts a job that blocks until the test releases
+//     it, and asserts the heartbeat keeps beating while it does; that run is `running` on purpose.
+//     Counting the whole table made this check wait out its full budget whenever that test ran
+//     first, which reads as a shutdown bug and is a fixture bug.
+func openRuns(t *testing.T, pool *store.Pool, jobs []jobSpec) int {
 	t.Helper()
+	names := make([]string, 0, len(jobs))
+	for _, j := range jobs {
+		names = append(names, j.name)
+	}
 	var n int
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM cron_runs WHERE finished_at IS NULL`).Scan(&n); err != nil {
+		`SELECT count(*) FROM cron_runs WHERE finished_at IS NULL AND job = ANY($1)`,
+		names).Scan(&n); err != nil {
 		t.Fatalf("count open runs: %v", err)
 	}
 	return n
@@ -181,7 +194,7 @@ func TestTheWorkerRecordsEveryRunWithItsOutcome(t *testing.T) {
 	// newest row per job, and a mutation check proved that vacuous: leaving an older run open
 	// forever still passed, because the next tick opened and closed a newer one and "latest" looked
 	// healthy. A job that abandons a run and carries on is precisely the failure this guards.
-	waitForWithin(t, 45*time.Second, "every run to close after shutdown", func() bool { return openRuns(t, pool) == 0 })
+	waitForWithin(t, 15*time.Second, "every run to close after shutdown", func() bool { return openRuns(t, pool, jobs) == 0 })
 
 	for _, want := range []struct{ job, outcome, detail string }{
 		{"test-ok", "ok", ""},

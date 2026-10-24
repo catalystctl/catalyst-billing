@@ -299,7 +299,7 @@ export default async function taxRatesPage(ctx: Ctx): Promise<Node> {
       actions: btn("Refresh", { size: "sm", variant: "ghost", icon: "refresh", onclick: () => void refreshRuns() }),
       body: h(
         "div",
-        { class: "table-wrap" },
+        { class: "table-wrap table-wrap--cards" },
         h(
           "table",
           { class: "table" },
@@ -410,7 +410,7 @@ export default async function taxRatesPage(ctx: Ctx): Promise<Node> {
     const nexusTable = status.nexus.length
       ? h(
           "div",
-          { class: "table-wrap" },
+          { class: "table-wrap table-wrap--cards" },
           h(
             "table",
             { class: "table" },

@@ -17,8 +17,9 @@
 #     database has a deferred trigger for this, so an unbalanced insert aborts the seed instead
 #     of quietly leaving a demo database whose `doctor` output is a lie.
 #
-# Re-running is safe: the script first purges anything it created (everything lives under
-# `@demo.test` or a `demo-` slug prefix), then rebuilds it.
+# Re-running is safe: the script first purges anything it created (everything under `@demo.test`
+# or a `demo-` slug prefix), then rebuilds it — except the catalog, which is republished in place
+# so that rows the seed did not create keep pointing at prices that still exist.
 #
 # The demo password is deliberately weak and printed at the end. It is a fixture, not a secret.
 
@@ -47,8 +48,8 @@ say() { printf '  %s\n' "$*"; }
 
 # ---------------------------------------------------------------- reset --
 # purge-test-data refuses a whole-database delete on purpose, so the demo domain is named
-# explicitly. Anything the command cannot reach (catalog rows, which are not scoped to a
-# customer) is removed below by slug prefix.
+# explicitly. The catalog is not scoped to a customer and is not removed here either: it is
+# upserted in place, for the reason written out above the catalog section.
 # The seed creates an affiliate, and an affiliate names a user, so it is removed here rather than
 # left for `purge-test-data` to trip over: an affiliate row is the one thing in this dataset that a
 # customer purge cannot reach without knowing the programme's table names.
@@ -78,15 +79,17 @@ fi
 psql_q <<'SQL'
 delete from coupon_products where coupon_id in (select id from coupons where code like 'DEMO-%');
 delete from coupons where code like 'DEMO-%';
--- A price version references its product, so the children go first. The catalog is not scoped to a
--- customer, which is why `purge-test-data` cannot reach it.
+-- The catalog itself is deliberately *not* deleted here. Products, price versions and categories
+-- are upserted in place by the catalog section below, because rows the seed did not create may
+-- still name them (an e2e harness's order, a storefront order placed by hand) and
+-- `order_items.price_version_id` has no cascade — deleting and re-inserting the catalog under new
+-- ids is exactly what made this seed unsafe to re-run.
+-- `product_upgrades` is the one catalog-adjacent table nothing points at, so a stale row from an
+-- older revision of this script is removed rather than upserted.
+delete from product_upgrades where product_id in (select id from products where slug like 'demo-%');
 -- Webhook deliveries are not scoped to a customer either: the inbox is keyed by provider and the
 -- provider's own event id, which is what makes a replayed delivery a no-op in production.
 delete from gateway_events where provider = 'stripe' and provider_account = 'acct_demo' and event_id like 'evt_demo_%';
-delete from price_versions where product_id in (select id from products where slug like 'demo-%');
-delete from product_upgrades where product_id in (select id from products where slug like 'demo-%');
-delete from products where slug like 'demo-%';
-delete from categories where slug like 'demo-%';
 SQL
 
 # ---------------------------------------------------------------- users --
@@ -173,58 +176,146 @@ on conflict (user_id, customer_id) do nothing;
 SQL
 
 # ---------------------------------------------------------------- catalog --
+# The demo catalog is *published*, not replaced.
+#
+# This section used to delete the demo products and price versions and insert them again with fresh
+# ids, after the demo customers had been purged. That works exactly once per database, and then it
+# fails for a reason worth writing down: `order_items.price_version_id` and
+# `subscriptions.price_version_id` are foreign keys with no cascade — deliberately, because the
+# price a customer was charged is history — so the DELETE is refused as soon as *anything* still
+# names a demo price:
+#
+#     update or delete on table "price_versions" violates foreign key constraint
+#     "order_items_price_version_id_fkey"
+#
+# and `make dev` dies on a database it exists to rebuild. The rows that refuse are not the seed's
+# own: `purge-test-data` removes the demo customers and their orders first, but the e2e harnesses
+# create their own customers and buy from whichever catalog the storefront offers
+# (`scripts/e2e-catalystctl.sh` picks the first published price), so their leftovers pin the demo
+# prices too — as does anyone who placed a storefront order by hand.
+#
+# So the catalog is upserted on its natural key — `categories.slug`, `products.slug`,
+# `(product_id, version)` — and the ids are read back instead of invented. Re-running keeps the
+# same ids, which is what makes the demo stable for rows the seed did not create, and the foreign
+# keys that refused the delete are satisfied by construction.
+#
+# Note what is not done here: an existing price version is never repurposed into a different one,
+# and the values written back are the ones the row already had (the demo prices are constants). A
+# real price change is a new version published by the product, not an UPDATE, and the catalog code
+# still does that. This is a fixture, not a back door. The flip side of never deleting is that a
+# product removed from this list is left behind rather than removed: it may be the only thing
+# keeping somebody else's order readable, and hiding it is a one-column UPDATE away.
 say "catalog"
-CAT_GAME="$(uuidgen)"; CAT_VPS="$(uuidgen)"; CAT_WEB="$(uuidgen)"; CAT_ADDON="$(uuidgen)"
-psql_q <<SQL
-insert into categories (id, slug, name, description, sort_order, hidden) values
-  ('$CAT_GAME',  'demo-game-servers', 'Game Servers', 'Low-latency game hosting with DDoS protection.', 1, false),
-  ('$CAT_VPS',   'demo-vps',          'Cloud VPS',    'Root access, NVMe storage, hourly snapshots.',   2, false),
-  ('$CAT_WEB',   'demo-web-hosting',  'Web Hosting',  'Managed hosting with a control panel and TLS.',  3, false),
-  ('$CAT_ADDON', 'demo-addons',       'Add-ons',      'Extras that attach to an existing service.',     4, false);
-SQL
+# Quoted heredoc: this block names no shell variable, and a backtick in a comment would otherwise be
+# command-substituted into the SQL.
+psql_q <<'SQL'
+insert into categories (slug, name, description, sort_order, hidden) values
+  ('demo-game-servers', 'Game Servers', 'Low-latency game hosting with DDoS protection.', 1, false),
+  ('demo-vps',          'Cloud VPS',    'Root access, NVMe storage, hourly snapshots.',   2, false),
+  ('demo-web-hosting',  'Web Hosting',  'Managed hosting with a control panel and TLS.',  3, false),
+  ('demo-addons',       'Add-ons',      'Extras that attach to an existing service.',     4, false)
+on conflict (lower(slug)) do update
+  set name = excluded.name, description = excluded.description,
+      sort_order = excluded.sort_order, hidden = excluded.hidden;
 
-# One product per row, with the price versions the storefront offers. Amounts are minor units.
-add_product() { # slug name category short description sort
-  printf '%s' "$(uuidgen)"
-}
-P_IRON="$(uuidgen)"; P_DIAMOND="$(uuidgen)"; P_VALHEIM="$(uuidgen)"
-P_VPS4="$(uuidgen)"; P_VPS8="$(uuidgen)"; P_WEB="$(uuidgen)"; P_BACKUP="$(uuidgen)"
+-- One product per row. The category is named by slug and joined here, so this script never has to
+-- carry a category id around.
+insert into products (slug, name, description, short_description, category_id, hidden, sort_order)
+select v.slug, v.name, v.description, v.short_description, c.id, false, v.sort_order
+from (values
+  ('demo-minecraft-iron',    'Minecraft — Iron',    '4 GB RAM, 2 vCPU, 10 player slots. Java and Bedrock.',  'Reliable survival server for a small group.', 'demo-game-servers', 1),
+  ('demo-minecraft-diamond', 'Minecraft — Diamond', '8 GB RAM, 4 vCPU, 40 player slots, mod support.',        'For modpacks and busy servers.',              'demo-game-servers', 2),
+  ('demo-valheim-duo',       'Valheim — Duo',       '6 GB RAM, 3 vCPU, up to 10 players.',                    'A Viking world for you and a friend.',        'demo-game-servers', 3),
+  ('demo-vps-4gb',           'Cloud VPS — 4 GB',    '4 GB RAM, 2 vCPU, 80 GB NVMe, root access.',             'The everyday VPS.',                           'demo-vps',          1),
+  ('demo-vps-8gb',           'Cloud VPS — 8 GB',    '8 GB RAM, 4 vCPU, 160 GB NVMe, root access.',            'More headroom for databases and builds.',     'demo-vps',          2),
+  ('demo-web-hosting',       'Managed Web Hosting', '20 GB SSD, unlimited mailboxes, free TLS.',              'PHP, Node and static sites.',                 'demo-web-hosting',  1),
+  ('demo-daily-backups',     'Daily Backups',       'Fourteen daily snapshots, off-site, one-click restore.', 'Attaches to any service.',                    'demo-addons',       1)
+) as v(slug, name, description, short_description, category_slug, sort_order)
+join categories c on lower(c.slug) = v.category_slug
+on conflict (slug) do update
+  set name = excluded.name,
+      description = excluded.description,
+      short_description = excluded.short_description,
+      category_id = excluded.category_id,
+      hidden = excluded.hidden,
+      sort_order = excluded.sort_order;
 
-psql_q <<SQL
-insert into products (id, slug, name, description, short_description, category_id, hidden, sort_order) values
-  ('$P_IRON',    'demo-minecraft-iron',    'Minecraft — Iron',    '4 GB RAM, 2 vCPU, 10 player slots. Java and Bedrock.','Reliable survival server for a small group.',  '$CAT_GAME', false, 1),
-  ('$P_DIAMOND', 'demo-minecraft-diamond', 'Minecraft — Diamond', '8 GB RAM, 4 vCPU, 40 player slots, mod support.',      'For modpacks and busy servers.',              '$CAT_GAME', false, 2),
-  ('$P_VALHEIM', 'demo-valheim-duo',       'Valheim — Duo',       '6 GB RAM, 3 vCPU, up to 10 players.',                  'A Viking world for you and a friend.',        '$CAT_GAME', false, 3),
-  ('$P_VPS4',    'demo-vps-4gb',           'Cloud VPS — 4 GB',    '4 GB RAM, 2 vCPU, 80 GB NVMe, root access.',           'The everyday VPS.',                           '$CAT_VPS',  false, 1),
-  ('$P_VPS8',    'demo-vps-8gb',           'Cloud VPS — 8 GB',    '8 GB RAM, 4 vCPU, 160 GB NVMe, root access.',          'More headroom for databases and builds.',      '$CAT_VPS',  false, 2),
-  ('$P_WEB',     'demo-web-hosting',       'Managed Web Hosting', '20 GB SSD, unlimited mailboxes, free TLS.',            'PHP, Node and static sites.',                  '$CAT_WEB',  false, 1),
-  ('$P_BACKUP',  'demo-daily-backups',     'Daily Backups',       'Fourteen daily snapshots, off-site, one-click restore.','Attaches to any service.',                    '$CAT_ADDON',false, 1);
-SQL
-
-PV_IRON_M="$(uuidgen)"; PV_IRON_A="$(uuidgen)"
-PV_DIAMOND_M="$(uuidgen)"; PV_DIAMOND_A="$(uuidgen)"
-PV_VALHEIM_M="$(uuidgen)"
-PV_VPS4_M="$(uuidgen)"; PV_VPS4_Q="$(uuidgen)"
-PV_VPS8_M="$(uuidgen)"
-PV_WEB_M="$(uuidgen)"; PV_WEB_A="$(uuidgen)"
-PV_BACKUP_M="$(uuidgen)"
-
-psql_q <<SQL
+-- The price versions the storefront offers, keyed by the product's slug and the version number.
+-- Amounts are minor units; `interval` is a type name in SQL, hence the quoting.
 insert into price_versions
-  (id, product_id, version, currency, amount_minor, setup_minor, interval, anchor_day, anchor_timezone, name, sort_order)
-values
-  ('$PV_IRON_M',    '$P_IRON',    1, 'USD', 1200,    0, 'monthly',   1, 'UTC', 'Monthly',  1),
-  ('$PV_IRON_A',    '$P_IRON',    2, 'USD', 12000,   0, 'annual',    1, 'UTC', 'Annual',   2),
-  ('$PV_DIAMOND_M', '$P_DIAMOND', 1, 'USD', 2400,    0, 'monthly',   1, 'UTC', 'Monthly',  1),
-  ('$PV_DIAMOND_A', '$P_DIAMOND', 2, 'USD', 24000,   0, 'annual',    1, 'UTC', 'Annual',   2),
-  ('$PV_VALHEIM_M', '$P_VALHEIM', 1, 'USD', 1800,    0, 'monthly',   1, 'UTC', 'Monthly',  1),
-  ('$PV_VPS4_M',    '$P_VPS4',    1, 'USD', 2000,    0, 'monthly',   1, 'UTC', 'Monthly',  1),
-  ('$PV_VPS4_Q',    '$P_VPS4',    2, 'USD', 5400,    0, 'quarterly', 1, 'UTC', 'Quarterly',2),
-  ('$PV_VPS8_M',    '$P_VPS8',    1, 'USD', 4000,    0, 'monthly',   1, 'UTC', 'Monthly',  1),
-  ('$PV_WEB_M',     '$P_WEB',     1, 'USD', 800,     0, 'monthly',   1, 'UTC', 'Monthly',  1),
-  ('$PV_WEB_A',     '$P_WEB',     2, 'USD', 8000,    0, 'annual',    1, 'UTC', 'Annual',   2),
-  ('$PV_BACKUP_M',  '$P_BACKUP',  1, 'USD', 300,     0, 'monthly',   1, 'UTC', 'Monthly',  1);
+  (product_id, version, currency, amount_minor, setup_minor, "interval", anchor_day,
+   anchor_timezone, name, sort_order)
+select p.id, v.version, v.currency, v.amount_minor, v.setup_minor, v."interval",
+       v.anchor_day, v.anchor_timezone, v.name, v.sort_order
+from (values
+  ('demo-minecraft-iron',    1, 'USD', 1200,  0, 'monthly',   1, 'UTC', 'Monthly',   1),
+  ('demo-minecraft-iron',    2, 'USD', 12000, 0, 'annual',    1, 'UTC', 'Annual',    2),
+  ('demo-minecraft-diamond', 1, 'USD', 2400,  0, 'monthly',   1, 'UTC', 'Monthly',   1),
+  ('demo-minecraft-diamond', 2, 'USD', 24000, 0, 'annual',    1, 'UTC', 'Annual',    2),
+  ('demo-valheim-duo',       1, 'USD', 1800,  0, 'monthly',   1, 'UTC', 'Monthly',   1),
+  ('demo-vps-4gb',           1, 'USD', 2000,  0, 'monthly',   1, 'UTC', 'Monthly',   1),
+  ('demo-vps-4gb',           2, 'USD', 5400,  0, 'quarterly', 1, 'UTC', 'Quarterly', 2),
+  ('demo-vps-8gb',           1, 'USD', 4000,  0, 'monthly',   1, 'UTC', 'Monthly',   1),
+  ('demo-web-hosting',       1, 'USD', 800,   0, 'monthly',   1, 'UTC', 'Monthly',   1),
+  ('demo-web-hosting',       2, 'USD', 8000,  0, 'annual',    1, 'UTC', 'Annual',    2),
+  ('demo-daily-backups',     1, 'USD', 300,   0, 'monthly',   1, 'UTC', 'Monthly',   1)
+) as v(product_slug, version, currency, amount_minor, setup_minor, "interval", anchor_day,
+       anchor_timezone, name, sort_order)
+join products p on p.slug = v.product_slug
+on conflict (product_id, version) do update
+  set currency = excluded.currency,
+      amount_minor = excluded.amount_minor,
+      setup_minor = excluded.setup_minor,
+      "interval" = excluded."interval",
+      anchor_day = excluded.anchor_day,
+      anchor_timezone = excluded.anchor_timezone,
+      name = excluded.name,
+      sort_order = excluded.sort_order;
 SQL
+
+# Every id the rest of the script uses comes back from the database. An id invented here would be
+# a second catalog — the orders would point at it and the storefront would not show it.
+declare -A PRODUCT_ID PRICE_ID
+while IFS='|' read -r slug id; do PRODUCT_ID["$slug"]="$id"; done < <(
+  psql_t -c "select slug, id from products where slug like 'demo-%' order by slug")
+while IFS='|' read -r key id; do PRICE_ID["$key"]="$id"; done < <(
+  psql_t -c "select p.slug||'#'||pv.version, pv.id
+                from price_versions pv join products p on p.id = pv.product_id
+               where p.slug like 'demo-%'")
+
+catalog_id() { # kind key
+  local key="$2" value
+  case "$1" in
+    product) value="${PRODUCT_ID[$key]-}" ;;
+    price)   value="${PRICE_ID[$key]-}" ;;
+    *) echo "seed-demo: unknown catalog kind: $1" >&2; exit 1 ;;
+  esac
+  if [[ -z "$value" ]]; then
+    echo "seed-demo: the catalog has no $1 named $key" >&2
+    exit 1
+  fi
+  printf '%s' "$value"
+}
+
+P_IRON="$(catalog_id product demo-minecraft-iron)"
+P_DIAMOND="$(catalog_id product demo-minecraft-diamond)"
+P_VALHEIM="$(catalog_id product demo-valheim-duo)"
+P_VPS4="$(catalog_id product demo-vps-4gb)"
+P_VPS8="$(catalog_id product demo-vps-8gb)"
+P_WEB="$(catalog_id product demo-web-hosting)"
+P_BACKUP="$(catalog_id product demo-daily-backups)"
+
+PV_IRON_M="$(catalog_id price 'demo-minecraft-iron#1')"
+PV_IRON_A="$(catalog_id price 'demo-minecraft-iron#2')"
+PV_DIAMOND_M="$(catalog_id price 'demo-minecraft-diamond#1')"
+PV_DIAMOND_A="$(catalog_id price 'demo-minecraft-diamond#2')"
+PV_VALHEIM_M="$(catalog_id price 'demo-valheim-duo#1')"
+PV_VPS4_M="$(catalog_id price 'demo-vps-4gb#1')"
+PV_VPS4_Q="$(catalog_id price 'demo-vps-4gb#2')"
+PV_VPS8_M="$(catalog_id price 'demo-vps-8gb#1')"
+PV_WEB_M="$(catalog_id price 'demo-web-hosting#1')"
+PV_WEB_A="$(catalog_id price 'demo-web-hosting#2')"
+PV_BACKUP_M="$(catalog_id price 'demo-daily-backups#1')"
 
 # ---------------------------------------------------------------- coupons --
 say "coupons"

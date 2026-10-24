@@ -13,7 +13,10 @@ set -euo pipefail
 BASE="${BASE_URL:-http://127.0.0.1:8798}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@dev.local}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-dev-only-password-1}"
-CUSTOMER_EMAIL="${CUSTOMER_EMAIL:-card@example.test}"
+# A fresh address per run: a new customer is the journey that matters, and a customer with no credit
+# keeps the invoice unpaid so the staff "money arrived" path — the one that runs fulfilment — is what
+# settles it.
+CUSTOMER_EMAIL="${CUSTOMER_EMAIL:-e2e-$(date +%s)@example.test}"
 CUSTOMER_PASSWORD="${CUSTOMER_PASSWORD:-dev-only-password-1}"
 PRODUCT_SLUG="${PRODUCT_SLUG:-demo-minecraft-iron}"
 PANEL="${PANEL_URL:-https://panel.catalystctl.com}"
@@ -68,15 +71,22 @@ step "installation is configured for catalystctl"
 curl -sS -m 10 -b "$ADMIN_JAR" "$BASE/api/v1/staff/servers" |
   jq -r '"   provider=\(.provider) extension=\(.extension_path // "n/a") problems=\(.problems // [])"' 
 
-step "granting the customer credit so the purchase can be paid"
+step "a new customer registers"
+api POST "$USER_JAR" "$BASE/api/v1/auth/register" "" \
+  "$(jq -nc --arg e "$CUSTOMER_EMAIL" --arg p "$CUSTOMER_PASSWORD" \
+     '{email:$e, password:$p, display_name:"E2E Buyer"}')" >/dev/null
+
 # The staff customer list ignores a search parameter, so the match is made here rather than trusting
-# the server to have filtered: picking the wrong customer would grant credit to a stranger.
-CUSTOMER_ID=$(curl -sS -m 30 -b "$ADMIN_JAR" "$BASE/api/v1/staff/customers" |
-  jq -r --arg e "$CUSTOMER_EMAIL" '[.data[] | select(.email == $e)][0].id // empty')
-[ -n "$CUSTOMER_ID" ] || die "customer $CUSTOMER_EMAIL not found"
-api POST "$ADMIN_JAR" "$BASE/api/v1/staff/customers/$CUSTOMER_ID/credit" "$ADMIN_CSRF" \
-  "$(jq -nc '{amount_minor: 50000, currency: "USD", reason: "live e2e"}')" >/dev/null
-ok "50.00 credit granted to $CUSTOMER_EMAIL"
+# the server to have filtered: picking the wrong customer would act on a stranger.
+CUSTOMER_ID=""
+for _ in $(seq 1 20); do
+  CUSTOMER_ID=$(curl -sS -m 30 -b "$ADMIN_JAR" "$BASE/api/v1/staff/customers" |
+    jq -r --arg e "$CUSTOMER_EMAIL" '[.data[] | select(.email == $e)][0].id // empty')
+  [ -n "$CUSTOMER_ID" ] && break
+  sleep 1
+done
+[ -n "$CUSTOMER_ID" ] || die "registration did not create a customer for $CUSTOMER_EMAIL"
+ok "customer $CUSTOMER_ID registered at $CUSTOMER_EMAIL"
 
 step "customer signs in and buys the product"
 USER_CSRF=$(login "$USER_JAR" "$CUSTOMER_EMAIL" "$CUSTOMER_PASSWORD")
@@ -84,21 +94,40 @@ PRICE_ID=$(psql "${BILLING_DATABASE_URL:?}" -qtA -c \
   "SELECT pv.id FROM price_versions pv JOIN products p ON p.id=pv.product_id
    WHERE p.slug='$PRODUCT_SLUG' AND pv.interval='monthly' ORDER BY pv.version LIMIT 1")
 [ -n "$PRICE_ID" ] || die "no monthly price for $PRODUCT_SLUG"
+# The portal checkout takes a cart, not a single line: `items` is the canonical spelling and
+# `tos_accepted` is required by the storefront's own contract.
 ORDER=$(api POST "$USER_JAR" "$BASE/api/v1/portal/orders" "$USER_CSRF" \
-  "$(jq -nc --arg p "$PRICE_ID" '{price_version_id:$p, quantity:1}')")
+  "$(jq -nc --arg p "$PRICE_ID" '{items:[{price_version_id:$p, quantity:1}], tos_accepted:true}')")
 ORDER_ID=$(jq -r '.order_id // .id' <<<"$ORDER")
 INVOICE_ID=$(jq -r '.invoice_id // .invoice.id // empty' <<<"$ORDER")
 ok "order $ORDER_ID, invoice ${INVOICE_ID:-none}"
 
 [ -n "$INVOICE_ID" ] || die "the order produced no invoice to pay"
-api POST "$USER_JAR" "$BASE/api/v1/portal/invoices/$INVOICE_ID/pay-with-credit" "$USER_CSRF" '{}' >/dev/null
-ok "invoice paid from credit"
+
+# Staff record the money arriving. This is the path that runs the fulfilment applier: the order is
+# fulfilled, the service is created, and the create operation is queued for the worker.
+# What is still owed. A credit balance can settle part of an invoice at checkout, so the payment must
+# be for the remainder rather than the total — an overpayment is refused, and a refusal here would look
+# like the fulfilment path being broken.
+AMOUNT=$(psql "$BILLING_DATABASE_URL" -qtA -c \
+  "SELECT total_minor - amount_paid_minor FROM invoices WHERE id='$INVOICE_ID'")
+if [ "${AMOUNT:-0}" -le 0 ]; then
+  ok "invoice was already settled from the customer's credit; using it as the paid invoice"
+else
+api POST "$ADMIN_JAR" "$BASE/api/v1/staff/invoices/$INVOICE_ID/payments" "$ADMIN_CSRF" \
+  "$(jq -nc --arg ref "e2e-$(date +%s)" --argjson amt "$AMOUNT" \
+     '{amount_minor:$amt, method:"bank_transfer", reference:$ref, note:"live e2e"}')" >/dev/null
+  ok "invoice paid: $AMOUNT minor units recorded"
+fi
+MARK=$(psql "$BILLING_DATABASE_URL" -qtA -c "SELECT now()::text")
 
 step "waiting for the service to be created from the paid order"
 SERVICE_ID=""
 for _ in $(seq 1 40); do
   SERVICE_ID=$(psql "$BILLING_DATABASE_URL" -qtA -c \
-    "SELECT id FROM services WHERE customer_id='$CUSTOMER_ID' ORDER BY created_at DESC LIMIT 1")
+    "SELECT id FROM services
+      WHERE customer_id='$CUSTOMER_ID' AND created_at >= '$MARK'::timestamptz
+      ORDER BY created_at DESC LIMIT 1")
   [ -n "$SERVICE_ID" ] && break
   sleep 1
 done
@@ -122,7 +151,7 @@ ok "panel accounts matching the customer: $BEFORE"
 echo
 echo "   queued operations:"
 psql "$BILLING_DATABASE_URL" -qtA -F' | ' -c \
-  "SELECT kind, status, coalesce(detail,'') FROM service_operations WHERE service_id='$SERVICE_ID' ORDER BY created_at"
+  "SELECT kind, status, coalesce(last_error,'') FROM service_operations WHERE service_id='$SERVICE_ID' ORDER BY created_at"
 echo
 echo "SERVICE_ID=$SERVICE_ID"
 echo "CUSTOMER_ID=$CUSTOMER_ID"

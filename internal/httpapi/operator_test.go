@@ -816,11 +816,15 @@ func TestOperatorWriters(t *testing.T) {
 		t.Fatalf("unknown outcome folded to %q, want failed", outcome)
 	}
 
-	// Beat upserts one row rather than inserting a second.
-	if err := httpapi.Beat(ctx, env.pool, 6, "v1.2.3"); err != nil {
+	// Beat upserts per INSTANCE: the same worker beating twice is one row, two different workers are
+	// two rows. The old behaviour was a single row keyed 'worker', which made the second assertion
+	// impossible — two workers overwrote each other, so the panel could report that *a* worker was
+	// alive and never that there were two, and `BILLING_EMBEDDED_WORKER=1` alongside a separate
+	// `billing worker` was invisible right up until the charge sweep started logging 23505s.
+	if err := httpapi.Beat(ctx, env.pool, "worker-alpha", 6, "v1.2.3"); err != nil {
 		t.Fatalf("Beat: %v", err)
 	}
-	if err := httpapi.Beat(ctx, env.pool, 7, "v1.2.4"); err != nil {
+	if err := httpapi.Beat(ctx, env.pool, "worker-alpha", 7, "v1.2.4"); err != nil {
 		t.Fatalf("second Beat: %v", err)
 	}
 	var count, jobs int
@@ -830,7 +834,39 @@ func TestOperatorWriters(t *testing.T) {
 		t.Fatalf("read heartbeat: %v", err)
 	}
 	if count != 1 || jobs != 7 || version != "v1.2.4" {
-		t.Fatalf("heartbeat rows = %d (%d jobs, %q), want one upserted row", count, jobs, version)
+		t.Fatalf("heartbeat rows = %d (%d jobs, %q), want one upserted row for one instance", count, jobs, version)
+	}
+
+	// A second worker adds a row rather than replacing the first.
+	if err := httpapi.Beat(ctx, env.pool, "worker-beta", 9, "v1.2.4"); err != nil {
+		t.Fatalf("Beat for the second worker: %v", err)
+	}
+	if err := env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM worker_heartbeat`).Scan(&count); err != nil {
+		t.Fatalf("count heartbeats: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("heartbeat rows = %d after two instances beat, want 2: a second worker is invisible", count)
+	}
+
+	// And the reader reports the count, which is the field that makes two workers actionable.
+	rec := env.get(t, "/api/v1/staff/cron/heartbeat", env.admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("heartbeat read: %d %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Workers   int   `json:"workers"`
+		Instances []any `json:"instances"`
+		Stale     bool  `json:"stale"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode heartbeat: %v (%s)", err, rec.Body)
+	}
+	if body.Workers != 2 || len(body.Instances) != 2 {
+		t.Fatalf("workers = %d with %d instances, want 2 and 2", body.Workers, len(body.Instances))
+	}
+	if body.Stale {
+		t.Fatal("a freshly beaten fleet is reported stale")
 	}
 }
 

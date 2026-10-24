@@ -32,6 +32,10 @@ func testServer(t *testing.T, panel *fakePanel, tweak ...func(*config)) *server 
 		verifyTLS: true,
 		panelPath: "/servers/{id}",
 		plansByID: map[string]plan{},
+		// The real default, as configFromEnv applies it. Kept in step deliberately: a test that ran with
+		// a different default from production would not be testing the shipping behaviour, and the
+		// config test above asserts the default itself.
+		networkMode: "bridge",
 	}
 	for _, apply := range tweak {
 		apply(&cfg)
@@ -92,6 +96,11 @@ func TestConfigRequiresOnlyTheCredentials(t *testing.T) {
 	}
 	if cfg.panelPath != "/servers/{id}" {
 		t.Fatalf("the default panel path should be /servers/{id}, got %q", cfg.panelPath)
+	}
+	// Bridge by default: one code path, one pool requirement, and no dependence on what a particular panel
+	// happens to default to.
+	if cfg.networkMode != "bridge" {
+		t.Fatalf("the default network mode should be bridge, got %q", cfg.networkMode)
 	}
 }
 
@@ -473,8 +482,17 @@ func TestCreateUsesTheServicePlacement(t *testing.T) {
 	if sent.AllocatedMemoryMb != 4096 {
 		t.Fatalf("the service's memory field should size the server, got %d", sent.AllocatedMemoryMb)
 	}
-	if sent.AllocationID != "alloc-1" || sent.PrimaryPort != 25565 {
-		t.Fatalf("a free allocation should be claimed, got %q:%d", sent.AllocationID, sent.PrimaryPort)
+	// The mode defaults to bridge, so the panel's allocation is claimed: that is what reserves the host
+	// port and stops two concurrent creates from colliding on the same one.
+	if sent.PrimaryPort != 25565 || sent.AllocationID != "alloc-1" {
+		t.Fatalf("port/allocation = %d/%q, want 25565/alloc-1", sent.PrimaryPort, sent.AllocationID)
+	}
+	if mode := sent.NetworkMode; mode == nil || *mode != "bridge" {
+		t.Fatalf("the mode should be sent explicitly as bridge, got %v", mode)
+	}
+	// No address is sent: the panel's IPAM allocates from the network's pool, which is authoritative.
+	if sent.PrimaryIP != "" {
+		t.Fatalf("an address must not be forced when none was asked for, got %q", sent.PrimaryIP)
 	}
 	if sent.Description != "billing:create:svc-1:1" {
 		t.Fatalf("the description marker is what makes lookup survive a lost ledger, got %q", sent.Description)
@@ -595,9 +613,11 @@ func TestCreateClaimsASpecificPortWhenAsked(t *testing.T) {
 		"metadata":      purchase(map[string]string{fieldPort: "25566"}),
 	}), &struct{}{})
 
-	if panel.created[0].PrimaryPort != 25566 || panel.created[0].AllocationID != "alloc-2" {
-		t.Fatalf("the requested port should be claimed, got %q port %d",
-			panel.created[0].AllocationID, panel.created[0].PrimaryPort)
+	if panel.created[0].PrimaryPort != 25566 {
+		t.Fatalf("the requested port should be used, got %d", panel.created[0].PrimaryPort)
+	}
+	if panel.created[0].AllocationID != "alloc-2" {
+		t.Fatalf("the allocation carrying 25566 should be claimed, got %q", panel.created[0].AllocationID)
 	}
 }
 
@@ -1126,4 +1146,202 @@ func TestACustomerWithoutAnAddressStillGetsAServer(t *testing.T) {
 	if panel.created[0].OwnerID != "" {
 		t.Fatalf("owner = %q, want none", panel.created[0].OwnerID)
 	}
+}
+
+func TestATemplateBeyondTheFirstPageIsResolvedByID(t *testing.T) {
+	panel := newFakePanel(t)
+	// A catalogue with more templates than one page, which is what a real panel has: the reference
+	// installation lists 251. The template of interest is last, and it must be both selectable and
+	// resolvable. The default fixture template is replaced so the name is unambiguous: a panel with two
+	// "Paper" entries is a real situation, and it is the dropdown's job (not this test's) to tell them
+	// apart.
+	panel.templates = nil
+	for i := 0; i < 250; i++ {
+		panel.templates = append(panel.templates, panelTemplate{
+			ID:   "tpl-filler-" + itoa(i),
+			Name: "Filler " + itoa(i),
+		})
+	}
+	panel.templates = append(panel.templates, panelTemplate{ID: "tpl-paper-late", Name: "Paper"})
+	s := testServer(t, panel)
+
+	declared := s.declaredFields(t.Context())
+	var templateChoices []string
+	for _, f := range declared {
+		if f.Key == fieldTemplate {
+			templateChoices = f.Choices
+		}
+	}
+	found := false
+	for _, choice := range templateChoices {
+		if strings.Contains(choice, "Paper") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a template past the first page must be selectable; %d choices and no Paper",
+			len(templateChoices))
+	}
+
+	// By name, and by the id the panel's own detail endpoint knows.
+	for _, value := range []string{"Paper", "tpl-paper-late"} {
+		id, name, err := s.resolveTemplate(t.Context(), value)
+		if err != nil {
+			t.Fatalf("resolve %q: %v", value, err)
+		}
+		if id != "tpl-paper-late" || name != "Paper" {
+			t.Fatalf("resolve %q = %q/%q, want tpl-paper-late/Paper", value, id, name)
+		}
+	}
+}
+
+func TestAnUnknownTemplateIsRefusedWithTheCataloguesHelp(t *testing.T) {
+	panel := newFakePanel(t)
+	s := testServer(t, panel)
+
+	_, _, err := s.resolveTemplate(t.Context(), "tpl-does-not-exist")
+	if err == nil {
+		t.Fatal("an unknown template must be refused")
+	}
+	// Naming what does exist is the difference between a usable error and a dead end.
+	if !strings.Contains(err.Error(), "Paper") {
+		t.Fatalf("the refusal should list known templates, got %q", err.Error())
+	}
+}
+
+func TestAnAccountThatAlreadyExistsIsAdoptedNotRefused(t *testing.T) {
+	panel := newFakePanel(t)
+	// The panel has the account, but its search endpoint does not return it yet: this is the real
+	// panel's behaviour right after a create, and the reason the repair must not trust one search.
+	panel.users["user-alice"] = panelUser{ID: "user-alice", Email: "alice@example.test", Username: "alice"}
+	panel.searchLag = 2
+	s := testServer(t, panel)
+
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata":      purchase(map[string]string{"customer_email": "alice@example.test"}),
+	}), &struct{}{})
+
+	// No second account was created, and the server went to the existing one.
+	if len(panel.userCreates) != 0 && panel.created[0].OwnerID != "user-alice" {
+		t.Fatalf("owner = %q after %d create attempts", panel.created[0].OwnerID, len(panel.userCreates))
+	}
+	if panel.created[0].OwnerID != "user-alice" {
+		t.Fatalf("owner = %q, want the existing account", panel.created[0].OwnerID)
+	}
+}
+
+func TestABridgeCreateClaimsTheAllocation(t *testing.T) {
+	panel := newFakePanel(t)
+	s := testServer(t, panel)
+
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata":      purchase(map[string]string{fieldNetworkMode: "bridge"}),
+	}), &struct{}{})
+	if panel.created[0].AllocationID != "alloc-1" {
+		t.Fatalf("bridge networking must claim the allocation, got %q", panel.created[0].AllocationID)
+	}
+	if mode := panel.created[0].NetworkMode; mode == nil || *mode != "bridge" {
+		t.Fatalf("the mode must be sent, got %v", mode)
+	}
+}
+
+func TestAStaticAddressIsSentForMacvlan(t *testing.T) {
+	panel := newFakePanel(t)
+	s := testServer(t, panel)
+
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata": purchase(map[string]string{
+			fieldNetworkMode: "macvlan",
+			fieldPrimaryIP:   "192.168.1.240",
+		}),
+	}), &struct{}{})
+	if panel.created[0].PrimaryIP != "192.168.1.240" {
+		t.Fatalf("the requested static address must be sent, got %q", panel.created[0].PrimaryIP)
+	}
+	if panel.created[0].AllocationID != "" {
+		t.Fatal("macvlan must not claim an allocation")
+	}
+}
+
+func TestABadStaticAddressIsRefused(t *testing.T) {
+	panel := newFakePanel(t)
+	s := testServer(t, panel)
+
+	rep := call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata":      purchase(map[string]string{fieldPrimaryIP: "not-an-address"}),
+	})
+	// Refused here rather than by the container runtime later, where the customer would see a server
+	// that never starts instead of a purchase they can fix.
+	expectError(t, rep, codeRejected)
+	if n := panel.callCount("POST", "/servers"); n != 0 {
+		t.Fatalf("the panel must not be called, %d calls", n)
+	}
+}
+
+func TestAPortHeldByAnExistingServerIsNotChosen(t *testing.T) {
+	panel := newFakePanel(t)
+	// A server already on the node's first free port, with no allocation pointing at it — the live panel's
+	// state when a server predates its allocation. The adapter must not pick 25565 for a new server.
+	panel.addServer(panelServer{
+		ID: "srv-old", Name: "old", Status: "stopped",
+		NodeID: "node-1", PrimaryPort: 25565,
+	})
+	s := testServer(t, panel)
+
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata":      purchase(nil),
+	}), &struct{}{})
+
+	if panel.created[0].PrimaryPort == 25565 {
+		t.Fatal("a port an existing server listens on must not be chosen")
+	}
+	if panel.created[0].PrimaryPort != 25566 {
+		t.Fatalf("the next free port should be used, got %d", panel.created[0].PrimaryPort)
+	}
+}
+
+func TestACreateThatRacesForAPortRetriesWithAnother(t *testing.T) {
+	panel := newFakePanel(t)
+	s := testServer(t, panel)
+	// The port the adapter is about to pick gets taken between the list and the create: exactly the race
+	// two workers produce. Without a retry the purchase fails for a reason nobody can act on.
+	panel.takePortBeforeCreate = 25565
+
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata":      purchase(nil),
+	}), &struct{}{})
+
+	// Every attempt is recorded, including the one the panel refused, so the assertion is on the last.
+	if len(panel.created) < 2 {
+		t.Fatalf("expected a retry after the port was taken, got %d attempt(s)", len(panel.created))
+	}
+	if first := panel.created[0]; first.PrimaryPort != 25565 {
+		t.Fatalf("the first attempt should have used 25565, got %d", first.PrimaryPort)
+	}
+	last := panel.created[len(panel.created)-1]
+	if last.PrimaryPort == 25565 {
+		t.Fatalf("the retry reused the taken port %d", last.PrimaryPort)
+	}
+}
+
+func TestAnExhaustedNodeIsRefusedWithTheRemedy(t *testing.T) {
+	panel := newFakePanel(t)
+	// One port, already held. Nothing is left, so the refusal must say what to do about it.
+	panel.allocations["node-1"] = []panelAllocation{
+		{ID: "alloc-1", NodeID: "node-1", IP: "10.0.0.1", Port: 25565},
+	}
+	panel.addServer(panelServer{ID: "srv-1", Name: "one", Status: "stopped", NodeID: "node-1", PrimaryPort: 25565})
+	s := testServer(t, panel)
+
+	rep := call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata":      purchase(nil),
+	})
+	expectError(t, rep, codeRejected)
 }

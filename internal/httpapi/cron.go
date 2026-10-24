@@ -25,6 +25,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -56,10 +57,11 @@ func registerOperatorCron(r *router) {
 // would let a broken deployment hide behind a large number.
 const HeartbeatStaleAfter = 2 * time.Minute
 
-// heartbeatID is the primary key the worker upserts.
+// heartbeatID is the row key used before heartbeats were per-instance.
 //
-// One row, not one per job: the loop is one process with one ticker, and a row per job
-// would let a job that is no longer registered look alive.
+// It is kept only so the migration that removed it, and any test asserting on the legacy shape, can
+// name it. No code writes this id any more: a singleton row is what made two workers overwrite each
+// other, so the panel could never say how many were running.
 const heartbeatID = "worker"
 
 // cronRunRow is one run in the history.
@@ -163,7 +165,9 @@ func (s *Server) handleCronRuns(w http.ResponseWriter, r *http.Request) {
 
 // heartbeatJSON is the heartbeat response.
 type heartbeatJSON struct {
-	// ID is the row's key ("worker").
+	// ID is this worker's instance id — one row per process, so the row count is the worker count.
+	// It is not the host name: two workers can share a host, and the same worker restarted is a
+	// new instance.
 	ID string `json:"id"`
 	// BeatAt is when the worker last reported.
 	BeatAt time.Time `json:"beat_at"`
@@ -193,52 +197,82 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
-	var (
-		id      string
-		beatAt  time.Time
-		jobs    int
-		version string
-	)
-	err := s.pool.QueryRow(r.Context(), `
-		SELECT id, beat_at, jobs, version FROM worker_heartbeat WHERE id = $1`, heartbeatID).
-		Scan(&id, &beatAt, &jobs, &version)
+	rows, err := s.pool.Query(r.Context(), `
+		SELECT id, beat_at, jobs, version FROM worker_heartbeat
+		ORDER BY beat_at DESC, id`)
 	if err != nil {
-		// A worker that has never run leaves no row. Reporting that as an empty heartbeat
-		// is honest and renders; a 500 would say the panel is broken.
-		if isNoRows(err) {
-			w.Header().Set("Cache-Control", "no-store")
-			writeJSON(w, http.StatusOK, map[string]any{
-				"heartbeat":           nil,
-				"present":             false,
-				"stale":               true,
-				"stale_after_seconds": int64(HeartbeatStaleAfter.Seconds()),
-				"detail":              "no worker has reported a heartbeat",
-			})
-			return
-		}
 		s.cfg.Logger.ErrorContext(r.Context(), "heartbeat failed", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal_error",
 			"the request could not be completed")
 		return
 	}
+	defer rows.Close()
 
-	age := now.Sub(beatAt)
-	if age < 0 {
-		// A clock that is ahead of ours is not stale; clamping avoids a negative age in
-		// the response, which a client would render as "in the future".
-		age = 0
+	instances := make([]heartbeatJSON, 0, 2)
+	for rows.Next() {
+		var (
+			id      string
+			beatAt  time.Time
+			jobs    int
+			version string
+		)
+		if err := rows.Scan(&id, &beatAt, &jobs, &version); err != nil {
+			s.cfg.Logger.ErrorContext(r.Context(), "read heartbeat row", "error", err)
+			writeProblem(w, http.StatusInternalServerError, "internal_error",
+				"the request could not be completed")
+			return
+		}
+		age := now.Sub(beatAt)
+		if age < 0 {
+			// A clock that is ahead of ours is not stale; clamping avoids a negative age in the
+			// response, which a client would render as "in the future".
+			age = 0
+		}
+		instances = append(instances, heartbeatJSON{
+			ID:                id,
+			BeatAt:            beatAt.UTC(),
+			AgeSeconds:        int64(age.Seconds()),
+			Jobs:              jobs,
+			Version:           version,
+			Stale:             age > HeartbeatStaleAfter,
+			StaleAfterSeconds: int64(HeartbeatStaleAfter.Seconds()),
+		})
 	}
-	hb := heartbeatJSON{
-		ID:                id,
-		BeatAt:            beatAt.UTC(),
-		AgeSeconds:        int64(age.Seconds()),
-		Jobs:              jobs,
-		Version:           version,
-		Stale:             age > HeartbeatStaleAfter,
-		StaleAfterSeconds: int64(HeartbeatStaleAfter.Seconds()),
+	if err := rows.Err(); err != nil {
+		s.cfg.Logger.ErrorContext(r.Context(), "read heartbeats", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal_error",
+			"the request could not be completed")
+		return
 	}
+
+	if len(instances) == 0 {
+		// A worker that has never run leaves no row. Reporting that as an empty heartbeat
+		// is honest and renders; a 500 would say the panel is broken.
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"heartbeat":           nil,
+			"present":             false,
+			"stale":               true,
+			"stale_after_seconds": int64(HeartbeatStaleAfter.Seconds()),
+			"detail":              "no worker has reported a heartbeat",
+			"workers":             0,
+			"instances":           instances,
+		})
+		return
+	}
+
+	// `heartbeat` stays the newest instance so every existing client keeps rendering one card, and
+	// `workers` is the fact those clients could not previously express. The headline is stale when
+	// the NEWEST beat is stale: if the freshest row is old, nothing is beating.
+	newest := instances[0]
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{"heartbeat": hb, "present": true, "stale": hb.Stale})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"heartbeat": newest,
+		"present":   true,
+		"stale":     newest.Stale,
+		"workers":   len(instances),
+		"instances": instances,
+	})
 }
 
 // ------------------------------------------------------------------- writers --
@@ -360,23 +394,40 @@ func normalizeOutcome(outcome string) string {
 	}
 }
 
-// Beat upserts the worker heartbeat.
+// Beat upserts this worker's heartbeat.
 //
-//	func Beat(ctx context.Context, pool *store.Pool, jobs int, version string) error
+//	func Beat(ctx context.Context, pool *store.Pool, instanceID string, jobs int, version string) error
 //
-// It is one statement so two workers cannot interleave into two rows, and it is called on
-// every tick rather than on a schedule of its own: a heartbeat that is only written when
-// something happens is not a heartbeat.
-func Beat(ctx context.Context, pool *store.Pool, jobs int, version string) error {
+// `instanceID` identifies the PROCESS, not the installation: one row per worker, so the reader's row
+// count is the number of workers actually running. Before this was per-instance the table had a
+// single row keyed 'worker', and two workers — `BILLING_EMBEDDED_WORKER=1` plus a separate
+// `billing worker` is the easy way to get two — silently overwrote each other. The panel could show
+// that *a* worker was alive and could never show that there were two, which is exactly the
+// misconfiguration worth seeing.
+//
+// Rows older than 24 hours are pruned in the same statement. Instances accumulate on every restart,
+// and a table that only grows turns "how many workers are running" into "how many have ever run".
+// The prune is an index range scan that normally finds nothing, which is why it can afford to run on
+// every tick rather than on a timer of its own.
+func Beat(ctx context.Context, pool *store.Pool, instanceID string, jobs int, version string) error {
 	if pool == nil {
 		return nil
 	}
+	if strings.TrimSpace(instanceID) == "" {
+		// An empty id would collide with every other instance that also failed to supply one, which
+		// is the singleton behaviour this change removed. Refusing is better than silently
+		// re-creating the bug.
+		return fmt.Errorf("httpapi: heartbeat requires an instance id")
+	}
 	_, err := pool.Exec(ctx, `
+		WITH pruned AS (
+		    DELETE FROM worker_heartbeat WHERE beat_at < now() - interval '24 hours'
+		)
 		INSERT INTO worker_heartbeat (id, beat_at, jobs, version)
 		VALUES ($1, now(), $2, $3)
 		ON CONFLICT (id) DO UPDATE
 			SET beat_at = now(), jobs = EXCLUDED.jobs, version = EXCLUDED.version`,
-		heartbeatID, jobs, truncate(strings.TrimSpace(version), 120))
+		truncate(strings.TrimSpace(instanceID), 120), jobs, truncate(strings.TrimSpace(version), 120))
 	return err
 }
 

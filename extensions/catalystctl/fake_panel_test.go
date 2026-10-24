@@ -68,6 +68,13 @@ type fakePanel struct {
 	failUserCreateCode string
 	// userPageLimit truncates the account list, so a "not on page one" lookup can be simulated.
 	userPageLimit int
+	// searchLag makes the next N account searches miss an account that exists, which is what the real
+	// panel does in the milliseconds after a create.
+	searchLag int
+	// takePortBeforeCreate makes the next POST /servers fail as though the chosen port had been taken, so
+	// the adapter's retry can be exercised. Zero means "never".
+	takePortBeforeCreate int32
+	tookPort             bool
 }
 
 // recordedCall is one mutating request the adapter made.
@@ -169,7 +176,16 @@ func (f *fakePanel) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "/locations":
 		writePanelOK(w, f.locations)
 	case r.Method == http.MethodGet && path == "/templates":
-		writePanelOK(w, f.templates)
+		f.handleTemplates(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/templates/"):
+		id := strings.TrimPrefix(path, "/templates/")
+		for _, tpl := range f.templates {
+			if tpl.ID == id {
+				writePanelOK(w, tpl)
+				return
+			}
+		}
+		writePanelError(w, http.StatusNotFound, "TEMPLATE_NOT_FOUND", "Template not found")
 	case r.Method == http.MethodGet && path == "/nodes":
 		writePanelOK(w, f.nodes)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/nodes/") && strings.HasSuffix(path, "/stats"):
@@ -214,6 +230,34 @@ func (f *fakePanel) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if f.failCreateStatus != 0 {
 		writePanelError(w, f.failCreateStatus, f.failCreateCode, "refused")
 		return
+	}
+	// The panel's own rule: an allocation reserves a host port, so it is only meaningful for bridge
+	// networking. Reproduced here because getting it wrong makes every create against a host-network
+	// template fail with SERVER_NETWORK_MODE_INVALID.
+	mode := ""
+	if req.NetworkMode != nil {
+		mode = *req.NetworkMode
+	}
+	if req.AllocationID != "" && mode != "bridge" {
+		writePanelError(w, http.StatusBadRequest, "SERVER_NETWORK_MODE_INVALID",
+			"Allocation IDs are only valid for bridge networking")
+		return
+	}
+	// A simulate-the-race hook: the port gets grabbed after the adapter read the allocation list.
+	if f.takePortBeforeCreate != 0 && !f.tookPort && req.PrimaryPort == f.takePortBeforeCreate {
+		f.tookPort = true
+		writePanelError(w, http.StatusBadRequest, "PORT_ALREADY_IN_USE",
+			"Port "+itoa(int(req.PrimaryPort))+" is already in use on this node")
+		return
+	}
+	// The live panel refuses a port an existing server already listens on, even when the allocation table
+	// reports it as unassigned. Modelled here because the adapter depends on it.
+	for _, existing := range f.servers {
+		if existing.NodeID == req.NodeID && existing.PrimaryPort == req.PrimaryPort {
+			writePanelError(w, http.StatusBadRequest, "PORT_ALREADY_IN_USE",
+				"Port "+itoa(int(req.PrimaryPort))+" is already in use on this node")
+			return
+		}
 	}
 	id := "srv-" + itoa(f.nextID)
 	f.nextID++
@@ -351,9 +395,34 @@ func (f *fakePanel) handleDelete(w http.ResponseWriter, path string) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleTemplates pages the template list the way the panel does.
+func (f *fakePanel) handleTemplates(w http.ResponseWriter, r *http.Request) {
+	limit, offset := 100, 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		if n, err := atoi(raw); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	out := []panelTemplate{}
+	for i := offset; i < len(f.templates) && len(out) < limit; i++ {
+		out = append(out, f.templates[i])
+	}
+	writePanelOK(w, out)
+}
+
 // handleListUsers answers the admin users list, which the panel returns as a bare object.
 func (f *fakePanel) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
+	if search != "" && f.searchLag > 0 {
+		f.searchLag--
+		// A lagging index: the search matches nothing, but the list still shows the account.
+		search = "\x00never-matches"
+	}
 	out := make([]panelUser, 0, len(f.users))
 	for _, user := range f.users {
 		// The panel filters on address and username, by substring.

@@ -413,18 +413,44 @@ func (c *panelClient) stats(ctx context.Context, id string) (serverStats, bool, 
 }
 
 // freeAllocation returns an unassigned port on the node, or an error naming the remedy.
-func (c *panelClient) freeAllocation(ctx context.Context, nodeID string) (panelAllocation, error) {
+func (c *panelClient) freeAllocation(ctx context.Context, nodeID string, used map[int32]struct{}) (panelAllocation, error) {
 	var out envelope[[]panelAllocation]
 	if err := c.do(ctx, http.MethodGet, "/nodes/"+url.PathEscape(nodeID)+"/allocations", nil, &out); err != nil {
 		return panelAllocation{}, err
 	}
 	for _, alloc := range out.Data {
-		if alloc.free() {
-			return alloc, nil
+		if !alloc.free() {
+			continue
 		}
+		// An allocation with no `serverId` is not proof the port is unused. A server created before the
+		// allocation existed — or one whose allocation was reset — holds its port through `primaryPort`
+		// alone, and the panel refuses a create on that port with PORT_ALREADY_IN_USE. Learned against a
+		// live panel, where port 25566 was listed as free while a bridge server was listening on it.
+		if _, taken := used[alloc.Port]; taken {
+			continue
+		}
+		return alloc, nil
 	}
 	return panelAllocation{}, fmt.Errorf(
-		"no free port allocation on node %s; add ports on the panel's node screen", nodeID)
+		"no usable port allocation is left on node %s; add ports on the panel's node screen", nodeID)
+}
+
+// portsInUse collects the ports the node's existing servers listen on.
+//
+// It is the second half of the "is this port really free" question: the allocation table answers "was this
+// port handed out", and the servers answer "is something actually on it". A create needs both.
+func (c *panelClient) portsInUse(ctx context.Context, nodeID string) (map[int32]struct{}, error) {
+	used := map[int32]struct{}{}
+	err := c.listServers(ctx, func(srv panelServer) bool {
+		if srv.NodeID == nodeID && srv.PrimaryPort > 0 {
+			used[srv.PrimaryPort] = struct{}{}
+		}
+		return false // never stop early: every page matters
+	})
+	if err != nil {
+		return used, err
+	}
+	return used, nil
 }
 
 // allocationOnPort finds the free allocation carrying a specific port.
@@ -484,28 +510,28 @@ type createUserRequest struct {
 
 // createPanelUser creates one account.
 func (c *panelClient) createPanelUser(ctx context.Context, req createUserRequest) (panelUser, error) {
-	// The created account is read from whichever key the panel puts it under. Three shapes are accepted
-	// because the panel is not consistent across its own endpoints — the users LIST is a bare object
-	// while most writes are enveloped — and a wrong guess here would create the account and then report
-	// the create as failed, leaving a server that belongs to nobody.
+	// The created account comes back as a BARE object — no `success`/`data` envelope, unlike most of this
+	// panel's writes. Verified against the live panel: `{"id":…, "email":…, "username":…, "roles":[]}`.
+	//
+	// All four shapes are accepted anyway, because getting this wrong is the worst kind of bug in this
+	// flow: the account IS created, the adapter reports the create as failed, and the retry hits a 409 for
+	// an account nobody has the id of. That is a stuck purchase with a stranded account on the panel, and
+	// it happened here before the bare shape was understood.
 	var out struct {
+		panelUser
 		User panelUser `json:"user"`
 		Data struct {
+			panelUser
 			User panelUser `json:"user"`
-			ID   string    `json:"id"`
 		} `json:"data"`
 	}
 	if err := c.do(ctx, http.MethodPost, "/admin/users", req, &out); err != nil {
 		return panelUser{}, err
 	}
-	if out.User.ID != "" {
-		return out.User, nil
-	}
-	if out.Data.User.ID != "" {
-		return out.Data.User, nil
-	}
-	if out.Data.ID != "" {
-		return panelUser{ID: out.Data.ID}, nil
+	for _, candidate := range []panelUser{out.panelUser, out.User, out.Data.panelUser, out.Data.User} {
+		if candidate.valid() {
+			return candidate, nil
+		}
 	}
 	return panelUser{}, fmt.Errorf("the panel accepted the account request but returned no user")
 }
@@ -519,15 +545,49 @@ func (c *panelClient) locations(ctx context.Context) ([]panelLocation, error) {
 	return out.Data, nil
 }
 
-// templates lists the panel's sellable templates.
+// templates lists every template the panel sells, page by page.
 //
-// The panel paginates this endpoint and its default page is small, so the listing asks for the
-// panel's own maximum. A template missing from the dropdown is a product an operator cannot sell,
-// and "it was on page two" is not an answer they can act on.
+// Paging matters here in a way it does not for locations: a real installation has hundreds of game
+// templates (the reference panel has 251), so a single page silently hides most of the catalogue. A
+// template missing from the dropdown is a product an operator cannot sell, and — worse — a purchase that
+// names one by id was refused as "does not exist on this panel" while it was on page three. That is why
+// id resolution also consults the panel directly (see templateByID) instead of trusting this list.
 func (c *panelClient) templates(ctx context.Context) ([]panelTemplate, error) {
-	var out envelope[[]panelTemplate]
-	if err := c.do(ctx, http.MethodGet, "/templates?limit=100", nil, &out); err != nil {
-		return nil, err
+	const pageSize = 100
+	out := make([]panelTemplate, 0, pageSize)
+	for page := 0; page < c.pageLimit; page++ {
+		var resp envelope[[]panelTemplate]
+		if err := c.do(ctx, http.MethodGet,
+			fmt.Sprintf("/templates?limit=%d&offset=%d", pageSize, page*pageSize), nil, &resp); err != nil {
+			// A first-page failure is the caller's problem; a later one leaves what was already read,
+			// because a partial list is more useful than none and the detail endpoint can still resolve
+			// a specific id.
+			if page == 0 {
+				return nil, err
+			}
+			return out, nil
+		}
+		out = append(out, resp.Data...)
+		if len(resp.Data) == 0 {
+			break
+		}
+	}
+	return out, nil
+}
+
+// templateByID reads one template, which is how an id is resolved without depending on a list page.
+//
+// A purchase may name a template the list cannot show — because the installation has more templates
+// than the adapter is willing to page through, or because the list is briefly incomplete. Asking the
+// panel for that id is authoritative and cheap, and it is what makes "put this exact template on this
+// product" work.
+func (c *panelClient) templateByID(ctx context.Context, id string) (panelTemplate, error) {
+	var out envelope[panelTemplate]
+	if err := c.do(ctx, http.MethodGet, "/templates/"+url.PathEscape(id), nil, &out); err != nil {
+		return panelTemplate{}, err
+	}
+	if out.Data.ID == "" {
+		return panelTemplate{}, &panelError{status: http.StatusNotFound, code: "TEMPLATE_NOT_FOUND"}
 	}
 	return out.Data, nil
 }

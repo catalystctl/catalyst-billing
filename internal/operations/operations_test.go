@@ -732,3 +732,77 @@ func TestChargeAttemptKeyIsTheIdempotencyMarker(t *testing.T) {
 			len(second.Outcomes), charger.callCount())
 	}
 }
+
+// Two workers sweeping at once produce ONE charge and one skip, never two provider round-trips.
+//
+// This is the concurrency property the charge sweep needs, and it is worth being precise about what
+// it actually rests on. The lock is not the guarantee: `payment_attempts.operation_key` is UNIQUE
+// and inserted before the provider call, so even with the lock removed the loser is refused by the
+// database. What the lock buys is rate limit and log hygiene — without it the losing worker records
+// a failed run, and a red row in the failure viewer is indistinguishable from a real failure.
+//
+// The assertion is therefore two-fold: exactly one provider call, AND the second sweep reports
+// `locked` rather than an error. A test that only counted charges would pass with the lock removed,
+// which is why both halves are here.
+func TestConcurrentSweepsChargeOnceAndOneStandsDown(t *testing.T) {
+	f := newFixture(t)
+	set(t, f.pool, "gateway", "off_session_enabled", "true")
+	charger := &feeCharger{}
+
+	// A charger that holds the first sweep open long enough for the second to overlap it. Without
+	// the delay the two calls may serialise by luck and the test would prove nothing.
+	blocking := &blockingCharger{inner: charger, hold: 150 * time.Millisecond}
+
+	opts := chargeOptions(blocking)
+	type result struct {
+		run operations.ChargeDueRun
+		err error
+	}
+	results := make([]result, 2)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			run, err := operations.ChargeDue(context.Background(), f.pool, opts)
+			results[i] = result{run: run, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	for i, r := range results {
+		if r.err != nil {
+			t.Fatalf("sweep %d failed: %v — a sweep that stands down must not report an error", i, r.err)
+		}
+	}
+	locked := 0
+	for _, r := range results {
+		if r.run.Reason == operations.ReasonLocked {
+			locked++
+		}
+	}
+	if locked != 1 {
+		t.Fatalf("%d of 2 sweeps reported locked, want exactly 1: the lock is not excluding anyone", locked)
+	}
+	if got := blocking.inner.callCount(); got != 1 {
+		t.Fatalf("the provider was called %d time(s) for one due invoice across two sweeps, want 1", got)
+	}
+}
+
+// blockingCharger holds every charge open for `hold`, so two sweeps genuinely overlap.
+type blockingCharger struct {
+	inner *feeCharger
+	hold  time.Duration
+}
+
+func (b *blockingCharger) ChargeOffSession(ctx context.Context, req payments.OffSessionCharge) (payments.OffSessionResult, error) {
+	select {
+	case <-time.After(b.hold):
+	case <-ctx.Done():
+		return payments.OffSessionResult{}, ctx.Err()
+	}
+	return b.inner.ChargeOffSession(ctx, req)
+}
+
+// Name delegates so the saved method is scoped to the same provider the fixture set up.
+func (b *blockingCharger) Name() string { return b.inner.Name() }

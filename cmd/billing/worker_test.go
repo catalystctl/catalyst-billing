@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -103,19 +104,57 @@ type runSummary struct {
 //     it, and asserts the heartbeat keeps beating while it does; that run is `running` on purpose.
 //     Counting the whole table made this check wait out its full budget whenever that test ran
 //     first, which reads as a shutdown bug and is a fixture bug.
-func openRuns(t *testing.T, pool *store.Pool, jobs []jobSpec) int {
+func openRuns(t *testing.T, pool *store.Pool, jobs []jobSpec, since time.Time) int {
 	t.Helper()
 	names := make([]string, 0, len(jobs))
 	for _, j := range jobs {
 		names = append(names, j.name)
 	}
 	var n int
+	// `started_at >= since` bounds the question to runs THIS test opened. Without it the count
+	// includes a `running` row left behind by an earlier run of the same test in the same database
+	// — a leftover from a failed attempt or a mutation check — and the wait can never reach zero
+	// while the worker is behaving perfectly. That reads as "shutdown abandons rows" and is
+	// yesterday's debris.
 	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM cron_runs WHERE finished_at IS NULL AND job = ANY($1)`,
-		names).Scan(&n); err != nil {
+		`SELECT count(*) FROM cron_runs
+		 WHERE finished_at IS NULL AND job = ANY($1) AND started_at >= $2`,
+		names, since).Scan(&n); err != nil {
 		t.Fatalf("count open runs: %v", err)
 	}
 	return n
+}
+
+// describeOpenRuns lists the runs this test left open, for a failure message that names them.
+func describeOpenRuns(t *testing.T, pool *store.Pool, jobs []jobSpec, since time.Time) string {
+	t.Helper()
+	names := make([]string, 0, len(jobs))
+	for _, j := range jobs {
+		names = append(names, j.name)
+	}
+	rows, err := pool.Query(context.Background(), `
+		SELECT job, outcome, started_at FROM cron_runs
+		WHERE finished_at IS NULL AND job = ANY($1) AND started_at >= $2
+		ORDER BY started_at`, names, since)
+	if err != nil {
+		return "could not read open runs: " + err.Error()
+	}
+	defer rows.Close()
+	var b strings.Builder
+	n := 0
+	for rows.Next() {
+		var job, outcome string
+		var started time.Time
+		if err := rows.Scan(&job, &outcome, &started); err != nil {
+			return "could not read an open run: " + err.Error()
+		}
+		n++
+		fmt.Fprintf(&b, "  %s outcome=%s started=%s\n", job, outcome, started.UTC().Format(time.RFC3339Nano))
+	}
+	if n == 0 {
+		return "  (none by the time the message was built)"
+	}
+	return b.String()
 }
 
 // latestRun reads the newest run recorded for a job.
@@ -139,10 +178,16 @@ func latestRun(t *testing.T, pool *store.Pool, job string) (runSummary, bool) {
 }
 
 // readHeartbeat reads the worker's heartbeat row.
+//
+// It no longer filters on a constant id: heartbeats are one row per worker INSTANCE, so a test with
+// one worker in it has exactly one row and the newest is the one to assert on. Asking for `id =
+// 'worker'` would only ever find a legacy row, and would pass on a tree where the writer had stopped
+// beating entirely — which is the failure these tests exist to catch.
 func readHeartbeat(t *testing.T, pool *store.Pool) (beatAt time.Time, jobs int, version string, ok bool) {
 	t.Helper()
 	err := pool.QueryRow(context.Background(), `
-		SELECT beat_at, jobs, version FROM worker_heartbeat WHERE id = 'worker'`).
+		SELECT beat_at, jobs, version FROM worker_heartbeat
+		ORDER BY beat_at DESC, id LIMIT 1`).
 		Scan(&beatAt, &jobs, &version)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, 0, "", false
@@ -169,6 +214,7 @@ func TestTheWorkerRecordsEveryRunWithItsOutcome(t *testing.T) {
 		{name: "test-panic", interval: 50 * time.Millisecond,
 			run: func(context.Context) error { panic("boom") }},
 	}
+	testStart := time.Now().UTC().Add(-time.Second)
 	stop := startWorker(t, pool, jobs, 25*time.Millisecond)
 
 	waitFor(t, "a closed run for every job", func() bool {
@@ -194,7 +240,16 @@ func TestTheWorkerRecordsEveryRunWithItsOutcome(t *testing.T) {
 	// newest row per job, and a mutation check proved that vacuous: leaving an older run open
 	// forever still passed, because the next tick opened and closed a newer one and "latest" looked
 	// healthy. A job that abandons a run and carries on is precisely the failure this guards.
-	waitForWithin(t, 15*time.Second, "every run to close after shutdown", func() bool { return openRuns(t, pool, jobs) == 0 })
+	// Reports WHICH run is still open rather than only that the deadline passed. A bare timeout
+	// here reads as "shutdown abandons rows" and sends the next person to the drain logic; the
+	// job name and start time say whether a run is genuinely stuck or was opened by a late tick.
+	deadline := time.Now().Add(15 * time.Second)
+	for openRuns(t, pool, jobs, testStart) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("runs still open after shutdown:\n%s", describeOpenRuns(t, pool, jobs, testStart))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	for _, want := range []struct{ job, outcome, detail string }{
 		{"test-ok", "ok", ""},

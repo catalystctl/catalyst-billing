@@ -35,6 +35,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,6 +55,7 @@ const (
 	fieldServerName  = "server_name"
 	fieldNetworkMode = "network_mode"
 	fieldPort        = "port"
+	fieldPrimaryIP   = "primary_ip"
 )
 
 // autoNode is the value that means "let the adapter choose within the location".
@@ -73,6 +75,9 @@ type placement struct {
 	NetworkMode  string
 	// Port is a specific port to claim. Zero means "take the first free one on the node".
 	Port int32
+	// PrimaryIP is the address the server binds for macvlan and static-LAN networking. Empty means
+	// "use the node's own address", which is right for host and bridge networking.
+	PrimaryIP string
 	// Name is the server's display name at the provider.
 	Name string
 }
@@ -153,6 +158,13 @@ func (s *server) resolvePlacement(ctx context.Context, metadata map[string]strin
 		out.Name = serverName(metadata, metadata["service_id"])
 	}
 
+	if raw := s.setting(metadata, fieldPrimaryIP, "PRIMARY_IP", ""); raw != "" {
+		if !looksLikeIP(raw) {
+			return out, fmt.Errorf("primary_ip %q is not an IP address", raw)
+		}
+		out.PrimaryIP = raw
+	}
+
 	if mode := s.setting(metadata, fieldNetworkMode, "NETWORK_MODE", s.cfg.networkMode); mode != "" {
 		if !validNetworkMode(mode) {
 			return out, fmt.Errorf("network_mode %q is not one of bridge, macvlan, host, mc-lan-static, mc-lan-dynamic", mode)
@@ -216,7 +228,23 @@ func (s *server) resolveLocation(ctx context.Context, value string) (string, str
 }
 
 // resolveTemplate resolves a template by id or name.
+//
+// An id is tried against the panel directly first. A panel has hundreds of templates and the list is
+// paged, so "resolve the id from the list" fails for anything late in the catalogue — and that failure
+// would tell an operator their template does not exist, which is exactly wrong.
 func (s *server) resolveTemplate(ctx context.Context, value string) (string, string, error) {
+	if looksLikePanelID(value) {
+		tpl, err := s.client.templateByID(ctx, value)
+		switch {
+		case err == nil:
+			return tpl.ID, tpl.Name, nil
+		case !isNotFound(err):
+			return "", "", err
+		}
+		// Not an id the panel knows. Fall through to the list, because an operator may have typed a
+		// name that happens to look like one.
+	}
+
 	templates, err := s.client.templates(ctx)
 	if err != nil {
 		return "", "", err
@@ -314,6 +342,24 @@ type nodeCapacity struct {
 	node       panelNode
 	freeMemory int64
 	freeCPU    int64
+}
+
+// looksLikePanelID reports whether a value is shaped like one of the panel's ids.
+//
+// The panel's ids are long, unpunctuated and have no spaces (a cuid or a nanoid). The test is
+// deliberately loose — it only decides whether to *ask the panel* about the value before searching names,
+// and a wrong guess costs one request that returns 404.
+func looksLikePanelID(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < 10 || len(value) > 64 || strings.ContainsAny(value, " :@/") {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 // named is anything with an id and a name the resolvers can search.
@@ -440,12 +486,17 @@ func (s *server) declaredFields(ctx context.Context) []extproto.ProvisionField {
 			Key: fieldPort, Label: "Port", Type: extproto.FieldNumber,
 			Hint: "Leave empty to claim the next free port on the node.",
 		},
-		// Not required: an empty answer means "whatever the template expects", which is the right
-		// default for most games and the only one an operator can pick without knowing the panel's
-		// networking model.
+		// Not required: an empty answer takes the installation default, which is bridge. Bridge is the
+		// supported mode — it is the only one where the panel reserves a host port through an allocation,
+		// so concurrent creates cannot collide and the customer's address is stable. The other modes are
+		// listed because a panel may already have servers on them, not because they are recommended.
 		choiceField(fieldNetworkMode, "Network mode",
 			[]string{"bridge", "macvlan", "host", "mc-lan-static", "mc-lan-dynamic"}, nil, false,
-			"Leave empty for the template's own default."),
+			"Leave empty for bridge, which is the supported mode."),
+		extproto.ProvisionField{
+			Key: fieldPrimaryIP, Label: "Static IP", Type: extproto.FieldText,
+			Hint: "Only for macvlan or static-LAN networking. Leave empty to bind the node's own address.",
+		},
 	)
 	return fields
 }
@@ -503,4 +554,23 @@ var placementOptions = map[string]struct{}{
 func isPlacementOption(name string) bool {
 	_, consumed := placementOptions[strings.ToUpper(strings.TrimSpace(name))]
 	return consumed
+}
+
+// looksLikeIP reports whether a value parses as an IP address.
+//
+// The check is here rather than only at the panel because a wrong address is refused much later, by the
+// container runtime, and the customer would see a server that never comes up instead of a purchase that
+// was refused for a reason they can fix.
+func looksLikeIP(value string) bool {
+	return net.ParseIP(strings.TrimSpace(value)) != nil
+}
+
+// usesBridgeNetworking reports whether a network mode needs a panel allocation.
+//
+// The panel reserves a host port through an allocation, and it accepts an `allocationId` ONLY for bridge
+// networking: every other mode binds an address directly and refuses the allocation with
+// SERVER_NETWORK_MODE_INVALID. Verified against the live panel, and the reason a create that always sent
+// one was refused for any template whose default mode is host.
+func usesBridgeNetworking(mode string) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), "bridge")
 }

@@ -1689,7 +1689,7 @@ func (c *Client) GetStaffCronFailures(ctx context.Context, query url.Values, bod
 
 // GetStaffCronHeartbeat calls GET /api/v1/staff/cron/heartbeat.
 //
-// # Worker heartbeat
+// # Worker heartbeats, one per running worker
 //
 // Permission: log:read. Staff only.
 func (c *Client) GetStaffCronHeartbeat(ctx context.Context, query url.Values, body any) (*Result, error) {

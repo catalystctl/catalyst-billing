@@ -109,6 +109,14 @@ const (
 	ReasonDisabled = "disabled"
 	// ReasonNothingDue means the scan found no work, which is the healthy state.
 	ReasonNothingDue = "nothing_due"
+	// ReasonLocked means another worker was mid-sweep and this tick stood down.
+	//
+	// It is a skip, never a failure. Two workers scanning the same invoices is not a correctness
+	// problem — `payment_attempts.operation_key` is UNIQUE and inserted before the provider call,
+	// so the loser is refused by the database rather than double-charging — but it burns provider
+	// rate limit and races the decline-to-dunning transition from two goroutines. The lock removes
+	// the noise; the constraint remains the guarantee.
+	ReasonLocked = "locked"
 	// ReasonSent means the telemetry payload was delivered.
 	ReasonSent = "sent"
 	// ReasonRecentlySent means a delivery was already recorded inside TelemetryMinimumGap, so this
@@ -168,7 +176,15 @@ func Jobs(pool *store.Pool, opts Options) []Job {
 			Run: func(ctx context.Context) error {
 				run, err := ChargeDue(ctx, pool, opts)
 				logChargeDue(opts.Logger, run, err)
-				return err
+				if err != nil {
+					return err
+				}
+				if run.Reason == ReasonLocked {
+					// A skip, not a success: the sweep did not run, and the run history should say
+					// so without calling it a failure.
+					return Skip("another worker held the sweep")
+				}
+				return nil
 			},
 		})
 	}
@@ -216,7 +232,8 @@ func logChargeDue(logger *slog.Logger, run ChargeDueRun, err error) {
 	}
 	if len(run.Outcomes) > 0 {
 		logger.Info("charge due sweep complete", "attempted", len(run.Outcomes),
-			"settled", run.Settled, "declined", run.Declined)
+			"settled", run.Settled, "declined", run.Declined,
+			"already_attempted", run.AlreadyAttempted)
 	}
 }
 

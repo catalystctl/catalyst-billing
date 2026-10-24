@@ -17782,7 +17782,10 @@ paths:
             x-staff-only: true
     /api/v1/staff/cron/heartbeat:
         get:
-            description: 'The heartbeat row plus whether it is stale. `stale` is derived from the age, because a heartbeat row that exists is not the same as a worker that is alive: a process killed nine hours ago leaves a row behind forever. A worker that has never run answers 200 with `present: false` rather than a 404, because that is the sentence the operator needs.'
+            description: |-
+                Every worker instance that has beaten in the last day, newest first, and whether the newest is stale. `stale` is derived from the age, because a heartbeat row that exists is not the same as a worker that is alive: a process killed nine hours ago leaves a row behind until the writer prunes it. A worker that has never run answers 200 with `present: false` rather than a 404, because that is the sentence the operator needs.
+
+                `workers` is the number of instances beating, and it is the field this route exists for. Heartbeats used to be a single row keyed 'worker', so two workers overwrote each other and the panel could show that *a* worker was alive and never that there were two — which is the misconfiguration worth seeing, because it means every job runs twice and the charge sweep fills the failure viewer with duplicate-key rows. `heartbeat` stays the newest instance so an existing client keeps rendering one card.
             operationId: GetStaffCronHeartbeat
             responses:
                 2XX:
@@ -17791,7 +17794,7 @@ paths:
                             schema:
                                 properties:
                                     heartbeat:
-                                        description: Null when no worker has ever reported. `present` says the same thing, for a client that prefers a boolean.
+                                        description: The newest instance, or null when no worker has ever reported. `present` says the same thing, for a client that prefers a boolean.
                                         oneOf:
                                             - properties:
                                                 age_seconds:
@@ -17820,14 +17823,46 @@ paths:
                                                 - stale
                                               type: object
                                             - type: "null"
+                                    instances:
+                                        items:
+                                            properties:
+                                                age_seconds:
+                                                    type: integer
+                                                beat_at:
+                                                    format: date-time
+                                                    type: string
+                                                id:
+                                                    example: worker
+                                                    type: string
+                                                jobs:
+                                                    type: integer
+                                                stale:
+                                                    description: True when the beat is older than the server's stale threshold. A row existing is not the same as a worker being alive.
+                                                    type: boolean
+                                                stale_after_seconds:
+                                                    type: integer
+                                                version:
+                                                    type: string
+                                            required:
+                                                - id
+                                                - beat_at
+                                                - age_seconds
+                                                - jobs
+                                                - version
+                                                - stale
+                                            type: object
+                                        type: array
                                     present:
                                         type: boolean
                                     stale:
                                         type: boolean
                                     stale_after_seconds:
                                         type: integer
+                                    workers:
+                                        description: How many instances are beating. Above one means every job is running in more than one process.
+                                        type: integer
                                 type: object
-                    description: The heartbeat, or its absence
+                    description: The heartbeats, or their absence
                 "400":
                     content:
                         application/json:
@@ -17867,7 +17902,7 @@ paths:
             security:
                 - sessionCookie: []
                 - bearerKey: []
-            summary: Worker heartbeat
+            summary: Worker heartbeats, one per running worker
             x-permission: log:read
             x-rate-class: read
             x-staff-only: true

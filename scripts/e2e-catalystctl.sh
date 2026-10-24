@@ -21,6 +21,10 @@ CUSTOMER_PASSWORD="${CUSTOMER_PASSWORD:-dev-only-password-1}"
 PRODUCT_SLUG="${PRODUCT_SLUG:-demo-minecraft-iron}"
 PANEL="${PANEL_URL:-https://panel.catalystctl.com}"
 PANEL_KEY="${PANEL_KEY:?PANEL_KEY is required}"
+TEMPLATE_ID="${TEMPLATE_ID:-cmv8fyx17006b32n6eq1z6ctm}"
+NODE_ID="${NODE_ID:-cmv8godh6000l32pgi40ecwg6}"
+LOCATION_NAME="${LOCATION_NAME:-US East 1}"
+EXTENSION="${BILLING_PROVISIONER_EXTENSION:-$PWD/bin/catalystctl}"
 ADMIN_JAR=$(mktemp)
 USER_JAR=$(mktemp)
 trap 'rm -f "$ADMIN_JAR" "$USER_JAR"' EXIT
@@ -67,9 +71,23 @@ step "admin signs in"
 ADMIN_CSRF=$(login "$ADMIN_JAR" "$ADMIN_EMAIL" "$ADMIN_PASSWORD")
 ok "admin session established"
 
-step "installation is configured for catalystctl"
-curl -sS -m 10 -b "$ADMIN_JAR" "$BASE/api/v1/staff/servers" |
-  jq -r '"   provider=\(.provider) extension=\(.extension_path // "n/a") problems=\(.problems // [])"' 
+step "staff configure the installation: the panel's address and key"
+# The two things that belong to the installation rather than to a product. Everything about where a
+# server goes is set per service further down.
+api PUT "$ADMIN_JAR" "$BASE/api/v1/staff/servers" "$ADMIN_CSRF" \
+  "$(jq -nc --arg u "$PANEL" --arg k "$PANEL_KEY" \
+     '{provider:"catalystctl", values:{panel_url:$u, api_key:$k}}')" >/dev/null
+INTEGRATION=$(curl -sS -m 10 -b "$ADMIN_JAR" "$BASE/api/v1/staff/servers")
+PROVIDER=$(jq -r '.provider' <<<"$INTEGRATION")
+[ "$PROVIDER" = "catalystctl" ] || die "the provider is $PROVIDER, not catalystctl"
+jq -r '"   provider=\(.provider) extension=\(.extension_path // "n/a") problems=\(.problems // [])"' <<<"$INTEGRATION"
+# The extension is resolved from the bin directory, so a missing binary is a real configuration
+# problem and is worth catching here rather than in the queue.
+EXT=$(jq -r '.extension_path // empty' <<<"$INTEGRATION")
+if [ -n "$EXT" ]; then
+  [ -x "$EXT" ] || die "the configured extension $EXT is not executable"
+  ok "extension resolved to $EXT"
+fi
 
 step "a new customer registers"
 api POST "$USER_JAR" "$BASE/api/v1/auth/register" "" \
@@ -109,6 +127,7 @@ ok "order $ORDER_ID, invoice ${INVOICE_ID:-none}"
 # What is still owed. A credit balance can settle part of an invoice at checkout, so the payment must
 # be for the remainder rather than the total — an overpayment is refused, and a refusal here would look
 # like the fulfilment path being broken.
+MARK=$(psql "$BILLING_DATABASE_URL" -qtA -c "SELECT clock_timestamp()::text")
 AMOUNT=$(psql "$BILLING_DATABASE_URL" -qtA -c \
   "SELECT total_minor - amount_paid_minor FROM invoices WHERE id='$INVOICE_ID'")
 if [ "${AMOUNT:-0}" -le 0 ]; then
@@ -119,7 +138,6 @@ api POST "$ADMIN_JAR" "$BASE/api/v1/staff/invoices/$INVOICE_ID/payments" "$ADMIN
      '{amount_minor:$amt, method:"bank_transfer", reference:$ref, note:"live e2e"}')" >/dev/null
   ok "invoice paid: $AMOUNT minor units recorded"
 fi
-MARK=$(psql "$BILLING_DATABASE_URL" -qtA -c "SELECT now()::text")
 
 step "waiting for the service to be created from the paid order"
 SERVICE_ID=""
@@ -134,25 +152,188 @@ done
 [ -n "$SERVICE_ID" ] || die "no service was created from the paid invoice"
 ok "service $SERVICE_ID exists"
 
+step "the panel can actually place a server (IP pools)"
+# A panel assigns each server an address from an IP pool, one per network. With no pool the panel
+# refuses every create with SERVER_CREATE_FAILED "No IP pool configured for this network" — a
+# prerequisite worth naming before a purchase fails five times in a queue.
+BRIDGE_POOL=$(pget "/api/admin/ip-pools" '[.data[]? | select(.networkName=="bridge")] | length')
+if [ "${BRIDGE_POOL:-0}" -lt 1 ]; then
+  die "the panel has no bridge IP pool, so it cannot assign an address to a new server.
+   Add one on the panel (Admin → IP pools): networkName=bridge and a CIDR that cannot collide
+   with the node's own network."
+fi
+ok "bridge IP pool present: $(pget "/api/admin/ip-pools" '[.data[]? | select(.networkName=="bridge") | .cidr] | join(", ")')"
+
+step "the service's declared placement fields come from the panel"
+DECLARED=$(api GET "$ADMIN_JAR" "$BASE/api/v1/staff/services/$SERVICE_ID/provisioning-fields" "")
+jq -r '.fields[]? | "   \(.key)  \(.type)  \(if .required then "required" else "optional" end)  \((.choices // []) | length) choices"' <<<"$DECLARED"
+LOC_CHOICES=$(jq -r '[.fields[]? | select(.key=="location") | .choices[]?] | join(", ")' <<<"$DECLARED")
+[ -n "$LOC_CHOICES" ] || die "the location dropdown is empty; the adapter could not list the panel"
+case "$LOC_CHOICES" in
+  *"$LOCATION_NAME"*) ok "the location dropdown lists $LOCATION_NAME" ;;
+  *) die "the location dropdown does not contain $LOCATION_NAME (got: $LOC_CHOICES)" ;;
+esac
+
 step "operator sets the placement: template, location, size"
 api PUT "$ADMIN_JAR" "$BASE/api/v1/staff/services/$SERVICE_ID/provisioning-fields" "$ADMIN_CSRF" \
-  "$(jq -nc '{values:{
-      location: "US East 1",
-      template: "cmv8fyx17006b32n6eq1z6ctm",
+  "$(jq -nc --arg loc "$LOCATION_NAME" --arg tpl "$TEMPLATE_ID" --arg node "$NODE_ID" '{values:{
+      location: $loc,
+      template: $tpl,
+      node: $node,
       memory_mb: "2048",
       disk_mb: "10240",
       cpu_cores: "1"}}')" >/dev/null
 ok "placement stored on the service"
 
-step "the customer's panel account before provisioning"
-BEFORE=$(pget "/api/admin/users?search=$CUSTOMER_EMAIL" '.users | length')
-ok "panel accounts matching the customer: $BEFORE"
+step "the worker provisions the service (no embedded worker in serve)"
+WORKER_LOG=/tmp/e2e-worker.log
+BILLING_PROVISIONER_EXTENSION="$EXTENSION" timeout 60 ./bin/billing worker >"$WORKER_LOG" 2>&1 &
+WORKER_PID=$!
 
-echo
-echo "   queued operations:"
+SERVICE_ACTIVE=""
+for _ in $(seq 1 40); do
+  if ! kill -0 "$WORKER_PID" 2>/dev/null && [ -z "$SERVICE_ACTIVE" ]; then
+    : # the worker exited; the assertions below will say what happened
+  fi
+  ROW=$(psql "$BILLING_DATABASE_URL" -qtA -F'|' -c \
+    "SELECT status, COALESCE(external_id,'') FROM services WHERE id='$SERVICE_ID'")
+  case "$ROW" in
+    active\|*) SERVICE_ACTIVE=${ROW#*|}; break ;;
+  esac
+  sleep 1
+done
+kill "$WORKER_PID" 2>/dev/null || true
+wait "$WORKER_PID" 2>/dev/null || true
+
+step "operations"
 psql "$BILLING_DATABASE_URL" -qtA -F' | ' -c \
-  "SELECT kind, status, coalesce(last_error,'') FROM service_operations WHERE service_id='$SERVICE_ID' ORDER BY created_at"
+  "SELECT kind, status, attempts, coalesce(last_error,'') FROM service_operations
+    WHERE service_id='$SERVICE_ID' ORDER BY created_at"
+
+[ -n "$SERVICE_ACTIVE" ] || die "the service was not provisioned (see $WORKER_LOG)"
+ok "service is active with external id $SERVICE_ACTIVE"
+
+step "the panel: a customer account, and a server owned by it"
+PANEL_USER=$(pget "/api/admin/users?search=$CUSTOMER_EMAIL" \
+  "[.users[] | select(.email == \"$CUSTOMER_EMAIL\")][0].id // empty")
+[ -n "$PANEL_USER" ] || die "no panel account was created for $CUSTOMER_EMAIL"
+ok "panel account $PANEL_USER exists for the customer"
+
+pget "/api/servers/$SERVICE_ACTIVE" \
+  '"   name=\(.data.name) state=\(.data.status) owner=\(.data.ownerId) template=\(.data.templateId) node=\(.data.nodeId) location=\(.data.locationId) memory=\(.data.allocatedMemoryMb)MB port=\(.data.primaryPort)"'
+
+OWNER=$(pget "/api/servers/$SERVICE_ACTIVE" '.data.ownerId')
+[ "$OWNER" = "$PANEL_USER" ] || die "the server is owned by $OWNER, not the customer's account $PANEL_USER"
+ok "the server belongs to the customer's panel account"
+
+TEMPLATE=$(pget "/api/servers/$SERVICE_ACTIVE" '.data.templateId')
+[ "$TEMPLATE" = "$TEMPLATE_ID" ] || die "template is $TEMPLATE, want $TEMPLATE_ID"
+NODE=$(pget "/api/servers/$SERVICE_ACTIVE" '.data.nodeId')
+[ "$NODE" = "$NODE_ID" ] || die "node is $NODE, want $NODE_ID"
+MEMORY=$(pget "/api/servers/$SERVICE_ACTIVE" '.data.allocatedMemoryMb')
+[ "$MEMORY" = "2048" ] || die "memory is $MEMORY, want 2048"
+ok "placed on the requested template, node and size"
+
+step "bridge networking: the panel reserved a host port for this server"
+MODE=$(pget "/api/servers/$SERVICE_ACTIVE" '.data.networkMode')
+[ "$MODE" = "bridge" ] || die "network mode is $MODE, want bridge"
+ok "network mode is bridge"
+# The whole reason for bridge: the panel holds an allocation for the server, which is what stops two
+# creates from colliding on one port and what gives the customer a stable address.
+# The resource's own allocation list reports the reserved host port, which is the thing the customer
+# connects to and the thing a second create cannot take.
+HOST_PORT=$(pget "/api/servers/$SERVICE_ACTIVE/allocations" '[.data[]? | select(.isPrimary) | .hostPort][0] // empty')
+[ -n "$HOST_PORT" ] || die "the server holds no primary allocation; its port is not reserved"
+ok "the panel reserved host port $HOST_PORT for it"
+# And the node's table agrees that the allocation belongs to this server, not merely that a timer says so.
+OWNER_OF_PORT=$(pget "/api/nodes/$NODE_ID/allocations" "[.data[]? | select(.port == $HOST_PORT) | .serverId][0] // empty")
+[ "$OWNER_OF_PORT" = "$SERVICE_ACTIVE" ] ||
+  die "port $HOST_PORT is held by $OWNER_OF_PORT, not this server"
+ok "the node's allocation table binds port $HOST_PORT to this server"
+
+step "the customer's portal card reports the same server"
+PORTAL_CSRF=$(login "$USER_JAR" "$CUSTOMER_EMAIL" "$CUSTOMER_PASSWORD")
+CARD=$(api GET "$USER_JAR" "$BASE/api/v1/portal/services/$SERVICE_ID/server" "")
+jq -r '"   name=\(.name) state=\(.state) address=\(.address) can_power=\(.can_power // []) link=\(.panel_url // "none")"' <<<"$CARD"
+CARD_NAME=$(jq -r '.name // empty' <<<"$CARD")
+[ -n "$CARD_NAME" ] || die "the card reported no server name"
+jq -e '.available == true and (.address | length > 0) and (.panel_url | length > 0)' <<<"$CARD" >/dev/null ||
+  die "the card is missing one of: available, address, panel link"
+ok "the card shows the name, address and panel link"
+
+step "the customer starts the server from the billing panel"
+BEFORE_STATE=$(pget "/api/servers/$SERVICE_ACTIVE" '.data.status')
+api POST "$USER_JAR" "$BASE/api/v1/portal/services/$SERVICE_ID/server/power" "$PORTAL_CSRF" \
+  '{"action":"start"}' >/dev/null
+sleep 3
+AFTER_STATE=$(pget "/api/servers/$SERVICE_ACTIVE" '.data.status')
+ok "panel state $BEFORE_STATE -> $AFTER_STATE"
+# What this proves is that the action reached the panel and changed the server's state. Whether the
+# process keeps running is the panel's business: a template whose game has not been installed yet comes up
+# and dies ("crashed"), exactly as it would from the panel's own console. Asserting "running" would make
+# this test a test of Paper's installer.
+case "$AFTER_STATE" in
+  stopped) die "the panel did not act on the start request (state still $AFTER_STATE)" ;;
+  crashed) printf '   \033[33mnote\033[0m the server started and exited: template %s needs its installer run first (panel-side)\n' "$TEMPLATE_ID" ;;
+  *) ;;
+esac
+
+step "the power action is audited and attributed"
+psql "$BILLING_DATABASE_URL" -qtA -F' | ' -c \
+  "SELECT action, outcome, actor_id IS NOT NULL AS attributed
+     FROM audit_events WHERE action LIKE 'service.power%' AND target_id='$SERVICE_ID'
+     ORDER BY created_at DESC LIMIT 2"
+
+step "suspend and resume travel to the panel"
+# The staff suspend route refuses a service with no overdue invoice (dunning decides eligibility, which is
+# correct). So this exercises the adapter's suspend/resume the way dunning does: by queueing the operation
+# the worker claims. What is under test is the adapter's conversation with the panel, not the eligibility
+# rule that is already covered by its own tests.
+queue_op() {
+  psql "$BILLING_DATABASE_URL" -qtA -c \
+    "INSERT INTO service_operations (service_id, kind, operation_key, generation, status)
+     VALUES ('$SERVICE_ID', '$1', 'e2e-$1-$(date +%s%N)', 1, 'queued')" >/dev/null
+}
+run_worker() {
+  BILLING_PROVISIONER_EXTENSION="$EXTENSION" timeout 60 ./bin/billing worker >"$WORKER_LOG" 2>&1 || true
+}
+
+queue_op suspend
+run_worker
+SUSPENDED=$(pget "/api/servers/$SERVICE_ACTIVE" '.data.suspendedAt // empty')
+if [ -n "$SUSPENDED" ]; then
+  ok "the panel reports the server suspended ($SUSPENDED)"
+else
+  psql "$BILLING_DATABASE_URL" -qtA -F' | ' -c \
+    "SELECT kind, status, coalesce(last_error,'') FROM service_operations
+      WHERE service_id='$SERVICE_ID' AND kind='suspend'"
+  die "the panel did not report the server suspended"
+fi
+
+queue_op resume
+run_worker
+CLEARED=$(pget "/api/servers/$SERVICE_ACTIVE" '.data.suspendedAt // "cleared"')
+[ "$CLEARED" = "cleared" ] || die "the resume did not clear the suspension (suspendedAt=$CLEARED)"
+ok "the resume cleared the suspension"
+
+step "cleanup"
+if [ "${KEEP:-0}" = "1" ]; then
+  printf '   \033[33mkept\033[0m PANEL_SERVER_ID=%s (KEEP=1)\n' "$SERVICE_ACTIVE"
+else
+  # A live panel accumulates strays, so a run that is finished removes what it created. The billing
+  # side is left intact: the point of the record is that this service did exist.
+  # The server first: the panel refuses to delete an account that still owns one, so the order matters.
+  curl -sS -m 30 -X DELETE -H "Authorization: Bearer $PANEL_KEY" "$PANEL/api/servers/$SERVICE_ACTIVE" \
+    >/dev/null 2>&1 && ok "removed the panel server" || printf '   \033[33mnote\033[0m could not remove %s\n' "$SERVICE_ACTIVE"
+  # The account this run created. The panel's delete is a POST to /delete, and it refuses (500) while the
+  # account still owns a server — which is why it comes second.
+  curl -sS -m 30 -X POST -H "Authorization: Bearer $PANEL_KEY" "$PANEL/api/admin/users/$PANEL_USER/delete" \
+    >/dev/null 2>&1 && ok "removed the panel account" || printf '   \033[33mnote\033[0m could not remove account %s\n' "$PANEL_USER"
+fi
+
 echo
 echo "SERVICE_ID=$SERVICE_ID"
 echo "CUSTOMER_ID=$CUSTOMER_ID"
-echo "INVOICE_ID=$INVOICE_ID"
+echo "CUSTOMER_EMAIL=$CUSTOMER_EMAIL"
+echo "PANEL_USER_ID=$PANEL_USER"
+echo "PANEL_SERVER_ID=$SERVICE_ACTIVE"

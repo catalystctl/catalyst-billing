@@ -74,6 +74,19 @@ produce a burst of retroactive charges. Before turning it back on, read
 amount per currency, and the invoices it would skip and why. It resolves no gateway,
 so asking it cannot charge anything.
 
+Two things guard it now, and they do different jobs. A per-database advisory lock makes only one
+sweep run at a time: a tick that finds another worker mid-sweep records `skipped` with reason
+`locked` rather than a failure, because a red row in the failure viewer is indistinguishable from a
+real one. The uniqueness of `payment_attempts.operation_key` remains the actual guarantee — the lock
+is rate-limit and log hygiene, and if it is ever lost the constraint still prevents a double charge.
+Invoices another worker got to first are counted as `already_attempted` and logged, not raised as
+errors.
+
+`worker_heartbeat` has one row per worker instance, and the automation screen shows the count. More
+than one is a misconfiguration rather than a scale-out: `BILLING_EMBEDDED_WORKER=1` alongside a
+separate `billing worker` means every job runs twice. It is flagged on the screen because the earlier
+single-row heartbeat made it impossible to see.
+
 That job's safety does not depend on there being one worker. The attempt row is
 inserted before the provider is called and `payment_attempts.operation_key` is
 UNIQUE, so two workers scanning the same invoice produce one provider round-trip and

@@ -450,13 +450,20 @@ func operatorOperations() map[string]Operation {
 			},
 		},
 		"GET /api/v1/staff/cron/heartbeat": {
-			Summary: "Worker heartbeat",
-			Description: "The heartbeat row plus whether it is stale. `stale` is derived from the age, because a " +
-				"heartbeat row that exists is not the same as a worker that is alive: a process killed nine " +
-				"hours ago leaves a row behind forever. A worker that has never run answers 200 with " +
-				"`present: false` rather than a 404, because that is the sentence the operator needs.",
+			Summary: "Worker heartbeats, one per running worker",
+			Description: "Every worker instance that has beaten in the last day, newest first, and whether the newest is " +
+				"stale. `stale` is derived from the age, because a heartbeat row that exists is not the same as a " +
+				"worker that is alive: a process killed nine hours ago leaves a row behind until the writer prunes " +
+				"it. A worker that has never run answers 200 with `present: false` rather than a 404, because that " +
+				"is the sentence the operator needs.\n\n" +
+				"`workers` is the number of instances beating, and it is the field this route exists for. " +
+				"Heartbeats used to be a single row keyed 'worker', so two workers overwrote each other and the " +
+				"panel could show that *a* worker was alive and never that there were two — which is the " +
+				"misconfiguration worth seeing, because it means every job runs twice and the charge sweep fills " +
+				"the failure viewer with duplicate-key rows. `heartbeat` stays the newest instance so an existing " +
+				"client keeps rendering one card.",
 			Responses: []Response{
-				{Status: 200, Description: "The heartbeat, or its absence", Schema: map[string]any{
+				{Status: 200, Description: "The heartbeats, or their absence", Schema: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"heartbeat": map[string]any{
@@ -464,7 +471,15 @@ func operatorOperations() map[string]Operation {
 								heartbeatSchema(),
 								map[string]any{"type": "null"},
 							},
-							"description": "Null when no worker has ever reported. `present` says the same thing, for a client that prefers a boolean.",
+							"description": "The newest instance, or null when no worker has ever reported. `present` says the same thing, for a client that prefers a boolean.",
+						},
+						"instances": map[string]any{
+							"type":  "array",
+							"items": heartbeatSchema(),
+						},
+						"workers": map[string]any{
+							"type":        "integer",
+							"description": "How many instances are beating. Above one means every job is running in more than one process.",
 						},
 						"present":             map[string]any{"type": "boolean"},
 						"stale":               map[string]any{"type": "boolean"},

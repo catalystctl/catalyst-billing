@@ -11,6 +11,7 @@ import (
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/settings"
 	"github.com/catalyst/billing/internal/store"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Charging a saved payment method for invoices that are due (OPS-01).
@@ -64,6 +65,10 @@ type ChargeDueRun struct {
 	// Settled and Declined are the counts an operator reads first.
 	Settled  int
 	Declined int
+	// AlreadyAttempted counts invoices another worker got to first. It is reported rather than
+	// logged as a failure: the UNIQUE attempt key refusing the insert is the safety property
+	// working, and a run that shows it is evidence that two workers overlapped.
+	AlreadyAttempted int
 }
 
 // ChargeDue charges every open, past-due invoice that has a default saved method and has not been
@@ -94,6 +99,26 @@ func ChargeDue(ctx context.Context, pool *store.Pool, opts Options) (ChargeDueRu
 	if factory == nil {
 		factory = gatewayCharger(pool)
 	}
+
+	// One sweep at a time, per database.
+	//
+	// The uniqueness of `payment_attempts.operation_key` already makes a double charge impossible,
+	// so this is not a safety guard and must not be mistaken for one. What it prevents is two
+	// workers burning provider rate limit on the same batch and racing the decline-to-dunning
+	// transition from two goroutines — the visible symptom of which was a burst of 23505 failures
+	// in the run history, which is a red row that hides real ones.
+	//
+	// Acquired BEFORE the charger is resolved, so a tick that stands down does not launch an
+	// extension process to discover it has nothing to do.
+	release, got, err := sweepLock(ctx, pool)
+	if err != nil {
+		return ChargeDueRun{}, err
+	}
+	if !got {
+		return ChargeDueRun{Reason: ReasonLocked}, nil
+	}
+	defer release()
+
 	charger, account, closeFn, err := factory(ctx)
 	if err != nil {
 		switch {
@@ -142,6 +167,16 @@ func ChargeDue(ctx context.Context, pool *store.Pool, opts Options) (ChargeDueRu
 			// sweep rather than logging the same refusal once per invoice.
 			return run, nil
 		default:
+			// A guaranteed unique key refused the insert: another worker recorded the attempt for
+			// this invoice and this method in the window between the scan and this call. That is
+			// the constraint doing its job, not a transport failure, so it must not be joined into
+			// the run's error — a red row here is indistinguishable from a real failure and would
+			// teach an operator to ignore the one that matters. The invoice is left to the worker
+			// that owns the attempt.
+			if isUniqueViolation(err) {
+				run.AlreadyAttempted++
+				continue
+			}
 			// One invoice's transport failure must not stop the rest of the batch, and it must be
 			// visible: it is joined and returned so the run is recorded as failed.
 			failures = append(failures, fmt.Errorf("invoice %s: %w", id, err))
@@ -241,4 +276,59 @@ func gatewayCharger(pool *store.Pool) ChargerFactory {
 		return payments.ExtensionCharger{Caller: client, Provider: cfg.Provider}, cfg.Provider,
 			func() { _ = client.Close() }, nil
 	}
+}
+
+// sweepLock takes a per-database advisory lock for the charge sweep.
+//
+// It returns (release, true) when this caller owns the sweep, and (noop, false) when another worker
+// does — a skip, decided by pg_try, never a block.
+//
+// Two details make this correct rather than approximately correct:
+//
+//   - `pg_advisory_lock` is SESSION-scoped, so the unlock must run on the same connection that took
+//     it. Doing it on the pool would land on whichever connection was free, unlock nothing, and
+//     leave the lock to be released whenever that backend happened to be recycled. So the
+//     connection is acquired once and held for the whole sweep.
+//   - The key is derived from `current_database()`. Advisory locks are CLUSTER-wide: without the
+//     database in the key, a dev database and a production database on one cluster would serialise
+//     against each other, which is exactly the bug the test-harness lock hit.
+//
+// The lock is not the reason a card cannot be charged twice — `payment_attempts.operation_key` is
+// UNIQUE — and must not be relied on as if it were. If the process dies mid-sweep the session ends
+// and the lock is released by PostgreSQL.
+func sweepLock(ctx context.Context, pool *store.Pool) (release func(), got bool, err error) {
+	if pool == nil {
+		return func() {}, true, nil
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("operations: acquire sweep connection: %w", err)
+	}
+	const key = `('x' || substr(md5('catalyst-billing:' || $1 || ':' || current_database()), 1, 16))::bit(64)::bigint`
+	var acquired bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+key+`)`, ChargeDueJob).Scan(&acquired); err != nil {
+		conn.Release()
+		return nil, false, fmt.Errorf("operations: take sweep lock: %w", err)
+	}
+	if !acquired {
+		conn.Release()
+		return func() {}, false, nil
+	}
+	return func() {
+		// Unlock on the SAME connection, then hand it back. Releasing without unlocking would
+		// leave the lock held by a pooled backend and silently disable every later sweep.
+		if _, uerr := conn.Exec(context.WithoutCancel(ctx),
+			`SELECT pg_advisory_unlock(`+key+`)`, ChargeDueJob); uerr != nil {
+			// Losing the unlock is not fatal: the session will release it when the backend is
+			// recycled. It is worth telling the operator, but the sweep it protected already ran.
+			_ = uerr
+		}
+		conn.Release()
+	}, true, nil
+}
+
+// isUniqueViolation reports whether err is PostgreSQL's unique-key violation (SQLSTATE 23505).
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

@@ -133,6 +133,19 @@ interface HeartbeatResponse {
   stale: boolean;
   stale_after_seconds: number;
   detail?: string;
+  /** How many workers are beating. Above one is a misconfiguration — `BILLING_EMBEDDED_WORKER=1`
+   *  plus a separate `billing worker` is the usual way to get there — and it is worth surfacing
+   *  because before heartbeats were per-instance the panel could not see it at all. */
+  workers?: number;
+  /** One entry per worker instance, newest first. */
+  instances?: Array<{
+    id: string;
+    beat_at: string;
+    age_seconds: number;
+    jobs: number;
+    version: string;
+    stale: boolean;
+  }>;
   heartbeat?: {
     id: string;
     beat_at: string;
@@ -659,16 +672,42 @@ function heartbeatCard(
     ? badge("Stale", "warning", { dot: true })
     : badge("Live", "success", { dot: true });
 
+  // More than one worker is a misconfiguration, not a scale-out: `BILLING_EMBEDDED_WORKER=1`
+  // alongside a separate `billing worker` means two processes run every job. Nothing is charged
+  // twice — `payment_attempts.operation_key` is unique — but the sweep and the dunning transitions
+  // overlap, and the failure viewer fills with duplicate-key rows. Flagged here rather than left to
+  // be discovered in a log.
+  const workers = heartbeat.workers ?? 1;
+  const fleet =
+    workers > 1
+      ? banner(
+          "warning",
+          `${workers} workers are running`,
+          "Every job is being executed by more than one process. Run one worker per database: the unique attempt key stops a double charge, but overlapping sweeps burn provider rate limit and produce failure rows that hide real ones.",
+        )
+      : null;
+
   return card({
     title: "Worker",
     actions: state,
     body: h(
       "div",
       { class: "stack-sm" },
+      fleet,
       h(
         "div",
         { class: "meta-grid" },
         h("div", { class: "meta" }, h("span", { class: "meta-label" }, "Last reported"), h("span", { class: "meta-value", title: dateTime(hb.beat_at) }, relative(hb.beat_at))),
+        h(
+          "div",
+          { class: "meta" },
+          h("span", { class: "meta-label" }, workers > 1 ? "Workers" : "Worker"),
+          h(
+            "span",
+            { class: "meta-value" },
+            workers > 1 ? `${workers} running` : `1 · ${hb.id}`,
+          ),
+        ),
         h("div", { class: "meta" }, h("span", { class: "meta-label" }, "Jobs it is running"), h("span", { class: "meta-value mono" }, String(hb.jobs))),
         h("div", { class: "meta" }, h("span", { class: "meta-label" }, "Version"), h("span", { class: "meta-value mono" }, hb.version || "—")),
       ),

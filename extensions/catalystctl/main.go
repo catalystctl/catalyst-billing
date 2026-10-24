@@ -219,6 +219,17 @@ func configFromEnv(environ []string) (config, error) {
 		return config{}, fmt.Errorf("CCTL_NETWORK_MODE=%q is not one of bridge, macvlan, host, mc-lan-static, mc-lan-dynamic",
 			cfg.networkMode)
 	}
+	// Bridge is the default, and it is a deliberate choice rather than a fallback.
+	//
+	// Bridge is the only mode where the panel reserves a host port through an allocation, which is what
+	// makes two concurrent creates unable to collide on the same port and what gives the customer a stable
+	// address to connect to. Left unset, the panel picks its own default (mc-lan-static on the reference
+	// installation), which needs a static IP pool per node and hands out an address the operator has to
+	// manage. Sending bridge explicitly means one code path, one pool requirement, and no dependence on
+	// what a particular panel happens to default to.
+	if cfg.networkMode == "" {
+		cfg.networkMode = "bridge"
+	}
 
 	plans, err := parsePlans(env["CCTL_PLANS"])
 	if err != nil {
@@ -645,12 +656,26 @@ func (s *server) create(req *request) reply {
 		LocationID:        place.LocationID,
 		OwnerID:           ownerID,
 		PrimaryPort:       allocation.Port,
-		PrimaryIP:         allocation.IP,
-		AllocationID:      allocation.ID,
 		AllocatedMemoryMb: place.MemoryMB,
 		AllocatedCpuCores: place.CPUCores,
 		AllocatedDiskMb:   place.DiskMB,
 		Environment:       environmentFor(p.Metadata),
+	}
+	// How the server gets its address depends on the network mode, and the panel is strict about it:
+	// an allocation is only accepted for bridge networking, where it reserves a host port. Every other
+	// mode binds an address directly, so the address is sent instead.
+	//
+	// The free allocation is read either way, because its *port* is the port to use and reserving it is
+	// what stops two concurrent creates from racing for the same one.
+	if usesBridgeNetworking(place.NetworkMode) {
+		createReq.AllocationID = allocation.ID
+	} else if place.PrimaryIP != "" {
+		// A static address is only sent when the service asked for one. Otherwise the panel's own IPAM
+		// allocates from the pool configured for the network, and that is authoritative: the reference
+		// panel refused a create with "No IP pool configured for this network" until a pool existed, and
+		// once one did it assigned the address itself. Sending the node's address instead would take an
+		// address outside the pool and collide with the node.
+		createReq.PrimaryIP = place.PrimaryIP
 	}
 	if place.NetworkMode != "" {
 		mode := place.NetworkMode
@@ -658,6 +683,27 @@ func (s *server) create(req *request) reply {
 	}
 
 	srv, err := s.client.createServer(ctx, createReq)
+	// A port that looked free and was not: another create took it between the list and this request, or the
+	// panel's allocation table disagrees with a running server. Trying the next free port is the correct
+	// repair — the operation key already recorded intent, so the alternative is a failed purchase for a
+	// reason the customer cannot act on.
+	for attempt := 0; err != nil && portConflict(err) && attempt < 2; attempt++ {
+		used, usedErr := s.client.portsInUse(ctx, place.NodeID)
+		if usedErr != nil {
+			break
+		}
+		used[allocation.Port] = struct{}{}
+		allocation, err = s.client.freeAllocation(ctx, place.NodeID, used)
+		if err != nil {
+			break
+		}
+		createReq.PrimaryPort = allocation.Port
+		createReq.AllocationID = ""
+		if usesBridgeNetworking(place.NetworkMode) {
+			createReq.AllocationID = allocation.ID
+		}
+		srv, err = s.client.createServer(ctx, createReq)
+	}
 	if err != nil {
 		// A create that failed before the panel acted is a clean failure: the ledger keeps the
 		// intent, and the core may retry with the same key. A create the panel *refused* is a
@@ -692,7 +738,13 @@ func (s *server) claimAllocation(ctx context.Context, place placement) (panelAll
 	if place.Port > 0 {
 		return s.client.allocationOnPort(ctx, place.NodeID, place.Port)
 	}
-	return s.client.freeAllocation(ctx, place.NodeID)
+	used, err := s.client.portsInUse(ctx, place.NodeID)
+	if err != nil {
+		// Not being able to read the node's servers is not a reason to refuse a purchase: fall back to the
+		// allocation table alone, which is what a panel with a broken list endpoint still answers.
+		used = nil
+	}
+	return s.client.freeAllocation(ctx, place.NodeID, used)
 }
 
 // createResult renders the create reply.
@@ -1169,4 +1221,21 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+// portConflict reports whether the panel refused a create because the requested port is taken.
+//
+// It is checked by code because the alternative — a string match on the message — would break the moment the
+// panel's wording changed, and this retry is the difference between a purchase that succeeds on the next port
+// and one that fails for a reason nobody can act on.
+func portConflict(err error) bool {
+	var pe *panelError
+	if !errors.As(err, &pe) {
+		return false
+	}
+	switch pe.code {
+	case "PORT_ALREADY_IN_USE", "SERVER_PORT_CONFLICT", "ALLOCATION_TAKEN":
+		return true
+	}
+	return false
 }

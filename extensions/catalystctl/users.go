@@ -32,6 +32,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // customerEmailKey is the metadata key the core sends for the customer's address.
@@ -94,13 +95,44 @@ func (s *server) ensurePanelUser(ctx context.Context, metadata map[string]string
 		Password: randomPassword(),
 		RoleIDs:  s.roleIDs(),
 	})
-	if err != nil {
-		// A duplicate is a race, not a failure: another worker created the account between the list and
-		// the create. Re-reading is the correct repair, and it is the only case where this is safe to
-		// retry without a fresh operation key.
-		if isRejection(err) {
-			if again, listErr := s.client.listUsers(ctx, email); listErr == nil {
-				for _, user := range again {
+	if err == nil && created.valid() {
+		s.recordPanelUser(email, created)
+		return created.ID, nil
+	}
+	if err != nil && !isRejection(err) {
+		return "", err
+	}
+
+	// Either the panel refused a duplicate or it answered without an id, and in both cases the account
+	// may well exist: the panel's account search is not immediately consistent (the create and the search
+	// can be milliseconds apart), and a create whose reply could not be parsed has still happened.
+	//
+	// So the repair is to look again, a few times with a short wait, before concluding failure. Giving up
+	// is the one outcome that is definitely wrong: it strands an account on the panel that no operation
+	// key points at, and every later attempt for the same customer is then a permanent 409.
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(time.Duration(attempt) * 300 * time.Millisecond):
+			}
+		}
+		again, listErr := s.client.listUsers(ctx, email)
+		if listErr != nil {
+			continue
+		}
+		for _, user := range again {
+			if strings.EqualFold(strings.TrimSpace(user.Email), email) {
+				s.recordPanelUser(email, user)
+				return user.ID, nil
+			}
+		}
+		// The initial lookup used the search endpoint. A panel under load may not match there yet, so the
+		// last resort reads the account list itself.
+		if attempt >= 2 {
+			if all, err := s.client.listUsers(ctx, ""); err == nil {
+				for _, user := range all {
 					if strings.EqualFold(strings.TrimSpace(user.Email), email) {
 						s.recordPanelUser(email, user)
 						return user.ID, nil
@@ -108,10 +140,11 @@ func (s *server) ensurePanelUser(ctx context.Context, metadata map[string]string
 				}
 			}
 		}
+	}
+	if err != nil {
 		return "", err
 	}
-	s.recordPanelUser(email, created)
-	return created.ID, nil
+	return "", fmt.Errorf("the panel created no account for %s and reports none", email)
 }
 
 // recordPanelUser remembers the address-to-account mapping.

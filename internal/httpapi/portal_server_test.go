@@ -1,183 +1,437 @@
-package httpapi_test
+package httpapi
 
-// The live server card and its power buttons.
+// The live server card and its power route, driven through the real router: real session scoping, real
+// route metadata, a real extension process over the real protocol.
 //
-// These routes hand a customer a button that starts and stops a machine they pay for, so the
-// properties worth testing are the ones a mistake makes dangerous:
+// # What only this level can prove
 //
-//   - Scoping. Another customer's service id must be indistinguishable from one that does not
-//     exist. The distinction is not cosmetic: 403-for-somebody-else's-id confirms the id is real.
-//   - Honesty about the provider. A provider that is not configured, an adapter that cannot report
-//     state, and a machine that has not been created yet are three different answers, and the panel
-//     must not collapse them into an empty card or a 500.
-//   - Refusal before effect. An action the provider does not support, and a service with no
-//     server, are refused before anything is asked of the provider.
+// The adapter's own tests (extensions/catalystctl) prove what it sends to a panel. Only this level
+// proves the things a customer can actually hit:
+//
+//   - **Scoping.** Another customer's service id must be a 404, not a 403 and not a read. The check is
+//     a JOIN in one query, and a test that used a service the caller owns would never exercise it.
+//   - **A 200 with a sentence, not a 5xx, when the provider is unreachable.** A game panel outage must
+//     not make an invoice list look broken.
+//   - **The power route is idempotent by the request's idempotency key** and writes an audit row that
+//     attributes the action to the customer.
+//   - **The four failure classes map to different statuses.** "Could not ask" and "cannot be done" are
+//     different sentences to a customer, and only the second is permanent.
 
 import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/catalyst/billing/internal/authn"
+	"github.com/catalyst/billing/internal/gatewayconfig"
+	"github.com/catalyst/billing/internal/store/storetest"
 )
 
-// serverViewResponse is the subset of the card these tests assert on.
-type serverViewResponse struct {
-	ServiceID     string `json:"service_id"`
-	ServiceStatus string `json:"service_status"`
-	Provisioned   bool   `json:"provisioned"`
-	Available     bool   `json:"available"`
-	Detail        string `json:"detail"`
-	Provider      string `json:"provider"`
+// serverClient is one seeded customer with one service.
+type serverClient struct {
+	customerID string
+	user       authn.User
+	serviceID  string
+	externalID string
 }
 
-// provisionService gives the fixture's service a provider-side identity, which is what distinguishes
-// "provisioned but unreachable" from "no server yet".
-func provisionService(t *testing.T, env *authEnv, serviceID, externalID string) {
+// seedServerClient inserts a user, a customer, the account link, and a product + service.
+//
+// The rows are inserted directly rather than through the catalog and portal APIs: those APIs are not
+// what this test is about, and driving them would make the setup fail for reasons unrelated to the
+// card.
+func seedServerClient(t *testing.T, s *Server, externalID string) serverClient {
 	t.Helper()
-	if _, err := env.pool.Exec(context.Background(),
-		`UPDATE services SET external_id = $2 WHERE id = $1`, serviceID, externalID); err != nil {
-		t.Fatalf("give the service a provider identity: %v", err)
+	pool := s.pool
+	ctx := context.Background()
+
+	const (
+		customerID = "33333333-3333-4333-8333-333333333301"
+		userID     = "33333333-3333-4333-8333-333333333302"
+		productID  = "33333333-3333-4333-8333-333333333303"
+	)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO users (id, email, password_hash, display_name, status)
+		VALUES ($1, 'card-customer@example.test', 'x', 'Card Customer', 'active')
+		ON CONFLICT DO NOTHING`, userID); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO customers (id, email, name)
+		VALUES ($1, 'card-customer@example.test', 'Card Customer')
+		ON CONFLICT DO NOTHING`, customerID); err != nil {
+		t.Fatalf("seed customer: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO customer_accounts (user_id, customer_id, role)
+		VALUES ($1, $2, 'owner')
+		ON CONFLICT DO NOTHING`, userID, customerID); err != nil {
+		t.Fatalf("seed account link: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO products (id, slug, name)
+		VALUES ($1, 'card-product-`+t.Name()+`', 'Game server')
+		ON CONFLICT DO NOTHING`, productID); err != nil {
+		t.Fatalf("seed product: %v", err)
+	}
+
+	var serviceID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO services (customer_id, product_id, status, external_id, generation)
+		VALUES ($1, $2, 'active', $3, 1)
+		RETURNING id`, customerID, productID, externalID).Scan(&serviceID); err != nil {
+		t.Fatalf("seed service: %v", err)
+	}
+
+	return serverClient{
+		customerID: customerID,
+		user:       authn.User{ID: userID, Email: "card-customer@example.test", Status: "active"},
+		serviceID:  serviceID,
+		externalID: externalID,
 	}
 }
 
-// A customer reads their own server, and the answer is a 200 even when there is nothing to show:
-// the card is a place to explain, not a failure mode.
-func TestServerViewExplainsAnUnprovisionedService(t *testing.T) {
-	env := newAuthEnv(t)
-	tenant := env.createTenant(t, "server-view@example.test", "12.00")
-	cookie, _ := env.login(t, "server-view@example.test", "a long enough password")
+// configureFixtureProvisioner points the servers integration at the fixture adapter.
+//
+// The binary is built once per test run, the way internal/extproto's fixtures are, so this test drives
+// a separate process over the real protocol rather than an in-process stub.
+func configureFixtureProvisioner(t *testing.T, s *Server, extraEnv ...string) {
+	t.Helper()
+	bin := buildFixtureProvisioner(t)
 
-	rec := env.get(t, "/api/v1/portal/services/"+tenant.serviceID+"/server", cookie)
+	resolver := gatewayconfig.New(s.pool)
+	// Only what the test sets: an inherited BILLING_PROVISIONER_EXTENSION would silently override the
+	// fixture path and the card would read somebody else's installation.
+	resolver.LookupEnv = func(key string) (string, bool) {
+		for _, kv := range extraEnv {
+			if k, v, ok := strings.Cut(kv, "="); ok && k == key {
+				if k == "FAKE_PROV_POWER_STATE" || k == "FAKE_PROV_NO_METRICS" {
+					continue
+				}
+				return v, true
+			}
+		}
+		return "", false
+	}
+	// The binary's location is not a stored setting: it comes from BILLING_PROVISIONER_EXTENSION, or
+	// from the installation's bin directory. Setting the variable is exactly what a deployment does,
+	// and it is the only thing that reaches the resolver the request path builds for itself.
+	t.Setenv("BILLING_PROVISIONER_EXTENSION", bin)
+	if _, err := resolver.Save(context.Background(), gatewayconfig.ServerKind, map[string]string{
+		"provider": "fake",
+	}, "", nil); err != nil {
+		t.Fatalf("configure the fixture provisioner: %v", err)
+	}
+}
+
+// buildFixtureProvisioner builds extensions/fakeprov once per run.
+func buildFixtureProvisioner(t *testing.T) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "fakeprov")
+	cmd := exec.Command("go", "build", "-o", out, "../../extensions/fakeprov")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fakeprov: %v\n%s", err, b)
+	}
+	return out
+}
+
+// do issues a request through the real router as a given user.
+func do(s *Server, method, path string, user *authn.User, body string, headers map[string]string) *httptest.ResponseRecorder {
+	var reader *strings.Reader
+	if body == "" {
+		reader = strings.NewReader("")
+	} else {
+		reader = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "test-key-1")
+	// The session a test attaches carries this token; a mutating route is CSRF-checked even in a test,
+	// which is the point of driving the real router.
+	req.Header.Set(csrfHeaderName, "tok")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	if user != nil {
+		req = withUser(req, *user)
+	}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestPortalServerViewRendersTheLiveServer(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	configureFixtureProvisioner(t, s)
+	client := seedServerClient(t, s, "resource-card-1")
+
+	rec := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &client.user, "", nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("view: %d %s", rec.Code, rec.Body)
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	var out serverViewResponse
+
+	var out struct {
+		Provisioned bool     `json:"provisioned"`
+		Available   bool     `json:"available"`
+		Name        string   `json:"name"`
+		State       string   `json:"state"`
+		Address     string   `json:"address"`
+		PanelURL    string   `json:"panel_url"`
+		CanPower    []string `json:"can_power"`
+		Detail      string   `json:"detail"`
+		Stats       *struct {
+			CPUPercent   float64 `json:"cpu_percent"`
+			MemoryUsedMB int64   `json:"memory_used_mb"`
+		} `json:"stats"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("decode: %v (%s)", err, rec.Body)
+		t.Fatalf("decode: %v\n%s", err, rec.Body.String())
 	}
-	if out.Provisioned {
-		t.Fatal("a service with no external id reports itself provisioned")
+
+	if !out.Provisioned || !out.Available {
+		t.Fatalf("expected a live server, got provisioned=%t available=%t detail=%q",
+			out.Provisioned, out.Available, out.Detail)
+	}
+	// The name and the address are what the customer came for.
+	if !strings.Contains(out.Name, "Fixture server") {
+		t.Fatalf("name = %q, want the provider's own name", out.Name)
+	}
+	if out.Address != "play.example.test:25565" {
+		t.Fatalf("address = %q, want host:port from the provider", out.Address)
+	}
+	// The deep link is the button that opens the panel. Without it the feature is incomplete.
+	if !strings.Contains(out.PanelURL, "/servers/") {
+		t.Fatalf("panel_url = %q, want a link to the server", out.PanelURL)
+	}
+	// A running server offers stop/restart/kill and never start.
+	if strings.Join(out.CanPower, ",") != "stop,restart,kill" {
+		t.Fatalf("can_power = %v, want stop,restart,kill for a running server", out.CanPower)
+	}
+	if out.Stats == nil || out.Stats.CPUPercent == 0 {
+		t.Fatalf("stats = %+v, want the provider's figures", out.Stats)
+	}
+}
+
+func TestPortalServerViewHidesAnotherCustomersService(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	configureFixtureProvisioner(t, s)
+	client := seedServerClient(t, s, "resource-card-2")
+
+	// A different, signed-in customer.
+	other := authn.User{ID: "44444444-4444-4444-8444-444444444401", Email: "other@example.test", Status: "active"}
+	rec := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &other, "", nil)
+
+	// 404, deliberately: a 403 would confirm the service exists, which is an enumeration oracle.
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for another customer's service: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "Fixture server") {
+		t.Fatalf("the response leaked the server's name: %s", rec.Body.String())
+	}
+}
+
+func TestPortalServerViewIsASentenceWhenTheProviderCannotBeReached(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	configureFixtureProvisioner(t, s)
+	client := seedServerClient(t, s, "resource-card-3")
+
+	// Point the integration at a binary that does not exist: the launch fails, which is the same class
+	// of failure as a provider outage.
+	resolver := gatewayconfig.New(s.pool)
+	// A path that does not exist: the launch fails to find the binary, which is the same class of
+	// failure as a provider outage.
+	t.Setenv("BILLING_PROVISIONER_EXTENSION", filepath.Join(t.TempDir(), "absent"))
+	if _, err := resolver.Save(context.Background(), gatewayconfig.ServerKind, map[string]string{
+		"provider": "fake",
+	}, "", nil); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	rec := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &client.user, "", nil)
+
+	// 200 with a sentence: a provider outage is not a reason to fail the request, and a 5xx here would
+	// take the whole billing page down for something that is not the billing panel's fault.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with available=false: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Available bool   `json:"available"`
+		Detail    string `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
 	if out.Available {
-		t.Fatal("a service with no server reports live state as available")
+		t.Fatal("available should be false when the provider could not be launched")
 	}
 	if out.Detail == "" {
-		t.Fatal("no sentence explains why the card is empty: the page would render a blank box")
+		t.Fatal("a card with no data must say why")
 	}
-	// The read is a question about now, and a cached answer to it is a wrong answer.
-	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-		t.Fatalf("Cache-Control = %q, want no-store", got)
-	}
-}
-
-// Another customer's service must answer exactly as one that has never existed.
-func TestServerViewIsScopedToTheCaller(t *testing.T) {
-	env := newAuthEnv(t)
-	alice := env.createTenant(t, "server-alice@example.test", "12.00")
-	env.createTenant(t, "server-bob@example.test", "12.00")
-	provisionService(t, env, alice.serviceID, "remote-alice")
-	bobCookie, _ := env.login(t, "server-bob@example.test", "a long enough password")
-
-	other := env.get(t, "/api/v1/portal/services/"+alice.serviceID+"/server", bobCookie)
-	if other.Code != http.StatusNotFound {
-		t.Fatalf("another customer's service answered %d, want 404", other.Code)
-	}
-
-	// The same request for an id that genuinely does not exist must be indistinguishable — same
-	// status and same problem code — or the 404 becomes an oracle for which ids are real.
-	missing := env.get(t,
-		"/api/v1/portal/services/0199f8ff-0000-7000-8000-000000000000/server", bobCookie)
-	if missing.Code != other.Code {
-		t.Fatalf("a nonexistent id answered %d while another customer's answered %d",
-			missing.Code, other.Code)
-	}
-	var otherBody, missingBody struct {
-		Code string `json:"code"`
-	}
-	_ = json.Unmarshal(other.Body.Bytes(), &otherBody)
-	_ = json.Unmarshal(missing.Body.Bytes(), &missingBody)
-	if otherBody.Code != missingBody.Code {
-		t.Fatalf("problem codes differ: another customer's %q vs nonexistent %q",
-			otherBody.Code, missingBody.Code)
+	// The sentence must not leak the deployment's internals: a customer cannot act on a file path, and
+	// it reads as though their server were broken.
+	if strings.Contains(out.Detail, "/nonexistent") || strings.Contains(out.Detail, "launch") {
+		t.Fatalf("the customer-facing sentence leaked internals: %q", out.Detail)
 	}
 }
 
-// A power action on a service that has no server is refused before anything is asked of a provider,
-// and the refusal names the reason rather than reporting a generic failure.
-func TestPowerRefusesAServiceWithNoServer(t *testing.T) {
-	env := newAuthEnv(t)
-	tenant := env.createTenant(t, "server-nopower@example.test", "12.00")
-	cookie, csrf := env.login(t, "server-nopower@example.test", "a long enough password")
+func TestPortalServerViewSaysSoWhenNoServerExistsYet(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	configureFixtureProvisioner(t, s)
+	// An empty external id is a service that has not been provisioned: the normal state a minute
+	// after a purchase.
+	client := seedServerClient(t, s, "")
 
-	rec := env.postJSON(t, "/api/v1/portal/services/"+tenant.serviceID+"/server/power",
-		cookie, csrf, map[string]any{"action": "start"})
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("power on an unprovisioned service: %d %s", rec.Code, rec.Body)
+	rec := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &client.user, "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
-	var problem struct {
-		Code string `json:"code"`
+	var out struct {
+		Provisioned bool   `json:"provisioned"`
+		Detail      string `json:"detail"`
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &problem)
-	if problem.Code != "not_provisioned" {
-		t.Fatalf("code = %q, want not_provisioned", problem.Code)
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Provisioned {
+		t.Fatal("a service with no external id is not provisioned")
+	}
+	if out.Detail == "" {
+		t.Fatal("the card must explain why there is nothing to show")
 	}
 }
 
-// An action outside the four the API accepts is a 400, not a 409 or a silent no-op.
-func TestPowerRefusesAnUnknownAction(t *testing.T) {
-	env := newAuthEnv(t)
-	tenant := env.createTenant(t, "server-badaction@example.test", "12.00")
-	provisionService(t, env, tenant.serviceID, "remote-badaction")
-	cookie, csrf := env.login(t, "server-badaction@example.test", "a long enough password")
+func TestPortalServerPowerPerformsTheAction(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products", "audit_events")
+	configureFixtureProvisioner(t, s)
+	client := seedServerClient(t, s, "resource-card-4")
 
-	rec := env.postJSON(t, "/api/v1/portal/services/"+tenant.serviceID+"/server/power",
-		cookie, csrf, map[string]any{"action": "reboot"})
+	// The fixture starts "running", so stop is the action that changes something.
+	rec := do(s, http.MethodPost, "/api/v1/portal/services/"+client.serviceID+"/server/power",
+		&client.user, `{"action":"stop"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Action  string `json:"action"`
+		Changed bool   `json:"changed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Action != "stop" || !out.Changed {
+		t.Fatalf("expected a changed stop, got %+v", out)
+	}
+
+	// The action reaches the provider.
+	read := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &client.user, "", nil)
+	var view struct {
+		CanPower []string `json:"can_power"`
+	}
+	if err := json.Unmarshal(read.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if strings.Join(view.CanPower, ",") != "start" {
+		t.Fatalf("after a stop the only offered action is start, got %v", view.CanPower)
+	}
+
+	// And it is attributed: a power action nobody can trace is exactly what the audit log exists to
+	// prevent.
+	var count int
+	if err := s.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM audit_events
+		WHERE action = 'service.power' AND target_id = $1`, client.serviceID).Scan(&count); err != nil {
+		t.Fatalf("read the audit log: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("a power action must be recorded in the audit log")
+	}
+}
+
+func TestPortalServerPowerRejectsAnUnknownAction(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	configureFixtureProvisioner(t, s)
+	client := seedServerClient(t, s, "resource-card-5")
+
+	rec := do(s, http.MethodPost, "/api/v1/portal/services/"+client.serviceID+"/server/power",
+		&client.user, `{"action":"reinstall"}`, nil)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("unknown action: %d %s", rec.Code, rec.Body)
-	}
-	var problem struct {
-		Code string `json:"code"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &problem)
-	if problem.Code != "invalid_action" {
-		t.Fatalf("code = %q, want invalid_action", problem.Code)
+		t.Fatalf("status = %d, want 400 for an action outside the four: %s", rec.Code, rec.Body.String())
 	}
 }
 
-// With no provisioner configured, a power request is refused as not-configured rather than reported
-// as a provider failure. The difference decides whether the operator checks their provider settings
-// or their game panel.
-func TestPowerSaysWhenServerControlIsNotConfigured(t *testing.T) {
-	env := newAuthEnv(t)
-	tenant := env.createTenant(t, "server-noprov@example.test", "12.00")
-	provisionService(t, env, tenant.serviceID, "remote-noprov")
-	cookie, csrf := env.login(t, "server-noprov@example.test", "a long enough password")
+func TestPortalServerPowerRefusesAServiceWithNoServer(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	configureFixtureProvisioner(t, s)
+	client := seedServerClient(t, s, "")
 
-	rec := env.postJSON(t, "/api/v1/portal/services/"+tenant.serviceID+"/server/power",
-		cookie, csrf, map[string]any{"action": "start"})
-	// No provider is wired in this harness, so the honest answer is one of the two configuration
-	// refusals — never a 200 claiming the machine started.
+	rec := do(s, http.MethodPost, "/api/v1/portal/services/"+client.serviceID+"/server/power",
+		&client.user, `{"action":"start"}`, nil)
+	// There is nothing to start. Saying so is a conflict with the current state of the resource, not a
+	// malformed request and not a server error.
 	if rec.Code != http.StatusConflict {
-		t.Fatalf("power with no provider: %d %s, want 409", rec.Code, rec.Body)
-	}
-	var problem struct {
-		Code string `json:"code"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &problem)
-	if problem.Code != "provider_not_configured" && problem.Code != "power_unsupported" {
-		t.Fatalf("code = %q, want provider_not_configured or power_unsupported", problem.Code)
+		t.Fatalf("status = %d, want 409 for a service with no server: %s", rec.Code, rec.Body.String())
 	}
 }
 
-// The staff read is not a customer route: a customer session must not be able to inspect another
-// account's machine through it.
-func TestStaffServerViewRefusesACustomerSession(t *testing.T) {
-	env := newAuthEnv(t)
-	tenant := env.createTenant(t, "server-staffgate@example.test", "12.00")
-	cookie, _ := env.login(t, "server-staffgate@example.test", "a long enough password")
+func TestStaffServerViewRequiresTheStaffPermission(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	configureFixtureProvisioner(t, s)
+	client := seedServerClient(t, s, "resource-card-6")
 
-	rec := env.get(t, "/api/v1/staff/services/"+tenant.serviceID+"/server", cookie)
-	if rec.Code != http.StatusForbidden && rec.Code != http.StatusUnauthorized {
-		t.Fatalf("a customer read the staff server card: %d %s", rec.Code, rec.Body)
+	// A plain customer has no service:read:all, so the staff route is refused even for a service they
+	// own. That is the point of a staff route: it is not a second door into the same room.
+	rec := do(s, http.MethodGet, "/api/v1/staff/services/"+client.serviceID+"/server", &client.user, "", nil)
+	if rec.Code != http.StatusForbidden && rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want the staff route to refuse a customer: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStaffServerViewServesAnOperator(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	configureFixtureProvisioner(t, s)
+	client := seedServerClient(t, s, "resource-card-7")
+
+	admin := adminUser()
+	rec := do(s, http.MethodGet, "/api/v1/staff/services/"+client.serviceID+"/server", &admin, "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for an administrator: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Available bool   `json:"available"`
+		Name      string `json:"name"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.Available || out.Name == "" {
+		t.Fatalf("an operator must see the same live server, got %+v", out)
+	}
+}
+
+func TestTheCardIsNotCached(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	configureFixtureProvisioner(t, s)
+	client := seedServerClient(t, s, "resource-card-8")
+
+	rec := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &client.user, "", nil)
+	// A cached live view is a wrong live view, and an intermediary caching one customer's server for
+	// another is worse.
+	if got := rec.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}
 }

@@ -440,10 +440,26 @@ RECORDED = {
     "api GET /api/v1/staff/credit/debits":
         "GAP: the staff credit ledger records debits and no screen reads them; /credits shows "
         "the customer's balance. Recorded: the credit screens are another package's files.",
-    "api GET /api/v1/staff/tax-import/runs":
-        "GAP: a tax import records its runs and /tax-rates reads provenance, source, preview and "
-        "import but not the run history. Recorded: web/src/views/tax-rates.ts is another "
-        "package's file.",
+    # Deleted on purpose, not forgotten: /tax-rates grew an import-history card that reads this
+    # route, so the finding no longer occurs. A record that outlives its finding is worse than no
+    # record — it hides the next real one behind a line everybody has learned to skip.
+    "write POST /api/v1/portal/services/{id}/server/power":
+        "FALSE POSITIVE, verified by hand: web/src/ui/game-server.ts posts `${url}/power` where "
+        "`url` is built from the card's basePath option, so the write exists and the path literal "
+        "does not. The sweep matches text, and a URL assembled from a parameter is invisible to it. "
+        "The customer card and the staff card are the same renderer, which is why there is one "
+        "record here and one below rather than two implementations to keep in step.",
+    "write POST /api/v1/staff/services/{id}/server/power":
+        "FALSE POSITIVE, same call site as the portal entry above: the shared card takes its base "
+        "path as an option, so an operator's page and a customer's page differ only in that string.",
+    "api GET /api/v1/tax/disclosure":
+        "GAP, and deliberately left open: the storefront does not print a tax label. It must not "
+        "print one yet. `Server.IssuerFor` prices an invoice at the customer's own jurisdiction, "
+        "but no production path calls it — checkout, the manual invoice, orders and the renewal "
+        "worker all issue through the shared no-tax issuer. Advertising \"incl. 19% VAT\" on a "
+        "storefront whose invoices carry no tax line would be a false statement to a customer. The "
+        "wiring is one change across all four issuance paths, and half of it would mean the first "
+        "invoice of a subscription charges VAT while every renewal does not.",
 
     # The export routes ARE reachable; the sweep cannot see them because each screen builds the
     # path through a helper (`exportPath()` in views/customers.ts, invoices.ts, services.ts), and
@@ -468,10 +484,9 @@ RECORDED = {
         "path for a customer and the staff path for an operator; the sweep cannot resolve a "
         "function call. The staff spelling is NOT a duplicate: the portal handler resolves the "
         "caller's own customer, which a staff login does not have",
-    "api GET /api/v1/staff/tax-import/runs":
-        "GAP: an import's run history has no screen. /tax-rates reads provenance and the source "
-        "and can preview and import, but the record of past runs — what was imported, when, and "
-        "what was rejected — is API-only. Recorded: the next pass on the tax screen.",
+    # Deleted on purpose, not forgotten: /tax-rates grew an import-history card that reads this
+    # route, so the finding no longer occurs. A record that outlives its finding is worse than no
+    # record — it hides the next real one behind a line everybody has learned to skip.
     "api GET /api/v1/catalog/category/{slug}":
         "the storefront filters in place with ?category=; a category URL is not part of the "
         "storefront's design, so the endpoint is public API only",

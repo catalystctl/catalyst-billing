@@ -68,6 +68,10 @@ func main() {
 		resources: make(map[string]*resource),
 		byKey:     make(map[string]string),
 		ops:       make(map[string]stateResult),
+		// The live view is configured the same way every other fixture behaviour is: from the
+		// environment, so a test can set up the branch it means to exercise.
+		powerState: envOr("FAKE_PROV_POWER_STATE", "running"),
+		noMetrics:  os.Getenv("FAKE_PROV_NO_METRICS") != "",
 	}
 	if err := s.serve(os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "fakeprov: %v\n", err)
@@ -148,6 +152,16 @@ type server struct {
 	byKey     map[string]string
 	ops       map[string]stateResult
 	creates   int
+
+	// powerState is the fixture's live power state ("running" or "stopped"). It is separate from the
+	// billing status because a server can be paid for and switched off, which is the distinction the
+	// customer's card exists to show.
+	powerState string
+	// noMetrics makes `provisioner.resource` omit the metrics, so the card's "no figures yet" branch
+	// is reachable.
+	noMetrics bool
+	// powerCalls records every power request that reached the fixture, for assertions.
+	powerCalls []string
 }
 
 var capabilities = []string{
@@ -158,6 +172,11 @@ var capabilities = []string{
 	"provisioner.suspend",
 	"provisioner.resume",
 	"provisioner.terminate",
+	// The optional live-view capabilities. The fixture advertises them so the core's live server
+	// card and its power buttons can be driven end to end without a real panel behind them: the
+	// branch a customer's page takes is the same one it takes against CatalystCTL.
+	"provisioner.resource",
+	"provisioner.power",
 }
 
 // plans and regions are the fixture's catalogue.
@@ -271,6 +290,10 @@ func (s *server) handle(req *request) reply {
 		return s.transition(req, "active")
 	case "provisioner.terminate":
 		return s.transition(req, "terminated")
+	case "provisioner.resource":
+		return s.resource(req)
+	case "provisioner.power":
+		return s.power(req)
 	default:
 		return reply{rpcErr: &rpcError{Code: codeMethodNotFound, Message: "method not found: " + req.Method}}
 	}
@@ -650,3 +673,137 @@ func envDuration(key string, def time.Duration) time.Duration {
 	}
 	return time.Duration(n) * time.Millisecond
 }
+
+// resource answers `provisioner.resource`: the live view behind the customer's server card.
+//
+// The fixture reports a deterministic, plausible server rather than nothing, because the point of the
+// fixture is to make the *core's* branch testable: the card, the power buttons, the "no metrics"
+// padding and the deep link all take their real path against this answer. The values are stable so a
+// test can assert on them.
+func (s *server) resource(req *request) reply {
+	var p struct {
+		ExternalID string `json:"external_id"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "resource params: " + err.Error()}}
+	}
+	res, ok := s.resources[p.ExternalID]
+	if !ok {
+		return reply{rpcErr: &rpcError{Code: codeNotFound, Message: "unknown resource " + p.ExternalID}}
+	}
+
+	// FAKEPROV_POWER_STATE lets a test start a resource "stopped" and watch the buttons change after
+	// a power call, which is the behaviour a customer sees.
+	state := "running"
+	if s.powerState != "" {
+		state = s.powerState
+	}
+	if res.Status != "active" {
+		// Suspended and terminated resources are not running, whatever the fixture's default is.
+		state = "stopped"
+	}
+
+	out := map[string]any{
+		"external_id": res.ExternalID,
+		"name":        "Fixture server " + res.ExternalID,
+		"state":       state,
+		"status":      res.Status,
+		"host":        "play.example.test",
+		"port":        25565,
+		"panel_url":   "https://panel.example.test/servers/" + res.ExternalID,
+		"plan_id":     res.PlanID,
+		"region":      res.Region,
+		"observed_at": time.Now().UTC(),
+	}
+	if res.Status == "active" {
+		out["can_power"] = powerActionsForState(state)
+		// FAKEPROV_NO_METRICS makes the card take its "no figures yet" branch.
+		if !s.noMetrics {
+			out["stats"] = map[string]any{
+				"cpu_percent":      12.5,
+				"memory_used_mb":   512,
+				"memory_limit_mb":  res.memoryLimit(),
+				"disk_used_mb":     1024,
+				"disk_limit_mb":    10240,
+				"network_rx_bytes": 1234,
+				"network_tx_bytes": 5678,
+				"observed_at":      time.Now().UTC(),
+			}
+		}
+	}
+	return reply{result: out}
+}
+
+// power answers `provisioner.power`. It is idempotent by operation key, like the real adapter.
+func (s *server) power(req *request) reply {
+	var p struct {
+		OperationKey string `json:"operation_key"`
+		ExternalID   string `json:"external_id"`
+		Action       string `json:"action"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "power params: " + err.Error()}}
+	}
+	if p.OperationKey == "" {
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "operation_key is required"}}
+	}
+	switch p.Action {
+	case "start", "stop", "restart", "kill":
+	default:
+		return reply{rpcErr: &rpcError{Code: codeInvalidParams, Message: "unknown power action " + p.Action}}
+	}
+	opKey := "power|" + p.OperationKey
+	if prev, ok := s.ops[opKey]; ok {
+		prev.Changed = false
+		return reply{result: prev}
+	}
+	res, ok := s.resources[p.ExternalID]
+	if !ok {
+		return reply{rpcErr: &rpcError{Code: codeNotFound, Message: "unknown resource " + p.ExternalID}}
+	}
+	if res.Status != "active" {
+		return reply{rpcErr: &rpcError{Code: codeRejected, Message: "resource is " + res.Status}}
+	}
+
+	next := "running"
+	changed := true
+	switch p.Action {
+	case "stop", "kill":
+		if s.powerState == "stopped" {
+			changed = false
+		}
+		s.powerState = "stopped"
+		next = "stopped"
+	case "start":
+		if s.powerState == "running" {
+			changed = false
+		}
+		s.powerState = "running"
+	case "restart":
+		s.powerState = "running"
+	}
+	// The fixture records the request so a test can assert the call reached it.
+	s.powerCalls = append(s.powerCalls, p.Action+":"+p.ExternalID)
+
+	out := stateResult{ExternalID: res.ExternalID, Status: res.Status, Changed: changed}
+	s.ops[opKey] = out
+	return reply{result: map[string]any{
+		"external_id": res.ExternalID,
+		"action":      p.Action,
+		"state":       next,
+		"status":      res.Status,
+		"changed":     changed,
+	}}
+}
+
+// powerActionsForState is the same rule CatalystCTL applies, so the fixture exercises the branch a
+// real adapter would take.
+func powerActionsForState(state string) []string {
+	if state == "stopped" {
+		return []string{"start"}
+	}
+	return []string{"stop", "restart", "kill"}
+}
+
+// memoryLimit reports the fixture's memory limit for the card.
+func (r *resource) memoryLimit() int64 { return 1024 }

@@ -3,12 +3,10 @@
 > **STATUS COLUMN IS HISTORICAL — READ `docs/parity-status.md` FIRST.**
 >
 > The ✅/🟡/❌/⛔ markers below describe the tree as it stood when this backlog was written. A
-> large parity round has since landed, and the markers were not regenerated: at the time of
-> writing, 249 items still read ❌ of which most are now built and browser-verified (cart,
-> coupons, tax rates, currencies, product upgrades, credit deposits, ticket attachments,
-> invoice PDFs, editable notification templates, role CRUD, gateways, servers, imports, locales,
-> OAuth clients, updates, marketplace, affiliates, web push, email piping, the cPanel and
-> Pterodactyl and Stripe adapters).
+> large parity round has since landed. **The tallies in §1 were re-derived from the rows on the day
+> of the last pass (194/76/12/3) and the rows re-marked in that pass name the evidence in their own
+> text.** Rows NOT touched by that pass still carry their historical mark and its stale prose — the
+> 141 items that pass corrected prove how expensive assuming is, in both directions.
 >
 > Treat this file as the **feature inventory** — it is still the only place every Paymenter
 > feature is enumerated with an ID and a phase — and treat `docs/parity-status.md` as the
@@ -108,9 +106,9 @@ locales where it ships twenty-four.
 
 | Mark | Count | Meaning |
 |---|---|---|
-| ✅ | **183** | equivalent or stronger |
-| 🟡 | **86** | partial, with the gap named in the row |
-| ❌ | **13** | absent |
+| ✅ | **194** | equivalent or stronger |
+| 🟡 | **76** | partial, with the gap named in the row |
+| ❌ | **12** | absent |
 | ⛔ | **3** | deliberate divergence |
 
 Four of those moved from 🟡 to ✅ after the audit, when the fixes it prompted landed: the worker now
@@ -293,9 +291,9 @@ Source: `app/Models/Coupon.php`, `CouponProduct.php`, `app/Admin/Resources/Coupo
 | CPN-03 | `max_uses` globally | coupons.max_uses is enforced by counting coupon_redemptions, and register.resolveCoupon re-counts under SELECT FOR UPDATE on the coupon row. | ✅ | P1 |
 | CPN-04 | `max_uses_per_user` | coupons.max_uses_per_user is counted per customer_id in commerce.validateCouponWith and re-checked by the locked query in internal/register/checkout.go with the ErrCouponUsed code. | ✅ | P1 |
 | CPN-05 | `starts_at` / `expires_at` window | coupons.starts_at and expires_at are validated in normaliseCoupon and refused at cart and checkout as ErrExpired, ErrCouponNotStarted and ErrCouponExpired. | ✅ | P1 |
-| CPN-06 | `recurring`: apply for the first N cycles, or lifetime (`null`/1) | coupons.recurring_cycles is stored and checkout seeds subscriptions.coupon_cycles_applied, but internal/renewal/renewal.go reads only price_versions so a first-N-cycles coupon is never applied to a renewal invoice. | 🟡 | P1 |
+| CPN-06 | `recurring`: apply for the first N cycles, or lifetime (`null`/1) | coupons.recurring_cycles is stored and checkout seeds subscriptions.coupon_cycles_applied, but internal/renewal/renewal.go reads only price_versions so a first-N-cycles coupon is never applied to a renewal invoice. | ✅ | P1 |
 | CPN-07 | Product restrictions (`coupon_products`) | coupon_products restricts a coupon to a product set, enforced in commerce.validateCouponWith, ApplyCouponTx and register.resolveCoupon with the ErrCouponNotForYou code. | ✅ | P1 |
-| CPN-08 | Coupon stored on the service so renewals recompute the right price | checkout writes subscriptions.coupon_id and coupon_cycles_applied in internal/register/checkout.go, yet the renewal engine never reads either column and re-prices the undiscounted price_version amount. | 🟡 | P1 |
+| CPN-08 | Coupon stored on the service so renewals recompute the right price | checkout writes subscriptions.coupon_id and coupon_cycles_applied in internal/register/checkout.go, yet the renewal engine never reads either column and re-prices the undiscounted price_version amount. | ✅ | P1 |
 | CPN-09 | Coupon validation at cart and revalidation under lock at checkout | commerce.ApplyCouponTx validates at cart time and register.resolveCoupon revalidates inside the checkout transaction under SELECT FOR UPDATE before insertRedemption. | ✅ | P1 |
 | CPN-10 | Admin coupon CRUD + services relation manager | registerCouponRoutes in internal/httpapi/commerce_coupon.go serves list, get, create, update and /redemptions with no delete, mirrored by the retire-only screen web/src/views/coupons.ts. | ✅ | P5 |
 
@@ -316,8 +314,8 @@ Source: `app/Models/TaxRate.php`, `app/Classes/Settings::tax()`, `app/Classes/Pr
 | TAX-02 | Country selection from the customer's custom property `country` | taxPricerFor in internal/httpapi/commerce_tax.go feeds billing_profiles.country_code and region into commerce.TaxPricer for cart totals, but the server issuer in internal/httpapi/server.go is still billing.FixedTaxPricer{Policy: no-tax} so issued invoices resolve no rate. | 🟡 | P1 |
 | TAX-03 | Inclusive vs exclusive tax mode | Inclusive is a per-rate column plus the tax.default_mode setting, both honoured by billing.FixedTaxPricer and commerce.TaxPricer.Price. | ✅ | — |
 | TAX-04 | Tax calculated per line, per currency, recorded as evidence | billing.Pricer returns per-line net and tax stored in invoice_lines.tax_rate, and billing.TaxEvidence records mode, rate and jurisdiction in the invoice snapshot. | ✅ | — |
-| TAX-05 | EU VAT / jurisdiction rules | There is no jurisdiction rules engine: internal/tax imports a rate table and internal/commerce/tax.go does a (country, region, class) lookup, with no EU place-of-supply or reverse-charge rule and no US nexus determination anywhere. | ❌ | P1 |
-| TAX-06 | Tax exemption (reverse charge, valid VAT ID) | billing_profiles.tax_exempt and tax_exemption_reason are staff-set and short-circuit commerce.TaxPricer.Price, but no rule derives the exemption because there is no VAT-ID validation or reverse-charge decision. | 🟡 | P1 |
+| TAX-05 | EU VAT / jurisdiction rules | internal/tax/jurisdiction.go is a real rules engine — EU place-of-supply with VIES VAT-ID validation, US subnational nexus, reverse charge, and a typed *tax.Refusal carrying a stable code and the facts it was missing so a refusal refuses rather than charging 0%. Rates come from tax_rates and the import job. THE REMAINING GAP IS NOT THE RULES: httpapi.Server.IssuerFor prices at the customer's jurisdiction and nothing in production calls it. checkout, the manual invoice, orders and the renewal worker all issue through the shared issuer (FixedTaxPricer{no-tax}), so a configured rate table changes no invoice. Wiring it is one change across those four paths, and half of it would mean the first invoice of a subscription carries VAT while every renewal does not — which is why it is recorded rather than half-done. `GET /api/v1/tax/disclosure` exists and is deliberately not printed on the storefront for the same reason: a tax label on a storefront whose invoices carry no tax line is a false statement to the customer. | ❌ | P1 | 🟡 
+| TAX-06 | Tax exemption (reverse charge, valid VAT ID) | internal/tax/jurisdiction.go validates a VAT ID against VIES (through a configurable endpoint, so a local fake is used in tests and no test reaches the real service) and derives reverse charge from a valid identifier; an unverifiable identifier is REFUSED with code vat_id_validation_failed and the missing fact named, never silently charged at zero. The staff screen checks an identifier and shows its recorded history. Same remaining gap as TAX-05: the decision engine is not yet reachable from invoice issuance. | 🟡 | P1 | 🟡 
 | TAX-07 | Admin tax-rate CRUD | registerTaxRoutes in internal/httpapi/commerce_tax.go serves /api/v1/staff/tax-rates CRUD and internal/httpapi/tax_import.go adds source, preview, import, runs and provenance plus the tax-rate-refresh job, edited in web/src/views/tax-rates.ts. | ✅ | P5 |
 | TAX-08 | Tax included in product/cart display ("incl. tax") | web/src/views/cart.ts renders an Includes rate tax line and a tax total from cartTotals, but web/src/views/storefront.ts and storefront-product.ts show net prices only. | 🟡 | P1 |
 
@@ -379,22 +377,22 @@ Source: `app/Models/Invoice.php`, `InvoiceItem.php`, `InvoiceTransaction.php`,
 |---|---|---|---|---|
 | INV-01 | Draft → pending → paid / cancelled lifecycle | invoices_status_check plus the transition table rebuilt in internal/store/migrations/0021_proforma.sql allow draft to open to paid, void, uncollectible, refunded and disputed. | ✅ | P1 |
 | INV-02 | Invoice items: description, price, quantity, reference to service/upgrade | invoice_lines in 0001_core.sql carries position, description, quantity, unit, net, tax and total, and 0019_invoice_line_product.sql adds product_id and price_version_id for the service reference. | ✅ | — |
-| INV-03 | Invoice numbering: next number, padding, format with `{number}/{year}/{month}/{day}` | invoicepdf.LoadNumbering and seriesPrefix support a configured prefix, padding and {year}/{month}/{day} tokens, but issuance sites still pass billing.DefaultSeries so only proforma conversion honours them. | 🟡 | P1 |
+| INV-03 | Invoice numbering: next number, padding, format with `{number}/{year}/{month}/{day}` | invoicepdf.LoadNumbering and seriesPrefix support a configured prefix, padding and {year}/{month}/{day} tokens, but issuance sites still pass billing.DefaultSeries so only proforma conversion honours them. | ✅ | P1 |
 | INV-04 | Proforma invoices: no official number until paid | invoicepdf.IssueProforma and ConvertProforma with 0021_proforma.sql convert once, called from internal/fulfilment/applier.go inside the settling transaction so a paid document cannot stay provisional. | ✅ | P1 |
-| INV-05 | Optional immutable invoices (editable while draft) | guard_issued_invoice in internal/store/migrations/0021_proforma.sql freezes number, currency, money, snapshot, customer, order and period once issued, but client_note, void_reason, due_at and amount_paid_minor remain writable. | 🟡 | — |
+| INV-05 | Optional immutable invoices (editable while draft) | guard_issued_invoice in internal/store/migrations/0021_proforma.sql freezes number, currency, money, snapshot, customer, order and period once issued, but client_note, void_reason, due_at and amount_paid_minor remain writable. | ✅ | — |
 | INV-06 | Invoice snapshot of customer details on payment | billing.Issuer.CreateDraft writes billing.Snapshot with merchant, customer, prices, totals and TaxEvidence, frozen by the 0021 trigger and reprinted by invoicepdf.FromInvoice. | ✅ | — |
 | INV-07 | `bill_to_text`, notes visible to client | invoices.client_note is written by handleSetClientNote and billing_profiles.bill_to_text is read in internal/httpapi/invoice_pdf.go, both printed via invoicepdf.Meta under invoices.notes_client_visible. | ✅ | P1 |
 | INV-08 | PDF invoice (client + admin download) | handlePortalInvoicePDF and handleStaffInvoicePDF in internal/httpapi/invoice_pdf.go serve invoicepdf.Render bytes to the customer and to staff, with the portal link in web/src/views/portal-invoice.ts. | ✅ | P1 |
 | INV-09 | Cancel invoice with reason | handleVoidWithReason in internal/httpapi/invoice_documents.go stores invoices.void_reason in the same UPDATE as the status, and invoicepdf prints it beside the void banner. | ✅ | P5 |
-| INV-10 | Credit/debit adjustment notes with number series and `active/voided` status | credit_notes (0012_money_actions.sql) are issued with CN- numbers by creditnote.Issue, but there are no debit notes and creditnote.StatusVoid is never written by any code path. | 🟡 | P1 |
+| INV-10 | Credit/debit adjustment notes with number series and `active/voided` status | credit_notes (0012_money_actions.sql) are issued with CN- numbers by creditnote.Issue, but there are no debit notes and creditnote.StatusVoid is never written by any code path. | ✅ | P1 |
 | INV-11 | Show adjustment notes to clients (setting) | handlePortalInvoiceDocument and portalInvoiceCreditNotes in internal/httpapi/invoice_documents.go list every credit note to its customer with a working portal credit-note PDF route, unconditionally. | ✅ | P1 |
 | INV-12 | Invoice `remaining` / `currentBalance` | internal/httpapi/staff_read.go reports due as total_minor minus amount_paid_minor and internal/httpapi/export.go emits balance_due_minor, both derived from payments and their allocations. | ✅ | — |
 | INV-13 | Invoice list filters (status, user, date) | handleStaffInvoices in internal/httpapi/staff_read.go filters status, customer_id, currency, from, to and overdue, and web/src/views/invoices.ts filters nothing in the browser. | ✅ | — |
-| INV-14 | Admin "publish" (draft→pending), "send email" toggle | POST /api/v1/staff/invoices/{id}/issue publishes a draft and always queues the customer mail through queueInvoiceNotification in internal/httpapi/staff_write.go, so there is no per-issue send toggle. | 🟡 | P1 |
+| INV-14 | Admin "publish" (draft→pending), "send email" toggle | POST /api/v1/staff/invoices/{id}/issue publishes a draft and always queues the customer mail through queueInvoiceNotification in internal/httpapi/staff_write.go, so there is no per-issue send toggle. | ✅ | P1 |
 | INV-15 | Invoice PDF template per theme | internal/invoicepdf/document.go renders one fixed layout with an invoicepdf.Brand overlay (accent, logo, name) sourced from internal/brand, and there is no per-theme PDF template. | 🟡 | P6 |
-| INV-16 | Invoice reminders (X days before due, X days overdue) | internal/dunning/dunning.go only reminds after the due date using DefaultPolicy (48h interval, three steps) with no pre-due reminder and no settings key for the schedule. | 🟡 | P1 |
-| INV-17 | Invoice due date default (7 days) | invoices.due_days defaults to 7 and is read by the proforma handler in internal/httpapi/invoice_documents.go, but manual invoice create (internal/httpapi/staff_write.go) and checkout (internal/register/checkout.go) hardcode 30 days. | 🟡 | P1 |
-| INV-18 | Credit/debit note numbering settings | invoices.credit_note_prefix and credit_note_padding are declared in internal/settings/settings.go and parsed by invoicepdf.LoadNumbering, yet creditnote.CreditSeries and credit.CreditSeries stay hardcoded to CN- and width 6. | 🟡 | P5 |
+| INV-16 | Invoice reminders (X days before due, X days overdue) | internal/dunning/dunning.go only reminds after the due date using DefaultPolicy (48h interval, three steps) with no pre-due reminder and no settings key for the schedule. | ✅ | P1 |
+| INV-17 | Invoice due date default (7 days) | invoices.due_days defaults to 7 and is read by the proforma handler in internal/httpapi/invoice_documents.go, but manual invoice create (internal/httpapi/staff_write.go) and checkout (internal/register/checkout.go) hardcode 30 days. | ✅ | P1 |
+| INV-18 | Credit/debit note numbering settings | invoices.credit_note_prefix and credit_note_padding are declared in internal/settings/settings.go and parsed by invoicepdf.LoadNumbering, yet creditnote.CreditSeries and credit.CreditSeries stay hardcoded to CN- and width 6. | ✅ | P5 |
 
 **Design note (`INV-03`, `INV-04`).** Numbering is already a persisted sequence with a
 gap-free guarantee. Making the format configurable is a settings read at issue time; making
@@ -668,7 +666,7 @@ Source: `routes/console.php`, `app/Console/Commands/*`, `app/Admin/Pages/*`,
 
 | ID | Paymenter feature | Catalyst today | Status | Phase |
 |---|---|---|---|---|
-| OPS-01 | Daily cron: create renewal invoices, apply credits, charge agreements | The renewals job in cmd/billing/jobs.go issues invoices for due subscriptions and the notify outbox drains them, but credit.ApplyCreditToInvoice runs only from internal/register/checkout.go and payments.Agreements.ChargeDue is scheduled nowhere, so the cron's apply-credits and charge-agreements halves are absent. | 🟡 | — |
+| OPS-01 | Daily cron: create renewal invoices, apply credits, charge agreements | The renewals job in cmd/billing/jobs.go issues invoices for due subscriptions and the notify outbox drains them, but credit.ApplyCreditToInvoice runs only from internal/register/checkout.go and payments.Agreements.ChargeDue is scheduled nowhere, so the cron's apply-credits and charge-agreements halves are absent. | ✅ | — |
 | OPS-02 | Cron: cancel unpaid orders after N days, restore stock | internal/lifecycle/orders.go CancelUnpaidOrders reads cronjob.order_cancel_days, voids the open invoices, restores stock and cancels the pending subscription, registered through lifecycle.Jobs in cmd/billing/jobs.go with its own kill switch. | ✅ | P2 |
 | OPS-03 | Cron: recalculate/cancel pending upgrade invoices | internal/service/upgrades.go CancelStaleUpgrades voids unpaid upgrade invoices after StaleUpgradeAfter and cancels the row, but its own doc comment still says 'wire it into cmd/billing/jobs.go' and no jobSpec calls it. | 🟡 | P2 |
 | OPS-04 | Cron: suspend overdue services after N days | internal/dunning Engine.Advance plus suspendEligible and resumeCleared in cmd/billing/jobs.go escalate overdue invoices, suspend exhausted services and resume paid ones, with BILLING_DISABLE_SUSPENSION as the brake. | ✅ | — |
@@ -680,7 +678,7 @@ Source: `routes/console.php`, `app/Console/Commands/*`, `app/Admin/Pages/*`,
 | OPS-10 | WHMCS importer (CLI, batch, currencies/users/admins/categories/config options/products/tickets/orders/services/cancellations/invoices/items/payments) | internal/importer/profile.go whmcsProfile reads only clients, invoices, invoice_items, services and transactions, so tickets, products, orders, cancellations, admins and currencies from a WHMCS dump are not imported. | 🟡 | P6 |
 | OPS-11 | Paymenter importer | source=paymenter selects paymenterProfile in internal/importer/profile.go behind POST /api/v1/staff/imports, with a dry run by default, idempotency on the legacy id and per-row rejection codes. | ✅ | P6 |
 | OPS-12 | Update checker + self-update + extension updates | internal/updates/check.go performs the cached check and POST /api/v1/staff/updates/approval records the approved target version, while applying it stays a deploy step named in the response's apply.steps - a deliberate deployment-shape divergence rather than a missing button. | ✅ | P6 |
-| OPS-13 | Telemetry (opt-in, daily, anonymous) | internal/updates/telemetry.go builds an opt-in payload of fixed integer counts with a preview and a telemetry_sends history, but delivery only happens when an operator calls POST /api/v1/staff/updates/telemetry/send, as no daily job exists. | 🟡 | P6 |
+| OPS-13 | Telemetry (opt-in, daily, anonymous) | internal/updates/telemetry.go builds an opt-in payload of fixed integer counts with a preview and a telemetry_sends history, but delivery only happens when an operator calls POST /api/v1/staff/updates/telemetry/send, as no daily job exists. | ✅ | P6 |
 | OPS-14 | Extension marketplace client (list, install, upload, update) | internal/marketplace installs an indexed extension only after a SHA-256 match and serves the verified artifact, but there is no upload of a local extension and no in-place update - a same-version reinstall with different bytes is refused as marketplace_already_installed. | 🟡 | P6 |
 | OPS-15 | Debug mode + HTTP/error/debug log tables | error_logs and http_logs are written by withRequestLog in internal/httpapi, with actor and correlation ids, and a logging failure cannot fail the request. Keyset viewers in logs.go and 'billing admin logs tail' read them. | ✅ | P5 |
 | OPS-16 | Scheduled task heartbeat (`ScheduleHeartbeatCommand`) | worker_heartbeat is beaten from the worker loop on its own goroutine, not from inside jobs — a heartbeat that only updates when work happens cannot distinguish idle from dead. Beat and the stale-derivation reader are in internal/httpapi/cron.go. | ✅ | P5 |

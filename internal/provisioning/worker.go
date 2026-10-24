@@ -91,7 +91,13 @@ type Operation struct {
 	ServiceExternal string
 	ProductID       string
 	CustomerID      string
-	Config          map[string]any
+	// CustomerEmail and CustomerName identify the person behind the service to a provider that
+	// needs an account of its own for them. They are read at claim time rather than stored on the
+	// service, because a customer who changes their email address must not keep being provisioned
+	// under the old one.
+	CustomerEmail string
+	CustomerName  string
+	Config        map[string]any
 	// ServerID, ServerRegion and ServerNode are the product's provisioner target as it
 	// stood when the operation was claimed. The region is a *fallback*: a price version
 	// that names its own region still wins, so an existing plan keeps provisioning
@@ -226,9 +232,11 @@ func (w *Worker) claim(ctx context.Context) (Operation, error) {
 			       o.payload,
 			       s.status, COALESCE(s.external_id, ''), s.product_id, s.customer_id, s.config,
 			       COALESCE(srv.id::text, ''), COALESCE(srv.region, ''), COALESCE(srv.node, ''),
-			       COALESCE(s.external_subscription_id, '')
+			       COALESCE(s.external_subscription_id, ''),
+			       COALESCE(c.email, ''), COALESCE(c.name, '')
 			FROM service_operations o
 			JOIN services s ON s.id = o.service_id
+			LEFT JOIN customers c ON c.id = s.customer_id
 			LEFT JOIN products p ON p.id = s.product_id
 			LEFT JOIN servers srv ON srv.id = p.server_id
 			WHERE o.status IN ('queued', 'retry_wait')
@@ -239,7 +247,7 @@ func (w *Worker) claim(ctx context.Context) (Operation, error) {
 			Scan(&op.ID, &op.ServiceID, &op.Kind, &op.OperationKey, &op.Generation, &op.Status,
 				&op.Attempts, &op.Payload, &op.ServiceStatus, &op.ServiceExternal, &op.ProductID,
 				&op.CustomerID, &op.Config, &op.ServerID, &op.ServerRegion, &op.ServerNode,
-				&op.ExternalSubscription)
+				&op.ExternalSubscription, &op.CustomerEmail, &op.CustomerName)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNoWork
 		}
@@ -544,6 +552,16 @@ func (o Operation) region() string {
 //     and the key its create call reads (UPG-12).
 func (o Operation) metadata() map[string]string {
 	out := map[string]string{"service_id": o.ServiceID, "customer_id": o.CustomerID}
+	// The identity of the person the resource belongs to. A provider that hosts servers per user —
+	// a game panel, a VPS platform — has to create an account for them, and an account needs an
+	// address. An id is not enough, and asking the adapter to look it up would mean the adapter
+	// reading this database.
+	if o.CustomerEmail != "" {
+		out["customer_email"] = o.CustomerEmail
+	}
+	if o.CustomerName != "" {
+		out["customer_name"] = o.CustomerName
+	}
 	if o.ServerID != "" {
 		out["server_id"] = o.ServerID
 	}

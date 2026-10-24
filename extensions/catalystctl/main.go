@@ -108,12 +108,17 @@ type plan struct {
 
 // config is the adapter's whole configuration, read once at startup.
 type config struct {
-	panelURL    string
-	apiKey      string
-	templateID  string
-	nodeID      string
-	locationID  string
-	ownerID     string
+	panelURL   string
+	apiKey     string
+	templateID string
+	nodeID     string
+	locationID string
+	ownerID    string
+	// userMode and userRoleID govern the panel account a customer's server belongs to. They are
+	// EnvOnly: a role id is panel-specific, and an installation that sets it once should not have to
+	// repeat it on every service.
+	userMode    panelUserMode
+	userRoleID  string
 	networkMode string
 	panelPath   string
 	timeout     time.Duration
@@ -144,6 +149,8 @@ func configFromEnv(environ []string) (config, error) {
 		nodeID:      strings.TrimSpace(env["CCTL_NODE_ID"]),
 		locationID:  strings.TrimSpace(env["CCTL_LOCATION_ID"]),
 		ownerID:     strings.TrimSpace(env["CCTL_OWNER_ID"]),
+		userMode:    panelUserMode(strings.TrimSpace(env["CCTL_USER_MODE"])),
+		userRoleID:  strings.TrimSpace(env["CCTL_USER_ROLE_ID"]),
 		networkMode: strings.TrimSpace(env["CCTL_NETWORK_MODE"]),
 		panelPath:   strings.TrimSpace(env["CCTL_PANEL_PATH"]),
 		timeout:     30 * time.Second,
@@ -178,6 +185,15 @@ func configFromEnv(environ []string) (config, error) {
 	// startup error.
 	if !strings.HasPrefix(cfg.apiKey, "catalyst_") {
 		return config{}, errors.New("CCTL_API_KEY must be a panel API key (catalyst_…)")
+	}
+
+	// Creating a panel account per customer is the default: a server owned by the API key's own user is
+	// a server the customer cannot open, and one panel login would expose every customer's server.
+	if cfg.userMode == "" {
+		cfg.userMode = userModeCreate
+	}
+	if !validUserMode(string(cfg.userMode)) {
+		return config{}, fmt.Errorf("CCTL_USER_MODE=%q is not create or none", string(cfg.userMode))
 	}
 
 	if raw := strings.TrimSpace(env["CCTL_TIMEOUT_MS"]); raw != "" {
@@ -606,6 +622,16 @@ func (s *server) create(req *request) reply {
 		return reply{rpcErr: internalError(err)}
 	}
 
+	// The account the server belongs to. A panel is multi-tenant, so this is what makes the console link
+	// we show the customer open *their* server rather than one in a shared account.
+	ownerID, err := s.ensurePanelUser(ctx, p.Metadata)
+	if err != nil {
+		if isRejection(err) {
+			return reply{rpcErr: &rpcError{Code: codeRejected, Message: "could not create the customer's panel account: " + err.Error()}}
+		}
+		return reply{rpcErr: internalError(err)}
+	}
+
 	allocation, err := s.claimAllocation(ctx, place)
 	if err != nil {
 		return reply{rpcErr: &rpcError{Code: codeRejected, Message: err.Error()}}
@@ -617,7 +643,7 @@ func (s *server) create(req *request) reply {
 		TemplateID:        place.TemplateID,
 		NodeID:            place.NodeID,
 		LocationID:        place.LocationID,
-		OwnerID:           s.ownerID(p.Metadata),
+		OwnerID:           ownerID,
 		PrimaryPort:       allocation.Port,
 		PrimaryIP:         allocation.IP,
 		AllocationID:      allocation.ID,
@@ -667,15 +693,6 @@ func (s *server) claimAllocation(ctx context.Context, place placement) (panelAll
 		return s.client.allocationOnPort(ctx, place.NodeID, place.Port)
 	}
 	return s.client.freeAllocation(ctx, place.NodeID)
-}
-
-// ownerID decides which panel user owns the new server.
-//
-// The per-service value wins, because a reseller product creates servers under a different panel
-// account. `CCTL_OWNER_ID` is the installation-wide default, and an empty answer lets the panel
-// fall back to the API key's own owner.
-func (s *server) ownerID(metadata map[string]string) string {
-	return s.setting(metadata, "owner", "OWNER_ID", s.cfg.ownerID)
 }
 
 // createResult renders the create reply.

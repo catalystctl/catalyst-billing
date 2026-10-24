@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +58,16 @@ type fakePanel struct {
 	repeatsPage bool
 	// unauthorized makes every request answer 401, for the credential-failure path.
 	unauthorized bool
+	// users is the panel's accounts, keyed by id.
+	users map[string]panelUser
+	// userCreates records every account creation request.
+	userCreates []createUserRequest
+	// failUserCreateStatus, when non-zero, makes POST /admin/users fail.
+	failUserCreateStatus int
+	// failUserCreateCode is that failure's panel error code.
+	failUserCreateCode string
+	// userPageLimit truncates the account list, so a "not on page one" lookup can be simulated.
+	userPageLimit int
 }
 
 // recordedCall is one mutating request the adapter made.
@@ -92,7 +103,11 @@ func newFakePanel(t *testing.T) *fakePanel {
 			},
 		},
 		templates: []panelTemplate{{ID: "tpl-paper", Name: "Paper"}},
-		nextID:    1,
+		users: map[string]panelUser{
+			// The panel's own administrator, which must never be matched to a customer.
+			"user-admin": {ID: "user-admin", Email: "admin@example.test", Username: "admin"},
+		},
+		nextID: 1,
 	}
 }
 
@@ -168,6 +183,10 @@ func (f *fakePanel) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/nodes/") && strings.HasSuffix(path, "/allocations"):
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "/nodes/"), "/allocations")
 		writePanelOK(w, f.allocations[id])
+	case r.Method == http.MethodGet && path == "/admin/users":
+		f.handleListUsers(w, r)
+	case r.Method == http.MethodPost && path == "/admin/users":
+		f.handleCreateUser(w, r)
 	case r.Method == http.MethodPost && path == "/servers":
 		f.handleCreate(w, r)
 	case r.Method == http.MethodGet && path == "/servers":
@@ -330,6 +349,56 @@ func (f *fakePanel) handleDelete(w http.ResponseWriter, path string) {
 	}
 	delete(f.servers, id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleListUsers answers the admin users list, which the panel returns as a bare object.
+func (f *fakePanel) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
+	out := make([]panelUser, 0, len(f.users))
+	for _, user := range f.users {
+		// The panel filters on address and username, by substring.
+		if search != "" && !strings.Contains(strings.ToLower(user.Email), search) &&
+			!strings.Contains(strings.ToLower(user.Username), search) {
+			continue
+		}
+		out = append(out, user)
+	}
+	// Deterministic order, so a "first page" claim in a test means something.
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if f.userPageLimit > 0 && len(out) > f.userPageLimit {
+		out = out[:f.userPageLimit]
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"users": out})
+}
+
+// handleCreateUser answers POST /admin/users, enforcing the panel's own email uniqueness.
+func (f *fakePanel) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	var req createUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writePanelError(w, http.StatusBadRequest, "VALIDATION_ERROR", "bad body")
+		return
+	}
+	f.userCreates = append(f.userCreates, req)
+	if f.failUserCreateStatus != 0 {
+		writePanelError(w, f.failUserCreateStatus, f.failUserCreateCode, "refused")
+		return
+	}
+	for _, user := range f.users {
+		if strings.EqualFold(user.Email, req.Email) {
+			writePanelError(w, http.StatusConflict, "ADMIN_USER_EXISTS", "a user with that email exists")
+			return
+		}
+	}
+	if req.Password == "" {
+		// An account with no password is an account anyone can take over; the panel refuses it and so
+		// does this fixture.
+		writePanelError(w, http.StatusBadRequest, "VALIDATION_ERROR", "password is required")
+		return
+	}
+	id := "user-" + itoa(len(f.users)+1)
+	f.users[id] = panelUser{ID: id, Email: req.Email, Username: req.Username}
+	writePanelOK(w, map[string]any{"user": f.users[id]})
 }
 
 // writePanelOK writes the panel's success envelope.

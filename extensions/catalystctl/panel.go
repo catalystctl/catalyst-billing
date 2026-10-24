@@ -446,6 +446,70 @@ func (c *panelClient) allocationOnPort(ctx context.Context, nodeID string, port 
 		"port %d is not free on node %s; leave the port empty to take any free one", port, nodeID)
 }
 
+// listUsers reads the panel's accounts, filtered by the panel's own search.
+//
+// The search is the whole reason this is safe on a large installation: listing every account and paging
+// until the address turns up would either stop early (and create a duplicate for a customer who already
+// has an account) or walk a shared panel forever. The panel filters by address and username, so the
+// answer is one page and the caller only has to confirm an exact match — a substring search for
+// "alice@example.test" also matches "notalice@example.test", so the confirmation is not optional.
+func (c *panelClient) listUsers(ctx context.Context, search string) ([]panelUser, error) {
+	path := "/admin/users?limit=100"
+	if search != "" {
+		path += "&search=" + url.QueryEscape(search)
+	}
+	var out struct {
+		Users []panelUser `json:"users"`
+		// The admin users endpoint answers a bare object rather than the {success,data} envelope.
+		Data struct {
+			Users []panelUser `json:"users"`
+		} `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Users != nil {
+		return out.Users, nil
+	}
+	return out.Data.Users, nil
+}
+
+// createUserRequest is the POST /api/admin/users payload.
+type createUserRequest struct {
+	Email    string   `json:"email"`
+	Username string   `json:"username"`
+	Password string   `json:"password"`
+	RoleIDs  []string `json:"roleIds,omitempty"`
+}
+
+// createPanelUser creates one account.
+func (c *panelClient) createPanelUser(ctx context.Context, req createUserRequest) (panelUser, error) {
+	// The created account is read from whichever key the panel puts it under. Three shapes are accepted
+	// because the panel is not consistent across its own endpoints — the users LIST is a bare object
+	// while most writes are enveloped — and a wrong guess here would create the account and then report
+	// the create as failed, leaving a server that belongs to nobody.
+	var out struct {
+		User panelUser `json:"user"`
+		Data struct {
+			User panelUser `json:"user"`
+			ID   string    `json:"id"`
+		} `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/admin/users", req, &out); err != nil {
+		return panelUser{}, err
+	}
+	if out.User.ID != "" {
+		return out.User, nil
+	}
+	if out.Data.User.ID != "" {
+		return out.Data.User, nil
+	}
+	if out.Data.ID != "" {
+		return panelUser{ID: out.Data.ID}, nil
+	}
+	return panelUser{}, fmt.Errorf("the panel accepted the account request but returned no user")
+}
+
 // locations lists the panel's datacenters.
 func (c *panelClient) locations(ctx context.Context) ([]panelLocation, error) {
 	var out envelope[[]panelLocation]

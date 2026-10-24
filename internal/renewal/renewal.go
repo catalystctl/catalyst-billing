@@ -23,6 +23,7 @@ import (
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/calendar"
 	"github.com/catalyst/billing/internal/catalog"
+	"github.com/catalyst/billing/internal/coupon"
 	"github.com/catalyst/billing/internal/credit"
 	"github.com/catalyst/billing/internal/invoicepdf"
 	"github.com/catalyst/billing/internal/money"
@@ -364,6 +365,43 @@ func (e *Engine) renewOne(ctx context.Context, runID, subscriptionID string, now
 		if err != nil {
 			return err
 		}
+
+		// A coupon a customer bought is a promise about what this invoice costs (CPN-06/CPN-08).
+		//
+		// `coupon.RenewalDiscount` and `coupon.ApplyRenewalDiscount` decide and write the discount
+		// for a cycle, and until now nothing in production called either: the checkout path applied
+		// a coupon to the FIRST invoice, and every renewal after it charged list price while the
+		// subscription still carried the coupon. The customer had paid for a discount and then
+		// silently stopped receiving it, which is the worst shape a billing bug can take because
+		// the invoice looks correct.
+		//
+		// It runs here, on the draft and inside the renewal's own transaction, for three reasons:
+		// the discount is a line on the invoice rather than an adjustment to a number somebody
+		// already read; a retried period cannot apply the coupon twice, because the counter moves
+		// in this same transaction; and a failure fails the subscription rather than quietly billing
+		// list price. A subscription with no coupon takes the `discount.Applies == false` path and
+		// writes nothing, so a renewal for a customer without a promotion is byte-identical to what
+		// it was before — which is what `TestRenewalIsUnchangedForACustomerWithNoCredit` asserts.
+		baseMinor := price.AmountMinor
+		for _, line := range surcharges {
+			baseMinor += line.UnitPrice.Minor() * (line.QuantityMilli / 1000)
+		}
+		discount, err := coupon.RenewalDiscount(ctx, tx, sub.ID, baseMinor, price.Currency, now)
+		if err != nil {
+			return err
+		}
+		if discount.Applies {
+			if _, err := coupon.ApplyRenewalDiscount(ctx, tx, coupon.ApplyRequest{
+				InvoiceID:      invoiceID,
+				SubscriptionID: sub.ID,
+				CustomerID:     sub.CustomerID,
+				Discount:       discount,
+				Currency:       price.Currency,
+			}); err != nil {
+				return err
+			}
+		}
+
 		issued, err := e.issuer.Issue(ctx, tx, invoiceID, series)
 		if err != nil {
 			return err

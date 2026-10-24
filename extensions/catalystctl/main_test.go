@@ -970,3 +970,160 @@ func TestACorruptLedgerIsRefusedRatherThanIgnored(t *testing.T) {
 		t.Fatal("a corrupt ledger must not accept writes over the top")
 	}
 }
+
+// ------------------------------------------------------------- panel accounts --
+
+func TestCreateGivesTheServerToTheCustomersPanelAccount(t *testing.T) {
+	panel := newFakePanel(t)
+	s := testServer(t, panel)
+
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata": purchase(map[string]string{
+			"customer_email": "Alice@Example.test",
+			"customer_name":  "Alice",
+		}),
+	}), &struct{}{})
+
+	// An account is created for the customer, and the server is owned by it. Without this the server
+	// would live in the API key's own account and the console link we show would not open it.
+	if len(panel.userCreates) != 1 {
+		t.Fatalf("expected one panel account, got %d", len(panel.userCreates))
+	}
+	created := panel.userCreates[0]
+	if created.Email != "alice@example.test" {
+		t.Fatalf("the account should use the customer's address, got %q", created.Email)
+	}
+	if created.Username != "alice" {
+		t.Fatalf("username = %q, want alice", created.Username)
+	}
+	// The password must be unguessable and never the customer's own: billing has no password to give.
+	if len(created.Password) < 20 {
+		t.Fatalf("the generated password is too short to be unguessable (%d chars)", len(created.Password))
+	}
+	if panel.created[0].OwnerID == "" {
+		t.Fatal("the server was created with no owner")
+	}
+	if panel.created[0].OwnerID != "user-2" {
+		t.Fatalf("owner = %q, want the new customer account", panel.created[0].OwnerID)
+	}
+}
+
+func TestASecondServiceReusesTheCustomersPanelAccount(t *testing.T) {
+	panel := newFakePanel(t)
+	// The account already exists, as it would after the first purchase or a manual invite.
+	panel.users["user-alice"] = panelUser{ID: "user-alice", Email: "alice@example.test", Username: "alice"}
+	s := testServer(t, panel)
+
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata":      purchase(map[string]string{"customer_email": "alice@example.test"}),
+	}), &struct{}{})
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-2:1",
+		"metadata":      purchase(map[string]string{"customer_email": "ALICE@example.test"}),
+	}), &struct{}{})
+
+	if len(panel.userCreates) != 0 {
+		t.Fatalf("an existing account must be reused, it tried to create %d", len(panel.userCreates))
+	}
+	for i, created := range panel.created {
+		if created.OwnerID != "user-alice" {
+			t.Fatalf("server %d owner = %q, want user-alice", i, created.OwnerID)
+		}
+	}
+}
+
+func TestAnExplicitOwnerBeatsTheCustomersAccount(t *testing.T) {
+	panel := newFakePanel(t)
+	s := testServer(t, panel)
+
+	// A reseller product places servers in a panel account of its own.
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata": purchase(map[string]string{
+			"customer_email": "alice@example.test",
+			"env.OWNER_ID":   "user-reseller",
+		}),
+	}), &struct{}{})
+
+	if len(panel.userCreates) != 0 {
+		t.Fatal("an explicit owner must not trigger an account creation")
+	}
+	if panel.created[0].OwnerID != "user-reseller" {
+		t.Fatalf("owner = %q, want user-reseller", panel.created[0].OwnerID)
+	}
+}
+
+func TestUserModeNoneLeavesOwnershipToThePanel(t *testing.T) {
+	panel := newFakePanel(t)
+	s := testServer(t, panel, func(cfg *config) { cfg.userMode = userModeNone })
+
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata":      purchase(map[string]string{"customer_email": "alice@example.test"}),
+	}), &struct{}{})
+
+	if len(panel.userCreates) != 0 {
+		t.Fatal("CCTL_USER_MODE=none must not create accounts")
+	}
+	if panel.created[0].OwnerID != "" {
+		t.Fatalf("owner = %q, want none: the panel decides", panel.created[0].OwnerID)
+	}
+}
+
+func TestAClashingUsernameIsMadeUnique(t *testing.T) {
+	panel := newFakePanel(t)
+	// Another customer already took "alice".
+	panel.users["user-other"] = panelUser{ID: "user-other", Email: "other@example.test", Username: "alice"}
+	s := testServer(t, panel)
+
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata":      purchase(map[string]string{"customer_email": "alice@example.test"}),
+	}), &struct{}{})
+
+	if len(panel.userCreates) != 1 {
+		t.Fatalf("expected one account, got %d", len(panel.userCreates))
+	}
+	if got := panel.userCreates[0].Username; got == "alice" {
+		t.Fatal("a duplicate username would be refused by the panel")
+	}
+}
+
+func TestAnAccountRaceIsRepairedByReReading(t *testing.T) {
+	panel := newFakePanel(t)
+	// The list is capped, so the lookup cannot see alice's account, but the create is then refused
+	// because it exists: exactly the race two workers produce.
+	panel.users["user-alice"] = panelUser{ID: "user-alice", Email: "alice@example.test", Username: "alice"}
+	panel.userPageLimit = 1
+	s := testServer(t, panel)
+
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata":      purchase(map[string]string{"customer_email": "alice@example.test"}),
+	}), &struct{}{})
+
+	if panel.created[0].OwnerID != "user-alice" {
+		t.Fatalf("owner = %q, want the account the race created", panel.created[0].OwnerID)
+	}
+}
+
+func TestACustomerWithoutAnAddressStillGetsAServer(t *testing.T) {
+	panel := newFakePanel(t)
+	s := testServer(t, panel)
+
+	// No customer_email means no person: an import or a back-office fixture. Creating an account for
+	// nobody would litter the panel, and refusing would block work that has nothing to do with one.
+	result(t, call(t, s, "provisioner.create", map[string]any{
+		"operation_key": "create:svc-1:1",
+		"metadata":      purchase(nil),
+	}), &struct{}{})
+
+	if len(panel.userCreates) != 0 {
+		t.Fatal("no address, no account")
+	}
+	if panel.created[0].OwnerID != "" {
+		t.Fatalf("owner = %q, want none", panel.created[0].OwnerID)
+	}
+}

@@ -34,6 +34,11 @@ export interface ServerView {
   available: boolean;
   /** A sentence explaining why the card has no data. */
   detail?: string;
+  /** The machine-readable failure class: not_configured, unsupported, not_recognised, timeout,
+   *  unreachable. It is what makes a failure diagnosable — "does not recognise this service" is true both
+   *  for a deleted server and for an installation whose provider was changed, and only one of those is the
+   *  customer's problem. */
+  reason?: string;
   provider?: string;
   extension?: string;
   name?: string;
@@ -229,12 +234,29 @@ export function mountServerCard(ctx: Ctx, opts: ServerCardOptions): HTMLElement 
       });
     }
     if (!view.available) {
+      // The integration is named here on purpose. A changed or misconfigured provider is invisible from a
+      // customer-facing sentence alone, and it makes *every* service report the same failure at once. This
+      // line is what turns "contact support" into a diagnosis: "Integration: fake" when the install is
+      // supposed to be on catalystctl.
+      const integration = view.provider
+        ? h("p", { class: "page-sub", style: "margin: 0" }, `Integration: ${view.provider}`)
+        : null;
+      const hint =
+        view.reason === "panel_misconfigured"
+          ? "This is a problem with this installation's configuration, not with your server. Support can " +
+            "fix it from the servers integration screen."
+          : view.reason === "not_recognised"
+          ? "This can mean the server was removed, or that this installation's server integration has " +
+            "changed. Support can tell which from the integration named above."
+          : null;
       return card({
         title: "Server",
         body: h(
           "div",
           { class: "stack-sm" },
           h("p", { class: "page-sub" }, view.detail ?? "The server's live state is not available right now."),
+          integration,
+          hint ? h("p", { class: "page-sub", style: "margin: 0" }, hint) : null,
           h("div", { class: "row-wrap" }, btn("Ask support", { href: "/tickets/new", size: "sm", icon: "message" })),
         ),
         actions: btn("Retry", { size: "sm", icon: "refresh", onclick: () => void load() }),
@@ -411,6 +433,10 @@ function stateLabel(v: ServerView): string {
       return "Restarting";
     case "installing":
       return "Installing";
+    case "unhealthy":
+      return "Not responding";
+    case "crashed":
+      return "Crashed";
     case "suspended":
       return "Suspended";
     default:
@@ -435,6 +461,10 @@ function stateSentence(v: ServerView): string {
       return "Your server is restarting.";
     case "installing":
       return "Your server is installing. It becomes available when this finishes.";
+    case "unhealthy":
+      return "Your server is running but not responding to its health check. A restart usually fixes this.";
+    case "crashed":
+      return "Your server stopped unexpectedly. Start it again; if it keeps crashing, contact support.";
     case "suspended":
       return "Your server is suspended, so it cannot be started from here.";
     default:
@@ -470,6 +500,8 @@ function problemSentence(err: unknown): string {
     return "The server panel could not be reached. Your service is unaffected; try again in a moment.";
   }
   switch (err.code) {
+    case "server_not_found":
+      return "The server panel does not recognise this service. Please contact support.";
     case "power_timeout":
       return "The server panel did not answer in time. Your service is unaffected; try again in a moment.";
     case "power_rejected":
@@ -478,6 +510,8 @@ function problemSentence(err: unknown): string {
       return "The server panel does not recognise this service. Please contact support.";
     case "provider_not_configured":
       return "Server control is not set up yet. Please contact support.";
+    case "panel_misconfigured":
+      return "This installation's server panel address is misconfigured, so live server details cannot be read.";
     case "power_unsupported":
       return "This provider does not support power control from the billing panel.";
     case "not_provisioned":

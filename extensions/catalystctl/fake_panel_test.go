@@ -52,6 +52,8 @@ type fakePanel struct {
 	// listPages, when non-zero, caps every list page to that many servers, which is how a panel
 	// that enforces its own page size is simulated.
 	listPages int
+	// addr is the server's address once started.
+	addr string
 	// repeatsPage makes every list request return the first page again, ignoring the offset. It
 	// simulates a panel whose pagination the adapter cannot walk, which is the case a scan must
 	// refuse to answer rather than mistake for the end of the list.
@@ -118,11 +120,21 @@ func newFakePanel(t *testing.T) *fakePanel {
 	}
 }
 
+// url returns the fake's address, for tests that need to build a wrong one from it.
+func (f *fakePanel) url() string {
+	f.t.Helper()
+	if f.addr == "" {
+		f.start()
+	}
+	return f.addr
+}
+
 // start runs the fake and returns its URL.
 func (f *fakePanel) start() string {
 	f.t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	f.t.Cleanup(srv.Close)
+	f.addr = srv.URL
 	return srv.URL
 }
 
@@ -214,7 +226,11 @@ func (f *fakePanel) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/servers/"):
 		f.handleDelete(w, path)
 	default:
-		writePanelError(w, http.StatusNotFound, "NOT_FOUND", "no such endpoint "+path)
+		// The live panel answers an unknown path with `{"error":"Not Found"}` and NO code. That shape is what
+		// makes "wrong API root" distinguishable from "missing resource", so the fixture reproduces it.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Not Found"}`))
 	}
 }
 

@@ -92,6 +92,14 @@ type Config struct {
 	ExtensionPath string `json:"extension_path"`
 	// ExtensionSource is where ExtensionPath came from.
 	ExtensionSource string `json:"extension_source"`
+	// ProviderExtension is the binary name the configured provider expects under the bin directory.
+	ProviderExtension string `json:"provider_extension,omitempty"`
+	// ExtensionMismatch is true when the environment points the integration at a binary that is not the one
+	// the configured provider names. That combination is a trap: the settings screen says one provider, the
+	// process runs another, and every failure is attributed to the wrong component. It is reported rather
+	// than refused, because a deployment may deliberately override the path to a build elsewhere — but it is
+	// never silent.
+	ExtensionMismatch bool `json:"extension_mismatch,omitempty"`
 	// Values are the provider's credentials, in render order.
 	Values []Value `json:"values"`
 	// WebhookURL is where the provider must deliver events, derived from
@@ -282,12 +290,27 @@ func (r *Resolver) Load(ctx context.Context, kind Kind) (Config, error) {
 		}
 	}
 
+	if known {
+		cfg.ProviderExtension = provider.Extension
+	}
+
 	// The binary. The environment wins; otherwise the provider's name under bin/.
 	envPath := r.lookup(pathEnv(kind))
 	switch {
 	case envPath != "":
 		cfg.ExtensionPath = envPath
 		cfg.ExtensionSource = SourceEnvironment
+		// The environment override beats the configured provider, which is intended for a deployment that
+		// builds the binary elsewhere — and is a trap when it names a *different* adapter. "provider=catalystctl"
+		// with BILLING_PROVISIONER_EXTENSION=bin/fakeprov runs the fixture, so every real service reports
+		// "the server panel does not recognise this service" while the settings screen looks correct.
+		if known && !strings.EqualFold(filepath.Base(envPath), provider.Extension) {
+			cfg.ExtensionMismatch = true
+			cfg.Notes = append(cfg.Notes, fmt.Sprintf(
+				"%s points at %s, but the configured provider is %q, which expects %s. "+
+					"The process is running %s — every request goes to the wrong adapter.",
+				pathEnv(kind), filepath.Base(envPath), cfg.Provider, provider.Extension, filepath.Base(envPath)))
+		}
 	case known:
 		cfg.ExtensionPath = filepath.Join(r.binDir(), provider.Extension)
 		cfg.ExtensionSource = SourceDefault

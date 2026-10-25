@@ -41,7 +41,31 @@ setting() {
   ./bin/billing admin setting set "$1" "$2" "$3" 2>&1 | sed -n 's/^set /dev: set /p'
 }
 
-setting servers provider fake
+# The fixture provisioner is a default, not a policy.
+#
+# `make dev` runs this on every start. On an installation where somebody has pointed the panel at a real
+# provisioner — which is exactly what an operator does to verify a live integration — overwriting that with
+# `fake` is not a harmless dev convenience: every service then reports "The server panel does not recognise
+# this service", because the fixture never created any of them. That happened, and it took a while to
+# diagnose because the message describes the customer's server, not the installation.
+#
+# So the row is written only when it has not been set, or when it is already the fixture. Anything else is
+# left alone and said out loud. DEV_FORCE_FIXTURES=1 restores the old unconditional behaviour.
+current_provider="$(./bin/billing admin setting get servers provider 2>/dev/null || true)"
+case "$current_provider" in
+  ""|fake)
+    setting servers provider fake
+    ;;
+  *)
+    if [ "${DEV_FORCE_FIXTURES:-0}" = "1" ]; then
+      setting servers provider fake
+    else
+      echo "dev: leaving servers.provider=$current_provider alone (a real provisioner is configured)"
+      echo "dev: set DEV_FORCE_FIXTURES=1 to switch this database back to the fixtures"
+    fi
+    ;;
+esac
+
 setting gateway provider stripe
 setting gateway enabled true
 

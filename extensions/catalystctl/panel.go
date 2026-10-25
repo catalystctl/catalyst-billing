@@ -25,6 +25,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -48,7 +49,7 @@ type panelClient struct {
 
 func newPanelClient(cfg config) *panelClient {
 	return &panelClient{
-		base:      cfg.panelURL,
+		base:      normalisePanelURL(cfg.panelURL),
 		key:       cfg.apiKey,
 		http:      &http.Client{Timeout: cfg.timeout, Transport: transportFor(cfg)},
 		pageLimit: 50,
@@ -69,11 +70,41 @@ func transportFor(cfg config) *http.Transport {
 	return transport
 }
 
+// normalisePanelURL trims what an operator habitually pastes into a base URL.
+//
+// The panel's own documentation and its API explorer both show paths beginning `/api`, so `…/api` is what
+// people paste. Joined with the adapter's own `/api` prefix that becomes `/api/api/servers/…`, which the panel
+// answers with a bare `404 {"error":"Not Found"}` — indistinguishable, before this change, from "that server
+// does not exist". One character of configuration turned into a customer-facing "the server panel does not
+// recognise this service".
+//
+// Stripping it here is better than documenting it: the value is unambiguous, and a deployment that keeps the
+// old value keeps working.
+func normalisePanelURL(raw string) string {
+	u := strings.TrimSpace(raw)
+	for {
+		trimmed := strings.TrimRight(u, "/")
+		// `/api` and a versioned `/api/v1` are both paths into the same API root.
+		for _, suffix := range []string{"/api", "/api/v1", "/api/v2"} {
+			if strings.HasSuffix(strings.ToLower(trimmed), suffix) {
+				trimmed = trimmed[:len(trimmed)-len(suffix)]
+				break
+			}
+		}
+		if trimmed == u {
+			return u
+		}
+		u = trimmed
+	}
+}
+
 // panelError is a refusal or failure from the panel.
 type panelError struct {
 	status  int
 	code    string
 	message string
+	// resourceMissing is set once a 404 has been shown to be a real lookup rather than a wrong API root.
+	resourceMissing bool
 }
 
 func (e *panelError) Error() string {
@@ -90,11 +121,24 @@ func (e *panelError) Error() string {
 }
 
 // notFound reports whether the panel said the thing does not exist.
+//
+// Only the panel's own code counts. A 404 without it is ambiguous — it is what a wrong API root answers, and
+// treating it as "gone" is how a misconfigured panel URL reports every customer's server as missing. The one
+// exception is a 404 the caller has *proven* to be a real lookup, by checking that the API root itself answers
+// (see probeRoot); that proof is recorded on the error as resourceMissing.
 func (e *panelError) notFound() bool {
 	if e == nil {
 		return false
 	}
-	return e.status == http.StatusNotFound || e.code == "SERVER_NOT_FOUND"
+	if e.code == "SERVER_NOT_FOUND" {
+		return true
+	}
+	return e.status == http.StatusNotFound && e.resourceMissing
+}
+
+// misrouted reports whether a 404 came from something that is not the panel's API.
+func (e *panelError) misrouted() bool {
+	return e != nil && e.status == http.StatusNotFound && !e.notFound()
 }
 
 // locked reports whether the resource is suspended or in another state the panel refuses to act
@@ -330,10 +374,34 @@ func (c *panelClient) do(ctx context.Context, method, path string, body, out any
 	return json.Unmarshal(raw, out)
 }
 
+// probeRoot reports whether the configured base is actually the panel's API.
+//
+// One cheap call, only on a 404 that did not carry the panel's own "server not found" code. It is what makes
+// the difference between "the resource is gone" and "we are talking to something that is not the panel"
+// observable rather than guessed.
+func (c *panelClient) probeRoot(ctx context.Context) bool {
+	var out envelope[[]panelLocation]
+	return c.do(ctx, http.MethodGet, "/locations", nil, &out) == nil
+}
+
 // getServer reads one server. A missing server is a *panelError whose notFound() is true.
 func (c *panelClient) getServer(ctx context.Context, id string) (panelServer, error) {
 	var out envelope[panelServer]
 	if err := c.do(ctx, http.MethodGet, "/servers/"+url.PathEscape(id), nil, &out); err != nil {
+		var pe *panelError
+		if errors.As(err, &pe) && pe.status == http.StatusNotFound && pe.code != "SERVER_NOT_FOUND" {
+			// A 404 with no code: either the panel does not know this server, or this is not the panel.
+			if c.probeRoot(ctx) {
+				pe.resourceMissing = true
+				return panelServer{}, pe
+			}
+			return panelServer{}, &panelError{
+				status: http.StatusNotFound,
+				code:   "PANEL_API_NOT_FOUND",
+				message: fmt.Sprintf("%s does not answer as a Catalyst panel API; "+
+					"check the panel URL (it should be the origin, without /api)", c.base),
+			}
+		}
 		return panelServer{}, err
 	}
 	if out.Data.ID == "" {

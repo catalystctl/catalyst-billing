@@ -111,7 +111,7 @@ package that built it. Three states, and no fourth:
 | E5.1 System settings | ADM-02, OPS-09, NTF-10, I18N-07 | **built** | Typed accessor over one table, secrets redacted on every read path, audited write, `/settings/system` renders and saves. |
 | E5.2 Admin CRUD gaps | ADM-04…ADM-09, ADM-13…ADM-18, ADM-24, ADM-25, ADM-28…ADM-37, CPN-10, CT-10, CT-12, SVC-12…SVC-15, UPG-13, UPG-14, CRD-07, INV-09, INV-18, PAY-13, PAY-14, IDN-22 | **built** | Every resource has a staff screen, and the writes exist: coupons, tax rates, currencies, config options, announcements, cancellations, settings, tickets, credits, gateways, servers, imports, locales, OAuth clients, updates, marketplace, affiliates, **and creation of a customer, a service and a staff user**. Order editing is deliberately absent — an order is a record of what was agreed, and corrections go through credit notes and cancellations rather than rewriting it. |
 | E5.3 Roles and sessions | IDN-12, IDN-13, IDN-14, IDN-15, IDN-16, IDN-17, ADM-30 | **built** | `/security` lists every active session and the sign-in history and can revoke one; `/roles` edits custom roles against the real permission catalogue with the four system roles immutable in the database; `/users` creates a person with a role. Audited impersonation names both accounts, API-key CIDR allowlists are enforced, and the last administrator cannot be demoted or disabled. |
-| E5.4 Observability | ADM-17…ADM-22, OPS-08, OPS-15, OPS-16 | **built** | Email, error and HTTP log viewers; cron history; worker heartbeat surfaced through `doctor`. |
+| E5.4 Observability | ADM-17…ADM-22, OPS-08, OPS-15, OPS-16 | **built** | Email, error and HTTP log viewers; cron run history with failures, per-job statistics and retry; worker heartbeat per instance, surfaced through `doctor` and the automation screen. |
 | E5.5 CLI parity | OPS-17 | **built** | `create-user`, `create-customer`, `issue-invoice`, `purge-test-data`, `setting set` and `logs tail`; a setting write goes through the same validation the HTTP path uses and writes an audit row naming `BILLING_ADMIN_ACTOR`. |
 | E5.6 Dashboard and navigation | ADM-01, ADM-36, ADM-37 | **built** | Revenue from the ledger rather than invoice totals, the exception queue, a selectable period, and a nav grouped like Paymenter's. |
 | E5.7 Catalog polish | CAT-04, CAT-06 | **built** | A duplicate-product action copying price versions and config options with an audit row naming the source; a rich-text description with a `plain`/`html` format and a sanitising test that proves a hostile payload is neutralised. |
@@ -320,6 +320,42 @@ One epic is not started and one is partial. Both are breadth, not capability:
   different and much larger thing than branding, and the boundary is stated in `docs/branding.md` §5
   so a later reader does not mistake the overlay for the registry.
 
+### Two defects that are capability, not breadth
+
+These are not on the epic list because they are not missing features — they are features that exist
+and are not reached. Both are recorded here because a tested, complete-looking implementation is the
+exact thing a reader will assume is working.
+
+- **Configured tax never reaches an invoice, and the cart already quotes it.** `internal/tax` is a
+  full jurisdiction engine — EU place-of-supply, VIES VAT-ID validation, US subnational nexus,
+  reverse charge, and a refusal that refuses rather than charging 0%. `Server.IssuerFor` prices at
+  the customer's jurisdiction. Nothing in production calls it: checkout, the manual invoice, orders
+  and the renewal worker all issue through the shared issuer, which is
+  `FixedTaxPricer{Policy:"no-tax"}`. Meanwhile `taxPricerFor` is what the CART uses, so the panel
+  quotes one number and documents another. With `tax.enabled` on and rates configured, an
+  inclusive-tax installation shows totals that agree numerically while the invoice under-states net
+  and omits the VAT amount — a VAT invoice that cannot support the customer's input-VAT reclaim —
+  and an exclusive-tax installation's cart total and invoice total disagree outright.
+
+  The storefront tax label and `GET /api/v1/tax/disclosure` are therefore deliberately **not**
+  shipped: a tax label beside an invoice with no tax line is a false statement to the customer.
+  The fix is one change across all four issuance paths, and it must be all four — half of it means
+  the first invoice of a subscription carries VAT while every renewal does not, which is worse than
+  uniformly carrying none. The seam must live below `httpapi` (three of the four paths are outside
+  it: `register.NewCheckoutService`, `orders.New`, `renewal.Engine`), and the rate must be resolved
+  inside the issuing transaction so the immutable `snapshot` records the rate that actually applied.
+  One commercial decision is open: when VIES is unreachable, refuse, or fall back to the destination
+  rate and record the substitution in the snapshot. Refusing turns a third-party outage into failed
+  EU B2B checkout; the fallback over-collects and is recoverable.
+
+- **Outbound mail is not localised, though the panel is.** The client renders in the user's locale
+  and every email goes out in English, so a customer who picked German gets a German panel and an
+  English invoice. `notify.NewLocalizedSender` exists on an unmerged branch
+  (`agent-team/i18n-ieqw64`) and is referenced only by its own test; its resolver method
+  `CatalogSet` is absent from master's `i18n.Store`. Finishing it is: port
+  `internal/notify/locale.go`, add `CatalogSet`, place one line in `cmd/billing/jobs.go` at the
+  notifications sender, and prove a non-default-locale recipient gets translated mail.
+
 Three things moved from this list to **done** in the last round, each with a test that can fail:
 
 - **An arbitrary N-day billing period** is expressible as `every_<N>_days` (N in 1..366).
@@ -339,7 +375,7 @@ Two things on this list are decisions rather than gaps:
 - **Order editing.** Deliberately absent. An order is the record of what was agreed; corrections
   go through credit notes and cancellations, which is what keeps an issued invoice immutable.
 
-## The never-regress list, checked## The never-regress list, checked
+## The never-regress list, checked
 
 | Rule | Evidence |
 |---|---|

@@ -51,6 +51,11 @@ func statusForState(state string) extproto.ResourceStatus {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "running", "started", "stopped", "offline", "exited":
 		return resourceActive
+	case "unhealthy", "crashed":
+		// The container exists and the customer is paying for it, so the billing lifecycle is active. It is
+		// the *power* state that is wrong, and that is reported separately: claiming "provisioning" here
+		// would tell the billing panel the service never finished being built.
+		return resourceActive
 	case "suspended":
 		return resourceSuspended
 	case "deleted", "terminated":
@@ -75,7 +80,13 @@ func powerActionsFor(srv panelServer) []string {
 	switch strings.ToLower(srv.Status) {
 	case "running", "started":
 		return []string{"stop", "restart", "kill"}
-	case "stopped", "offline", "exited":
+	case "unhealthy":
+		// Running but failing its health check. Restart is the thing a customer actually wants here, and a
+		// panel that reports this state is telling us the process is up and reachable by the agent.
+		return []string{"stop", "restart", "kill"}
+	case "stopped", "offline", "exited", "crashed":
+		// A crashed server is stopped with a reason. Start is what brings it back, so offering nothing (as
+		// an unrecognised state did) left the customer with no control at all.
 		return []string{"start"}
 	case "starting", "stopping", "restarting", "installing":
 		return []string{"kill"}
@@ -153,6 +164,11 @@ func mapPanelError(err error) *rpcError {
 	var pe *panelError
 	if errors.As(err, &pe) {
 		switch {
+		case pe.code == "PANEL_API_NOT_FOUND":
+			// A wrong panel URL is a deployment fault, not a lost server. It is reported as retryable so
+			// nothing destructive follows from it, and the message names the URL so an operator can act.
+			return &rpcError{Code: codeInternal, Message: pe.Error(),
+				Data: map[string]any{"reason": "panel_api_not_found"}}
 		case pe.notFound():
 			return &rpcError{Code: codeNotFound, Message: pe.Error()}
 		case pe.status == http.StatusUnauthorized || pe.status == http.StatusForbidden:

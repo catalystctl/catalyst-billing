@@ -190,12 +190,21 @@ func (s *Server) writeServerView(w http.ResponseWriter, r *http.Request, target 
 	case err != nil:
 		// The read failed. That is not a statement about the service, so it is a 200 whose card says
 		// why rather than a 5xx that would take the whole page down.
+		//
+		// `reason` is the machine-readable half of the sentence, and it exists because the sentence alone
+		// cannot be acted on. "The server panel does not recognise this service" is true both when the
+		// server was deleted and when the installation's provider was changed to one that never created
+		// it — the second is a deployment fault every service shares, and only the reason tells them
+		// apart.
+		out["reason"] = serverProblemReason(err)
 		s.cfg.Logger.WarnContext(r.Context(), "read the live server state",
-			"service_id", target.serviceID, "provider", view.Provider, "error", err)
+			"service_id", target.serviceID, "provider", view.Provider, "extension", view.Extension,
+			"reason", serverProblemReason(err), "error", err)
 		out["detail"] = serverProblemSentence(err)
 		writeJSON(w, http.StatusOK, out)
 		return
 	case !view.Supported:
+		out["reason"] = "unsupported"
 		// The configured adapter has no live view. Saying so is better than an empty card that looks
 		// like a bug in the panel.
 		out["detail"] = "The " + view.Provider + " integration cannot report a server's live state."
@@ -255,6 +264,26 @@ func powerActionStrings(actions []extproto.PowerAction) []string {
 	return out
 }
 
+// serverProblemReason classifies a provider failure for a client and for a log line.
+//
+// The names are stable strings rather than error text: a UI branches on them, and an operator greps for them.
+func serverProblemReason(err error) string {
+	switch {
+	case errors.Is(err, provisioning.ErrPanelMisconfigured):
+		return "panel_misconfigured"
+	case errors.Is(err, provisioning.ErrNotConfigured):
+		return "not_configured"
+	case errors.Is(err, provisioning.ErrUnsupportedOperation):
+		return "unsupported"
+	case errors.Is(err, extproto.ErrNotFound):
+		return "not_recognised"
+	case errors.Is(err, extproto.ErrTimeout):
+		return "timeout"
+	default:
+		return "unreachable"
+	}
+}
+
 // serverProblemSentence turns a provider failure into a sentence a customer can act on.
 //
 // The provider's own text is not repeated here: it is written for an operator, it can name internal
@@ -262,6 +291,11 @@ func powerActionStrings(actions []extproto.PowerAction) []string {
 // sounds like their server is broken when it is the billing deployment that is.
 func serverProblemSentence(err error) string {
 	switch {
+	case errors.Is(err, provisioning.ErrPanelMisconfigured):
+		// Names the installation, not the customer's server: the panel URL is wrong for *every* service, and a
+		// customer reading "your server does not exist" would be told something false.
+		return "This installation's server panel address is misconfigured, so live server details cannot be " +
+			"read. Your service is unaffected; please contact support."
 	case errors.Is(err, provisioning.ErrNotConfigured):
 		return "Server control is not set up yet. Please contact support."
 	case errors.Is(err, extproto.ErrTimeout):

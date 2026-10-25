@@ -61,7 +61,23 @@ export BILLING_PUBLIC_URL="http://$ADDR"
 # credentials live in its environment (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET), not the panel's,
 # and are read from .env above — without them the adapter starts and every charge fails.
 export BILLING_GATEWAY_EXTENSION="$PWD/bin/stripe"
-export BILLING_PROVISIONER_EXTENSION="$PWD/bin/fakeprov"
+# The provisioner binary, unless the installation is pointed at a real adapter.
+#
+# BILLING_PROVISIONER_EXTENSION beats the configured provider — that is deliberate, so a deployment can build
+# the binary elsewhere — which makes this line dangerous: with `servers.provider = catalystctl` in the settings
+# table, exporting fakeprov here runs the fixture instead, and every real service then reports "the server panel
+# does not recognise this service" while the settings screen looks perfectly correct. That happened on a
+# tunnelled dev instance and cost an afternoon.
+#
+# So the fixture is used only when the configured provider *is* the fixture. DEV_FORCE_FIXTURES=1 keeps the old
+# unconditional behaviour for a database that has no provider configured yet.
+configured_provider="$(./bin/billing admin setting get servers provider 2>/dev/null || true)"
+if [ "${DEV_FORCE_FIXTURES:-0}" = "1" ] || [ -z "$configured_provider" ] || [ "$configured_provider" = "fake" ]; then
+  export BILLING_PROVISIONER_EXTENSION="$PWD/bin/fakeprov"
+else
+  export BILLING_PROVISIONER_EXTENSION="$PWD/bin/$configured_provider"
+  echo "dev: using the configured provisioner: $BILLING_PROVISIONER_EXTENSION"
+fi
 export BILLING_GATEWAY_ACCOUNT="${BILLING_GATEWAY_ACCOUNT:-acct_test}"
 # The provider name is set here as well as in the settings table, and both are needed: the
 # panel and the jobs resolve it from the table (where the environment would otherwise win),

@@ -1345,3 +1345,109 @@ func TestAnExhaustedNodeIsRefusedWithTheRemedy(t *testing.T) {
 	})
 	expectError(t, rep, codeRejected)
 }
+
+// The panel reports states beyond the five obvious ones, and an unrecognised state used to mean "offer no
+// controls at all". A customer with an unhealthy or crashed server then had no button — the exact moment
+// they need one. These two states were found by driving the real panel through a start.
+func TestARealPanelStateStillOffersTheRightControls(t *testing.T) {
+	cases := []struct {
+		state   string
+		actions string
+		status  string
+		why     string
+	}{
+		{
+			state: "unhealthy", actions: "stop,restart,kill", status: string(resourceActive),
+			why: "running but failing its health check: restart is what fixes it, so it must be offered",
+		},
+		{
+			state: "crashed", actions: "start", status: string(resourceActive),
+			why: "stopped with a reason: start is what brings it back",
+		},
+		{
+			state: "installing", actions: "kill", status: string(resourceProvisioning),
+			why: "still being built: nothing but killing it makes sense",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.state, func(t *testing.T) {
+			srv := panelServer{ID: "srv-1", Status: tc.state}
+			got := strings.Join(powerActionsFor(srv), ",")
+			if got != tc.actions {
+				t.Fatalf("power actions for %q = %q, want %q (%s)", tc.state, got, tc.actions, tc.why)
+			}
+			if status := string(statusFor(srv)); status != tc.status {
+				t.Fatalf("billing status for %q = %q, want %q", tc.state, status, tc.status)
+			}
+		})
+	}
+}
+
+func TestAnUnhealthyServerCanBeRestartedThroughTheAdapter(t *testing.T) {
+	panel := newFakePanel(t)
+	panel.addServer(panelServer{ID: "srv-1", Name: "one", Status: "unhealthy"})
+	s := testServer(t, panel)
+
+	var out struct {
+		Changed bool `json:"changed"`
+	}
+	result(t, call(t, s, "provisioner.power", map[string]any{
+		"operation_key": "power:svc-1:restart:1",
+		"external_id":   "srv-1",
+		"action":        "restart",
+	}), &out)
+	if n := panel.callCount("POST", "/servers/srv-1/restart"); n != 1 {
+		t.Fatalf("an unhealthy server must accept a restart, the panel saw %d calls", n)
+	}
+	if !out.Changed {
+		t.Fatal("the restart should report a change")
+	}
+}
+
+// ---------------------------------------------------------------- panel URL --
+
+func TestAPanelURLWithAnAPIPathIsNormalised(t *testing.T) {
+	// What people paste. Joined with the adapter's own /api prefix it becomes /api/api/…, which the panel
+	// answers with a bare 404 — the exact failure that reported a live server as "does not recognise".
+	cases := map[string]string{
+		"https://panel.example.com":        "https://panel.example.com",
+		"https://panel.example.com/":       "https://panel.example.com",
+		"https://panel.example.com/api":    "https://panel.example.com",
+		"https://panel.example.com/api/":   "https://panel.example.com",
+		"https://panel.example.com/api/v1": "https://panel.example.com",
+		"https://panel.example.com/panel":  "https://panel.example.com/panel",
+	}
+	for in, want := range cases {
+		if got := normalisePanelURL(in); got != want {
+			t.Fatalf("normalisePanelURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestAWrongAPIRootIsNotReportedAsAMissingServer(t *testing.T) {
+	panel := newFakePanel(t)
+	// The adapter's base points one level too deep, so every request lands on a path the panel does not serve.
+	// Its answer is a 404 with no code, which must not be read as "that server is gone".
+	s := testServer(t, panel, func(cfg *config) { cfg.panelURL = panel.url() + "/nonsense" })
+
+	rep := call(t, s, "provisioner.resource", map[string]any{"external_id": "srv-1"})
+	if rep.rpcErr == nil {
+		t.Fatal("a wrong API root must fail")
+	}
+	// Not -32004: that is authoritative absence, and the core would conclude the resource was deleted.
+	if rep.rpcErr.Code == codeNotFound {
+		t.Fatalf("a misrouted panel URL must not be reported as not-found: %+v", rep.rpcErr)
+	}
+	if data, ok := rep.rpcErr.Data.(map[string]any); !ok || data["reason"] != "panel_api_not_found" {
+		t.Fatalf("the error should carry a structured reason, got %+v", rep.rpcErr.Data)
+	}
+}
+
+func TestAGenuineMissingServerIsStillNotFound(t *testing.T) {
+	panel := newFakePanel(t)
+	s := testServer(t, panel)
+
+	// The panel answers with its own SERVER_NOT_FOUND code, which stays authoritative: this is a real absence.
+	rep := call(t, s, "provisioner.resource", map[string]any{"external_id": "srv-nope"})
+	expectError(t, rep, codeNotFound)
+}

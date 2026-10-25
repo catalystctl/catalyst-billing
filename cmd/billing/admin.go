@@ -35,7 +35,7 @@ import (
 func cmdAdmin(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: billing admin " +
-			"<create-user|password-reset|create-customer|issue-invoice|import|purge-test-data|setting|logs>")
+			"<create-user|password-reset|create-customer|issue-invoice|import|purge-test-data|setting|logs|services>")
 	}
 	switch args[0] {
 	case "create-user":
@@ -55,13 +55,28 @@ func cmdAdmin(args []string) error {
 		// grow a `get` and a `list`, and a command that guessed its verb from how many arguments
 		// it received could not grow them.
 		if len(args) < 2 {
-			return errors.New("usage: billing admin setting <set> <group> <key> <value|-> [--as <email>]")
+			return errors.New("usage: billing admin setting <set|get> <group> <key> [<value|->] [--as <email>]")
 		}
 		switch args[1] {
 		case "set":
 			return adminSettingSet(args[2:])
+		case "get":
+			return adminSettingGet(args[2:])
 		default:
-			return fmt.Errorf("unknown setting command %q; try `billing admin setting set`", args[1])
+			return fmt.Errorf("unknown setting command %q; try `billing admin setting set` or `get`", args[1])
+		}
+	case "services":
+		// `services check-remote` answers "does the configured provisioner actually know these services?" — the
+		// question behind "The server panel does not recognise this service", which is otherwise answered by
+		// hand with a curl per service.
+		if len(args) < 2 {
+			return errors.New("usage: billing admin services <check-remote> [--timeout 20s] [--status active]")
+		}
+		switch args[1] {
+		case "check-remote":
+			return adminServicesCheckRemote(args[2:])
+		default:
+			return fmt.Errorf("unknown services command %q; try `billing admin services check-remote`", args[1])
 		}
 	case "logs":
 		if len(args) < 2 {

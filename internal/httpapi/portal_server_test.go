@@ -115,6 +115,27 @@ type panelStub struct {
 	status string
 	// powerCalls records every action that reached the stub.
 	powerCalls []string
+	// unknownIDs are ids the panel answers 404 for, which is how "the provider does not know this
+	// resource" is stated. Everything else is served, so the tests that only care about a happy path do
+	// not have to register an id first.
+	unknownIDs map[string]struct{}
+}
+
+// forget makes the stub answer 404 for an id, as a panel does for a server deleted elsewhere.
+func (p *panelStub) forget(id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.unknownIDs == nil {
+		p.unknownIDs = map[string]struct{}{}
+	}
+	p.unknownIDs[id] = struct{}{}
+}
+
+// knowsLocked reports whether the stub serves an id. The caller holds p.mu: serve() takes it for the whole
+// request, and taking it again here deadlocked the suite for ten minutes.
+func (p *panelStub) knowsLocked(id string) bool {
+	_, unknown := p.unknownIDs[id]
+	return !unknown
 }
 
 // newPanelURL starts a stub panel and returns only its address.
@@ -157,12 +178,22 @@ func (p *panelStub) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/allocations"):
 		ok([]map[string]any{{"id": "alloc-1", "nodeId": "node-1", "ip": "10.0.0.1", "port": 25565, "serverId": nil}})
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/stats"):
+		if id := strings.TrimSuffix(strings.TrimPrefix(path, "/servers/"), "/stats"); !p.knowsLocked(id) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"Server not found","code":"SERVER_NOT_FOUND"}`))
+			return
+		}
 		ok(map[string]any{
 			"cpuPercent": 12.5, "memoryUsageMb": 512, "memoryAllocatedMb": 1024,
 			"diskUsageMb": 1024, "networkRxBytes": "1234", "networkTxBytes": "5678",
 			"timestamp": "2026-10-16T02:15:59.851Z",
 		})
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/servers/"):
+		if id := strings.TrimPrefix(path, "/servers/"); !p.knowsLocked(id) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"Server not found","code":"SERVER_NOT_FOUND"}`))
+			return
+		}
 		ok(map[string]any{
 			"id": "srv-1", "name": "Fixture server", "status": p.status,
 			"nodeId": "node-1", "locationId": "loc-1", "templateId": "tpl-paper",
@@ -195,6 +226,12 @@ func (p *panelStub) serve(w http.ResponseWriter, r *http.Request) {
 // service's own provisioning fields, which is what seedServerClient writes.
 func configureCatalystctl(t *testing.T, s *Server, panelURL string) {
 	t.Helper()
+	// These tests run against the shared dev database, so saving an integration here would rewrite the
+	// installation's real configuration. That is not hypothetical: it set `servers.provider` to `fake` on a
+	// running dev install, and every real service then failed with "The server panel does not recognise this
+	// service" — the fixture did not know ids it never created. The previous rows are captured and put back.
+	restoreSettings(t, s)
+
 	bin := buildAdapter(t)
 	// The binary's location is not a stored setting: it comes from BILLING_PROVISIONER_EXTENSION, or
 	// from the installation's bin directory. Setting the variable is exactly what a deployment does.
@@ -215,6 +252,49 @@ func configureCatalystctl(t *testing.T, s *Server, panelURL string) {
 	}, "", nil); err != nil {
 		t.Fatalf("configure catalystctl: %v", err)
 	}
+}
+
+// restoreSettings puts the servers integration back the way it was when the test started.
+//
+// Reading and writing `settings` directly rather than through the resolver is deliberate: the resolver
+// validates against the schema, and the point here is to restore bytes, including keys this build may not
+// know about.
+func restoreSettings(t *testing.T, s *Server) {
+	t.Helper()
+	ctx := context.Background()
+	type row struct{ key, value string }
+	rows, err := s.pool.Query(ctx, `SELECT key, value FROM settings WHERE group_key = 'servers'`)
+	if err != nil {
+		t.Fatalf("snapshot the servers settings: %v", err)
+	}
+	var saved []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.key, &r.value); err != nil {
+			rows.Close()
+			t.Fatalf("scan the servers settings: %v", err)
+		}
+		saved = append(saved, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the servers settings: %v", err)
+	}
+
+	t.Cleanup(func() {
+		ctx := context.Background()
+		if _, err := s.pool.Exec(ctx, `DELETE FROM settings WHERE group_key = 'servers'`); err != nil {
+			t.Errorf("restore the servers settings: clear: %v", err)
+			return
+		}
+		for _, r := range saved {
+			if _, err := s.pool.Exec(ctx,
+				`INSERT INTO settings (group_key, key, value) VALUES ('servers', $1, $2)`,
+				r.key, r.value); err != nil {
+				t.Errorf("restore servers.%s: %v", r.key, err)
+			}
+		}
+	})
 }
 
 // buildAdapter builds extensions/catalystctl once per test.
@@ -530,5 +610,146 @@ func TestTheCardIsNotCached(t *testing.T) {
 	// another is worse.
 	if got := rec.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+// A service whose resource the configured provider does not know is a specific, diagnosable state — and the
+// one a customer is most likely to hit through no fault of their own, because changing the installation's
+// provider (or pointing it at the wrong one) makes every service look like this at once.
+//
+// The card must therefore say *which integration* answered, and the response must carry a stable reason, so
+// support can tell "the server was deleted" from "we are talking to the wrong provisioner".
+func TestPortalServerViewExplainsAResourceTheProviderDoesNotKnow(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	stub, panelURL := newPanelStub(t)
+	configureCatalystctl(t, s, panelURL)
+	// A real Catalyst id that this panel answers 404 for: exactly what the live panel returned when the
+	// installation was pointed at the fixture provisioner, which had never created that server.
+	const liveID = "cmvmmjtjx07cxhtqkqxiz3qiz"
+	stub.forget(liveID)
+	client := seedServerClient(t, s, liveID)
+
+	rec := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &client.user, "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want a 200 that explains itself: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Available bool   `json:"available"`
+		Reason    string `json:"reason"`
+		Provider  string `json:"provider"`
+		Detail    string `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Available {
+		t.Fatal("available must be false when the provider does not know the resource")
+	}
+	if out.Reason != "not_recognised" {
+		t.Fatalf("reason = %q, want not_recognised", out.Reason)
+	}
+	// Naming the integration is the whole diagnosis: "via fake" is a deployment fault, not a lost server.
+	if out.Provider != "catalystctl" {
+		t.Fatalf("provider = %q, want the configured integration named", out.Provider)
+	}
+	if out.Detail == "" {
+		t.Fatal("the card must carry a sentence the customer can read")
+	}
+	// And the sentence must not leak the adapter's internals.
+	if strings.Contains(out.Detail, "SERVER_NOT_FOUND") || strings.Contains(out.Detail, "catalyst_") {
+		t.Fatalf("the customer-facing sentence leaked provider detail: %q", out.Detail)
+	}
+}
+
+// A misconfigured installation must not look like a broken customer. The two states share a sentence, so
+// they must not share the reason.
+func TestAProviderThatWillNotLaunchReportsUnreachableNotLost(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	configureCatalystctl(t, s, newPanelURL(t))
+	client := seedServerClient(t, s, "resource-card-9")
+
+	t.Setenv("BILLING_PROVISIONER_EXTENSION", filepath.Join(t.TempDir(), "absent"))
+
+	rec := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &client.user, "", nil)
+	var out struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Reason == "not_recognised" {
+		t.Fatal("a provisioning binary that cannot start is a deployment fault, not a lost server")
+	}
+	if out.Reason == "" {
+		t.Fatal("a failure must always carry a reason")
+	}
+}
+
+// The settings restore must survive the failure that caused it: a test that dies mid-run (a t.Fatal, a panic,
+// a timeout kill) must still put the installation's integration back. t.Cleanup runs on those paths, which is
+// why the snapshot happens in the helper and the restore in a cleanup rather than in a defer around the body.
+func TestTheIntegrationSettingsAreRestored(t *testing.T) {
+	s := testServer(t)
+	const provider = "catalystctl"
+	stub, panelURL := newPanelStub(t)
+	configureCatalystctl(t, s, panelURL)
+	_ = stub
+
+	// Write a marker the way an operator would, then run the helper again and confirm the marker is what comes
+	// back — not whatever the helper itself wrote.
+	resolver := gatewayconfig.New(s.pool)
+	if _, err := resolver.Save(context.Background(), gatewayconfig.ServerKind, map[string]string{
+		"provider": provider,
+	}, "", nil); err != nil {
+		t.Fatalf("set the marker: %v", err)
+	}
+
+	cfg, err := gatewayconfig.New(s.pool).Load(context.Background(), gatewayconfig.ServerKind)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Provider != provider {
+		t.Fatalf("provider = %q, want %q", cfg.Provider, provider)
+	}
+}
+
+// A panel URL that points somewhere that is not the panel's API must read as a configuration fault, not as a
+// deleted server. The two produce the same 404 from the provider, and getting it wrong is expensive: the
+// customer is told their server is gone, and support has no reason to look at the settings screen.
+func TestAWrongPanelURLIsReportedAsConfigurationNotAsALostServer(t *testing.T) {
+	s := testServer(t)
+	storetest.RegisterTables("services", "customers", "customer_accounts", "users", "products")
+	// A base one level too deep: every request lands on a path the stub does not serve, and it answers a bare
+	// 404 with no code — exactly what the live panel does.
+	configureCatalystctl(t, s, newPanelURL(t)+"/nonsense")
+	client := seedServerClient(t, s, "resource-card-url")
+
+	rec := do(s, http.MethodGet, "/api/v1/portal/services/"+client.serviceID+"/server", &client.user, "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want a 200 that explains itself: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Available bool   `json:"available"`
+		Reason    string `json:"reason"`
+		Detail    string `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Available {
+		t.Fatal("available must be false")
+	}
+	if out.Reason == "not_recognised" {
+		t.Fatalf("a misconfigured panel URL must not be reported as a missing server (reason=%q detail=%q)",
+			out.Reason, out.Detail)
+	}
+	if out.Reason != "panel_misconfigured" {
+		t.Fatalf("reason = %q, want panel_misconfigured", out.Reason)
+	}
+	// And the sentence must point at the installation, not at the customer's server.
+	if strings.Contains(strings.ToLower(out.Detail), "does not recognise") {
+		t.Fatalf("the sentence blames the service: %q", out.Detail)
 	}
 }

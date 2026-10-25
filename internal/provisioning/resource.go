@@ -23,6 +23,7 @@ package provisioning
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -106,7 +107,7 @@ func ReadResource(ctx context.Context, pool *store.Pool, timeout time.Duration, 
 	var res extproto.ProvisionResourceResult
 	if err := client.Call(ctx, extproto.MethodProvisionerResource,
 		&extproto.ProvisionResourceParams{ExternalID: externalID}, &res); err != nil {
-		return out, fmt.Errorf("provisioner.resource: %w", err)
+		return out, translateAdapterError(fmt.Errorf("provisioner.resource: %w", err))
 	}
 	out.Supported = true
 	out.Result = res
@@ -146,10 +147,18 @@ func ControlPower(ctx context.Context, pool *store.Pool, timeout time.Duration, 
 		ExternalID:   req.ExternalID,
 		Action:       req.Action,
 	}, &res); err != nil {
-		return PowerView{Provider: view.Provider, Extension: view.Extension}, fmt.Errorf("provisioner.power: %w", err)
+		return PowerView{Provider: view.Provider, Extension: view.Extension},
+			translateAdapterError(fmt.Errorf("provisioner.power: %w", err))
 	}
 	return PowerView{Provider: view.Provider, Extension: view.Extension, Supported: true, Result: res}, nil
 }
+
+// ErrPanelMisconfigured means the provider's address does not answer as a provider API.
+//
+// It is separate from ErrNotConfigured because the remedies differ: one is "no provider is configured", the
+// other is "a provider is configured and the URL is wrong". Telling an operator the first when it is the
+// second sends them to the wrong screen.
+var ErrPanelMisconfigured = errors.New("provisioning: the provider's URL does not answer as its API")
 
 // ErrInvalidPowerRequest means the caller built a power request the protocol forbids.
 //
@@ -185,4 +194,68 @@ func launchFor(ctx context.Context, pool *store.Pool, timeout time.Duration) (ga
 	out.Extension = client.Info().Name
 	out.Capabilities = client.Info().Capabilities
 	return cfg, client, out, nil
+}
+
+// Inspect asks the configured provisioner for one resource's protocol-level state.
+//
+// It is the cheap read: no metrics, no address resolution, just "does this resource exist and in what
+// state". That makes it the right call for an audit across every service, where ReadResource would fetch
+// stats for each one and turn a reconciliation into a load test on the provider.
+func Inspect(ctx context.Context, pool *store.Pool, timeout time.Duration, externalID string) (extproto.ProvisionInspectResult, error) {
+	if timeout <= 0 {
+		timeout = defaultCallTimeout
+	}
+	if externalID == "" {
+		return extproto.ProvisionInspectResult{}, fmt.Errorf("%w: the service has no provisioned resource", ErrNotConfigured)
+	}
+	_, client, _, err := launchFor(ctx, pool, timeout)
+	if err != nil {
+		return extproto.ProvisionInspectResult{}, err
+	}
+	defer func() { _ = client.Close() }()
+
+	if !client.Info().HasCapability(extproto.CapProvisionerInspect) {
+		return extproto.ProvisionInspectResult{},
+			fmt.Errorf("%w: the adapter does not advertise %s", ErrUnsupportedOperation, extproto.CapProvisionerInspect)
+	}
+	var res extproto.ProvisionInspectResult
+	if err := client.Call(ctx, extproto.MethodProvisionerInspect,
+		&extproto.ProvisionInspectParams{ExternalID: externalID}, &res); err != nil {
+		return extproto.ProvisionInspectResult{}, translateAdapterError(fmt.Errorf("provisioner.inspect: %w", err))
+	}
+	return res, nil
+}
+
+// adapterReasons are the structured reasons an adapter may put in a JSON-RPC error's `data`.
+//
+// The field exists precisely for this: a code is a coarse class (-32000 "something failed"), and a message is
+// English. A reason is neither — it is a stable token a caller can branch on, which is what keeps a
+// misconfigured panel URL from being reported as a customer's missing server.
+const (
+	// ReasonPanelAPINotFound means the configured panel URL does not answer as a panel API.
+	ReasonPanelAPINotFound = "panel_api_not_found"
+)
+
+// translateAdapterError turns a structured adapter reason into the sentinel this package owns.
+//
+// The distinction it draws is the one that matters to an operator: "the provider does not have this resource"
+// is a data repair, while "the provider's address is wrong" is a deployment fix shared by every service. Both
+// used to arrive as the same -32004, and the customer-facing sentence for both was "the server panel does not
+// recognise this service".
+func translateAdapterError(err error) error {
+	var rpcErr *extproto.Error
+	if !errors.As(err, &rpcErr) || len(rpcErr.Data) == 0 {
+		return err
+	}
+	var data struct {
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(rpcErr.Data, &data) != nil {
+		return err
+	}
+	switch data.Reason {
+	case ReasonPanelAPINotFound:
+		return fmt.Errorf("%w: %w", ErrPanelMisconfigured, err)
+	}
+	return err
 }

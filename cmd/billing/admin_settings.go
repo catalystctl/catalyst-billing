@@ -49,6 +49,69 @@ import (
 
 // ------------------------------------------------------------------ setting --
 
+// adminSettingGet prints one setting's effective value.
+//
+// Usage: billing admin setting get <group> <key>
+//
+// It exists for scripts, and for one script in particular: `scripts/dev-config.sh` points the panel at
+// the fixture provisioner, and it must be able to ask whether an operator has already pointed the
+// installation somewhere real. Without a read verb the only way to do that is psql against the settings
+// table — a second, unvalidated path to the same data, which is how the fixtures came to overwrite a live
+// integration and make every service report "The server panel does not recognise this service".
+//
+// A secret is printed as the redaction marker, never its value: a CLI that can read a credential back is a
+// CLI that can leak one into a shell history. `--exit-code` makes an unset key exit 1, which is what a
+// script wants when it is deciding whether to write a default.
+func adminSettingGet(args []string) error {
+	flags, positional, err := splitFlags(args, nil, []string{"exit-code"})
+	if err != nil {
+		return err
+	}
+	if len(positional) != 2 {
+		return errors.New("usage: billing admin setting get <group> <key> [--exit-code]")
+	}
+	group, key := positional[0], positional[1]
+
+	def, ok := settings.Lookup(group, key)
+	if !ok {
+		return unknownSettingError(group, key)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := store.Open(ctx, store.ConfigFromEnv())
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+
+	// The group is read in one statement through the same merge the settings screen uses, so the value
+	// printed here is the one the panel would render — default included, and a secret redacted on the same
+	// path. A per-key query would be a second definition of "the effective value".
+	values, err := settings.New(pool).Group(ctx, group)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", group, err)
+	}
+	for _, v := range values {
+		if v.Key != key {
+			continue
+		}
+		shown := v.Value
+		if def.Secret && v.IsSet {
+			shown = settings.RedactedMarker
+		}
+		fmt.Println(shown)
+		if flags["exit-code"] == "true" && !v.IsSet {
+			// The default is printed (so a caller can see what applies), but the exit status separates
+			// "you set this" from "this is the fallback" — the difference a seeding script needs.
+			os.Exit(1)
+		}
+		return nil
+	}
+	return fmt.Errorf("%s.%s is declared but was not returned by the store", group, key)
+}
+
 // adminSettingSet changes one setting from the command line.
 //
 // Usage: billing admin setting set <group> <key> <value|-> [--as <email or id>]

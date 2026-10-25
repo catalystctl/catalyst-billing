@@ -10,11 +10,13 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/catalyst/billing/internal/authn"
+	"github.com/catalyst/billing/internal/gatewayconfig"
 	"github.com/catalyst/billing/internal/httpapi"
 	"github.com/catalyst/billing/internal/payments"
 	"github.com/catalyst/billing/internal/portal"
@@ -301,6 +303,11 @@ func cmdServe(args []string) error {
 	// panel's CSP forbids by default. The policy is widened by exactly the configured provider's
 	// origins and by nothing when no provider is set, so a shop that has not configured a
 	// challenge keeps the strictest policy available.
+	// An integration whose environment override names a different adapter than the configured provider is a
+	// trap that costs hours: the settings screen says one thing, the process runs another, and every failure
+	// is attributed to the wrong component. Saying so once, loudly, at startup is the cheapest possible fix.
+	warnIntegrationMismatch(ctx, pool, logger)
+
 	if provider := captchaProvider(ctx, pool); provider != captcha.ProviderNone {
 		webHandler.WithChallengeOrigins(captcha.ChallengeOrigins(provider))
 	}
@@ -383,4 +390,28 @@ func captchaProvider(ctx context.Context, pool *store.Pool) captcha.Provider {
 		return captcha.ProviderNone
 	}
 	return provider
+}
+
+// warnIntegrationMismatch reports a configured provider whose binary override points somewhere else.
+//
+// It reads both integrations because both have the same override mechanism and the same failure mode.
+func warnIntegrationMismatch(ctx context.Context, pool *store.Pool, logger *slog.Logger) {
+	if pool == nil {
+		return
+	}
+	resolver := gatewayconfig.New(pool)
+	for _, kind := range []gatewayconfig.Kind{gatewayconfig.GatewayKind, gatewayconfig.ServerKind} {
+		cfg, err := resolver.Load(ctx, kind)
+		if err != nil || !cfg.ExtensionMismatch {
+			continue
+		}
+		logger.Warn("the integration runs a different adapter than the one configured",
+			"kind", string(kind),
+			"provider", cfg.Provider,
+			"expected_binary", cfg.ProviderExtension,
+			"actual_binary", filepath.Base(cfg.ExtensionPath),
+			"source", cfg.ExtensionSource,
+			"consequence", "every request for this integration goes to the wrong adapter; "+
+				"services will report that their resource does not exist")
+	}
 }

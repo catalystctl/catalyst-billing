@@ -1,0 +1,192 @@
+{
+  "schema": 2,
+  "id": "midnight-luxe",
+  "name": "Midnight Luxe",
+  "description": "Deep ink with gold hairlines and a serif display: a premium, spacious, low-density reading experience.",
+  "color": {
+    "mode": "dark",
+    "brand": {
+      "primary": "#c9a227",
+      "secondary": "#1b2340",
+      "accent": "#c9a227"
+    },
+    "semantic": {
+      "success": "#4ec9a0",
+      "warning": "#e0b352",
+      "danger": "#e07a7a",
+      "info": "#7aa8d8"
+    },
+    "dark": {
+      "bg": "#0a0f1e",
+      "popover": "#111830",
+      "overlay": "rgba(3, 6, 16, 0.78)",
+      "card": "#111830",
+      "surface1": "#111830",
+      "surface2": "#16203a",
+      "surface3": "#1d2947",
+      "border": "#243254",
+      "borderStrong": "#3a4a70",
+      "text": "#ece8dc",
+      "textMuted": "#a8a898",
+      "textFaint": "#7d7f78",
+      "input": "#1d2947",
+      "side": "#0d1327",
+      "top": "#0d1327",
+      "surfaceHover": "#1d2947",
+      "surfaceInset": "#0a0f1e",
+      "surfaceActive": "#243254",
+      "lineSoft": "#182240",
+      "textSubtle": "#8d8d80",
+      "textInverse": "#0a0f1e",
+      "scrollbar": "#3a4a70",
+      "pink": "#d98aa0",
+      "accent": "#c9a227",
+      "accentHover": "#dcb63d",
+      "accentPress": "#a8871d",
+      "accentInk": "#0a0f1e",
+      "success": "#4ec9a0",
+      "warning": "#e0b352",
+      "danger": "#e07a7a",
+      "info": "#7aa8d8"
+    },
+    "light": {
+      "bg": "#f7f5ef",
+      "popover": "#fffefb",
+      "overlay": "rgba(20, 24, 40, 0.5)",
+      "card": "#fffefb",
+      "surface1": "#fffefb",
+      "surface2": "#f0ece1",
+      "surface3": "#e2dccd",
+      "border": "#d8d0bd",
+      "borderStrong": "#b3a88d",
+      "text": "#151a28",
+      "textMuted": "#4d5266",
+      "textFaint": "#74798c",
+      "input": "#e2dccd",
+      "side": "#f0ece1",
+      "top": "#fffefb",
+      "surfaceHover": "#f0ece1",
+      "surfaceInset": "#f7f5ef",
+      "surfaceActive": "#e2dccd",
+      "lineSoft": "#e8e2d4",
+      "textSubtle": "#5d6275",
+      "textInverse": "#ffffff",
+      "scrollbar": "#b3a88d",
+      "pink": "#9c3350",
+      "accent": "#8a6f12",
+      "accentHover": "#6f5910",
+      "accentPress": "#57460c",
+      "accentInk": "#ffffff",
+      "success": "#1c7a5e",
+      "warning": "#8a6410",
+      "danger": "#a33434",
+      "info": "#2b5c8a"
+    }
+  },
+  "typography": {
+    "display": {
+      "family": "Fraunces",
+      "fallback": "Georgia, serif",
+      "weights": [
+        400,
+        600
+      ]
+    },
+    "body": {
+      "family": "Inter",
+      "fallback": "system-ui, sans-serif",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "mono": {
+      "family": "JetBrains Mono",
+      "fallback": "ui-monospace, monospace",
+      "weights": [
+        400
+      ]
+    },
+    "scale": {
+      "xs": "0.6875rem",
+      "sm": "0.8125rem",
+      "base": "0.9375rem",
+      "md": "1rem",
+      "lg": "1.125rem",
+      "xl": "1.375rem",
+      "2xl": "1.875rem",
+      "3xl": "2.75rem"
+    },
+    "leading": {
+      "tight": "1.15",
+      "snug": "1.4",
+      "normal": "1.6"
+    },
+    "tracking": {
+      "tight": "-0.005em",
+      "wide": "0.14em"
+    }
+  },
+  "space": {
+    "unit": 8,
+    "density": "roomy",
+    "scale": [
+      0.5,
+      0.75,
+      1,
+      1.5,
+      2,
+      3,
+      4,
+      6
+    ]
+  },
+  "shape": {
+    "radius": {
+      "xs": "4px",
+      "sm": "6px",
+      "md": "8px",
+      "lg": "12px",
+      "xl": "16px",
+      "full": "999px"
+    },
+    "borderWidth": "1px"
+  },
+  "layout": {
+    "shell": {
+      "nav": "sidebar",
+      "sidebarWidth": "264px",
+      "topbarHeight": "68px",
+      "contentMax": "1320px",
+      "cardStyle": "outlined",
+      "tableStyle": "comfortable",
+      "breadcrumbs": true
+    }
+  },
+  "components": {
+    "button": {
+      "height": "40px",
+      "radius": "8px"
+    },
+    "input": {
+      "height": "40px",
+      "radius": "8px"
+    },
+    "card": {
+      "radius": "12px",
+      "padding": "26px"
+    }
+  },
+  "elevation": {
+    "dark": {
+      "1": "none",
+      "2": "0 18px 44px -22px rgba(0, 0, 0, 0.85)",
+      "3": "0 40px 100px -30px rgba(0, 0, 0, 0.9)"
+    },
+    "light": {
+      "1": "none",
+      "2": "0 18px 44px -22px rgba(20, 24, 40, 0.16)",
+      "3": "0 40px 100px -30px rgba(20, 24, 40, 0.2)"
+    }
+  }
+}

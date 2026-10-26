@@ -178,6 +178,22 @@ export const routes: Route[] = [
   route("/ticket-fields", () => import("./views/ticket-fields")),
   route("/portal/affiliate", () => import("./views/portal-affiliate")),
   route("/branding", () => import("./views/branding")),
+
+  // ---- the theme studio -------------------------------------------------------------------
+  //
+  // Seven screens under /settings/theme, one per section of the studio's sub-nav
+  // (docs/theming-system.md §10.1). They are separate routes rather than tabs inside one screen
+  // because each one is a different kind of editor with its own failure modes, and because an
+  // operator debugging a published theme wants to send somebody a link to the colour screen
+  // rather than to "the theme editor, third tab". Each view carries the sub-nav, so the section
+  // is reachable from every other one and no entry is a dead end.
+  route("/settings/theme", () => import("./views/theme-overview")),
+  route("/settings/theme/presets", () => import("./views/theme-presets")),
+  route("/settings/theme/colors", () => import("./views/theme-colors")),
+  route("/settings/theme/typography", () => import("./views/theme-typography")),
+  route("/settings/theme/layout", () => import("./views/theme-layout")),
+  route("/settings/theme/css", () => import("./views/theme-css")),
+  route("/settings/theme/history", () => import("./views/theme-history")),
 ];
 
 /** True when a route for `path` is declared.
@@ -248,4 +264,11 @@ export const SEGMENT_LABELS: Record<string, string> = {
   "ticket-fields": "Ticket fields",
   affiliate: "Affiliate",
   branding: "Branding",
+  theme: "Theme",
+  presets: "Presets",
+  colors: "Colours",
+  typography: "Typography",
+  layout: "Layout",
+  css: "Custom CSS",
+  history: "History",
 };

@@ -1,0 +1,192 @@
+{
+  "schema": 2,
+  "id": "editorial-paper",
+  "name": "Editorial Paper",
+  "description": "Warm paper, a serif display face and rules instead of cards: a magazine layout for a catalogue that reads like a publication.",
+  "color": {
+    "mode": "light",
+    "brand": {
+      "primary": "#8c3a1e",
+      "secondary": "#3f4a42",
+      "accent": "#8c3a1e"
+    },
+    "semantic": {
+      "success": "#2f6b3f",
+      "warning": "#8a5a00",
+      "danger": "#a32b2b",
+      "info": "#2b5570"
+    },
+    "dark": {
+      "bg": "#1b1917",
+      "popover": "#24211e",
+      "overlay": "rgba(10, 9, 8, 0.74)",
+      "card": "#24211e",
+      "surface1": "#24211e",
+      "surface2": "#2b2724",
+      "surface3": "#35302c",
+      "border": "#403a35",
+      "borderStrong": "#5c544c",
+      "text": "#ece5db",
+      "textMuted": "#bdb3a5",
+      "textFaint": "#948b7f",
+      "input": "#35302c",
+      "side": "#24211e",
+      "top": "#1b1917",
+      "surfaceHover": "#2b2724",
+      "surfaceInset": "#1b1917",
+      "surfaceActive": "#3a342f",
+      "lineSoft": "#332e2a",
+      "textSubtle": "#8a8175",
+      "textInverse": "#1b1917",
+      "scrollbar": "#5c544c",
+      "pink": "#c9564a",
+      "success": "#7fc79a",
+      "warning": "#e0b062",
+      "danger": "#e88a8a",
+      "info": "#8ab6d6",
+      "accent": "#9a5239",
+      "accentHover": "#a86a55",
+      "accentPress": "#b47f6c",
+      "accentInk": "#ffffff"
+    },
+    "light": {
+      "bg": "#f7f3ea",
+      "popover": "#fffdf8",
+      "overlay": "rgba(40, 32, 24, 0.5)",
+      "card": "#fffdf8",
+      "surface1": "#fffdf8",
+      "surface2": "#f1ebdf",
+      "surface3": "#e4dccd",
+      "border": "#cfc5b3",
+      "borderStrong": "#a89c88",
+      "text": "#241f19",
+      "textMuted": "#544b40",
+      "textFaint": "#7a7064",
+      "input": "#e4dccd",
+      "side": "#f1ebdf",
+      "top": "#fffdf8",
+      "surfaceHover": "#f1ebdf",
+      "surfaceInset": "#f7f3ea",
+      "surfaceActive": "#e4dccd",
+      "lineSoft": "#e6ded0",
+      "textSubtle": "#6b6155",
+      "textInverse": "#ffffff",
+      "scrollbar": "#a89c88",
+      "pink": "#a83b34",
+      "accent": "#8c3a1e",
+      "accentHover": "#74301a",
+      "accentPress": "#5f2715",
+      "accentInk": "#ffffff",
+      "success": "#2f6b3f",
+      "warning": "#8a5a00",
+      "danger": "#a32b2b",
+      "info": "#2b5570"
+    }
+  },
+  "typography": {
+    "display": {
+      "family": "Source Serif 4",
+      "fallback": "Georgia, serif",
+      "weights": [
+        400,
+        600
+      ]
+    },
+    "body": {
+      "family": "Inter",
+      "fallback": "system-ui, sans-serif",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "mono": {
+      "family": "IBM Plex Mono",
+      "fallback": "ui-monospace, monospace",
+      "weights": [
+        400
+      ]
+    },
+    "scale": {
+      "xs": "0.6875rem",
+      "sm": "0.8125rem",
+      "base": "0.9375rem",
+      "md": "1rem",
+      "lg": "1.125rem",
+      "xl": "1.375rem",
+      "2xl": "1.875rem",
+      "3xl": "2.75rem"
+    },
+    "leading": {
+      "tight": "1.1",
+      "snug": "1.35",
+      "normal": "1.6"
+    },
+    "tracking": {
+      "tight": "-0.01em",
+      "wide": "0.1em"
+    }
+  },
+  "space": {
+    "unit": 8,
+    "density": "roomy",
+    "scale": [
+      0.5,
+      0.75,
+      1,
+      1.5,
+      2,
+      3,
+      4,
+      6
+    ]
+  },
+  "shape": {
+    "radius": {
+      "xs": "2px",
+      "sm": "2px",
+      "md": "2px",
+      "lg": "2px",
+      "xl": "2px",
+      "full": "2px"
+    },
+    "borderWidth": "1px"
+  },
+  "layout": {
+    "shell": {
+      "nav": "topbar",
+      "sidebarWidth": "0px",
+      "topbarHeight": "64px",
+      "contentMax": "1200px",
+      "cardStyle": "flat",
+      "tableStyle": "comfortable",
+      "breadcrumbs": true
+    }
+  },
+  "components": {
+    "button": {
+      "height": "38px",
+      "radius": "2px"
+    },
+    "input": {
+      "height": "38px",
+      "radius": "2px"
+    },
+    "card": {
+      "radius": "2px",
+      "padding": "24px"
+    }
+  },
+  "elevation": {
+    "dark": {
+      "1": "none",
+      "2": "0 1px 0 rgba(255, 255, 255, 0.06)",
+      "3": "0 2px 0 rgba(255, 255, 255, 0.08)"
+    },
+    "light": {
+      "1": "none",
+      "2": "0 1px 0 rgba(40, 32, 24, 0.12)",
+      "3": "0 2px 0 rgba(40, 32, 24, 0.16)"
+    }
+  }
+}

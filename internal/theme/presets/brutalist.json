@@ -1,0 +1,194 @@
+{
+  "schema": 2,
+  "id": "brutalist",
+  "name": "Brutalist",
+  "description": "Hard edges, no radius, no blur and a 2px border: type does the work and nothing pretends to be a card.",
+  "color": {
+    "mode": "light",
+    "brand": {
+      "primary": "#111111",
+      "secondary": "#ffe600",
+      "accent": "#e0002b"
+    },
+    "semantic": {
+      "success": "#0a7a2f",
+      "warning": "#8a5a00",
+      "danger": "#c1001f",
+      "info": "#0b4fa8"
+    },
+    "dark": {
+      "bg": "#141414",
+      "popover": "#1d1d1d",
+      "overlay": "rgba(0, 0, 0, 0.78)",
+      "card": "#1d1d1d",
+      "surface1": "#1d1d1d",
+      "surface2": "#242424",
+      "surface3": "#2e2e2e",
+      "border": "#4a4a4a",
+      "borderStrong": "#7a7a7a",
+      "text": "#f5f5f5",
+      "textMuted": "#c2c2c2",
+      "textFaint": "#9a9a9a",
+      "input": "#2e2e2e",
+      "side": "#1d1d1d",
+      "top": "#1d1d1d",
+      "surfaceHover": "#2e2e2e",
+      "surfaceInset": "#141414",
+      "surfaceActive": "#3a3a3a",
+      "lineSoft": "#333333",
+      "textSubtle": "#8f8f8f",
+      "textInverse": "#111111",
+      "scrollbar": "#7a7a7a",
+      "pink": "#ff2f5e",
+      "success": "#4ad07a",
+      "warning": "#ffd24a",
+      "danger": "#ff6b7a",
+      "info": "#6fb0ff",
+      "accent": "#e0002b",
+      "accentHover": "#e42449",
+      "accentPress": "#e84262",
+      "accentInk": "#ffffff"
+    },
+    "light": {
+      "bg": "#f4f4f0",
+      "popover": "#ffffff",
+      "overlay": "rgba(20, 20, 20, 0.6)",
+      "card": "#ffffff",
+      "surface1": "#ffffff",
+      "surface2": "#ececec",
+      "surface3": "#dcdcdc",
+      "border": "#111111",
+      "borderStrong": "#111111",
+      "text": "#111111",
+      "textMuted": "#4a4a4a",
+      "textFaint": "#6a6a6a",
+      "input": "#dcdcdc",
+      "side": "#ececec",
+      "top": "#ffffff",
+      "surfaceHover": "#ececec",
+      "surfaceInset": "#f4f4f0",
+      "surfaceActive": "#dcdcdc",
+      "lineSoft": "#cfcfcf",
+      "textSubtle": "#5c5c5c",
+      "textInverse": "#ffffff",
+      "scrollbar": "#111111",
+      "pink": "#c1001f",
+      "accent": "#c1001f",
+      "accentHover": "#9c0018",
+      "accentPress": "#7d0013",
+      "accentInk": "#ffffff",
+      "success": "#0a7a2f",
+      "warning": "#8a5a00",
+      "danger": "#c1001f",
+      "info": "#0b4fa8"
+    }
+  },
+  "typography": {
+    "display": {
+      "family": "Space Grotesk",
+      "fallback": "system-ui, sans-serif",
+      "weights": [
+        700,
+        800
+      ]
+    },
+    "body": {
+      "family": "Inter",
+      "fallback": "system-ui, sans-serif",
+      "weights": [
+        400,
+        600
+      ]
+    },
+    "mono": {
+      "family": "IBM Plex Mono",
+      "fallback": "ui-monospace, monospace",
+      "weights": [
+        400,
+        600
+      ]
+    },
+    "scale": {
+      "xs": "0.6875rem",
+      "sm": "0.75rem",
+      "base": "0.875rem",
+      "md": "0.9375rem",
+      "lg": "1.0625rem",
+      "xl": "1.25rem",
+      "2xl": "1.75rem",
+      "3xl": "2.75rem"
+    },
+    "leading": {
+      "tight": "1.05",
+      "snug": "1.2",
+      "normal": "1.4"
+    },
+    "tracking": {
+      "tight": "-0.02em",
+      "wide": "0.12em"
+    }
+  },
+  "space": {
+    "unit": 4,
+    "density": "compact",
+    "scale": [
+      0.25,
+      0.5,
+      0.75,
+      1,
+      1.5,
+      2,
+      3,
+      4
+    ]
+  },
+  "shape": {
+    "radius": {
+      "xs": "0px",
+      "sm": "0px",
+      "md": "0px",
+      "lg": "0px",
+      "xl": "0px",
+      "full": "0px"
+    },
+    "borderWidth": "2px"
+  },
+  "layout": {
+    "shell": {
+      "nav": "topbar",
+      "sidebarWidth": "0px",
+      "topbarHeight": "60px",
+      "contentMax": "1600px",
+      "cardStyle": "outlined",
+      "tableStyle": "comfortable",
+      "breadcrumbs": true
+    }
+  },
+  "components": {
+    "button": {
+      "height": "38px",
+      "radius": "0px",
+      "uppercase": true
+    },
+    "input": {
+      "height": "38px",
+      "radius": "0px"
+    },
+    "card": {
+      "radius": "0px",
+      "padding": "18px"
+    }
+  },
+  "elevation": {
+    "dark": {
+      "1": "none",
+      "2": "6px 6px 0 #000000",
+      "3": "10px 10px 0 #000000"
+    },
+    "light": {
+      "1": "none",
+      "2": "6px 6px 0 #111111",
+      "3": "10px 10px 0 #111111"
+    }
+  }
+}

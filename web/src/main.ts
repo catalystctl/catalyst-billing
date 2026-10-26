@@ -23,6 +23,8 @@ import "./styles/view-commerce.css";
 import "./styles/view-support.css";
 import "./styles/view-platform.css";
 import "./styles/view-branding.css";
+import "./styles/reference-parity.css";
+import "./styles/view-theme.css";
 
 import { bootstrap } from "./app";
 

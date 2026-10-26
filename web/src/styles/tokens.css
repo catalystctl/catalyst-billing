@@ -24,13 +24,13 @@
   --text-base: 0.8125rem; /* 13px — the panel's body size */
   --text-md: 0.875rem; /* 14px — prose, form values */
   --text-lg: 1rem; /* 16px — card titles */
-  --text-xl: 1.25rem; /* 20px — page titles */
-  --text-2xl: 1.625rem; /* 26px — detail titles */
+  --text-xl: 1.125rem; /* 18px — page titles */
+  --text-2xl: 1.5rem; /* 24px — detail titles */
   --text-3xl: 2.25rem; /* 36px — hero figures */
 
   --leading-tight: 1.15;
   --leading-snug: 1.35;
-  --leading-normal: 1.55;
+  --leading-normal: 1.45;
 
   --tracking-tight: -0.015em;
   --tracking-wide: 0.06em;
@@ -47,15 +47,15 @@
 
   /* Shape */
   --r-xs: 4px;
-  --r-sm: 6px;
-  --r-md: 10px;
-  --r-lg: 14px;
-  --r-xl: 20px;
+  --r-sm: 4px;
+  --r-md: 4px;
+  --r-lg: 4px;
+  --r-xl: 8px;
   --r-full: 999px;
 
-  --sidebar-w: 232px;
-  --topbar-h: 56px;
-  --content-max: 1440px;
+  --sidebar-w: 242px;
+  --topbar-h: 55px;
+  --content-max: 1900px;
 
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --dur-1: 90ms;
@@ -69,53 +69,59 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  --bg: #0a0d13;
-  --bg-grain: radial-gradient(1200px 600px at 15% -10%, rgba(109, 139, 255, 0.09), transparent 60%);
-  --surface: #10141c;
-  --surface-2: #151a24;
-  --surface-3: #1a202c;
-  --surface-hover: #1b2230;
-  --surface-inset: #0c1017;
+  --bg: #171413;
+  --bg-grain: none;
+  --side: #201c1a;
+  --top: #181514;
+  --surface: #1e1a18;
+  --surface-2: #201c1a;
+  --surface-3: #29231f;
+  --surface-active: #3a302a;
+  --surface-hover: #29231f;
+  --surface-inset: #171413;
 
-  --line: #1e2532;
-  --line-strong: #2b3546;
-  --line-accent: rgba(109, 139, 255, 0.42);
+  --line: #37322e;
+  --line-soft: #302b28;
+  --line-strong: #4a4139;
+  --line-accent: rgba(255, 149, 30, 0.3);
 
-  --text: #e8edf7;
-  --text-dim: #96a1b5;
-  --text-faint: #667186;
-  --text-inverse: #0a0d13;
+  --text: #e7e2de;
+  --text-dim: #aaa29b;
+  --text-faint: #807973;
+  --text-subtle: #67615c;
+  --text-inverse: #241407;
 
-  --accent: #7b95ff;
-  --accent-hover: #94a9ff;
-  --accent-press: #6b86f5;
-  --accent-ink: #0a0d13;
+  --accent: #ff951e;
+  --accent-hover: #ffab4a;
+  --accent-press: #e98212;
+  --accent-ink: #241407;
   /* --accent-text is the accent as *text*: a link, a small label, a badge word. It exists as a
    * token of its own because a tenant's brand colour is chosen for a logo, not for 12px type —
    * so a brand sets this to the nearest readable relative of the same hue while --accent stays
    * the colour they picked. Unset (the default) it is simply the accent, which is why an
    * installation with no brand is byte-identical to one built before branding existed. */
   --accent-text: var(--accent);
-  --accent-soft: rgba(123, 149, 255, 0.14);
-  --accent-soft-strong: rgba(123, 149, 255, 0.22);
+  --accent-soft: rgba(255, 149, 30, 0.1);
+  --accent-soft-strong: rgba(255, 149, 30, 0.18);
+  --pink: #ff4086;
 
-  --success: #45d9a1;
-  --success-soft: rgba(69, 217, 161, 0.13);
-  --warning: #f5b544;
-  --warning-soft: rgba(245, 181, 68, 0.13);
-  --danger: #ff7286;
-  --danger-soft: rgba(255, 114, 134, 0.13);
-  --info: #59c2f7;
-  --info-soft: rgba(89, 194, 247, 0.13);
+  --success: #11bd85;
+  --success-soft: rgba(17, 189, 133, 0.11);
+  --warning: #ff951e;
+  --warning-soft: rgba(255, 149, 30, 0.1);
+  --danger: #f45b64;
+  --danger-soft: rgba(244, 91, 100, 0.11);
+  --info: #318fe5;
+  --info-soft: rgba(49, 143, 229, 0.11);
 
-  --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
-  --shadow-2: 0 10px 30px -12px rgba(0, 0, 0, 0.7), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
-  --shadow-3: 0 32px 80px -24px rgba(0, 0, 0, 0.85);
+  --shadow-1: none;
+  --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.28);
+  --shadow-3: 0 20px 70px rgba(0, 0, 0, 0.38);
   --shadow-focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--line-accent);
 
-  --skeleton: linear-gradient(90deg, #151a24 0%, #1c2331 40%, #151a24 80%);
-  --overlay: rgba(5, 7, 11, 0.72);
-  --scrollbar: #2a3243;
+  --skeleton: linear-gradient(90deg, #201c1a 0%, #29231f 40%, #201c1a 80%);
+  --overlay: rgba(8, 7, 6, 0.73);
+  --scrollbar: #5b534c;
 }
 
 /* ----------------------------------------------------------------- light -- */
@@ -123,53 +129,59 @@
 [data-theme="light"] {
   color-scheme: light;
 
-  --bg: #f5f6f8;
-  --bg-grain: radial-gradient(1200px 600px at 15% -10%, rgba(59, 91, 219, 0.07), transparent 60%);
-  --surface: #ffffff;
-  --surface-2: #fbfbfc;
-  --surface-3: #f1f3f7;
-  --surface-hover: #f3f5f9;
-  --surface-inset: #f7f8fa;
+  --bg: #f5f2ee;
+  --bg-grain: none;
+  --side: #ebe6e0;
+  --top: #f9f7f3;
+  --surface: #fdfaf6;
+  --surface-2: #f9f7f3;
+  --surface-3: #f1eae3;
+  --surface-active: #f0ddce;
+  --surface-hover: #f1eae3;
+  --surface-inset: #f5f2ee;
 
-  --line: #e3e7ee;
-  --line-strong: #cfd6e2;
-  --line-accent: rgba(59, 91, 219, 0.45);
+  --line: #d9d0c7;
+  --line-soft: #e5dcd3;
+  --line-strong: #c4b8ac;
+  --line-accent: rgba(211, 108, 9, 0.3);
 
-  --text: #0f1523;
-  --text-dim: #5b6678;
-  --text-faint: #8792a5;
+  --text: #2b251f;
+  --text-dim: #615950;
+  --text-faint: #82796e;
+  --text-subtle: #9b9187;
   --text-inverse: #ffffff;
 
-  --accent: #3b5bdb;
-  --accent-hover: #2f4bc4;
-  --accent-press: #2943b0;
+  --accent: #d36c09;
+  --accent-hover: #bc5f07;
+  --accent-press: #a95506;
   --accent-ink: #ffffff;
   /* See the dark theme's note: a brand may set a readable relative for text without changing
    * the accent itself. The default is the accent. */
   --accent-text: var(--accent);
-  --accent-soft: rgba(59, 91, 219, 0.09);
-  --accent-soft-strong: rgba(59, 91, 219, 0.16);
+  --accent-soft: rgba(211, 108, 9, 0.11);
+  --accent-soft-strong: rgba(211, 108, 9, 0.18);
+  --pink: #e4346d;
 
-  --success: #0f9d6e;
-  --success-soft: rgba(15, 157, 110, 0.1);
-  --warning: #b06f00;
-  --warning-soft: rgba(176, 111, 0, 0.1);
-  --danger: #d92d4b;
-  --danger-soft: rgba(217, 45, 75, 0.09);
-  --info: #0b7fb8;
-  --info-soft: rgba(11, 127, 184, 0.09);
+  --success: #11815e;
+  --success-soft: rgba(17, 129, 94, 0.09);
+  --warning: #d36c09;
+  --warning-soft: rgba(211, 108, 9, 0.11);
+  --danger: #bc424a;
+  --danger-soft: rgba(188, 66, 74, 0.09);
+  --info: #286dad;
+  --info-soft: rgba(40, 109, 173, 0.09);
 
-  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.04);
-  --shadow-2: 0 12px 32px -16px rgba(16, 24, 40, 0.28), 0 1px 2px rgba(16, 24, 40, 0.05);
-  --shadow-3: 0 32px 80px -24px rgba(16, 24, 40, 0.35);
+  --shadow-1: none;
+  --shadow-2: 0 12px 32px rgba(54, 33, 18, 0.1);
+  --shadow-3: 0 20px 70px rgba(54, 33, 18, 0.14);
   --shadow-focus: 0 0 0 2px var(--surface), 0 0 0 4px var(--line-accent);
 
-  --skeleton: linear-gradient(90deg, #eef1f5 0%, #f7f8fa 40%, #eef1f5 80%);
+  --skeleton: linear-gradient(90deg, #ebe6e0 0%, #f5f2ee 40%, #ebe6e0 80%);
   /* A light theme still needs a real scrim: at 0.38 the page behind a dialog stays legible
    * enough to read, which makes the dialog look like a floating panel rather than a modal
    * that owns the screen. */
-  --overlay: rgba(15, 21, 35, 0.55);
-  --scrollbar: #cdd4e0;
+  --overlay: rgba(43, 37, 31, 0.5);
+  --scrollbar: #b8ada2;
 }
 
 /* ----------------------------------------------------------------- brand --

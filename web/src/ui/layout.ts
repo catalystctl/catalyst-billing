@@ -15,7 +15,7 @@ import { initials } from "../lib/format";
 import { languageSwitcher, tx, type LocaleOption } from "../lib/i18n";
 import { brandMark, icon, type IconName } from "../lib/icons";
 import type { Crumb, Ctx, Session } from "../lib/types";
-import { avatar, badge, btn, emptyState, iconBtn, spinner } from "./kit";
+import { avatar, badge, btn, emptyState, spinner } from "./kit";
 
 export interface NavItem {
   label: string;
@@ -101,6 +101,11 @@ export function navGroups(can: (p: string) => boolean, isStaff: boolean): NavGro
         { label: "Tax rates", href: "/tax-rates", icon: "percent", permission: "tax:write" },
         { label: "Currencies", href: "/currencies", icon: "globe", permission: "currency:write" },
         { label: "Branding", href: "/branding", icon: "sparkles", permission: "settings:write" },
+        // The Theme Studio is gated on theme:read, not settings:write: a merchandiser may draft a
+        // storefront theme without being able to rewrite the invoice template, and a support agent
+        // may read the studio to answer "why does our panel look like this". The publish action
+        // inside the screen is gated again on theme:publish.
+        { label: "Theme studio", href: "/settings/theme", icon: "sliders", permission: "theme:read" },
         { label: "System settings", href: "/settings/system", icon: "settings", permission: "settings:write" },
       ],
     });
@@ -324,25 +329,58 @@ export function createShell(options: ShellOptions): Shell {
     h("span", null, tx("shell.live.on", "Live")),
   );
   const userHost = h("div");
-  const themeBtn = iconBtn(
-    options.theme === "dark" ? "sun" : "moon",
-    options.theme === "dark"
-      ? tx("shell.theme.to_light", "Switch to light theme")
-      : tx("shell.theme.to_dark", "Switch to dark theme"),
-    options.onToggleTheme,
+  // The theme control is a labelled row in the rail's footer, not an icon in the top bar: it is a
+  // personal setting, and the rail's foot is where personal things live. A label also makes it
+  // discoverable, where an unlabelled moon glyph was a guess.
+  const themeBtn = h(
+    "button",
+    {
+      class: "bottom-action",
+      id: "theme-toggle",
+      type: "button",
+      title:
+        options.theme === "dark"
+          ? tx("shell.theme.to_light", "Switch to light theme")
+          : tx("shell.theme.to_dark", "Switch to dark theme"),
+      onclick: options.onToggleTheme,
+    },
+    icon(options.theme === "dark" ? "sun" : "moon", 15),
+    h(
+      "span",
+      { id: "theme-label" },
+      options.theme === "dark"
+        ? tx("shell.theme.light_mode", "Light mode")
+        : tx("shell.theme.dark_mode", "Dark mode"),
+    ),
   );
   // Null when the installation offers one language — the common case — so the toolbar has no
   // control that cannot do anything.
+  const app = h("div", { class: "app" });
+  // The rail can be put away on a wide screen as well as on a narrow one. The preference is
+  // remembered because a rail an operator collapsed on purpose is not a thing to re-open on every
+  // reload; a private-mode browser that refuses storage simply starts with the rail showing.
+  const setRail = (hidden: boolean) => {
+    app.classList.toggle("is-rail-hidden", hidden);
+    try {
+      localStorage.setItem("catalyst.rail", hidden ? "hidden" : "shown");
+    } catch {
+      /* storage refused; the rail still collapses for this session */
+    }
+    document.getElementById("rail-collapse")?.setAttribute("aria-expanded", hidden ? "false" : "true");
+  };
+  try {
+    if (localStorage.getItem("catalyst.rail") === "hidden") app.classList.add("is-rail-hidden");
+  } catch {
+    /* storage refused; the default is the rail */
+  }
+
   const localeSwitch = languageSwitcher({
     locales: options.locales,
     selected: options.locale,
     onSelect: options.onLocaleChange,
     id: "locale-switch",
   });
-  // A stable handle: app.ts swaps the glyph after a toggle without rebuilding the shell.
-  themeBtn.id = "theme-toggle";
 
-  const app = h("div", { class: "app" });
   const scrim = h("div", { class: "scrim", onclick: () => app.classList.remove("nav-open") });
   const content = h("main", { class: "content", id: "main", tabindex: -1 });
 
@@ -365,6 +403,11 @@ export function createShell(options: ShellOptions): Shell {
                 class: "nav-item",
                 href: item.href,
                 dataset: { href: item.href },
+                // The label is visible text, so this attribute is redundant until a theme's shell
+                // hides the text — which the `rail` nav variant does, leaving a column of icons. The
+                // tooltip is what keeps that navigable, and it costs one attribute here rather than a
+                // second copy of every label in the generated stylesheet.
+                title: item.label,
                 onclick: () => app.classList.remove("nav-open"),
               },
               icon(item.icon, 16),
@@ -459,8 +502,16 @@ export function createShell(options: ShellOptions): Shell {
       h(
         "div",
         { class: "sidebar-foot" },
+        themeBtn,
         h("div", { class: "popover-host" }, trigger),
         menu,
+        h(
+          "button",
+          { class: "bottom-action", type: "button", onclick: options.onLogout },
+          icon("logout", 15),
+          tx("shell.menu.sign_out", "Sign out"),
+        ),
+        h("div", { class: "version" }, "Catalyst Billing"),
       ),
     );
     // The menu is absolutely positioned relative to the footer.
@@ -480,6 +531,19 @@ export function createShell(options: ShellOptions): Shell {
         h("span", { class: "brand-mark" }, brandMark(17)),
         h("span", { class: "brand-name" }, "Catalyst", h("small", null, "Billing")),
       ),
+      h(
+        "button",
+        {
+          class: "collapse-btn",
+          id: "rail-collapse",
+          type: "button",
+          "aria-label": tx("shell.nav.collapse", "Collapse navigation"),
+          "aria-expanded": app.classList.contains("is-rail-hidden") ? "false" : "true",
+          title: tx("shell.nav.collapse", "Collapse navigation"),
+          onclick: () => setRail(!app.classList.contains("is-rail-hidden")),
+        },
+        icon("chevronLeft", 14),
+      ),
     ),
     nav,
     userHost,
@@ -494,7 +558,12 @@ export function createShell(options: ShellOptions): Shell {
         class: "btn btn--ghost btn--icon sidebar-toggle",
         type: "button",
         "aria-label": tx("shell.nav.open", "Open navigation"),
-        onclick: () => app.classList.toggle("nav-open"),
+        onclick: () => {
+          // Below the breakpoint the rail is an off-canvas drawer; above it, the same button is
+          // the way back from a collapsed rail, which would otherwise have no way back at all.
+          if (window.matchMedia("(max-width: 960px)").matches) app.classList.toggle("nav-open");
+          else setRail(false);
+        },
       },
       icon("menu", 16),
     ),
@@ -516,7 +585,6 @@ export function createShell(options: ShellOptions): Shell {
         h("span", null, tx("shell.search.label", "Search")),
         h("kbd", { class: "kbd" }, "⌘K"),
       ),
-      themeBtn,
     ),
   );
 

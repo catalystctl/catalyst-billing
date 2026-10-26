@@ -341,6 +341,9 @@ export interface CardOptions {
   flush?: boolean;
   tight?: boolean;
   class?: string;
+  /** The colour of the small square before the title. Pink is the console's default marker;
+   *  amber marks a panel that wants action, green one that reports a healthy state. */
+  marker?: "pink" | "accent" | "success";
 }
 
 export function card(opts: CardOptions): HTMLElement {
@@ -351,7 +354,12 @@ export function card(opts: CardOptions): HTMLElement {
       ? h(
           "header",
           { class: "card-head" },
-          h("h2", { class: "card-title" }, opts.title, opts.sub ? h("span", { class: "card-sub" }, opts.sub) : null),
+          h(
+            "h2",
+            { class: ["card-title", opts.marker ? `card-title--${opts.marker}` : ""].filter(Boolean).join(" ") },
+            opts.title,
+            opts.sub ? h("span", { class: "card-sub" }, opts.sub) : null,
+          ),
           opts.actions ? h("div", { class: "card-actions" }, opts.actions) : null,
         )
       : null,
@@ -367,6 +375,8 @@ export interface PageHeadOptions {
   sub?: Child;
   actions?: Child;
   badge?: Child;
+  /** Small operational section label above the title, matching the console's visual rhythm. */
+  eyebrow?: Child;
 }
 
 export function pageHead(opts: PageHeadOptions): HTMLElement {
@@ -376,6 +386,7 @@ export function pageHead(opts: PageHeadOptions): HTMLElement {
     h(
       "div",
       { class: "page-head-text" },
+      h("div", { class: "page-kicker" }, opts.eyebrow ?? "Catalyst billing"),
       h("h1", { class: "page-title" }, opts.title, opts.badge ?? null),
       opts.sub ? h("p", { class: "page-sub" }, opts.sub) : null,
     ),

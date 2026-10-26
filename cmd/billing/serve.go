@@ -312,6 +312,11 @@ func cmdServe(args []string) error {
 		webHandler.WithChallengeOrigins(captcha.ChallengeOrigins(provider))
 	}
 	srv.WithWeb(webHandler)
+	// The shell is rendered per request from the published theme (or from the built-in default when
+	// none is published). The provider is the server itself, because only it can read the theme cache
+	// and the tenant's display name; a web.Handler built in a test without a provider serves the
+	// built-in default, which is the same page a fresh installation gets.
+	webHandler.WithTheme(srv)
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Serve(ctx, cfg.addr) }()

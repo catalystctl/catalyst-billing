@@ -1,0 +1,743 @@
+/* Theme Studio.
+ *
+ * Seven screens share one visual vocabulary: a sub-nav, a scope picker, a gallery of preset
+ * cards, a colour form with a contrast meter, a type specimen, a shell diagram, a stylesheet
+ * editor and a history table. This file is that vocabulary and nothing else — every colour,
+ * radius, shadow and font comes from the token contract, so the studio is themed by the theme it
+ * is editing. A studio that hardcoded its own greys would be the one screen where a theme looked
+ * wrong.
+ *
+ * Two rules the rules below follow, and both are CSP-driven:
+ *
+ *   - No rule depends on an inline `style` attribute. Values that are arbitrary (a swatch
+ *     colour, a preview palette, a sidebar width being typed) arrive as custom properties written
+ *     through the CSSOM on the element itself, so the property is always the seam: the class
+ *     decides the layout, the property decides the value.
+ *   - No `@import`, no external `url()`. The panel's policy is `style-src 'self'`, and this
+ *     stylesheet is bundled with the rest.
+ */
+
+/* ------------------------------------------------------------------ chrome -- */
+
+/* The sub-nav is a tab row of links rather than buttons: each section is a route, so it can be
+ * bookmarked and the browser's Back button walks the sections that were visited. */
+.theme-subnav {
+  margin-top: calc(var(--s-2) * -1);
+}
+
+.theme-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+}
+
+.theme-scope {
+  min-width: 220px;
+  max-width: 280px;
+}
+
+.theme-scope-note {
+  max-width: 62ch;
+  padding-bottom: 6px;
+}
+
+.theme-side {
+  position: sticky;
+  top: var(--s-4);
+}
+
+.theme-side-sticky {
+  position: sticky;
+  top: var(--s-4);
+}
+
+.theme-save-row {
+  padding-top: var(--s-2);
+  gap: var(--s-3);
+}
+
+/* --------------------------------------------------------------- overview -- */
+
+/* A numbered step in the onboarding card. The number is the whole affordance: five links with no
+ * order would be five suggestions, and the order is the advice. */
+.theme-step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.theme-step:last-child {
+  border-bottom: 0;
+}
+
+.theme-step-number {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-full);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
+.theme-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* The health card is a definition list in two columns: a label and the value the server will
+ * enforce. It is not a table because it is read once, top to bottom. */
+.theme-health-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--text-sm);
+}
+
+.theme-health-row:last-child {
+  border-bottom: 0;
+}
+
+.theme-health-label {
+  color: var(--text-dim);
+}
+
+.theme-health-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text);
+  text-align: right;
+}
+
+/* A link to an existing screen. The arrow is on the left because the row is a destination, not a
+ * description with a button attached. */
+.theme-link-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--line-soft);
+  color: inherit;
+  text-decoration: none;
+}
+
+.theme-link-row:last-child {
+  border-bottom: 0;
+}
+
+.theme-link-row:hover {
+  color: var(--accent-text);
+}
+
+.theme-link-row svg {
+  margin-top: 3px;
+  flex: none;
+  color: var(--text-faint);
+}
+
+.theme-link-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- presets -- */
+
+.theme-preset-grid {
+  display: grid;
+  gap: var(--s-4);
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.theme-chips {
+  gap: 6px;
+}
+
+/*
+ * A preset card's head stacks.
+ *
+ * The shared `.card-head` is a single row — title, sub, actions — which is right for a panel whose
+ * title is short and whose sub is a count. In a 280px gallery card the title is "Catalyst Console"
+ * and the sub is a sentence, so the row runs the title straight into the sentence and the card reads
+ * as one long line ("Catalyst ConsoleDense tables, flat cards, thin borders").
+ *
+ * `.card-title` is an `<h2>` holding the name as a text node and the character line as a nested
+ * `<span class="card-sub">` (ui/kit.ts), so the fix is to make both block-level rather than to
+ * restructure the card primitive for one screen's benefit. The actions column keeps its place on the
+ * first row.
+ */
+.theme-preset-grid .card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: var(--s-2);
+}
+
+.theme-preset-grid .card-title {
+  display: block;
+  grid-column: 1;
+  min-width: 0;
+}
+
+.theme-preset-grid .card-sub {
+  display: block;
+  margin-top: 2px;
+}
+
+.theme-preset-grid .card-actions {
+  grid-column: 2;
+  grid-row: 1;
+  margin-left: 0;
+}
+
+/* The swatch row: four chips, each painted with one custom property set by the screen. */
+.theme-swatches {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.theme-swatch {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-xs);
+  background: var(--swatch, var(--surface-2));
+  border: 1px solid var(--line);
+  flex: none;
+}
+
+/* ----------------------------------------------------------------- colour -- */
+
+.theme-colour-grid {
+  gap: var(--s-3);
+}
+
+.theme-group-title {
+  font-size: var(--text-xs);
+  font-weight: 650;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* The contrast meter. A row is a pair, the ratio, and the verdict; the verdict is the reason the
+ * row exists, so it is the part that is coloured. */
+.theme-contrast {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.theme-contrast-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s-3);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.theme-contrast-row:last-child {
+  border-bottom: 0;
+}
+
+.theme-contrast-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.theme-contrast-text strong {
+  font-size: var(--text-sm);
+  font-weight: 550;
+}
+
+.theme-contrast-ratio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.theme-contrast-row[data-pass="false"] .theme-contrast-ratio {
+  color: var(--danger);
+}
+
+/* The colour preview: a card, a button, a link and a rule, painted with the palette in the form.
+ * Every value below is a custom property the screen writes on this element, never on the root —
+ * so a colour that has been typed but not saved appears here and nowhere else. */
+.theme-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--preview-border, var(--line));
+  background: var(--preview-bg, var(--surface));
+  color: var(--preview-text, var(--text));
+}
+
+.theme-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  font-size: var(--text-md);
+}
+
+.theme-preview-badge {
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  background: var(--preview-accent, var(--accent));
+  color: var(--preview-accent-ink, var(--accent-ink));
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.theme-preview-text {
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--preview-text, var(--text));
+}
+
+.theme-preview-hint {
+  font-size: var(--text-xs);
+  color: var(--preview-text-faint, var(--text-faint));
+}
+
+.theme-preview-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: var(--r-sm);
+  background: var(--preview-accent, var(--accent));
+  color: var(--preview-accent-ink, var(--accent-ink));
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.theme-preview-link {
+  font-size: var(--text-sm);
+  color: var(--preview-accent, var(--accent));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.theme-preview-rule {
+  height: 1px;
+  background: var(--preview-border-strong, var(--line-strong));
+}
+
+/* ------------------------------------------------------------- typography -- */
+
+.theme-family {
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.theme-family:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.theme-scale {
+  gap: var(--s-2);
+}
+
+/* The specimen. The families and the eight sizes are custom properties the screen writes, so a
+ * scale that has not been saved is still rendered at its real size. */
+.theme-type-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  font-family: var(--preview-font-body, var(--font-sans));
+  line-height: var(--preview-leading, var(--leading-normal));
+  overflow: hidden;
+}
+
+.theme-type-preview-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-faint);
+}
+
+.theme-type-preview-display {
+  font-family: var(--preview-font-display, var(--font-sans));
+  font-size: var(--preview-text-xl, var(--text-xl));
+  font-weight: 650;
+  letter-spacing: var(--tracking-tight);
+  margin: 0 0 var(--s-2);
+  color: var(--text);
+}
+
+.theme-type-preview-body {
+  font-size: var(--preview-text-base, var(--text-base));
+  margin: 0 0 var(--s-2);
+  color: var(--text);
+}
+
+.theme-type-preview-mono {
+  font-family: var(--preview-font-mono, var(--font-mono));
+  font-size: var(--preview-text-sm, var(--text-sm));
+  margin: 0;
+  color: var(--text-dim);
+}
+
+.theme-type-scale {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--s-3);
+  border-top: 1px solid var(--line-soft);
+  padding-top: var(--s-3);
+}
+
+.theme-type-step {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--s-2);
+  min-height: 18px;
+}
+
+.theme-type-step-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.theme-type-step-sample {
+  font-family: var(--preview-font-body, var(--font-sans));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+/* One rule per step: the size is a custom property, so a value the operator typed is rendered at
+ * the size they typed rather than at the size the studio was built with. */
+.theme-type-step-sample--xs {
+  font-size: var(--preview-text-xs, var(--text-xs));
+}
+
+.theme-type-step-sample--sm {
+  font-size: var(--preview-text-sm, var(--text-sm));
+}
+
+.theme-type-step-sample--base {
+  font-size: var(--preview-text-base, var(--text-base));
+}
+
+.theme-type-step-sample--md {
+  font-size: var(--preview-text-md, var(--text-md));
+}
+
+.theme-type-step-sample--lg {
+  font-size: var(--preview-text-lg, var(--text-lg));
+}
+
+.theme-type-step-sample--xl {
+  font-size: var(--preview-text-xl, var(--text-xl));
+}
+
+.theme-type-step-sample--2xl {
+  font-size: var(--preview-text-2xl, var(--text-2xl));
+}
+
+.theme-type-step-sample--3xl {
+  font-size: var(--preview-text-3xl, var(--text-3xl));
+}
+
+/* ----------------------------------------------------------------- layout -- */
+
+.theme-radius {
+  gap: var(--s-2);
+}
+
+/* The shell diagram. It is a picture of the chosen navigation, not a decoration: sidebar, rail
+ * and topbar are three different arrangements and the difference is the one thing a select's
+ * label cannot say. The rail's width is a custom property so a typed 232px is visible. */
+.theme-shell-diagram {
+  display: grid;
+  grid-template-columns: min(var(--diagram-rail, 120px), 168px) minmax(0, 1fr);
+  height: 176px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.theme-shell-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--side);
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.theme-shell-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-xs);
+  background: var(--accent);
+  margin-bottom: 4px;
+  flex: none;
+}
+
+.theme-shell-item {
+  height: 12px;
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  flex: none;
+}
+
+.theme-shell-item.is-active {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.theme-shell-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.theme-shell-top {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-height: min(var(--diagram-top, 40px), 64px);
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--top);
+  flex: none;
+}
+
+.theme-shell-top-item {
+  width: 42px;
+  height: 10px;
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+}
+
+.theme-shell-top-item--short {
+  width: 22px;
+}
+
+.theme-shell-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px;
+  min-height: 0;
+}
+
+.theme-shell-card {
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+/* A rail hides the labels, so the diagram draws it narrow and keeps the items. A topbar moves the
+ * whole navigation above the content, so the rail disappears entirely. */
+.theme-shell-diagram[data-nav="rail"] {
+  grid-template-columns: 46px minmax(0, 1fr);
+}
+
+.theme-shell-diagram[data-nav="rail"] .theme-shell-item {
+  height: 14px;
+}
+
+.theme-shell-diagram[data-nav="topbar"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.theme-shell-diagram[data-nav="topbar"] .theme-shell-rail {
+  display: none;
+}
+
+/* -------------------------------------------------------------------- css -- */
+
+.theme-css-input {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  min-height: 320px;
+  resize: vertical;
+  tab-size: 2;
+}
+
+.theme-css-counter {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.theme-css-counter[data-over="true"] {
+  color: var(--danger);
+}
+
+/* The parser's own sentence. It is monospaced and it wraps: the message names a line and a rule,
+ * and a sentence rewritten into prose by this screen would lose both. */
+.theme-css-error {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  margin: 0;
+}
+
+.theme-policy-row {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: var(--s-3);
+  align-items: start;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.theme-policy-row:last-child {
+  border-bottom: 0;
+}
+
+.theme-policy-mark {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--danger);
+  padding-top: 2px;
+}
+
+.theme-policy-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- history -- */
+
+.theme-note {
+  display: block;
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.theme-diff-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------- preview -- */
+
+/* The one iframe in the product. The host clips it and the width buttons change the frame's
+ * maximum, so a 390px preview is a phone-shaped document rather than a phone-shaped picture of
+ * one. */
+.theme-preview-host {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  padding: var(--s-3);
+  overflow: auto;
+}
+
+.theme-preview-frame {
+  display: block;
+  width: 100%;
+  max-width: 1440px;
+  height: 62vh;
+  min-height: 360px;
+  margin: 0 auto;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--bg);
+}
+
+.theme-preview-host[data-device="tablet"] .theme-preview-frame {
+  max-width: 834px;
+}
+
+.theme-preview-host[data-device="mobile"] .theme-preview-frame {
+  max-width: 390px;
+}
+
+/* --------------------------------------------------------------- the rest -- */
+
+.theme-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  color: var(--text-dim);
+}
+
+.theme-empty svg {
+  color: var(--accent);
+  flex: none;
+  margin-top: 1px;
+}
+
+@media (max-width: 1100px) {
+  .theme-side,
+  .theme-side-sticky {
+    position: static;
+  }
+
+  .theme-colour-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .theme-colour-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .theme-step {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+
+  .theme-step .btn {
+    grid-column: 2;
+    justify-self: start;
+  }
+}

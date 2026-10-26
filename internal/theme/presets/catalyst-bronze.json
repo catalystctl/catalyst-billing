@@ -1,0 +1,180 @@
+{
+  "schema": 2,
+  "id": "catalyst-bronze",
+  "name": "Catalyst Bronze",
+  "description": "The game panel's shipped tan-on-ink palette: warm bronze with a teal secondary.",
+  "color": {
+    "mode": "dark",
+    "brand": {
+      "primary": "#c48d5a",
+      "secondary": "#5ac4c2",
+      "accent": "#5a5cc4"
+    },
+    "semantic": {
+      "success": "#5ac48a",
+      "warning": "#e0a84e",
+      "danger": "#d9646c",
+      "info": "#5a9fd4"
+    },
+    "dark": {
+      "bg": "#0e1116",
+      "popover": "#161a21",
+      "overlay": "rgba(5, 7, 11, 0.72)",
+      "card": "#161a21",
+      "surface1": "#1d222b",
+      "surface2": "#232a35",
+      "surface3": "#2b3442",
+      "border": "#33352f",
+      "borderStrong": "#4a4b42",
+      "text": "#efeae2",
+      "textMuted": "#a9a396",
+      "textFaint": "#7d786e",
+      "input": "#2b3442",
+      "side": "#131820",
+      "top": "#131820",
+      "surfaceHover": "#232a35",
+      "surfaceInset": "#0e1116",
+      "surfaceActive": "#2b3442",
+      "lineSoft": "#262b31",
+      "textSubtle": "#8c877c",
+      "textInverse": "#1b1206",
+      "scrollbar": "#4a4b42",
+      "pink": "#d9646c",
+      "success": "#5ac48a",
+      "warning": "#e0a84e",
+      "danger": "#d9646c",
+      "info": "#5a9fd4",
+      "accent": "#5a5cc4",
+      "accentHover": "#7173cc",
+      "accentPress": "#8586d3",
+      "accentInk": "#ffffff"
+    },
+    "light": {
+      "bg": "#f3f1ec",
+      "popover": "#fdfcf8",
+      "overlay": "rgba(20, 18, 12, 0.52)",
+      "card": "#fdfcf8",
+      "surface1": "#fdfcf8",
+      "surface2": "#eae7df",
+      "surface3": "#dad6cb",
+      "border": "#d6d1c4",
+      "borderStrong": "#b8b1a1",
+      "text": "#1c1a15",
+      "textMuted": "#5d584d",
+      "textFaint": "#847e71",
+      "input": "#dad6cb",
+      "side": "#e8e4dc",
+      "top": "#fdfcf8",
+      "surfaceHover": "#eae7df",
+      "surfaceInset": "#f3f1ec",
+      "surfaceActive": "#dad6cb",
+      "lineSoft": "#e4e0d6",
+      "textSubtle": "#6f6a5e",
+      "textInverse": "#ffffff",
+      "scrollbar": "#b8b1a1",
+      "pink": "#b04a52",
+      "success": "#1c7a4d",
+      "warning": "#8a5f14",
+      "danger": "#a83b44",
+      "info": "#2b6ba0",
+      "accent": "#5a5cc4",
+      "accentHover": "#4d4fa9",
+      "accentPress": "#434491",
+      "accentInk": "#ffffff"
+    }
+  },
+  "typography": {
+    "display": {
+      "family": "Space Grotesk",
+      "fallback": "system-ui, sans-serif",
+      "weights": [
+        500,
+        700
+      ]
+    },
+    "body": {
+      "family": "Inter",
+      "fallback": "system-ui, sans-serif",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "mono": {
+      "family": "JetBrains Mono",
+      "fallback": "ui-monospace, monospace",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "scale": {
+      "xs": "0.6875rem",
+      "sm": "0.75rem",
+      "base": "0.8125rem",
+      "md": "0.875rem",
+      "lg": "1rem",
+      "xl": "1.125rem",
+      "2xl": "1.5rem",
+      "3xl": "2.25rem"
+    },
+    "leading": {
+      "tight": "1.15",
+      "snug": "1.35",
+      "normal": "1.45"
+    },
+    "tracking": {
+      "tight": "-0.005em",
+      "wide": "0.07em"
+    }
+  },
+  "space": {
+    "unit": 4,
+    "density": "compact",
+    "scale": [
+      0.25,
+      0.5,
+      0.75,
+      1,
+      1.5,
+      2,
+      3,
+      4
+    ]
+  },
+  "shape": {
+    "radius": {
+      "xs": "4px",
+      "sm": "4px",
+      "md": "4px",
+      "lg": "6px",
+      "xl": "10px",
+      "full": "999px"
+    },
+    "borderWidth": "1px"
+  },
+  "layout": {
+    "shell": {
+      "nav": "sidebar",
+      "sidebarWidth": "240px",
+      "topbarHeight": "56px",
+      "contentMax": "1500px",
+      "cardStyle": "flat",
+      "tableStyle": "compact"
+    }
+  },
+  "components": {
+    "button": {
+      "height": "32px",
+      "radius": "4px"
+    },
+    "input": {
+      "height": "32px",
+      "radius": "4px"
+    },
+    "card": {
+      "radius": "6px",
+      "padding": "16px"
+    }
+  }
+}

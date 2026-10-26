@@ -19,6 +19,7 @@ import {
   errorState,
   moneyEl,
   pageHead,
+  sectionTitle,
   skeletonLines,
   skeletonPage,
   statusBadge,
@@ -442,131 +443,137 @@ export default async function dashboardPage(ctx: Ctx): Promise<Node> {
   const render = (overview: Overview): Node => {
     const exceptions = overview.exceptions ?? [];
     const counts = overview.counts;
-    const critical = exceptions.filter((e) => e.severity === "critical").length;
-    const greeting = greetingFor(new Date());
+    const ledgerBalanced = !exceptions.some((e) => e.code === "ledger_imbalance");
+    const queueClear = exceptionTotal(exceptions, "unknown_operations", "failed_operations") === 0;
+    const quiet = exceptions.length === 0;
 
-    const hero = h(
-      "section",
-      { class: "hero" },
-      h(
+    const vitals = card({
+      title: "Billing vitals",
+      class: "vitals",
+      actions: h("a", { class: "panel-link", href: "/invoices" }, "View invoices", icon("arrowRight", 12)),
+      flush: true,
+      body: h(
         "div",
         null,
-        h("div", { class: "hero-greeting" }, greeting),
-        h(
-          "h1",
-          { class: "hero-title" },
-          exceptions.length === 0
-            ? "The ledger is quiet."
-            : critical > 0
-              ? `${critical} thing${critical === 1 ? "" : "s"} need${critical === 1 ? "s" : ""} you now.`
-              : "A few things want a look.",
-        ),
-        h(
-          "p",
-          { class: "hero-sub" },
-          exceptions.length === 0
-            ? "No exception is open. The queue is drained, every webhook is processed and the subledger balances."
-            : "These are the open exceptions the billing engine knows about, worst first. Each one names the action that clears it.",
-        ),
+        vitalRow("Customers", counts.available ? counts.customers : null, "Total on platform"),
+        vitalRow("Services", counts.available ? counts.services : null, "Provisioned and billable"),
+        vitalRow("Open invoices", counts.available ? counts.open_invoices : null, counts.available ? "Awaiting payment" : "Counts unavailable", true),
+        vitalRow("Renewals due", counts.available ? counts.due_subscriptions : null, "Next billing run"),
+        vitalStatusRow("Job queue", queueClear ? "Clear" : "Review", queueClear ? "All jobs processed" : "Operations need attention", queueClear),
+        vitalStatusRow("Subledger", counts.available && ledgerBalanced ? "Balanced" : "Review", counts.available && ledgerBalanced ? "No exceptions detected" : "Check the audit trail", counts.available && ledgerBalanced),
+      ),
+      foot: h(
+        "div",
+        { class: "vital-footer-left" },
+        h("span", { class: `pulse-icon${quiet ? "" : " pulse-icon--warning"}` }, icon(quiet ? "checkCircle" : "alertTriangle", 18)),
         h(
           "div",
-          { class: "row-wrap" },
-          btn("Open the queue", { href: "/operations", icon: "activity", size: "sm" }),
-          btn("Review invoices", { href: "/invoices", icon: "invoice", size: "sm" }),
-          btn("Customers", { href: "/customers", icon: "users", size: "sm" }),
+          null,
+          h("strong", null, quiet ? "The ledger is quiet." : "The engine needs a look."),
+          h(
+            "p",
+            null,
+            quiet
+              ? "No exception is open. The queue is drained, every webhook is processed, and the subledger balances."
+              : "Open exceptions are listed below, worst first. Each one names the action that clears it.",
+          ),
         ),
       ),
-      h(
-        "div",
-        { class: "hero-figure" },
-        h("span", { class: "hero-figure-label" }, "Open invoices"),
-        h("span", { class: "money money--xl" }, counts.available ? String(counts.open_invoices) : "—"),
-        h(
-          "span",
-          { class: "hero-figure-sub" },
-          counts.available
-            ? `${counts.due_subscriptions} subscription${counts.due_subscriptions === 1 ? "" : "s"} due to renew`
-            : "Counts unavailable — the database did not answer",
-        ),
-        h("span", { class: "hero-figure-sub faint" }, `Snapshot ${relative(overview.generated_at)}`),
-      ),
-    );
-
-    const stats = h(
-      "div",
-      { class: "grid-4" },
-      stat("Customers", counts.available ? counts.customers : null, "Total on the platform", "users"),
-      stat("Services", counts.available ? counts.services : null, "Provisioned and billable", "server"),
-      stat("Open invoices", counts.available ? counts.open_invoices : null, "Awaiting payment", "invoice"),
-      stat("Renewals due", counts.available ? counts.due_subscriptions : null, "Next billing run", "refresh"),
-    );
+    });
+    vitals.querySelector(".card-foot")?.appendChild(btn("Open the queue", { href: "/operations", iconAfter: "arrowRight", size: "sm" }));
 
     const exceptionCard = card({
       title: "Needs attention",
+      marker: "accent",
       sub: exceptions.length > 0 ? `${exceptions.length} open` : undefined,
-      actions: exceptions.length > 0 ? badge("Live", "accent", { dot: true }) : null,
+      actions: exceptions.length > 0 ? h("a", { class: "panel-link", href: "/operations" }, "View all", icon("arrowRight", 12)) : null,
       flush: true,
       body:
         exceptions.length === 0
-          ? emptyState({
-              title: "Nothing is on fire",
-              body: "No exception is open. This list fills itself from the queue, the webhook inbox and the ledger.",
-              icon: "checkCircle",
-            })
+          ? h(
+              "div",
+              { class: "attention-content" },
+              h(
+                "div",
+                { class: "healthy" },
+                h("span", { class: "healthy-icon" }, icon("checkCircle", 18)),
+                h(
+                  "div",
+                  null,
+                  h("h3", null, "Nothing is on fire"),
+                  h("p", null, "No exception is open. This list fills itself from the queue, webhook inbox, and ledger when something needs attention."),
+                ),
+              ),
+              h("div", { class: "thin-rule" }),
+              h("div", { class: "micro-row" }, h("span", { class: "mini-dot" }), "All operational checks are passing", h("span", { class: "micro-right" }, `Snapshot ${relative(overview.generated_at)}`)),
+            )
           : h("div", null, ...exceptions.map((e) => exceptionRow(ctx, e))),
     });
 
-    const side = h(
-      "div",
-      { class: "stack" },
-      card({
-        title: "At a glance",
-        body: h(
-          "div",
-          { class: "stack-sm" },
-          kvRow("Subledger", counts.available ? badge("Balanced", "success", { dot: true }) : badge("Unknown", "warning", { dot: true })),
-          kvRow("Queue", exceptionCount(exceptions, "unknown_operations", "failed_operations")),
-          kvRow("Webhook inbox", exceptionCount(exceptions, "stalled_webhooks")),
-          kvRow("Overdue", exceptionCount(exceptions, "overdue_invoices")),
-          kvRow("Renewals", exceptionCount(exceptions, "renewals_needing_review")),
-        ),
-      }),
-      card({
-        title: "Shortcuts",
-        flush: true,
-        body: h(
-          "div",
-          null,
-          shortcut(ctx, "/invoices/new", "plus", "Create an invoice", "Draft and issue in one step"),
-          shortcut(ctx, "/customers", "users", "Find a customer", "Search by email or name"),
-          shortcut(ctx, "/operations", "activity", "Work the queue", "Retry or reconcile an operation"),
-          shortcut(ctx, "/audit", "shield", "Read the audit log", "Who did what, and when"),
-        ),
-      }),
-    );
+    const glance = card({
+      title: "At a glance",
+      actions: h("a", { class: "panel-link", href: "/settings/system" }, "System settings", icon("arrowRight", 12)),
+      flush: true,
+      body: h(
+        "div",
+        null,
+        glanceRow("checkCircle", "Subledger", counts.available && ledgerBalanced ? badge("Balanced", "success", { dot: true }) : badge("Review", "warning", { dot: true })),
+        glanceRow("activity", "Queue", exceptionCount(exceptions, "unknown_operations", "failed_operations")),
+        glanceRow("radio", "Webhook inbox", exceptionCount(exceptions, "stalled_webhooks")),
+        glanceRow("clock", "Overdue", exceptionCount(exceptions, "overdue_invoices")),
+        glanceRow("refresh", "Renewals", exceptionCount(exceptions, "renewals_needing_review")),
+      ),
+    });
+
+    const shortcuts = card({
+      title: "Quick actions",
+      marker: "accent",
+      class: "shortcuts",
+      flush: true,
+      body: h(
+        "div",
+        { class: "shortcut-grid" },
+        shortcut(ctx, "/invoices/new", "plus", "Create an invoice", "Draft and issue in one step"),
+        shortcut(ctx, "/customers", "users", "Customers", "Manage customer accounts"),
+        shortcut(ctx, "/services", "server", "Services", "View provisioned services"),
+      ),
+    });
 
     const recent = ctx.can("invoice:read:all") ? recentInvoices(ctx) : null;
 
     return h(
       "div",
-      { class: "page" },
+      { class: "page dashboard-page" },
       pageHead({
-        title: "Overview",
+        title: "Dashboard",
+        eyebrow: "Overview",
         sub: "The state of the billing engine, in the order it should be read.",
-        actions: btn("Refresh", {
-          icon: "refresh",
-          size: "sm",
-          onclick: () => {
-            host.replaceChildren(skeletonPage());
-            void load();
-          },
-        }),
+        actions: h(
+          "div",
+          { class: "row-wrap" },
+          h(
+            "a",
+            { class: "alert-pill", href: "/invoices" },
+            h("span", { class: "live-dot" }),
+            `${counts.available ? counts.open_invoices : "—"} open invoice${counts.open_invoices === 1 ? "" : "s"}`,
+            icon("arrowRight", 13),
+          ),
+          btn("Refresh", {
+            icon: "refresh",
+            size: "sm",
+            onclick: () => {
+              host.replaceChildren(skeletonPage());
+              void load();
+            },
+          }),
+        ),
       }),
-      hero,
-      stats,
+      vitals,
+      h("div", { class: "dashboard-grid" }, exceptionCard, glance),
+      shortcuts,
+      sectionTitle("Period performance"),
       periodHost,
       widgetHost,
-      h("div", { class: "split" }, exceptionCard, side),
       recent ?? h("div"),
     );
   };
@@ -622,32 +629,46 @@ export default async function dashboardPage(ctx: Ctx): Promise<Node> {
   return host;
 }
 
-function greetingFor(now: Date): string {
-  const hour = now.getHours();
-  if (hour < 5) return "Working late";
-  if (hour < 12) return "Good morning";
-  if (hour < 18) return "Good afternoon";
-  return "Good evening";
-}
-
-function stat(label: string, value: number | null, hint: string, iconName: IconName): HTMLElement {
-  // No sparkline here on purpose: there is no time series in the overview payload, and a
-  // chart drawn from invented numbers is worse than no chart at all.
+function vitalRow(label: string, value: number | null, hint: string, meter = false): HTMLElement {
   return h(
-    "section",
-    { class: "card stat" },
-    h("span", { class: "stat-label" }, icon(iconName, 12), label),
-    h("span", { class: "stat-value" }, value === null ? "—" : value.toLocaleString("en-US")),
-    h("span", { class: "stat-hint" }, hint),
+    "div",
+    { class: "vital-row" },
+    h("span", { class: "vital-label" }, label),
+    h(
+      "span",
+      { class: "vital-main" },
+      h("strong", null, value === null ? "—" : value.toLocaleString("en-US")),
+      meter && value !== null && value > 0 ? h("span", { class: "meter", "aria-hidden": "true" }, h("span", { class: "meter-fill" })) : null,
+    ),
+    h("span", { class: "vital-side" }, hint),
   );
 }
 
-function kvRow(label: string, value: Node): HTMLElement {
-  return h("div", { class: "kv" }, h("span", { class: "kv-key" }, label), h("span", { class: "kv-value" }, value));
+function vitalStatusRow(label: string, value: string, hint: string, healthy: boolean): HTMLElement {
+  return h(
+    "div",
+    { class: "vital-row" },
+    h("span", { class: "vital-label" }, label),
+    h("span", { class: `vital-main vital-status ${healthy ? "is-healthy" : "is-warning"}` }, value),
+    h("span", { class: "vital-side" }, hint),
+  );
+}
+
+function glanceRow(iconName: IconName, label: string, value: Node): HTMLElement {
+  return h(
+    "div",
+    { class: "glance-row" },
+    h("span", { class: "glance-label" }, icon(iconName, 13), label),
+    h("span", { class: "glance-result" }, value),
+  );
+}
+
+function exceptionTotal(exceptions: Exception[], ...codes: string[]): number {
+  return exceptions.filter((e) => codes.includes(e.code)).reduce((sum, e) => sum + e.count, 0);
 }
 
 function exceptionCount(exceptions: Exception[], ...codes: string[]): Node {
-  const total = exceptions.filter((e) => codes.includes(e.code)).reduce((sum, e) => sum + e.count, 0);
+  const total = exceptionTotal(exceptions, ...codes);
   if (total === 0) return h("span", { class: "faint" }, "Clear");
   return h("span", { class: "mono" }, String(total));
 }
@@ -690,8 +711,8 @@ function exceptionRow(ctx: Ctx, e: Exception): HTMLElement {
 function shortcut(ctx: Ctx, href: string, iconName: IconName, title: string, sub: string): HTMLElement {
   return h(
     "a",
-    { class: "card-link", href },
-    h("span", { class: "search-hit-icon" }, icon(iconName, 13)),
+    { class: "shortcut", href },
+    h("span", { class: "shortcut-icon" }, icon(iconName, 15)),
     h("div", { class: "cell-main" }, h("div", { class: "primary" }, title), h("div", { class: "secondary" }, sub)),
     icon("chevronRight", 13),
   );

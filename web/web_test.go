@@ -163,11 +163,17 @@ func TestChallengeOriginsWidenOnlyWhatAWidgetNeeds(t *testing.T) {
 	}
 }
 
-// With no provider configured the policy is exactly as strict as it was, which is the common case:
-// most shops do not run a challenge, and they must not pay for the feature's policy.
+// With no provider configured the policy is exactly as strict as it was, except for one deliberate
+// widening: `frame-src 'self'`.
+//
+// The Theme Studio previews an unpublished draft in a same-origin iframe, and `frame-src` governs
+// what *this* document may frame while `frame-ancestors` on the preview response governs who may
+// frame *that* one. Allowing the origin to frame itself does not let any third party frame the panel
+// — `frame-ancestors 'none'` still forbids that — so the strictness that matters is unchanged. The
+// assertion is written per-directive so a future widening has to edit a line and explain itself.
 func TestNoChallengeKeepsTheStrictestPolicy(t *testing.T) {
 	csp := get(t, newHandler(t, false), "/").Header().Get("Content-Security-Policy")
-	for _, want := range []string{"script-src 'self'", "frame-src 'none'", "connect-src 'self'"} {
+	for _, want := range []string{"script-src 'self'", "frame-src 'self'", "frame-ancestors 'none'", "connect-src 'self'"} {
 		if !strings.Contains(csp, want) {
 			t.Fatalf("CSP missing %q: %s", want, csp)
 		}

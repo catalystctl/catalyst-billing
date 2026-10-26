@@ -1,0 +1,174 @@
+{
+  "schema": 2,
+  "id": "catalyst-billing",
+  "name": "Catalyst Billing",
+  "description": "The current billing identity: warm rust on graphite, compact and dense, built for long operator sessions.",
+  "color": {
+    "mode": "system",
+    "brand": {
+      "primary": "#ff951e",
+      "accent": "#ff951e"
+    },
+    "semantic": {
+      "success": "#11bd85",
+      "warning": "#ff951e",
+      "danger": "#f45b64",
+      "info": "#318fe5"
+    },
+    "dark": {
+      "bg": "#171413",
+      "popover": "#1e1a18",
+      "overlay": "rgba(8, 7, 6, 0.73)",
+      "card": "#1e1a18",
+      "surface1": "#1e1a18",
+      "surface2": "#201c1a",
+      "surface3": "#29231f",
+      "border": "#37322e",
+      "borderStrong": "#4a4139",
+      "text": "#e7e2de",
+      "textMuted": "#aaa29b",
+      "textFaint": "#807973",
+      "input": "#29231f",
+      "side": "#201c1a",
+      "top": "#181514",
+      "surfaceHover": "#29231f",
+      "surfaceInset": "#171413",
+      "surfaceActive": "#3a302a",
+      "lineSoft": "#302b28",
+      "textSubtle": "#67615c",
+      "textInverse": "#241407",
+      "scrollbar": "#5b534c",
+      "pink": "#ff4086",
+      "accent": "#ff951e",
+      "accentHover": "#ffab4a",
+      "accentPress": "#e98212",
+      "accentInk": "#241407",
+      "success": "#11bd85",
+      "warning": "#ff951e",
+      "danger": "#f45b64",
+      "info": "#318fe5"
+    },
+    "light": {
+      "bg": "#f5f2ee",
+      "popover": "#fdfaf6",
+      "overlay": "rgba(43, 37, 31, 0.5)",
+      "card": "#fdfaf6",
+      "surface1": "#fdfaf6",
+      "surface2": "#f9f7f3",
+      "surface3": "#f1eae3",
+      "border": "#d9d0c7",
+      "borderStrong": "#c4b8ac",
+      "text": "#2b251f",
+      "textMuted": "#615950",
+      "textFaint": "#82796e",
+      "input": "#f1eae3",
+      "side": "#ebe6e0",
+      "top": "#f9f7f3",
+      "surfaceHover": "#f1eae3",
+      "surfaceInset": "#f5f2ee",
+      "surfaceActive": "#f0ddce",
+      "lineSoft": "#e5dcd3",
+      "textSubtle": "#9b9187",
+      "textInverse": "#ffffff",
+      "scrollbar": "#b8ada2",
+      "pink": "#e4346d",
+      "accent": "#d36c09",
+      "accentHover": "#bc5f07",
+      "accentPress": "#a95506",
+      "accentInk": "#ffffff",
+      "success": "#11815e",
+      "warning": "#d36c09",
+      "danger": "#bc424a",
+      "info": "#286dad"
+    }
+  },
+  "typography": {
+    "display": {
+      "family": "ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Inter, Roboto, \"Helvetica Neue\", Arial, sans-serif",
+      "weights": [
+        600,
+        700
+      ]
+    },
+    "body": {
+      "family": "ui-sans-serif, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Inter, Roboto, \"Helvetica Neue\", Arial, sans-serif",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "mono": {
+      "family": "ui-monospace, \"SF Mono\", \"JetBrains Mono\", \"Cascadia Code\", Menlo, Consolas, \"Liberation Mono\", monospace",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "scale": {
+      "xs": "0.6875rem",
+      "sm": "0.75rem",
+      "base": "0.8125rem",
+      "md": "0.875rem",
+      "lg": "1rem",
+      "xl": "1.125rem",
+      "2xl": "1.5rem",
+      "3xl": "2.25rem"
+    },
+    "leading": {
+      "tight": "1.15",
+      "snug": "1.35",
+      "normal": "1.45"
+    },
+    "tracking": {
+      "tight": "-0.015em",
+      "wide": "0.06em"
+    }
+  },
+  "space": {
+    "unit": 4,
+    "density": "compact",
+    "scale": [
+      0.25,
+      0.5,
+      0.75,
+      1,
+      1.5,
+      2,
+      3,
+      4
+    ]
+  },
+  "shape": {
+    "radius": {
+      "xs": "4px",
+      "sm": "4px",
+      "md": "4px",
+      "lg": "4px",
+      "xl": "8px",
+      "full": "999px"
+    },
+    "borderWidth": "1px"
+  },
+  "layout": {
+    "shell": {
+      "nav": "sidebar",
+      "sidebarWidth": "242px",
+      "topbarHeight": "55px",
+      "contentMax": "1900px",
+      "cardStyle": "outlined",
+      "tableStyle": "compact"
+    }
+  },
+  "elevation": {
+    "dark": {
+      "1": "none",
+      "2": "0 12px 32px rgba(0, 0, 0, 0.28)",
+      "3": "0 20px 70px rgba(0, 0, 0, 0.38)"
+    },
+    "light": {
+      "1": "none",
+      "2": "0 12px 32px rgba(54, 33, 18, 0.1)",
+      "3": "0 20px 70px rgba(54, 33, 18, 0.14)"
+    }
+  }
+}

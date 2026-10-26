@@ -1,0 +1,193 @@
+{
+  "schema": 2,
+  "id": "catalyst-console",
+  "name": "Catalyst Console",
+  "description": "Dense, dark-first console matching the Catalyst game panel: near-black ground, thin borders and a rose accent.",
+  "color": {
+    "mode": "dark",
+    "brand": {
+      "primary": "#ff3d7f",
+      "secondary": "#252b35",
+      "accent": "#ff3d7f"
+    },
+    "semantic": {
+      "success": "#3fcf8e",
+      "warning": "#ffb020",
+      "danger": "#ff5a5a",
+      "info": "#6fa8ff"
+    },
+    "dark": {
+      "bg": "#0e1116",
+      "popover": "#161a21",
+      "overlay": "rgba(5, 7, 11, 0.72)",
+      "card": "#161a21",
+      "surface1": "#1d222b",
+      "surface2": "#232a35",
+      "surface3": "#2b3442",
+      "border": "#2b323d",
+      "borderStrong": "#3a4350",
+      "text": "#e9edf2",
+      "textMuted": "#939dac",
+      "textFaint": "#6b7585",
+      "input": "#2b323d",
+      "side": "#131820",
+      "top": "#131820",
+      "surfaceHover": "#232a35",
+      "surfaceInset": "#0e1116",
+      "surfaceActive": "#2b3442",
+      "lineSoft": "#232a35",
+      "textSubtle": "#7b8595",
+      "textInverse": "#0e1116",
+      "scrollbar": "#3a4350",
+      "pink": "#ff3d7f",
+      "success": "#3fcf8e",
+      "warning": "#ffb020",
+      "danger": "#ff5a5a",
+      "info": "#6fa8ff",
+      "accent": "#ff3d7f",
+      "accentHover": "#ff5891",
+      "accentPress": "#ff6fa0",
+      "accentInk": "#111111"
+    },
+    "light": {
+      "bg": "#f0f3f7",
+      "popover": "#fcfdff",
+      "overlay": "rgba(15, 21, 35, 0.55)",
+      "card": "#fcfdff",
+      "surface1": "#fcfdff",
+      "surface2": "#e9edf3",
+      "surface3": "#d5dae2",
+      "border": "#d5dae2",
+      "borderStrong": "#b9c1cd",
+      "text": "#161c24",
+      "textMuted": "#5f6a78",
+      "textFaint": "#7c8799",
+      "input": "#d5dae2",
+      "side": "#e7ebf1",
+      "top": "#fcfdff",
+      "surfaceHover": "#e9edf3",
+      "surfaceInset": "#f0f3f7",
+      "surfaceActive": "#d5dae2",
+      "lineSoft": "#e3e8ee",
+      "textSubtle": "#6f7a8a",
+      "textInverse": "#ffffff",
+      "scrollbar": "#b9c1cd",
+      "pink": "#d81f5c",
+      "success": "#0f8f5e",
+      "warning": "#a35f00",
+      "danger": "#c62f3f",
+      "info": "#2b6cb8",
+      "accent": "#ff3d7f",
+      "accentHover": "#db346d",
+      "accentPress": "#bd2d5e",
+      "accentInk": "#111111"
+    }
+  },
+  "typography": {
+    "display": {
+      "family": "Inter",
+      "fallback": "system-ui, sans-serif",
+      "weights": [
+        600,
+        700
+      ]
+    },
+    "body": {
+      "family": "Inter",
+      "fallback": "system-ui, sans-serif",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "mono": {
+      "family": "JetBrains Mono",
+      "fallback": "ui-monospace, monospace",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "scale": {
+      "xs": "0.6875rem",
+      "sm": "0.75rem",
+      "base": "0.8125rem",
+      "md": "0.875rem",
+      "lg": "1rem",
+      "xl": "1.125rem",
+      "2xl": "1.5rem",
+      "3xl": "2.25rem"
+    },
+    "leading": {
+      "tight": "1.15",
+      "snug": "1.35",
+      "normal": "1.45"
+    },
+    "tracking": {
+      "tight": "-0.01em",
+      "wide": "0.06em"
+    }
+  },
+  "space": {
+    "unit": 4,
+    "density": "compact",
+    "scale": [
+      0.25,
+      0.5,
+      0.75,
+      1,
+      1.5,
+      2,
+      3,
+      4
+    ]
+  },
+  "shape": {
+    "radius": {
+      "xs": "4px",
+      "sm": "4px",
+      "md": "4px",
+      "lg": "6px",
+      "xl": "10px",
+      "full": "999px"
+    },
+    "borderWidth": "1px"
+  },
+  "layout": {
+    "shell": {
+      "nav": "sidebar",
+      "sidebarWidth": "232px",
+      "topbarHeight": "56px",
+      "contentMax": "1440px",
+      "cardStyle": "flat",
+      "tableStyle": "compact",
+      "breadcrumbs": true
+    }
+  },
+  "components": {
+    "button": {
+      "height": "30px",
+      "radius": "4px"
+    },
+    "input": {
+      "height": "30px",
+      "radius": "4px"
+    },
+    "card": {
+      "radius": "6px",
+      "padding": "14px"
+    }
+  },
+  "elevation": {
+    "dark": {
+      "1": "none",
+      "2": "0 10px 30px -12px rgba(0, 0, 0, 0.7)",
+      "3": "0 32px 80px -24px rgba(0, 0, 0, 0.85)"
+    },
+    "light": {
+      "1": "none",
+      "2": "0 10px 30px -12px rgba(15, 21, 35, 0.18)",
+      "3": "0 32px 80px -24px rgba(15, 21, 35, 0.22)"
+    }
+  }
+}

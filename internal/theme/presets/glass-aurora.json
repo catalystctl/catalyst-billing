@@ -1,0 +1,195 @@
+{
+  "schema": 2,
+  "id": "glass-aurora",
+  "name": "Glass Aurora",
+  "description": "Translucent frosted panels over a soft gradient mesh: light-first, rounded and calm.",
+  "color": {
+    "mode": "light",
+    "brand": {
+      "primary": "#5b6ef5",
+      "secondary": "#d9d5ff",
+      "accent": "#8b5cf6"
+    },
+    "semantic": {
+      "success": "#0f8f6a",
+      "warning": "#a16207",
+      "danger": "#c02b4f",
+      "info": "#2563a8"
+    },
+    "dark": {
+      "bg": "#0b1020",
+      "popover": "#141a2e",
+      "overlay": "rgba(6, 10, 24, 0.7)",
+      "card": "#141a2e",
+      "surface1": "#141a2e",
+      "surface2": "#1b2238",
+      "surface3": "#232c45",
+      "border": "#2c3654",
+      "borderStrong": "#414d70",
+      "text": "#e8ecfb",
+      "textMuted": "#a5aecb",
+      "textFaint": "#7b85a3",
+      "input": "#232c45",
+      "side": "#10162a",
+      "top": "#10162a",
+      "surfaceHover": "#232c45",
+      "surfaceInset": "#0b1020",
+      "surfaceActive": "#2c3654",
+      "lineSoft": "#20283f",
+      "textSubtle": "#8a93b0",
+      "textInverse": "#0b1020",
+      "scrollbar": "#414d70",
+      "pink": "#f472b6",
+      "accent": "#9d8cff",
+      "accentHover": "#b4a6ff",
+      "accentPress": "#8672f0",
+      "accentInk": "#0b1020",
+      "success": "#3ddba4",
+      "warning": "#f0c060",
+      "danger": "#ff7a96",
+      "info": "#7cc0ff"
+    },
+    "light": {
+      "bg": "#f2f4fb",
+      "popover": "#ffffff",
+      "overlay": "rgba(30, 36, 60, 0.45)",
+      "card": "#ffffff",
+      "surface1": "#ffffff",
+      "surface2": "#e9edf9",
+      "surface3": "#dbe1f2",
+      "border": "#d2d9ec",
+      "borderStrong": "#aeb8d4",
+      "text": "#141a2e",
+      "textMuted": "#4d566f",
+      "textFaint": "#77819a",
+      "input": "#dbe1f2",
+      "side": "#e9edf9",
+      "top": "#ffffff",
+      "surfaceHover": "#e9edf9",
+      "surfaceInset": "#f2f4fb",
+      "surfaceActive": "#dbe1f2",
+      "lineSoft": "#e4e9f6",
+      "textSubtle": "#5f6883",
+      "textInverse": "#ffffff",
+      "scrollbar": "#aeb8d4",
+      "pink": "#c026a3",
+      "accent": "#5b4bd6",
+      "accentHover": "#4a3cbd",
+      "accentPress": "#3c30a0",
+      "accentInk": "#ffffff",
+      "success": "#0f8f6a",
+      "warning": "#a16207",
+      "danger": "#c02b4f",
+      "info": "#2563a8"
+    }
+  },
+  "typography": {
+    "display": {
+      "family": "Space Grotesk",
+      "fallback": "system-ui, sans-serif",
+      "weights": [
+        500,
+        600
+      ]
+    },
+    "body": {
+      "family": "DM Sans",
+      "fallback": "system-ui, sans-serif",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "mono": {
+      "family": "JetBrains Mono",
+      "fallback": "ui-monospace, monospace",
+      "weights": [
+        400
+      ]
+    },
+    "scale": {
+      "xs": "0.6875rem",
+      "sm": "0.75rem",
+      "base": "0.875rem",
+      "md": "0.9375rem",
+      "lg": "1.0625rem",
+      "xl": "1.25rem",
+      "2xl": "1.625rem",
+      "3xl": "2.25rem"
+    },
+    "leading": {
+      "tight": "1.2",
+      "snug": "1.4",
+      "normal": "1.55"
+    },
+    "tracking": {
+      "tight": "-0.015em",
+      "wide": "0.04em"
+    }
+  },
+  "space": {
+    "unit": 4,
+    "density": "comfortable",
+    "scale": [
+      0.25,
+      0.5,
+      0.75,
+      1,
+      1.5,
+      2,
+      3,
+      4
+    ]
+  },
+  "shape": {
+    "radius": {
+      "xs": "6px",
+      "sm": "10px",
+      "md": "14px",
+      "lg": "20px",
+      "xl": "28px",
+      "full": "999px"
+    },
+    "borderWidth": "1px"
+  },
+  "layout": {
+    "shell": {
+      "nav": "sidebar",
+      "sidebarWidth": "252px",
+      "topbarHeight": "64px",
+      "contentMax": "1440px",
+      "cardStyle": "elevated",
+      "tableStyle": "comfortable"
+    }
+  },
+  "components": {
+    "button": {
+      "height": "38px",
+      "radius": "10px"
+    },
+    "input": {
+      "height": "38px",
+      "radius": "10px"
+    },
+    "card": {
+      "radius": "14px",
+      "padding": "20px"
+    }
+  },
+  "elevation": {
+    "dark": {
+      "1": "none",
+      "2": "0 18px 48px -20px rgba(0, 0, 0, 0.8)",
+      "3": "0 40px 90px -30px rgba(0, 0, 0, 0.9)"
+    },
+    "light": {
+      "1": "none",
+      "2": "0 18px 48px -20px rgba(30, 36, 60, 0.18)",
+      "3": "0 40px 90px -30px rgba(30, 36, 60, 0.22)"
+    }
+  },
+  "background": {
+    "style": "mesh",
+    "gradient": "linear-gradient(135deg, #eef1fd 0%, #e7ecff 40%, #f6eefe 100%)"
+  }
+}

@@ -370,7 +370,23 @@ export async function bootstrap(root: HTMLElement): Promise<void> {
       onToggleTheme: () => {
         theme = toggleTheme(theme);
         const btn = document.getElementById("theme-toggle");
-        if (btn) fill(btn, icon(theme === "dark" ? "sun" : "moon", 14));
+        if (btn) {
+          btn.title =
+            theme === "dark"
+              ? tx("shell.theme.to_light", "Switch to light theme")
+              : tx("shell.theme.to_dark", "Switch to dark theme");
+          fill(
+            btn,
+            icon(theme === "dark" ? "sun" : "moon", 15),
+            h(
+              "span",
+              { id: "theme-label" },
+              theme === "dark"
+                ? tx("shell.theme.light_mode", "Light mode")
+                : tx("shell.theme.dark_mode", "Dark mode"),
+            ),
+          );
+        }
         // The accent is per mode, so switching themes has to re-resolve it: the brand paints
         // from the light accent in light mode and the dark one in dark mode, and a mode with no
         // accent configured falls back to the built-in colour rather than keeping the other

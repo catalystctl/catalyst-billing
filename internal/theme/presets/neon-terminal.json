@@ -1,0 +1,193 @@
+{
+  "schema": 2,
+  "id": "neon-terminal",
+  "name": "Neon Terminal",
+  "description": "Near-black ground, phosphor green type and monospace everywhere: an operations console that looks like one.",
+  "color": {
+    "mode": "dark",
+    "brand": {
+      "primary": "#39ff88",
+      "secondary": "#1f2a22",
+      "accent": "#39ff88"
+    },
+    "semantic": {
+      "success": "#39ff88",
+      "warning": "#ffc44d",
+      "danger": "#ff5470",
+      "info": "#4dd7ff"
+    },
+    "dark": {
+      "bg": "#070b08",
+      "popover": "#0d1410",
+      "overlay": "rgba(0, 6, 2, 0.8)",
+      "card": "#0d1410",
+      "surface1": "#0d1410",
+      "surface2": "#121b15",
+      "surface3": "#18241c",
+      "border": "#1f3327",
+      "borderStrong": "#2f5a3d",
+      "text": "#c9ffdc",
+      "textMuted": "#78b78f",
+      "textFaint": "#4f8063",
+      "input": "#18241c",
+      "side": "#0a100c",
+      "top": "#0a100c",
+      "surfaceHover": "#18241c",
+      "surfaceInset": "#070b08",
+      "surfaceActive": "#1f3327",
+      "lineSoft": "#152019",
+      "textSubtle": "#5e9977",
+      "textInverse": "#04120a",
+      "scrollbar": "#2f5a3d",
+      "pink": "#ff5470",
+      "accent": "#39ff88",
+      "accentHover": "#6bffab",
+      "accentPress": "#1fd96c",
+      "accentInk": "#04120a",
+      "success": "#39ff88",
+      "warning": "#ffc44d",
+      "danger": "#ff5470",
+      "info": "#4dd7ff"
+    },
+    "light": {
+      "bg": "#eef7f1",
+      "popover": "#f9fffb",
+      "overlay": "rgba(4, 20, 10, 0.5)",
+      "card": "#f9fffb",
+      "surface1": "#f9fffb",
+      "surface2": "#e2f0e7",
+      "surface3": "#cfe4d8",
+      "border": "#bcd6c6",
+      "borderStrong": "#8fb8a1",
+      "text": "#0b1a11",
+      "textMuted": "#3f5c4a",
+      "textFaint": "#63806e",
+      "input": "#cfe4d8",
+      "side": "#e2f0e7",
+      "top": "#f9fffb",
+      "surfaceHover": "#e2f0e7",
+      "surfaceInset": "#eef7f1",
+      "surfaceActive": "#cfe4d8",
+      "lineSoft": "#d6e8dd",
+      "textSubtle": "#4f6d5b",
+      "textInverse": "#ffffff",
+      "scrollbar": "#8fb8a1",
+      "pink": "#b3233c",
+      "accent": "#0b7a3f",
+      "accentHover": "#096632",
+      "accentPress": "#075228",
+      "accentInk": "#ffffff",
+      "success": "#0b7a3f",
+      "warning": "#8a5a00",
+      "danger": "#b3233c",
+      "info": "#1c6b86"
+    }
+  },
+  "typography": {
+    "display": {
+      "family": "IBM Plex Mono",
+      "fallback": "ui-monospace, monospace",
+      "weights": [
+        500,
+        600
+      ]
+    },
+    "body": {
+      "family": "IBM Plex Mono",
+      "fallback": "ui-monospace, monospace",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "mono": {
+      "family": "IBM Plex Mono",
+      "fallback": "ui-monospace, monospace",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    "scale": {
+      "xs": "0.6875rem",
+      "sm": "0.75rem",
+      "base": "0.8125rem",
+      "md": "0.875rem",
+      "lg": "1rem",
+      "xl": "1.125rem",
+      "2xl": "1.5rem",
+      "3xl": "2.25rem"
+    },
+    "leading": {
+      "tight": "1.15",
+      "snug": "1.35",
+      "normal": "1.5"
+    },
+    "tracking": {
+      "tight": "0em",
+      "wide": "0.08em"
+    }
+  },
+  "space": {
+    "unit": 4,
+    "density": "compact",
+    "scale": [
+      0.25,
+      0.5,
+      0.75,
+      1,
+      1.5,
+      2,
+      3,
+      4
+    ]
+  },
+  "shape": {
+    "radius": {
+      "xs": "2px",
+      "sm": "2px",
+      "md": "2px",
+      "lg": "2px",
+      "xl": "4px",
+      "full": "999px"
+    },
+    "borderWidth": "1px"
+  },
+  "layout": {
+    "shell": {
+      "nav": "rail",
+      "sidebarWidth": "200px",
+      "topbarHeight": "48px",
+      "contentMax": "1600px",
+      "cardStyle": "outlined",
+      "tableStyle": "compact"
+    }
+  },
+  "components": {
+    "button": {
+      "height": "30px",
+      "radius": "2px",
+      "uppercase": true
+    },
+    "input": {
+      "height": "30px",
+      "radius": "2px"
+    },
+    "card": {
+      "radius": "2px",
+      "padding": "14px"
+    }
+  },
+  "elevation": {
+    "dark": {
+      "1": "none",
+      "2": "0 0 0 1px #2f5a3d",
+      "3": "0 0 24px -6px #39ff88"
+    },
+    "light": {
+      "1": "none",
+      "2": "0 0 0 1px #8fb8a1",
+      "3": "0 0 24px -6px #0b7a3f"
+    }
+  }
+}

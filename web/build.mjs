@@ -135,6 +135,17 @@ async function run() {
     .replaceAll("{{STYLE}}", cssName ? `/assets/${cssName}` : "")
     .replaceAll("{{SCRIPT}}", `/assets/${jsName}`);
 
+  // The theme placeholders are resolved by web/web.go at request time, not here: the shell has to
+  // carry the *published* theme's title, social card and stylesheet, and those live in the
+  // database. The build's only job is to leave them alone — so a future rewrite that strips an
+  // unknown marker fails here, loudly, instead of shipping a shell whose <title> is the literal
+  // text "{{THEME_TITLE}}".
+  for (const marker of ["{{THEME_TITLE}}", "{{THEME_CSS_LINK}}", "{{THEME_MARK}}"]) {
+    if (!html.includes(marker)) {
+      throw new Error(`index.html lost the ${marker} placeholder; the server renders it`);
+    }
+  }
+
   // A stylesheet link with an empty href would be a request for the current document.
   const cleaned = cssName ? html : html.replace(/[ \t]*<link rel="stylesheet"[^>]*>\n?/, "");
 

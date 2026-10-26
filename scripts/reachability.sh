@@ -467,13 +467,7 @@ RECORDED = {
         "FALSE POSITIVE, same call site as the portal entry above: the shared card takes its base "
         "path as an option, so an operator's page and a customer's page differ only in that string.",
     "api GET /api/v1/tax/disclosure":
-        "GAP, and deliberately left open: the storefront does not print a tax label. It must not "
-        "print one yet. `Server.IssuerFor` prices an invoice at the customer's own jurisdiction, "
-        "but no production path calls it — checkout, the manual invoice, orders and the renewal "
-        "worker all issue through the shared no-tax issuer. Advertising \"incl. 19% VAT\" on a "
-        "storefront whose invoices carry no tax line would be a false statement to a customer. The "
-        "wiring is one change across all four issuance paths, and half of it would mean the first "
-        "invoice of a subscription charges VAT while every renewal does not.",
+        "the disclosure endpoint is API-only in this build; production invoice issuance now resolves the configured jurisdiction-aware pricer inside the issuing transaction. The storefront does not print a tax label until the product-facing disclosure policy is finalized.",
 
     # The export routes ARE reachable; the sweep cannot see them because each screen builds the
     # path through a helper (`exportPath()` in views/customers.ts, invoices.ts, services.ts), and

@@ -18,33 +18,24 @@
 > file: i18n is marked done, and its *backend* is, but nothing in the frontend renders a
 > translation.
 
-> **CURRENT VERIFIED STATUS (2026-10-26):** The authoritative implementation pass is recorded in
-> `docs/parity-status.md`; this section mirrors only the remaining work so a reader opening this
-> inventory can see the current finish line without trusting the historical row markers.
+> **CURRENT VERIFIED STATUS (2026-10-26):** The latest implementation pass is recorded in
+> `docs/parity-status.md`; this section mirrors the current finish line while the row markers below
+> remain historical inventory markers.
 >
-> **Implemented and verified in the latest pass:** cart totals now include selected configuration
-> option recurring/setup pricing consistently with checkout; failed-operation retry/resolve/delete
-> APIs are permission-checked, audited and described in OpenAPI; the theme shell and generated
-> frontend assets build successfully; and the seven public theme resource routes are recorded as
-> API-only surfaces.
+> **Closed in the latest pass:** `TAX-02/TAX-05/TAX-06/TAX-08` production tax issuance across
+> checkout, manual orders and renewals; `I18N-01` localized outbound mail with safe fallback;
+> `SF-09` separated/combined quantity semantics; `SF-14` explicit N-week/N-month periods;
+> `ADM-18` operation retry/resolve UI; `ADM-28` consolidated customer tickets, credits and
+> billing-agreement tabs; and `ADM-31` invoice send-email/PDF controls. These paths have focused
+> regression tests and the full Go/web verification gate passes.
 >
 > **Remaining non-gateway work:**
 >
-> - `TAX-02`, `TAX-05`, `TAX-06`, `TAX-08`: wire the existing jurisdiction/rate engine into
->   checkout, manual/staff orders and renewals so cart totals and immutable invoice snapshots agree;
->   settle the VIES-unreachable policy.
-> - `I18N-01`: localize outbound notification mail using the recipient locale with safe fallback.
-> - `SF-09`: implement distinct `separated` versus `combined` quantity semantics.
-> - `SF-14`: add N-week and N-month billing units beyond the supported N-day model.
-> - `ADM-18`: add operator UI for failed and needs-review operation retry/resolve actions.
-> - `ADM-28`: add customer-detail tickets, credits and billing-agreement tabs.
-> - `ADM-31`: add invoice-creation send-email and immediate-PDF controls.
 > - `I18N-08`: Gravatar remains absent by deliberate local-avatar design.
 >
-> PayPal, Mollie, legacy PayPal IPN and marketplace gateway breadth are deliberately excluded from
-> this pass. Verification currently passes `go test ./...`, `go build ./...`, `go vet ./...`, and
-> web tests `118/118`; reachability has two unrecorded findings corresponding to the missing
-> operation UI.
+> PayPal, Mollie, legacy PayPal IPN and marketplace gateway breadth remain deliberately excluded
+> from this pass. `go test ./...`, `go build ./...`, `go vet ./...`, web tests `148/148`, and
+> reachability (`44/44` recorded findings) pass.
 >
 This is the exhaustive list of what stands between Catalyst Billing and
 [Paymenter](https://paymenter.org). It is written to be worked from: every feature Paymenter

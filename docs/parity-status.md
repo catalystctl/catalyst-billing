@@ -3,9 +3,9 @@
 A living record of what is actually built, kept honest by checking the code rather than the
 reports. `docs/paymenter-parity.md` is the backlog; this file is where it stands.
 
-**Last verified:** `go test ./...` and `go build ./...` pass against the repository's real PostgreSQL test harness; `cd web && npm test` passes **118/118** tests. `bash scripts/reachability.sh --check` reports **2 unrecorded findings**: the staff operation retry and resolve actions have no operator UI. The seven public theme asset routes are recorded as deliberate resource endpoints. The remaining capability gaps are listed in **Not done, and why** below; PayPal/Mollie and other gateway breadth remain explicitly out of scope for this parity pass.
+**Last verified:** `go test ./...`, `go build ./...`, and `go vet ./...` pass against the repository's real PostgreSQL test harness; `cd web && npm test` passes **148/148** tests. `bash scripts/reachability.sh --check` passes with **44/44 findings recorded**. Tax issuance, localized outbound mail, explicit week/month billing periods, separated/combined quantity handling, operation recovery UI, invoice creation controls, and consolidated customer tickets/credits/billing-agreement tabs are implemented and covered by focused tests. PayPal/Mollie and other gateway breadth remain explicitly out of scope for this parity pass.
 
-**Scale now:** 109 tables, 353 documented API operations across 278 paths, and the theme registry plus brand overlay are present in the tree.
+**Scale now:** 111 tables, including period-unit and quantity-mode migrations, 353 documented API operations across 278 paths, and the theme registry plus brand overlay are present in the tree.
 
 ## Where the work happens
 
@@ -310,20 +310,12 @@ excluded from this pass at the user's request.
 
 **Capability gaps still requiring implementation:**
 
-- **TAX-02/TAX-05/TAX-06/TAX-08:** the jurisdiction/rate engine and transaction-aware lookup exist,
-  but production invoice issuance still uses the no-tax issuer in checkout, manual/staff orders,
-  and renewals. Wire all issuance paths together so cart and immutable invoice snapshots agree;
-  decide and test the VIES-unreachable policy (refuse versus recorded fallback).
-- **I18N-01:** outbound notification mail is not localized, even though the frontend is. Add a
-  locale-aware sender/catalog resolver and prove a non-default-locale recipient receives translated mail.
-- **SF-09:** `separated` and `combined` quantity modes still produce one service rather than the
-  Paymenter-equivalent independent services/lines.
-- **SF-14:** only arbitrary N-day periods are supported; N-week and N-month units remain absent.
-- **ADM-18:** operation retry/resolve endpoints exist, but there is no operator UI for failed or
-  needs-review operations. The API must remain permission-checked and audited.
-- **ADM-28:** customer detail still lacks tickets, credits, and billing-agreement tabs.
-- **ADM-31:** invoice creation still lacks a send-email toggle and immediate PDF affordance.
 - **I18N-08:** Gravatar remains intentionally absent; local initials are used instead.
+
+**Closed in the latest implementation pass:** TAX-02/TAX-05/TAX-06/TAX-08 production issuance;
+I18N-01 localized outbound mail; SF-09 separated/combined quantity modes; SF-14 explicit week/month
+periods; ADM-18 operation recovery UI; ADM-28 consolidated customer tabs; and ADM-31 invoice
+send-email/PDF controls.
 
 **Breadth or deliberate presentation differences:** ADM-22 still lacks a complete per-run history
 view; ADM-37 has no cluster landing pages; I18N-07 has no separate dark-mode logo. These do not
@@ -337,51 +329,25 @@ One epic remains gateway breadth rather than a capability defect:
   scoped documents, custom CSS controls, and per-tenant brand overlay now exist. The seven public
   theme asset routes are API-only by design and must be recorded in the reachability allow-list.
 
-### Two defects that are capability, not breadth
+### Verification notes for previously open defects
 
-These are not on the epic list because they are not missing features — they are features that exist
-and are not reached. Both are recorded here because a tested, complete-looking implementation is the
-exact thing a reader will assume is working.
+The following defects were closed in the latest implementation pass and are retained here as design
+history rather than current gaps:
 
-- **Configured tax never reaches an invoice, and the cart already quotes it.** `internal/tax` is a
-  full jurisdiction engine — EU place-of-supply, VIES VAT-ID validation, US subnational nexus,
-  reverse charge, and a refusal that refuses rather than charging 0%. `Server.IssuerFor` prices at
-  the customer's jurisdiction. Nothing in production calls it: checkout, the manual invoice, orders
-  and the renewal worker all issue through the shared issuer, which is
-  `FixedTaxPricer{Policy:"no-tax"}`. Meanwhile `taxPricerFor` is what the CART uses, so the panel
-  quotes one number and documents another. With `tax.enabled` on and rates configured, an
-  inclusive-tax installation shows totals that agree numerically while the invoice under-states net
-  and omits the VAT amount — a VAT invoice that cannot support the customer's input-VAT reclaim —
-  and an exclusive-tax installation's cart total and invoice total disagree outright.
+- **Configured tax now reaches invoices.** The issuer resolves the jurisdiction-aware pricer inside
+  the transaction for checkout, manual/staff orders and renewals. Inclusive/exclusive rates,
+  exemption/refusal behavior and renewal consistency are covered by focused tests. The storefront
+  disclosure endpoint remains API-only until its product-facing label policy is finalized.
+- **Outbound mail now localizes.** The notification worker decorates the sender with the recipient's
+  stored locale and safely falls back to the queued default text for missing translations. The
+  localized subject/body and branded HTML behavior are tested against the real outbox.
 
-  The storefront tax label and `GET /api/v1/tax/disclosure` are therefore deliberately **not**
-  shipped: a tax label beside an invoice with no tax line is a false statement to the customer.
-  The fix is one change across all four issuance paths, and it must be all four — half of it means
-  the first invoice of a subscription carries VAT while every renewal does not, which is worse than
-  uniformly carrying none. The seam must live below `httpapi` (three of the four paths are outside
-  it: `register.NewCheckoutService`, `orders.New`, `renewal.Engine`), and the rate must be resolved
-  inside the issuing transaction so the immutable `snapshot` records the rate that actually applied.
-  One commercial decision is open: when VIES is unreachable, refuse, or fall back to the destination
-  rate and record the substitution in the snapshot. Refusing turns a third-party outage into failed
-  EU B2B checkout; the fallback over-collects and is recoverable.
+Three older items remain historical evidence rather than current gaps:
 
-- **Outbound mail is not localised, though the panel is.** The client renders in the user's locale
-  and every email goes out in English, so a customer who picked German gets a German panel and an
-  English invoice. `notify.NewLocalizedSender` exists on an unmerged branch
-  (`agent-team/i18n-ieqw64`) and is referenced only by its own test; its resolver method
-  `CatalogSet` is absent from master's `i18n.Store`. Finishing it is: port
-  `internal/notify/locale.go`, add `CatalogSet`, place one line in `cmd/billing/jobs.go` at the
-  notifications sender, and prove a non-default-locale recipient gets translated mail.
-
-Three things moved from this list to **done** in the last round, each with a test that can fail:
-
-- **An arbitrary N-day billing period** is expressible as `every_<N>_days` (N in 1..366).
-  `internal/calendar` now carries a second period model that counts civil days from an explicit
-  origin, kept deliberately apart from the calendar-month model. The calendar intervals are proven
-  byte-identical by a differential test rather than by a claim about the diff.
+- **An arbitrary N-day billing period** is expressible as `every_<N>_days`; explicit N-week and
+  N-month forms now use validated week/day-count and calendar-month models respectively.
 - **A per-tenant invoice PDF** exists, with an unset brand proven byte-identical by hash.
-- **The purchase funnel** — a customer can buy end to end in a browser, which was the single largest
-  gap in the product.
+- **The purchase funnel** works end to end in a browser.
 
 Two things on this list are decisions rather than gaps:
 

@@ -49,32 +49,6 @@ func (h *harness) seedCoupon(t *testing.T, subscriptionID, percentage string, cy
 	return couponID
 }
 
-// onlySubscription returns the harness's one subscription.
-//
-// One harness is one world, so this asserts there is exactly one rather than taking the first row:
-// a second subscription would make every assertion below compare the wrong invoice, which is a
-// fixture bug that presents as a product bug.
-func (h *harness) onlySubscription(t *testing.T) string {
-	t.Helper()
-	rows, err := h.pool.Query(context.Background(), `SELECT id FROM subscriptions`)
-	if err != nil {
-		t.Fatalf("list subscriptions: %v", err)
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			t.Fatalf("scan subscription: %v", err)
-		}
-		ids = append(ids, id)
-	}
-	if len(ids) != 1 {
-		t.Fatalf("the harness has %d subscriptions, want 1", len(ids))
-	}
-	return ids[0]
-}
-
 // cyclesApplied reads the subscription's counter.
 func (h *harness) cyclesApplied(t *testing.T, subscriptionID string) int {
 	t.Helper()

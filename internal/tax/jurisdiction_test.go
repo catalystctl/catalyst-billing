@@ -34,10 +34,9 @@ import (
 var rulesNow = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 type rulesEnv struct {
-	pool   *store.Pool
-	rules  *tax.Rules
-	store  *commerce.Store
-	client string
+	pool  *store.Pool
+	rules *tax.Rules
+	store *commerce.Store
 }
 
 func newRulesEnv(t *testing.T) *rulesEnv {

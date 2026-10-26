@@ -47,12 +47,14 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/catalyst/billing/internal/commerce"
 	"github.com/catalyst/billing/internal/settings"
 	"github.com/catalyst/billing/internal/store"
+	"github.com/jackc/pgx/v5"
 )
 
 // ErrRefused is the sentinel every refusal wraps. A caller that only wants "can this be priced at
@@ -197,6 +199,10 @@ type Config struct {
 type Rules struct {
 	pool  *store.Pool
 	store *commerce.Store
+	// q is the read/write surface the rules use. It is the pool by default and the caller's
+	// transaction after WithTx, so a jurisdiction can be resolved against the same snapshot the
+	// invoice is written in.
+	q querier
 	// Validator is the service a VAT ID is checked against. Nil means "build one from
 	// Config.VATValidationURL", which is the VIES adapter.
 	Validator VATValidator
@@ -206,35 +212,84 @@ type Rules struct {
 
 // NewRules builds a rules engine for a pool.
 func NewRules(pool *store.Pool) *Rules {
-	return &Rules{pool: pool, store: commerce.New(pool)}
+	return &Rules{pool: pool, store: commerce.New(pool), q: pool}
+}
+
+// WithTx returns a copy of the rules that reads and records through the caller's transaction.
+//
+// It is what makes invoice issuance resolve jurisdiction inside the issuing transaction: the
+// billing profile, the settings, the rate row, the nexus declarations and the VAT-ID validation
+// history are all read from the same snapshot as the document. A nil transaction returns the
+// receiver unchanged, so a caller that has no transaction can use the pool path.
+func (r *Rules) WithTx(tx pgx.Tx) *Rules {
+	if tx == nil {
+		return r
+	}
+	copy := *r
+	copy.q = tx
+	return &copy
+}
+
+// setting reads one tax setting through the rules' querier, falling back to the code-side default
+// when no row exists. The default is the same one internal/settings declares, so an installation
+// with no settings rows behaves exactly as it did before.
+func (r *Rules) setting(ctx context.Context, key string) (string, error) {
+	def, ok := settings.Lookup("tax", key)
+	if !ok {
+		return "", fmt.Errorf("tax: unknown setting tax.%s", key)
+	}
+	var value string
+	err := r.q.QueryRow(ctx,
+		`SELECT value FROM settings WHERE group_key = 'tax' AND key = $1`, key).Scan(&value)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return def.Default, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("tax: read setting tax.%s: %w", key, err)
+	}
+	return value, nil
 }
 
 // Config reads the five jurisdiction settings in one pass.
 func (r *Rules) Config(ctx context.Context) (Config, error) {
-	s := settings.New(r.pool)
-	var (
-		cfg Config
-		err error
-	)
-	if cfg.SellerCountry, err = s.String(ctx, "tax", "seller_country"); err != nil {
+	var cfg Config
+	seller, err := r.setting(ctx, "seller_country")
+	if err != nil {
 		return Config{}, fmt.Errorf("tax: read seller country: %w", err)
 	}
-	cfg.SellerCountry = strings.ToUpper(strings.TrimSpace(cfg.SellerCountry))
-	if cfg.ReverseCharge, err = s.Bool(ctx, "tax", "reverse_charge"); err != nil {
+	cfg.SellerCountry = strings.ToUpper(strings.TrimSpace(seller))
+
+	reverse, err := r.setting(ctx, "reverse_charge")
+	if err != nil {
 		return Config{}, fmt.Errorf("tax: read reverse charge setting: %w", err)
 	}
-	if cfg.NexusEnforced, err = s.Bool(ctx, "tax", "nexus_enforced"); err != nil {
+	if cfg.ReverseCharge, err = strconv.ParseBool(strings.TrimSpace(reverse)); err != nil {
+		return Config{}, fmt.Errorf("tax: tax.reverse_charge is not a boolean")
+	}
+
+	nexus, err := r.setting(ctx, "nexus_enforced")
+	if err != nil {
 		return Config{}, fmt.Errorf("tax: read nexus setting: %w", err)
 	}
-	if cfg.VATValidationURL, err = s.String(ctx, "tax", "vat_validation_url"); err != nil {
+	if cfg.NexusEnforced, err = strconv.ParseBool(strings.TrimSpace(nexus)); err != nil {
+		return Config{}, fmt.Errorf("tax: tax.nexus_enforced is not a boolean")
+	}
+
+	url, err := r.setting(ctx, "vat_validation_url")
+	if err != nil {
 		return Config{}, fmt.Errorf("tax: read validation URL: %w", err)
 	}
-	cfg.VATValidationURL = strings.TrimSpace(cfg.VATValidationURL)
-	hours, err := s.Int(ctx, "tax", "vat_validation_ttl_hours")
+	cfg.VATValidationURL = strings.TrimSpace(url)
+
+	hours, err := r.setting(ctx, "vat_validation_ttl_hours")
 	if err != nil {
 		return Config{}, fmt.Errorf("tax: read validation TTL: %w", err)
 	}
-	cfg.VATValidationTTL = time.Duration(hours) * time.Hour
+	ttl, err := strconv.ParseInt(strings.TrimSpace(hours), 10, 64)
+	if err != nil {
+		return Config{}, fmt.Errorf("tax: tax.vat_validation_ttl_hours is not an integer")
+	}
+	cfg.VATValidationTTL = time.Duration(ttl) * time.Hour
 	return cfg, nil
 }
 
@@ -341,7 +396,7 @@ func (r *Rules) resolve(ctx context.Context, supply Supply) (*commerce.TaxRate, 
 	if supply.Country == "" {
 		return nil, nil
 	}
-	rate, err := r.store.ResolveRate(ctx, supply.Country, supply.Region, supply.TaxClass, supply.At)
+	rate, err := r.store.ResolveRateTx(ctx, r.q, supply.Country, supply.Region, supply.TaxClass, supply.At)
 	if errors.Is(err, commerce.ErrNotFound) {
 		return nil, nil
 	}
@@ -355,7 +410,7 @@ func (r *Rules) resolve(ctx context.Context, supply Supply) (*commerce.TaxRate, 
 // that distinguishes "tax is off in effect" from "this destination is missing".
 func (r *Rules) rateTableEmpty(ctx context.Context) (bool, error) {
 	var exists bool
-	if err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tax_rates)`).Scan(&exists); err != nil {
+	if err := r.q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tax_rates)`).Scan(&exists); err != nil {
 		return false, fmt.Errorf("tax: inspect rate table: %w", err)
 	}
 	return !exists, nil

@@ -57,6 +57,7 @@ import (
 	"github.com/catalyst/billing/internal/audit"
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/calendar"
+	"github.com/catalyst/billing/internal/commerce"
 	"github.com/catalyst/billing/internal/credit"
 	"github.com/catalyst/billing/internal/invoicepdf"
 	"github.com/catalyst/billing/internal/money"
@@ -737,11 +738,11 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 
 	// The discount is applied to the draft, where the document is still editable.
 	if plan.amount > 0 {
-		adjusted, err := applyDiscount(ctx, tx, invoiceID, snap, plan, charges, cur)
-		if err != nil {
+		// applyDiscount rewrites the draft's snapshot itself (writeSnapshot), so the snapshot
+		// it hands back is not needed here.
+		if _, err := applyDiscount(ctx, tx, invoiceID, snap, plan, charges, cur); err != nil {
 			return CheckoutResult{}, err
 		}
-		snap = adjusted
 		if err := insertRedemption(ctx, tx, plan, customerID, invoiceID, firstSubscriptionID, currency); err != nil {
 			return CheckoutResult{}, err
 		}
@@ -1540,81 +1541,27 @@ func loadCatalogLine(ctx context.Context, tx pgx.Tx, priceVersionID string) (cat
 // is refused: silently dropping a selection would charge a price the customer did not
 // agree to, and silently accepting one would price a service the provisioner cannot
 // build.
+//
+// The pricing and validation live in commerce.LoadConfigSelections, which the cart also calls.
+// Sharing the rule is what guarantees the cart total equals the invoice: the old local query
+// joined `config_option_prices` without matching `choice`, so a dropdown with more than one
+// priced tier could be charged at whichever row the join returned last. The required-option
+// check is enforced here (the checkout cannot proceed without it) and skipped on the cart,
+// where a half-configured draft is still a valid thing to show.
 func loadConfig(ctx context.Context, tx pgx.Tx, cl catalogLine, selected map[string]string) ([]configSelection, error) {
-	rows, err := tx.Query(ctx, `
-		SELECT co.id, co.name, co.option_type, co.choices, co.required, co.hidden,
-		       COALESCE(cop.amount_minor, 0), COALESCE(cop.setup_minor, 0)
-		FROM config_options co
-		LEFT JOIN config_option_prices cop
-		       ON cop.config_option_id = co.id AND cop.price_version_id = $2
-		WHERE co.product_id = $1
-		ORDER BY co.sort_order, co.name`, cl.productID, cl.priceVersionID)
+	sel, err := commerce.LoadConfigSelections(ctx, tx, cl.productID, cl.priceVersionID, selected, true)
 	if err != nil {
-		return nil, fmt.Errorf("checkout: load config options: %w", err)
-	}
-	defer rows.Close()
-
-	type option struct {
-		id       string
-		name     string
-		kind     string
-		choices  []string
-		required bool
-		hidden   bool
-		amount   int64
-		setup    int64
-	}
-	var options []option
-	for rows.Next() {
-		var (
-			o       option
-			rawJSON []byte
-		)
-		if err := rows.Scan(&o.id, &o.name, &o.kind, &rawJSON, &o.required, &o.hidden,
-			&o.amount, &o.setup); err != nil {
-			return nil, fmt.Errorf("checkout: scan config option: %w", err)
+		if errors.Is(err, commerce.ErrInvalidInput) {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 		}
-		if len(rawJSON) > 0 {
-			if err := json.Unmarshal(rawJSON, &o.choices); err != nil {
-				return nil, fmt.Errorf("checkout: decode config choices: %w", err)
-			}
-		}
-		options = append(options, o)
+		return nil, err
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("checkout: read config options: %w", err)
-	}
-
-	// Only options the product actually offers may be selected.
-	known := make(map[string]option, len(options))
-	for _, o := range options {
-		known[o.id] = o
-	}
-	out := make([]configSelection, 0, len(selected))
-	for id, value := range selected {
-		o, ok := known[id]
-		if !ok || o.hidden {
-			return nil, fmt.Errorf("%w: unknown option %s", ErrInvalidConfig, id)
-		}
-		if strings.TrimSpace(value) == "" {
-			continue
-		}
-		if len(o.choices) > 0 && !contains(o.choices, value) {
-			return nil, fmt.Errorf("%w: %q is not an available choice for %s",
-				ErrInvalidConfig, value, o.name)
-		}
+	out := make([]configSelection, 0, len(sel))
+	for _, s := range sel {
 		out = append(out, configSelection{
-			optionID: o.id, name: o.name, value: value,
-			amount: o.amount, setup: o.setup,
+			optionID: s.OptionID, name: s.Name, value: s.Value,
+			amount: s.Amount, setup: s.Setup,
 		})
-	}
-	for _, o := range options {
-		if !o.required || o.hidden {
-			continue
-		}
-		if _, ok := selected[o.id]; !ok {
-			return nil, fmt.Errorf("%w: %s must be chosen", ErrInvalidConfig, o.name)
-		}
 	}
 	return out, nil
 }

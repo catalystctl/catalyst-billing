@@ -2,7 +2,9 @@ package commerce_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,18 +24,6 @@ func allowQuantity(t *testing.T, pool *store.Pool, productID, policy string) {
 	if _, err := pool.Exec(context.Background(),
 		`UPDATE products SET allow_quantity = $2 WHERE id = $1`, productID, policy); err != nil {
 		t.Fatalf("set allow_quantity: %v", err)
-	}
-}
-
-// mustCurrency inserts a currency row. The migration seeds the common ones, so this is only
-// needed for a code the seed does not carry.
-func mustCurrency(t *testing.T, pool *store.Pool, code, name string, scale int) {
-	t.Helper()
-	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO currencies (code, name, scale, symbol, symbol_position, is_default, enabled, sort_order)
-		VALUES ($1, $2, $3, '', 'prefix', false, true, 100)
-		ON CONFLICT (code) DO NOTHING`, code, name, scale); err != nil {
-		t.Fatalf("create currency: %v", err)
 	}
 }
 
@@ -718,5 +708,130 @@ func TestCartMergeRefusesQuantityAboveCeiling(t *testing.T) {
 	}
 	if cart.Items[0].Quantity != commerce.MaxCartQuantity {
 		t.Fatalf("quantity = %d, want %d", cart.Items[0].Quantity, commerce.MaxCartQuantity)
+	}
+}
+
+// mustConfigOption inserts a dropdown option with one priced row per (choice, amount, setup).
+// It returns the option id. The price is attached to the given price version, which is what
+// makes a choice's price version-specific.
+func mustConfigOption(t *testing.T, pool *store.Pool, productID, priceID, name string,
+	choices []string, required bool, prices map[string][2]int64) string {
+	t.Helper()
+	ctx := context.Background()
+	raw, err := json.Marshal(choices)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var optionID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO config_options (product_id, name, option_type, choices, required)
+		VALUES ($1, $2, 'dropdown', $3, $4) RETURNING id`,
+		productID, name, raw, required).Scan(&optionID); err != nil {
+		t.Fatalf("create config option: %v", err)
+	}
+	for choice, amounts := range prices {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO config_option_prices (config_option_id, price_version_id, choice,
+				amount_minor, setup_minor)
+			VALUES ($1, $2, $3, $4, $5)`,
+			optionID, priceID, choice, amounts[0], amounts[1]); err != nil {
+			t.Fatalf("create config option price: %v", err)
+		}
+	}
+	return optionID
+}
+
+// CT-03: a selected config option's recurring and setup amounts are part of the cart total, not
+// something the checkout adds afterwards. The choice is priced, not the option: selecting the
+// free tier must not charge the paid tier's amount.
+func TestCartTotalsIncludeSelectedConfigOption(t *testing.T) {
+	s, ctx := newStore(t)
+	at(t, s, t0)
+	pool := s.Pool()
+	customerID := mustCustomer(t, pool, "cart-config@example.test")
+	productID, priceID := mustProduct(t, pool, "vps-config", 1000, 500, "USD")
+	allowQuantity(t, pool, productID, commerce.QuantityCombined)
+	optionID := mustConfigOption(t, pool, productID, priceID, "RAM",
+		[]string{"2 GB", "8 GB"}, true, map[string][2]int64{
+			"2 GB": {0, 0},
+			"8 GB": {1500, 300},
+		})
+
+	// The paid tier, quantity two: (1000 + 1500) × 2 recurring, (500 + 300) × 2 setup.
+	if _, err := s.AddItem(ctx, customerID, "USD", commerce.AddItemRequest{
+		PriceVersionID: priceID, Quantity: 2,
+		Config: map[string]string{optionID: "8 GB"},
+	}); err != nil {
+		t.Fatalf("add item: %v", err)
+	}
+	totals, err := s.Totals(ctx, customerID, nil)
+	if err != nil {
+		t.Fatalf("totals: %v", err)
+	}
+	if len(totals.Lines) != 1 {
+		t.Fatalf("lines = %d, want 1", len(totals.Lines))
+	}
+	line := totals.Lines[0]
+	if line.Line.Minor() != 5000 {
+		t.Fatalf("line = %d, want (1000+1500)×2 = 5000", line.Line.Minor())
+	}
+	if line.SetupLine.Minor() != 1600 {
+		t.Fatalf("setup line = %d, want (500+300)×2 = 1600", line.SetupLine.Minor())
+	}
+	if line.Unit.Minor() != 2500 {
+		t.Fatalf("unit = %d, want 1000+1500 = 2500", line.Unit.Minor())
+	}
+	if line.Setup.Minor() != 800 {
+		t.Fatalf("setup = %d, want 500+300 = 800", line.Setup.Minor())
+	}
+	if totals.Total.Minor() != 6600 {
+		t.Fatalf("total = %d, want 6600", totals.Total.Minor())
+	}
+	if !strings.Contains(line.Description, "RAM: 8 GB") {
+		t.Fatalf("description = %q, want it to name the chosen option", line.Description)
+	}
+
+	// The free tier contributes nothing: the cart charges the base price only.
+	if _, err := s.Clear(ctx, customerID); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if _, err := s.AddItem(ctx, customerID, "USD", commerce.AddItemRequest{
+		PriceVersionID: priceID, Quantity: 1,
+		Config: map[string]string{optionID: "2 GB"},
+	}); err != nil {
+		t.Fatalf("add free tier: %v", err)
+	}
+	totals, err = s.Totals(ctx, customerID, nil)
+	if err != nil {
+		t.Fatalf("totals free tier: %v", err)
+	}
+	if totals.Total.Minor() != 1500 {
+		t.Fatalf("free-tier total = %d, want 1000 + 500 setup = 1500", totals.Total.Minor())
+	}
+}
+
+// A choice the option does not offer is refused when it is added, so the cart can never hold a
+// selection that the totals (and therefore the checkout) cannot price.
+func TestCartRefusesUnknownConfigChoice(t *testing.T) {
+	s, ctx := newStore(t)
+	at(t, s, t0)
+	pool := s.Pool()
+	customerID := mustCustomer(t, pool, "cart-config-bad@example.test")
+	productID, priceID := mustProduct(t, pool, "vps-config-bad", 1000, 0, "USD")
+	optionID := mustConfigOption(t, pool, productID, priceID, "RAM",
+		[]string{"2 GB", "8 GB"}, false, map[string][2]int64{"8 GB": {1500, 0}})
+
+	_, err := s.AddItem(ctx, customerID, "USD", commerce.AddItemRequest{
+		PriceVersionID: priceID, Config: map[string]string{optionID: "64 GB"},
+	})
+	if !errors.Is(err, commerce.ErrInvalidInput) {
+		t.Fatalf("unknown choice: err = %v, want ErrInvalidInput", err)
+	}
+	_, err = s.AddItem(ctx, customerID, "USD", commerce.AddItemRequest{
+		PriceVersionID: priceID,
+		Config:         map[string]string{"00000000-0000-0000-0000-000000000000": "x"},
+	})
+	if !errors.Is(err, commerce.ErrInvalidInput) {
+		t.Fatalf("unknown option: err = %v, want ErrInvalidInput", err)
 	}
 }

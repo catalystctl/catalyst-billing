@@ -32,6 +32,7 @@ import (
 	"github.com/catalyst/billing/internal/billing"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // WildcardCountry is the country code that matches anywhere. It is the same literal the
@@ -413,6 +414,25 @@ func (s *Store) resolveRateWith(ctx context.Context, q querier, country, region,
 	return t, nil
 }
 
+// RateQuerier is the subset of pgx a rate lookup needs. It is exported so a caller that must
+// resolve a rate inside an open transaction can pass the transaction rather than the pool. It is
+// deliberately a distinct name from the store's general querier so the two cannot collide.
+type RateQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// ResolveRateTx finds the rate that applies at an instant using a caller-supplied querier.
+//
+// It is the transaction-aware form of ResolveRate. The rules engine uses it so a jurisdiction is
+// resolved against the same snapshot the invoice is written in: a rate appended by another
+// transaction between the decision and the insert cannot make the evidence describe a row the
+// document was not priced from.
+func (s *Store) ResolveRateTx(ctx context.Context, q RateQuerier, country, region, class string, at time.Time) (TaxRate, error) {
+	return s.resolveRateWith(ctx, q, country, region, class, at)
+}
+
 // TaxJurisdiction is the place a rate resolved to, rendered for evidence.
 func TaxJurisdiction(t TaxRate) string {
 	if t.CountryCode == WildcardCountry {
@@ -457,6 +477,9 @@ type TaxPricer struct {
 	Rounding money.Rounding
 	// At pins the instant the rate is resolved at. Zero means "now".
 	At time.Time
+	// Querier, when set, is the connection the rate is resolved from. It exists so an invoice
+	// issuer can resolve the rate inside its own transaction; nil means the store's pool.
+	Querier RateQuerier
 }
 
 // Price implements billing.Pricer.
@@ -499,7 +522,7 @@ func (p TaxPricer) Price(ctx context.Context, lines []billing.Line, cur money.Cu
 			fmt.Errorf("commerce: tax pricer has no store")
 	}
 
-	rate, err := p.Store.resolveRateWith(ctx, p.Store.pool, p.CountryCode, p.RegionCode, class, at)
+	rate, err := p.Store.resolveRateWith(ctx, p.querier(), p.CountryCode, p.RegionCode, class, at)
 	if err != nil {
 		if !errors.Is(err, ErrNotFound) {
 			return nil, billing.Totals{}, billing.TaxEvidence{}, err
@@ -547,6 +570,15 @@ func (p TaxPricer) Price(ctx context.Context, lines []billing.Line, cur money.Cu
 	// Record which dated row was used, so the document explains itself a year later.
 	evidence.Mode = mode
 	return results, totals, evidence, nil
+}
+
+// querier returns the connection the rate is resolved from: the caller's transaction when it
+// supplied one, otherwise the store's pool.
+func (p TaxPricer) querier() RateQuerier {
+	if p.Querier != nil {
+		return p.Querier
+	}
+	return p.Store.pool
 }
 
 // zeroTax prices every line with no tax, preserving the line shape so the invoice and the

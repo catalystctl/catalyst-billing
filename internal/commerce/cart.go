@@ -321,6 +321,14 @@ func (s *Store) AddItemTx(ctx context.Context, q querier, customerID, currency s
 	if err != nil {
 		return Cart{}, err
 	}
+	// Validate the selection against the catalog now, so a cart cannot hold an option the
+	// product does not offer or a choice it does not have. Required options are not enforced
+	// here: a cart is a draft, and the checkout is where an incomplete selection is refused.
+	// The point of validating at all is that Totals prices from the same rule, so an invalid
+	// selection would otherwise turn into a cart that cannot be priced.
+	if _, err := LoadConfigSelections(ctx, q, price.ProductID, price.ID, req.Config, false); err != nil {
+		return Cart{}, err
+	}
 	// The cart's currency is fixed once it holds an item. A price in another currency
 	// cannot join, because there is no exchange rate to convert it with.
 	if !strings.EqualFold(price.Currency, cart.Currency) && len(cart.Items) > 0 {
@@ -607,7 +615,13 @@ func (s *Store) ApplyCouponTx(ctx context.Context, q querier, customerID, code s
 			refusal = notApplicable("it does not apply to anything in this cart")
 			continue
 		}
-		amounts, err := lineAmounts(price, item.Quantity)
+		// The coupon is validated against the price the checkout will charge, so the option
+		// contribution is part of the base it discounts.
+		sel, err := LoadConfigSelections(ctx, q, price.ProductID, price.ID, item.Config, false)
+		if err != nil {
+			return Cart{}, err
+		}
+		amounts, err := lineAmountsWithConfig(price, item.Quantity, ConfigAmount(sel), ConfigSetup(sel))
 		if err != nil {
 			return Cart{}, err
 		}
@@ -694,10 +708,16 @@ func (s *Store) TotalsTx(ctx context.Context, q querier, customerID string, pric
 type cartLine struct {
 	item  CartItem
 	price priceRow
-	// line is unit*quantity; setup is setup*quantity; both before any discount.
+	// line is unit*quantity; setup is setup*quantity; both before any discount. Unit and setup
+	// already include the selected config options, so the cart total is the invoice total.
 	line  money.Amount
 	setup money.Amount
-	desc  string
+	// configAmount and configSetup are the option contributions folded into the two values
+	// above, kept so the line can report its effective unit price without re-reading the
+	// catalog.
+	configAmount int64
+	configSetup  int64
+	desc         string
 }
 
 func (s *Store) totalsFor(ctx context.Context, q querier, cart Cart, pricer billing.Pricer) (Totals, error) {
@@ -736,7 +756,14 @@ func (s *Store) totalsFor(ctx context.Context, q querier, cart Cart, pricer bill
 			return Totals{}, fmt.Errorf("%w: the cart is in %s and price %s is in %s",
 				ErrNotApplicable, cart.Currency, price.ID, price.Currency)
 		}
-		amounts, err := lineAmounts(price, item.Quantity)
+		// Price the selected config options the same way the checkout does. The rule is
+		// shared (LoadConfigSelections), so the cart total and the invoice cannot drift.
+		sel, err := LoadConfigSelections(ctx, q, price.ProductID, price.ID, item.Config, false)
+		if err != nil {
+			return Totals{}, err
+		}
+		configAmount, configSetup := ConfigAmount(sel), ConfigSetup(sel)
+		amounts, err := lineAmountsWithConfig(price, item.Quantity, configAmount, configSetup)
 		if err != nil {
 			return Totals{}, err
 		}
@@ -746,9 +773,14 @@ func (s *Store) totalsFor(ctx context.Context, q querier, cart Cart, pricer bill
 		if gross, err = gross.Add(amounts.setup); err != nil {
 			return Totals{}, err
 		}
+		desc := price.Description()
+		if summary := ConfigSummary(sel); summary != "" {
+			desc += " (" + summary + ")"
+		}
 		rows = append(rows, cartLine{
 			item: item, price: price, line: amounts.line, setup: amounts.setup,
-			desc: price.Description(),
+			configAmount: configAmount, configSetup: configSetup,
+			desc: desc,
 		})
 	}
 
@@ -942,8 +974,8 @@ func baseLineTotal(row cartLine, cur money.Currency) LineTotal {
 		ProductID:      row.price.ProductID,
 		Description:    row.desc,
 		Quantity:       row.item.Quantity,
-		Unit:           row.price.unit(cur),
-		Setup:          row.price.setup(cur),
+		Unit:           money.New(row.price.Amount+row.configAmount, cur),
+		Setup:          money.New(row.price.Setup+row.configSetup, cur),
 		Line:           row.line,
 		SetupLine:      row.setup,
 		Net:            money.Zero(cur),
@@ -1153,6 +1185,16 @@ func lineAmounts(price priceRow, quantity int) (struct {
 	line  money.Amount
 	setup money.Amount
 }, error) {
+	return lineAmountsWithConfig(price, quantity, 0, 0)
+}
+
+// lineAmountsWithConfig adds the selected config options' per-unit recurring and setup amounts
+// before multiplying by quantity. A config option is priced per unit, exactly as the checkout's
+// order item unit_minor is, so a cart line of three with a paid option charges it three times.
+func lineAmountsWithConfig(price priceRow, quantity int, configAmount, configSetup int64) (struct {
+	line  money.Amount
+	setup money.Amount
+}, error) {
 	var out struct {
 		line  money.Amount
 		setup money.Amount
@@ -1164,12 +1206,16 @@ func lineAmounts(price priceRow, quantity int) (struct {
 	if quantity <= 0 {
 		return out, invalid("quantity must be positive")
 	}
-	if out.line, err = money.New(price.Amount, cur).MulInt(int64(quantity)); err != nil {
+	unit, err := money.New(price.Amount+configAmount, cur).MulInt(int64(quantity))
+	if err != nil {
 		return out, fmt.Errorf("commerce: line value: %w", err)
 	}
-	if out.setup, err = money.New(price.Setup, cur).MulInt(int64(quantity)); err != nil {
+	setup, err := money.New(price.Setup+configSetup, cur).MulInt(int64(quantity))
+	if err != nil {
 		return out, fmt.Errorf("commerce: setup value: %w", err)
 	}
+	out.line = unit
+	out.setup = setup
 	return out, nil
 }
 

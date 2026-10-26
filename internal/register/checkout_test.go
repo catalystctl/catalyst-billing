@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/catalyst/billing/internal/billing"
+	"github.com/catalyst/billing/internal/commerce"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/notify"
 	"github.com/catalyst/billing/internal/register"
@@ -1087,4 +1088,82 @@ func TestInclusiveTaxDiscount(t *testing.T) {
 	if subtotal+tax != total {
 		t.Fatalf("invoice does not add up: %d + %d != %d", subtotal, tax, total)
 	}
+}
+
+// CT-03: the cart total and the invoice total are the same number once config options are
+// selected. This drives both paths against the same database: commerce.Totals prices the cart,
+// Checkout issues the invoice, and the two must agree on the recurring amount, the setup fee and
+// the selected choice's price.
+func TestCartTotalMatchesCheckoutWithConfigOptions(t *testing.T) {
+	f := newFixture(t, noTax())
+	customerID, userID := f.customer(t, "cart-vs-checkout@example.test")
+	productID, priceID := f.product(t, "cart-vs-checkout", 1000, 500)
+
+	ctx := context.Background()
+	var optionID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO config_options (product_id, name, option_type, choices, required)
+		VALUES ($1, 'RAM', 'dropdown', '["2 GB","8 GB"]', true) RETURNING id`,
+		productID).Scan(&optionID); err != nil {
+		t.Fatal(err)
+	}
+	// Two priced tiers: the free one and the paid one. The bug this guards against priced the
+	// option without matching the chosen choice, so selecting the free tier could be charged the
+	// paid tier's amount.
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO config_option_prices (config_option_id, price_version_id, choice,
+			amount_minor, setup_minor)
+		VALUES ($1, $2, '2 GB', 0, 0), ($1, $2, '8 GB', 1500, 300)`, optionID, priceID); err != nil {
+		t.Fatal(err)
+	}
+
+	cart := commerce.New(f.pool)
+	check := func(choice string, wantTotal, wantUnit, wantSetup int64) {
+		t.Helper()
+		if _, err := cart.Clear(ctx, customerID); err != nil {
+			t.Fatalf("clear cart: %v", err)
+		}
+		config := map[string]string{optionID: choice}
+		if _, err := cart.AddItem(ctx, customerID, "USD", commerce.AddItemRequest{
+			PriceVersionID: priceID, Config: config,
+		}); err != nil {
+			t.Fatalf("add to cart: %v", err)
+		}
+		totals, err := cart.Totals(ctx, customerID, nil)
+		if err != nil {
+			t.Fatalf("cart totals: %v", err)
+		}
+		res, err := f.checkout.Checkout(ctx, register.CheckoutRequest{
+			UserID: userID,
+			Lines:  []register.CheckoutLine{{PriceVersionID: priceID, Config: config}},
+		})
+		if err != nil {
+			t.Fatalf("checkout: %v", err)
+		}
+		if totals.Total.Minor() != res.Total.Minor() {
+			t.Fatalf("choice %q: cart total = %d, invoice total = %d",
+				choice, totals.Total.Minor(), res.Total.Minor())
+		}
+		if totals.Total.Minor() != wantTotal {
+			t.Fatalf("choice %q: total = %d, want %d", choice, totals.Total.Minor(), wantTotal)
+		}
+		if res.Subtotal.Minor() != wantTotal {
+			t.Fatalf("choice %q: invoice subtotal = %d, want %d", choice, res.Subtotal.Minor(), wantTotal)
+		}
+		var unit, setup int64
+		if err := f.pool.QueryRow(ctx,
+			`SELECT unit_minor, setup_minor FROM order_items WHERE order_id = $1`,
+			res.OrderID).Scan(&unit, &setup); err != nil {
+			t.Fatal(err)
+		}
+		if unit != wantUnit || setup != wantSetup {
+			t.Fatalf("choice %q: order item unit/setup = %d/%d, want %d/%d",
+				choice, unit, setup, wantUnit, wantSetup)
+		}
+	}
+
+	// Paid tier: 1000 + 1500 recurring, 500 + 300 setup.
+	check("8 GB", 3300, 2500, 800)
+	// Free tier: the base price and setup only.
+	check("2 GB", 1500, 1000, 500)
 }

@@ -164,6 +164,25 @@ const (
 	// PermUpdateManage checks for and applies panel updates. It is the one permission that can
 	// replace the running binary.
 	PermUpdateManage Permission = "update:manage"
+
+	// --- appearance -------------------------------------------------------------
+	//
+	// The theme registry is split into three grants rather than one, because the three acts have
+	// very different consequences (docs/theming-system.md §6.2):
+	//
+	//   theme:read     view the studio, the preset gallery and the history.
+	//   theme:write    create and edit drafts, upload assets, import an envelope. A draft is
+	//                  invisible to visitors, so this is the safe grant to give a merchandiser.
+	//   theme:publish  make a draft live, roll back, and edit custom CSS. It is separate because
+	//                  panel custom CSS can hide staff-critical UI: the operator who may recolour
+	//                  the storefront is not necessarily the one who may hide the refund button
+	//                  from every colleague.
+	//
+	// None of these widens the existing branding, mail or invoice settings endpoints. Those keep
+	// `settings:write`, so a theme grant cannot become the right to rewrite an invoice template.
+	PermThemeRead    Permission = "theme:read"
+	PermThemeWrite   Permission = "theme:write"
+	PermThemePublish Permission = "theme:publish"
 )
 
 // Role is a named bundle of permissions.
@@ -201,6 +220,7 @@ var rolePermissions = map[Role][]Permission{
 		PermLogRead, PermAnnouncementWrite,
 		PermCreditReadAll, PermServiceWriteAll, PermI18nWrite, PermImportWrite,
 		PermOAuthManage, PermUpdateManage,
+		PermThemeRead, PermThemeWrite, PermThemePublish,
 	},
 	RoleBilling: {
 		PermCustomerReadAll, PermCustomerWriteAll,
@@ -217,6 +237,9 @@ var rolePermissions = map[Role][]Permission{
 		// A clerk answers "what is this customer owed", corrects the label a customer sees, and
 		// runs a customer import. They do not manage OAuth clients or replace the binary.
 		PermCreditReadAll, PermServiceWriteAll, PermI18nWrite, PermImportWrite,
+		// A clerk runs the commercial side of the storefront, so they may draft and iterate on a
+		// theme. Publishing it — and writing panel custom CSS — stays with an administrator.
+		PermThemeRead, PermThemeWrite,
 	},
 	// Support can place and clear a hold, which is exactly the "stop, do not touch this"
 	// instruction a first-line agent needs while a dispute is open. Support cannot suspend,
@@ -234,6 +257,9 @@ var rolePermissions = map[Role][]Permission{
 		// A support agent may mint a read-only key for their own tooling. The key can only carry
 		// scopes the agent already holds, which is why this is safe to grant here.
 		PermAPIKeyManage,
+		// Support reads the studio to answer "why does our panel look like this" and to see who
+		// published what. They cannot draft or publish.
+		PermThemeRead,
 	},
 	RoleInfrastructure: {
 		PermServiceReadAll, PermServiceSuspend, PermServiceTerminate, PermServiceProvision,

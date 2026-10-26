@@ -377,7 +377,7 @@ func toDiscordFields(in []EmbedField) []discordEmbedField {
 		if strings.TrimSpace(f.Name) == "" || strings.TrimSpace(f.Value) == "" {
 			continue
 		}
-		out = append(out, discordEmbedField{Name: f.Name, Value: f.Value, Inline: f.Inline})
+		out = append(out, discordEmbedField(f))
 	}
 	return out
 }

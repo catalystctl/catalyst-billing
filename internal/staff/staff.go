@@ -17,17 +17,14 @@
 package staff
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/catalyst/billing/internal/ledger"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/paginate"
 	"github.com/catalyst/billing/internal/store"
-	"github.com/jackc/pgx/v5"
 )
 
 // ErrNotFound is returned when a record does not exist.
@@ -131,41 +128,4 @@ func (b *queryBuilder) whereClause() string {
 		return "true"
 	}
 	return strings.Join(b.where, " AND ")
-}
-
-// nextArg appends a value and returns its placeholder.
-func (b *queryBuilder) nextArg(value any) string {
-	b.args = append(b.args, value)
-	return fmt.Sprintf("$%d", len(b.args))
-}
-
-// inClause adds an "= ANY" condition for a list of ids.
-func (b *queryBuilder) inClause(column string, values []string) {
-	if len(values) == 0 {
-		return
-	}
-	b.add(column+" = ANY($%d)", values)
-}
-
-// isUniqueViolation reports whether an error is a uniqueness conflict.
-func isUniqueViolation(err error) bool { return store.IsUniqueViolation(err) }
-
-// receivableFor reads the subledger receivable for a customer in one currency.
-//
-// It exists so a staff screen can cross-check the invoice columns against the ledger. A
-// disagreement means something is wrong, and showing both is how an operator sees it
-// instead of trusting a number in doubt.
-func receivableFor(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, customerID string, cur money.Currency) (money.Amount, error) {
-	var minor int64
-	err := q.QueryRow(ctx, `
-		SELECT COALESCE(SUM(debit_minor - credit_minor), 0)
-		FROM journal_entries
-		WHERE customer_id = $1 AND account_code = $2 AND currency = $3`,
-		customerID, ledger.AccountReceivable, cur.Code()).Scan(&minor)
-	if err != nil {
-		return money.Amount{}, fmt.Errorf("staff: read receivable: %w", err)
-	}
-	return money.New(minor, cur), nil
 }

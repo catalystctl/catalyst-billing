@@ -756,21 +756,6 @@ func TestStaffPaginationIsStable(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ checkout --
-
-// fakeGateway is a checkout gateway that records how often it was called.
-type fakeGateway struct {
-	calls int
-	url   string
-}
-
-func (f *fakeGateway) Name() string { return "fakegateway" }
-
-func (f *fakeGateway) CreateCheckout(_ context.Context, _ any) (any, error) {
-	f.calls++
-	return nil, nil
-}
-
 // The portal routes are exercised through the real server in portal_test.go; here we only
 // assert that the checkout route exists, requires a permission, and refuses without a
 // gateway. The domain behaviour is covered by internal/checkout.

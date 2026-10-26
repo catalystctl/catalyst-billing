@@ -39,15 +39,6 @@ func EncodeCursor(sortKey, id string) string { return paginate.Encode(sortKey, i
 // DecodeCursor parses an opaque cursor.
 func DecodeCursor(c string) (sortKey, id string, err error) { return paginate.Decode(c) }
 
-// newPage builds a page response, computing the next cursor only when the page was
-// full.
-func newPage[T any](rows []T, limit int, sortKey func(T) string, id func(T) string) Page[T] {
-	if rows == nil {
-		rows = []T{}
-	}
-	return Page[T]{Data: rows, NextCursor: paginate.Next(rows, limit, sortKey, id)}
-}
-
 // writePage writes a page response.
 func writePage[T any](w http.ResponseWriter, p Page[T]) {
 	writeJSON(w, http.StatusOK, p)

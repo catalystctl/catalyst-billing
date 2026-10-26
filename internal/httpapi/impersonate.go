@@ -42,15 +42,6 @@ func registerImpersonation(r *router) {
 		authn.PermCustomerReadSelf, r.s.handleStopImpersonation)
 }
 
-// impersonationResponse is the body of a successful impersonation.
-type impersonationResponse struct {
-	Impersonating  bool           `json:"impersonating"`
-	ImpersonatedBy map[string]any `json:"impersonated_by"`
-	User           map[string]any `json:"user"`
-	CSRFToken      string         `json:"csrf_token"`
-	ExpiresAt      any            `json:"expires_at"`
-}
-
 func (s *Server) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 	if s.auth == nil || s.auth.Service == nil {
 		writeProblem(w, http.StatusServiceUnavailable, "auth_not_configured", "authentication is not configured")

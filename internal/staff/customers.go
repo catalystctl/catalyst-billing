@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/catalyst/billing/internal/money"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -733,6 +732,3 @@ func escapeLike(s string) string {
 	}
 	return b.String()
 }
-
-// currencyFor resolves the currency of an amount list entry.
-func currencyFor(a Amount) money.Currency { return a.Currency }

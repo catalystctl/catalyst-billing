@@ -712,14 +712,6 @@ func (s *Service) audit(ctx context.Context, userID, event, detail, ip string) {
 		VALUES ($1, $2, $3, NULLIF($4, '')::inet)`, uid, event, detail, ip)
 }
 
-// dummyHash is a valid Argon2id hash of a random value, used to make the
-// unknown-account path cost the same as the wrong-password path.
-//
-// It is generated once per Service rather than stored in a package variable: a
-// package-level cache would be written at startup and read by every request, which
-// is a data race under concurrency (and was caught by the race detector).
-func (s *Service) dummyHash() string { return s.dummy }
-
 // prepareDummy generates the dummy hash for this service. It is called by New, so
 // a Service is always ready to authenticate.
 func prepareDummy(h *Hasher) (string, error) {

@@ -75,21 +75,6 @@ func publicBaseURL() string {
 	return "http://127.0.0.1:8080"
 }
 
-// queueMessage writes a raw message to the outbox inside the caller's transaction.
-//
-// The credential flows no longer use it — they dispatch through the templated events in
-// internal/notify, which render the operator's wording and write the inbox row too. It is kept
-// for a caller that genuinely has a finished message in hand (a one-off notice with no template
-// of its own), and it fails rather than silently doing nothing when there is no outbox, because
-// a 202 that promised a mail nobody will send is worse than a 503.
-func (s *Server) queueMessage(ctx context.Context, tx pgx.Tx, msg notify.Message) error {
-	if s.notify == nil {
-		return errors.New("httpapi: no notification queue configured")
-	}
-	_, _, err := s.notify.Enqueue(ctx, tx, msg)
-	return err
-}
-
 // ------------------------------------------------------------ password reset --
 
 // handleResetRequest starts a password reset.

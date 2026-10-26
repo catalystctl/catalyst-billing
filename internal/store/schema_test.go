@@ -21,7 +21,6 @@ type fixture struct {
 	productID  string
 	priceID    string
 	orderID    string
-	invoiceID  string
 	subID      string
 }
 

@@ -190,7 +190,6 @@ func (e *Engine) Advance(ctx context.Context, limit int) ([]AdvanceResult, error
 	}
 	now := e.Now()
 	sch := e.schedule(ctx)
-	policy := e.policyFor(ctx)
 
 	// Bring newly overdue invoices into dunning, and resolve settled ones. This runs even when
 	// the ladder is switched off: an invoice that is overdue is overdue whether or not anything

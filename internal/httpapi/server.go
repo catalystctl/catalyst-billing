@@ -38,6 +38,7 @@ import (
 	"github.com/catalyst/billing/internal/portal"
 	"github.com/catalyst/billing/internal/staff"
 	"github.com/catalyst/billing/internal/store"
+	themecache "github.com/catalyst/billing/internal/theme/cache"
 	"github.com/catalyst/billing/web"
 	"github.com/jackc/pgx/v5"
 )
@@ -114,6 +115,14 @@ type Server struct {
 	approvals *approvals.Service
 	// web serves the embedded frontend; nil for an API-only deployment.
 	web *web.Handler
+	// themeCache is the in-process snapshot of what each scope serves, built on first use.
+	// A Server constructed without a pool still answers: the cache falls back to the built-in
+	// default document, which is what a fresh installation serves anyway.
+	themeCacheOnce sync.Once
+	themeCache     *themecache.Cache
+	// themePreviewKey signs draft-preview tokens. It is generated per process, so a preview token
+	// is valid on the instance that minted it and nowhere else — see previewToken in theme.go.
+	themePreviewKey []byte
 	// staff is the operator read surface, constructed on first use.
 	staff   *staff.Service
 	staffMu sync.Mutex

@@ -3,7 +3,6 @@ package marketplace
 import (
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -386,6 +385,3 @@ func stageArtifact(dir string, ext Extension, body []byte) (string, error) {
 	}
 	return final, nil
 }
-
-// errNoPool is returned when the store was constructed without a pool.
-var errNoPool = errors.New("marketplace: no database configured")

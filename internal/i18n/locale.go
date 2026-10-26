@@ -221,37 +221,6 @@ func (s *Store) Default(ctx context.Context) string {
 	return DefaultCode
 }
 
-// enabledCodes returns the codes a request may resolve to.
-//
-// A table with no enabled row falls back to the `i18n.enabled_locales` setting and then to the
-// default, for the same reason `Default` does.
-func (s *Store) enabledCodes(ctx context.Context, all []Locale) []string {
-	out := make([]string, 0, len(all))
-	for _, l := range all {
-		if l.Enabled {
-			out = append(out, l.Code)
-		}
-	}
-	if len(out) > 0 {
-		return out
-	}
-	if s.settings != nil {
-		var codes []string
-		if err := s.settings.JSON(ctx, "i18n", "enabled_locales", &codes); err == nil {
-			cleaned := make([]string, 0, len(codes))
-			for _, code := range codes {
-				if normalized, err := NormalizeCode(code); err == nil {
-					cleaned = append(cleaned, normalized)
-				}
-			}
-			if len(cleaned) > 0 {
-				return cleaned
-			}
-		}
-	}
-	return []string{s.Default(ctx)}
-}
-
 // CreateTx adds a locale inside the caller's transaction.
 //
 // An empty `enabled` means "offer it": adding a language is a deliberate act, and a locale that

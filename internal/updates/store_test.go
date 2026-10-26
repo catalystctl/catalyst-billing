@@ -2,7 +2,6 @@ package updates_test
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -531,5 +530,4 @@ func TestOutcomeStrings(t *testing.T) {
 			t.Errorf("outcome %q != %q", outcome, text)
 		}
 	}
-	_ = fmt.Sprint("")
 }

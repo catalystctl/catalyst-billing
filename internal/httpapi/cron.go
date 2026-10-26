@@ -57,13 +57,6 @@ func registerOperatorCron(r *router) {
 // would let a broken deployment hide behind a large number.
 const HeartbeatStaleAfter = 2 * time.Minute
 
-// heartbeatID is the row key used before heartbeats were per-instance.
-//
-// It is kept only so the migration that removed it, and any test asserting on the legacy shape, can
-// name it. No code writes this id any more: a singleton row is what made two workers overwrite each
-// other, so the panel could never say how many were running.
-const heartbeatID = "worker"
-
 // cronRunRow is one run in the history.
 type cronRunRow struct {
 	ID         string     `json:"id"`

@@ -84,18 +84,6 @@ func (e *Engine) schedule(ctx context.Context) settings.ReminderSchedule {
 	return out
 }
 
-// policyFor returns the escalation policy for this run.
-func (e *Engine) policyFor(ctx context.Context) Policy {
-	sch := e.schedule(ctx)
-	policy := e.policy
-	policy.MaxSteps = sch.MaxSteps
-	policy.ReminderInterval = time.Duration(sch.IntervalDays) * 24 * time.Hour
-	if policy.SuspendAfter <= 0 {
-		policy.SuspendAfter = DefaultPolicy().SuspendAfter
-	}
-	return policy
-}
-
 // remindDueSoon queues the pre-due reminder for every open invoice whose due date is within
 // the configured window.
 //

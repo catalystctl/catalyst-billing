@@ -506,11 +506,11 @@ func TestAuthProvidersListForTheSignInScreen(t *testing.T) {
 
 	env.createUser("admin@example.test", "correct horse battery", "administrator")
 	cookie, csrf := env.login("admin@example.test", "correct horse battery")
-	provider := fmt.Sprintf(`{"slug":"google","name":"Google","issuer_url":"https://accounts.example.test",
+	provider := `{"slug":"google","name":"Google","issuer_url":"https://accounts.example.test",
 		"authorization_endpoint":"https://accounts.example.test/authorize",
 		"token_endpoint":"https://accounts.example.test/token",
 		"userinfo_endpoint":"https://accounts.example.test/userinfo",
-		"client_id":"id","client_secret":"secret","enabled":true}`)
+		"client_id":"id","client_secret":"secret","enabled":true}`
 	rec = env.postJSON(http.MethodPost, "/api/v1/staff/oauth-providers", provider, cookie, csrf)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create provider: status %d, body %s", rec.Code, rec.Body)

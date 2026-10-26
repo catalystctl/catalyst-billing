@@ -121,11 +121,6 @@ func (c *canvas) textRight(xRight, y float64, s string, f Font, size float64) {
 	c.text(xRight-TextWidth(f, size, s), y, s, f, size)
 }
 
-// textCentred draws s centred on x.
-func (c *canvas) textCentred(x, y float64, s string, f Font, size float64) {
-	c.text(x-TextWidth(f, size, s)/2, y, s, f, size)
-}
-
 // line draws a hairline between two points.
 func (c *canvas) line(x1, y1, x2, y2 float64, width float64) {
 	fmt.Fprintf(&c.ops, "%.2f w 0.72 G %.2f %.2f m %.2f %.2f l S\n", width, x1, y1, x2, y2)

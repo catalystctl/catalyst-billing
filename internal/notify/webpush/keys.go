@@ -24,7 +24,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"math/big"
 	"strings"
 )
 
@@ -76,18 +75,13 @@ func ParsePrivateKey(s string) (*ecdsa.PrivateKey, error) {
 	if len(raw) != 32 {
 		return nil, fmt.Errorf("%w: a raw P-256 private key is 32 bytes, got %d", ErrInvalidKey, len(raw))
 	}
-	d := new(big.Int).SetBytes(raw)
-	curve := elliptic.P256()
-	if d.Sign() <= 0 || d.Cmp(curve.Params().N) >= 0 {
-		return nil, fmt.Errorf("%w: the scalar is outside the P-256 group", ErrInvalidKey)
+	// ParseRawPrivateKey refuses a scalar of zero or one at or above the group order, and it
+	// derives the public half: a raw scalar carries no point, and a signing key needs both.
+	key, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidKey, err)
 	}
-	// The public half is derived rather than stored: a raw scalar carries no point, and
-	// ecdsa.PrivateKey needs both halves to sign.
-	x, y := curve.ScalarBaseMult(raw)
-	return &ecdsa.PrivateKey{
-		PublicKey: ecdsa.PublicKey{Curve: curve, X: x, Y: y},
-		D:         d,
-	}, nil
+	return key, nil
 }
 
 // checkPrivateCurve refuses a key on any curve other than P-256.
@@ -167,8 +161,11 @@ func GenerateKeyPair() (publicKey, privateKey string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	scalar := make([]byte, 32)
-	key.D.FillBytes(scalar)
+	// Bytes() is the raw 32-byte scalar, which is exactly what ParsePrivateKey accepts.
+	scalar, err := key.Bytes()
+	if err != nil {
+		return "", "", fmt.Errorf("webpush: encode VAPID private key: %w", err)
+	}
 	return base64URL(pub), base64URL(scalar), nil
 }
 

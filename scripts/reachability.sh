@@ -364,7 +364,21 @@ RECORDED = {
     # Now referenced by web/src/lib/i18n.ts, which reads the stored locale preference from
     # /me/locale under the same group, so the sweep no longer records it as unreachable.
     "api GET /api/v1/me/invoices": "the API-key view of /portal/invoices; scripts only",
-    # Now referenced by the branding overlay (lib/brand.ts resolves a logo through it), so the
+    "api GET /theme/r/{revision}/theme.css":
+        "public theme resource loaded by the rendered shell; it has no standalone view",
+    "api GET /theme/r/{revision}/boot.js":
+        "public theme boot resource loaded by the rendered shell; it has no standalone view",
+    "api GET /theme/assets/{id}":
+        "public same-origin theme asset referenced by validated theme documents; it has no standalone view",
+    "api GET /theme/manifest.webmanifest":
+        "browser manifest metadata loaded by the document head; it has no standalone view",
+    "api GET /theme/favicon.ico":
+        "browser favicon resource loaded by the document head; it has no standalone view",
+    "api GET /theme/og.png":
+        "social preview resource loaded by metadata; it has no standalone view",
+    "api GET /theme/preview":
+        "signed draft preview resource loaded by the theme studio; it has no standalone view",
+
     # sweep no longer needs to record it as unreachable.
     "api GET /oauth/authorize": "OAuth2 consent for a third-party client, not the panel",
     "api POST /oauth/authorize": "OAuth2 consent for a third-party client, not the panel",

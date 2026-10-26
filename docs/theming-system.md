@@ -1,6 +1,8 @@
 # Centralized theming system — design and implementation plan
 
-**Status:** proposed
+**Status:** proposed, reconciled against HEAD `7b9a705` and the current worktree. The palette and
+layout values called out below include an uncommitted restyle; treat those as in-progress input
+until that work is merged.
 **Scope:** `catalyst-billing` (Go core + embedded TypeScript frontend)
 **Goal:** one theming system that an operator can use to (a) re-skin the entire panel and
 storefront from a preset, (b) upload their own logo, favicon, social card, banners and fonts,
@@ -10,10 +12,12 @@ storefront layout — without a fork, a rebuild, or a CSP exemption.
 **Decisions requested before implementation:**
 
 1. Confirm the default for new installations: `Catalyst Console` (game-panel match, rose
-   `#ff3d7f` on `#0e1116`) or `Catalyst Billing` (current tan/orange brand). This plan
-   recommends `Catalyst Console` for new installs and `Catalyst Billing` for upgrades.
+   `#ff3d7f` on `#0e1116`) or `Catalyst Billing` (the current warm rust/orange restyle,
+   still uncommitted). This plan recommends `Catalyst Console` for new installs and preserving
+   the installed token set on upgrades.
 2. Confirm whether per-product SEO/OG (server rendering of the storefront) is in scope.
-3. Confirm whether HTML email is in scope, or only a themed logo/footer on plain text.
+3. Confirm whether existing email-brand and invoice-template controls should be surfaced inside
+   Theme Studio in its first release or linked to their current settings screens.
 4. Confirm whether a free-form custom HTML block is required (deliberately excluded in v1).
 
 **How to read the file references.** Paths and symbol names are authoritative; line numbers
@@ -30,39 +34,40 @@ presets. It is a good first version, but it is a *recolouring* system: it cannot
 asset, cannot brand email or invoices, cannot theme the storefront differently from the admin
 panel, cannot change layout, and its custom CSS is filtered by a regex blacklist.
 
-Billing should not copy that design. It should implement the same mental model — **a theme is
-a versioned document; a preset is a document you can start from** — and then extend it along
-the axes the game panel left out:
+Billing has also moved since the first draft of this plan. It now has a tested tenant-brand
+overlay (name, uploaded logo, light/dark accents) reaching the panel and PDF; an invoice PDF
+presentation setting; HTML multipart email branding; and merchandising controls for featured
+products, category images, stock and announcements. These are separate existing capabilities,
+not a theme registry. The plan below treats them as the compatibility foundation and focuses
+the new work on a complete token system, presets, page composition and a unified editing
+experience. It must not rebuild or create a second source of truth for those features.
 
 | Capability | Game panel | Billing (this plan) |
 |---|---|---|
-| Brand name / logo / favicon | URL fields | Uploaded assets with digests, light/dark variants, alt text |
-| Social card (OG) | — | Generated and themed, per scope |
-| Banners / backgrounds | — | Asset library + background tokens |
-| Colours | 3 brand + 12 surfaces × 2 modes | Full token contract: brand, semantic, surfaces, text, borders, overlays, focus |
+| Brand name / logo / accent | URL fields | Keep billing's built name/logo/accent API; expose it inside Theme Studio without duplicating storage |
+| Social card (OG) | — | Still missing; make configurable/generated |
+| Banners / backgrounds | — | Still missing as page-level assets; compose with existing announcement feed |
+| Colours | 3 brand + 12 surfaces × 2 modes | Full token contract; preserve the existing per-mode brand accent overlay |
 | Typography | — | Font families, scale, weights, tracking; self-hosted fonts |
 | Density / shape / elevation / motion | Radius only | Full knobs, with presets that differ structurally, not just by hue |
 | Presets | 9 hue variations | 10 genuinely different designs, including one that matches the game panel |
-| Scopes | One | Panel, portal, storefront, email, invoice — with inheritance |
-| Layout | — | Section-based page composition + shell variants |
+| Scopes | One | Panel, portal, storefront, email, invoice — themes layer over existing identity/mail/PDF settings |
+| Layout | — | Section-based page composition + shell variants; retain existing merchandising and announcement data |
 | Custom CSS | Regex blacklist, `<style>` tag | Parsed and validated, served as a first-party stylesheet |
 | History | — | Immutable revisions, diff, preview, publish, rollback |
-| Branding removal | Manual, incomplete | One action + a checklist that proves nothing remains |
-| Security | `'unsafe-inline'`-class exposure risk | Strict CSP preserved end to end |
+| Branding removal | Name/logo/accent and mail/PDF settings exist separately | Unify workflow, add missing favicon/OG/assets, and verify all surfaces |
 
-The single most important architectural decision: **theme CSS and theme boot code are
-first-party HTTP resources, not inline markup.** `web/web.go` enforces
-`script-src 'self'; style-src 'self'` with no `'unsafe-inline'`. That policy is a feature —
-the panel renders customer-supplied text — and this plan keeps it. A `<style>` tag full of
-admin CSS, or an inline pre-paint script, would force the policy open. Instead:
+The plan’s original CSP decision remains sound: **theme CSS and theme boot code are first-party
+HTTP resources, not inline markup.** `web/web.go` enforces `script-src 'self'; style-src 'self'`
+with no `'unsafe-inline'`. Existing brand CSS is applied through a small, tested set of inline
+custom properties on the root (accent family only); that narrowly-scoped mechanism is distinct
+from injecting admin-authored CSS. Do not widen it into a theme mechanism.
 
 * `GET /theme/<revision>/theme.css` — generated tokens + preset CSS + validated custom CSS.
 * `GET /theme/<revision>/boot.js` — a tiny pre-paint script for personal preferences.
-* `GET /theme/assets/<digest>` — uploaded images and fonts, immutable.
-
-Both are same-origin, both are versioned by revision, and both are cacheable forever because
-the URL changes when the bytes change. The HTML shell is rendered by Go (not static) so the
-title, meta/OG tags, favicon and manifest links are theme-driven on the first byte.
+* `/api/v1/media/{id}` — keep using the existing media route for the tenant logo and catalog
+  images; introduce new theme-asset storage only for asset classes the current store cannot
+  represent (such as larger backgrounds or self-hosted fonts).
 
 ---
 
@@ -70,42 +75,60 @@ title, meta/OG tags, favicon and manifest links are theme-driven on the first by
 
 ### 2.1 Billing frontend
 
-* Framework-free TypeScript DOM app (`web/src`), ~50k lines, bundled by esbuild into a
-  committed `web/dist`, embedded in the binary by `web/web.go`.
-* One design-token file, `web/src/styles/tokens.css`, with `:root` / `[data-theme="dark"]` /
-  `[data-theme="light"]`. Everything else is already remarkably tokenized: outside
-  `tokens.css` there are **10 colour literals across 18 CSS files, plus exactly one in
-  TypeScript**. That is the good news — the colour layer is nearly ready for a theme document.
-* `web/src/lib/theme.ts` supports exactly two themes (`dark`, `light`) and stores the choice
-  in `localStorage["catalyst.theme"]`.
-* Branding is hardcoded in a small, known set of places (full inventory in Appendix B).
-* Storefront layout is fixed in code: header, hero, category chips, product grid, footer
-  (`web/src/views/storefront.ts`). Hero copy and section headings are literal.
-* `web/src/styles/layout.css` owns the shell (`--sidebar-w`, `--topbar-h`, grid).
+* Framework-free TypeScript DOM app (`web/src`), bundled by esbuild into committed `web/dist`
+  and embedded by `web/web.go`.
+* `tokens.css` already provides a shared variable vocabulary for both light and dark themes;
+  `web/src/lib/theme.ts` stores the mode in `localStorage`. Recent dashboard, shell and
+  storefront work changes token values and layout dimensions, not the underlying two-mode
+  architecture.
+* **Current worktree palette (in progress, not yet merged):** dark ground `#171413`, side
+  `#201c1a`, surfaces `#1e1a18/#201c1a/#29231f`, orange accent `#ff951e`; light ground
+  `#f5f2ee`, side `#ebe6e0`, surfaces `#fdfaf6/#f9f7f3/#f1eae3`, accent `#d36c09`. The
+  worktree also tightens radii to 4px for most controls, changes the sidebar to 242px, topbar
+  to 55px and content max to 1900px, and adds dashboard-specific components. Recheck the
+  merged token file before freezing a preset; do not treat these in-flight values as the final
+  Catalyst Billing design.
+* Tenant identity is no longer hardcoded: `GET /api/v1/branding` supplies the public name,
+  logo and resolved light/dark accent; `web/src/lib/brand.ts` applies the current mode's
+  accent family, and `/branding` edits it. The existing theme toggle and brand overlay are
+  independently tested. This is a constrained brand overlay, not the theme registry proposed
+  here.
+* Storefront composition is still fixed in code (`web/src/views/storefront.ts`), but the data
+  is more configurable than the first plan implied: `products.featured`, category images,
+  stock/quantity rules, the storefront settings group, and scheduled announcements already
+  influence what is shown. The future layout renderer should consume these existing APIs and
+  rows, not create replacement merchandising data.
+* Existing browser tests include `web/test/brand.test.mjs`, `web/test/styles.test.mjs`, and
+  `scripts/e2e-ui.mjs`; extend those rather than inventing parallel guards.
 
 ### 2.2 Billing backend
 
-* `internal/settings` is a typed registry over a `(group, key, value)` table: a missing row
-  reads a code-side default; values are bounded at 64 KiB (`maxValueBytes = 64 << 10`);
-  secrets are redacted; writes are audited in the same transaction.
-* Routes are data (`internal/httpapi/routes.go`) and every route declares its access class,
-  permission, CSRF and idempotency. Permission coverage and OpenAPI parity are tests.
-* `internal/authn/authz.go` holds the closed permission list; system roles are immutable by
-  trigger and seeded through migrations. The newest permission is `i18n:write` /
-  `import:write` / `update:manage` (`0027_permission_expansion.sql`), which is the template a
-  new `theme:*` grant must follow.
-* Uploads already have a precedent: `product_images` (`0018_catalog.sql:58`) stores bytes in
-  the database, deduped by SHA-256 digest, capped at 256 KiB, served from `/api/v1/media/{id}`
-  with `Cache-Control: immutable`, `X-Content-Type-Options: nosniff`, and a sandboxing CSP for
-  SVG.
-* Email templates (`internal/notify`) substitute `{{company_name}}` and fall back to the
-  literal `"Catalyst Billing"` in three places.
-* Invoice PDFs (`internal/invoicepdf`) use a `billing.Merchant` snapshot and built-in
-  Helvetica; they do not read the web theme at all.
-* Migrations live in `internal/store/migrations`, are applied in one transaction and
-  checksummed; `billing doctor` verifies the schema is current. **The highest-numbered
-  migration today is `0058`**, so the theme migration takes the next free number (`0059`) and
-  must be renumbered again if it lands after another migration.
+* `internal/settings` is a typed registry over `(group, key, value)`: absent rows use code
+  defaults; each value is capped at 64 KiB; secrets are redacted; writes are audited.
+* Routes are table-driven (`internal/httpapi/routes.go`) with access class, permission, CSRF
+  and idempotency. Permission-coverage and OpenAPI-parity tests are gates.
+* **Tenant brand is built** (`0060_branding.sql`, `internal/brand`, `internal/httpapi/branding.go`):
+  `branding.name`, `logo_id`, `accent_light`, `accent_dark`; public `GET /api/v1/branding`,
+  staff read/write, and logo upload/delete. The name/logo reach panel chrome, storefront and
+  sign-in views; the brand and logo also reach invoice PDFs. Logo bytes reuse `product_images`,
+  capped at 256 KiB. The no-brand fallback is pinned byte-identical in CSSOM behaviour and PDF
+  output. Keep this API and data contract backward-compatible.
+* **Invoice presentation is built:** `invoices.pdf_template` is validated JSON
+  (`invoicepdf.Template`) for document headings, bill-to/footer/total labels and accent. Brand
+  logo/name/accent are applied separately. Extend this contract rather than creating a second
+  PDF template store.
+* **Email branding is built** (`0068_mail_brand_and_problems.sql`): `mail.brand_html`, header,
+  footer, accent and logo URL; multipart/alternative HTML is rendered at event time and stored
+  in `notification_deliveries.body_html`, while the plain-text body remains. The HTML mail logo
+  is intentionally an absolute URL because recipient mail clients fetch it. Preserve that
+  compatibility, and keep it distinct from same-origin browser assets.
+* **Storefront merchandising is partly built** (`0061_storefront_merchandising.sql`): category
+  images, featured products, stock and quantity policy; announcements have placement/schedule
+  and appear on storefront/customer surfaces. These are content/data controls, not page-layout
+  controls.
+* The current migration head is `0072_worker_instances.sql`; a future theme-registry migration
+  must take the next free number at implementation time, not assume `0059`/`0073` remains free.
+* Migrations are transactional/checksummed; `billing doctor` checks schema health.
 
 ### 2.3 The game panel (reference implementation)
 
@@ -127,9 +150,9 @@ Live at `https://demo.catalystctl.com/admin/theme-settings`; its SPA bundle and
   blacklist, not a parser; it is the first thing to improve on.
 * **Presets:** Catalyst Bronze, Ocean, Sunset Ember, Forest, Royal, Crimson, Slate Mono,
   Neon Nights, Brutalist.
-* **Gaps:** no asset upload, no OG/banner/email/PDF branding, no scoped themes, no layout
-  composition (the “Layout” tab is only a radius slider), no history/rollback, no fonts, no
-  contrast validation, no per-page templates.
+* **Gaps:** no versioned theme registry, presets, per-scope overrides, layout composition,
+  revision history or per-page templates. Billing already has identity/logo/accent and email/
+  PDF branding, so those are not feature gaps or fresh work in billing.
 
 ---
 
@@ -141,15 +164,18 @@ Live at `https://demo.catalystctl.com/admin/theme-settings`; its SPA bundle and
    the operator can edit. Presets are embedded JSON in the binary, importable and exportable.
 3. **The token contract is the API.** Components only ever read CSS variables. A theme that
    does not define a token inherits it from its parent scope or the built-in default.
-4. **The strict CSP does not move.** No `'unsafe-inline'`, no nonce for admin content, no
-   external origins. Theme CSS/JS/assets are same-origin, revision-addressed resources.
-5. **The default is the current look.** Shipping the system must not change a pixel until an
-   operator chooses a preset. `Catalyst Console` (the game-panel match) is the recommended
-   default for new installations, but existing installations keep `Catalyst Billing`.
+4. **The strict CSP does not move.** No `'unsafe-inline'`, no nonce for admin-authored CSS,
+   and no arbitrary external origins for browser theme resources. Theme CSS/JS/assets are
+   same-origin, revision-addressed resources (configured CAPTCHA origins remain a separate,
+   existing exception).
+5. **Compatibility first.** Preserve the existing brand overlay, per-user light/dark choice,
+   invoice PDF template, mail branding settings and storefront merchandising APIs. A Theme
+   Studio may present them together, but it must not introduce duplicate settings or silently
+   change an existing installation's rendering.
 6. **A scope is a trust boundary.** Storefront custom CSS can never style the staff panel.
    Panel custom CSS is a privileged capability and is audited.
 7. **Every claim is testable.** Contrast, CSP, sanitizer bypasses, cache headers, preset
-   rendering and branding removal all get automated gates.
+   rendering and branding coverage all get automated gates.
 
 ---
 
@@ -170,8 +196,8 @@ Live at `https://demo.catalystctl.com/admin/theme-settings`; its SPA bundle and
               │                        │                         │
    ┌──────────▼─────────┐   ┌──────────▼──────────┐   ┌──────────▼─────────┐
    │ GET /theme/<rev>/  │   │ GET /api/v1/theme    │   │ Email / PDF         │
-   │  theme.css         │   │  (manifest: brand,   │   │ renderers consume   │
-   │  boot.js           │   │  layout, assets)     │   │ the same document   │
+   │  theme.css         │   │  (manifest: tokens,  │   │ existing brand/PDF  │
+   │  boot.js           │   │   layouts, refs)      │   │ mail adapters        │
    │ /theme/assets/<id> │   └──────────┬───────────┘   └────────────────────┘
    └──────────┬─────────┘              │
               │                        │
@@ -183,8 +209,14 @@ Live at `https://demo.catalystctl.com/admin/theme-settings`; its SPA bundle and
 
 ### 4.1 The theme document (schema v2)
 
-The document is intentionally broader than the game panel's settings row. Every field is
-optional; missing fields inherit. A complete example is in §7.
+The theme document stores **presentation tokens, shell settings, page layouts and validated
+custom CSS only**. It deliberately does not duplicate tenant identity, mail branding or the
+PDF template. Those values remain in the existing `branding.*`, `mail.brand_*` and
+`invoices.pdf_template` settings contracts; Theme Studio can aggregate-edit those controls,
+but revisions must not create a second source of truth. A public theme manifest may compose
+the safe values for rendering.
+
+Every theme field is optional; missing fields inherit. A complete example is in §7.
 
 ```jsonc
 {
@@ -193,21 +225,6 @@ optional; missing fields inherit. A complete example is in §7.
   "name": "Catalyst Console",
   "description": "Dense, dark-first console matching the game panel.",
   "extends": null,                    // preset id or parent theme id
-  "brand": {
-    "name": "Catalyst",
-    "product": "Billing",
-    "legal_name": "Catalyst Hosting Ltd",
-    "tagline": "Infrastructure, billed honestly",
-    "logo_light": "asset:<id>",
-    "logo_dark": "asset:<id>",
-    "mark": "asset:<id>",
-    "favicon": "asset:<id>",
-    "og_image": "asset:<id>",
-    "email_logo": "asset:<id>",
-    "support_url": "https://example.com/support",
-    "footer_text": "© 2025 Catalyst Hosting",
-    "hide_credit": true
-  },
   "color": {
     "mode": "dark",                   // dark | light | system
     "brand":  { "primary": "#ff3d7f", "secondary": "#252b35", "accent": "#ff3d7f" },
@@ -247,7 +264,9 @@ Validation is server-side and closed:
   between 0.5× and 3×);
 * enums: nav, density, cardStyle, tableStyle, background style, font families from the
   installed set;
-* assets: an `asset:<uuid>` reference that exists and has an allowed content type;
+* assets: theme document refs use `theme-asset:<uuid>` for new favicon/OG/banner/background/font
+  assets. Existing tenant logo stays as `branding.logo_id` referencing `product_images`; it is
+  never imported into or copied by a visual theme revision;
 * layout: every section type exists in the block registry and every prop validates against
   that block's schema;
 * total document size ≤ 1 MiB (excluding asset bytes); `customCss` ≤ 256 KiB;
@@ -257,11 +276,17 @@ Validation is server-side and closed:
 
 | Scope | Used by | Default | Can override |
 |---|---|---|---|
-| `panel` | Staff admin SPA | `Catalyst Billing` (existing look) | everything |
-| `portal` | Customer area | inherits `panel` | brand, colours, layout shell, custom CSS |
-| `storefront` | Public catalogue, cart, checkout, auth pages | inherits `panel` | brand, colours, layout (full page composition), custom CSS |
-| `email` | Transactional mail | inherits `panel` (colours/logo only) | logo, colours, footer text |
-| `invoice` | PDF invoices/credit notes | inherits `panel` (logo/colours) | logo, colours, fonts |
+| `panel` | Staff admin SPA | `Catalyst Console` on new installs; migrations preserve installed tokens | tokens, shell layout, custom CSS |
+| `portal` | Customer area | inherits panel presentation | tokens, customer shell layout, custom CSS |
+| `storefront` | Public catalogue, cart, checkout, auth pages | inherits panel presentation | tokens, full page composition, custom CSS |
+| `email` | Transactional mail | existing `mail.brand_*` settings stay authoritative | email-safe presentation, rendered through `notify.MailBrandFor` |
+| `invoice` | PDF invoices/credit notes | existing `branding.*` plus `invoices.pdf_template` stay authoritative | PDF-safe presentation, rendered through `invoicepdf` |
+
+Brand identity is currently installation-wide (name, logo, per-mode accents). Email has
+separate header/footer/accent/logo URL settings, and PDF wording/accent has a validated
+settings document. Scope-specific brand overrides are a future product decision, not an
+implicit `brand` subtree in every theme. The initial theme resolver can share/inherit visual
+tokens while composing the appropriate existing identity configuration for each renderer.
 
 Resolution is a deep merge: `built-in default ← parent scope ← scope document`. A scope can
 set `"inherit": false` to start from the built-in default instead. The merge is performed
@@ -269,38 +294,37 @@ once at publish time and the resolved document is stored alongside the draft (so
 change to the parent cannot silently mutate a published storefront). Publishing a parent
 offers to re-resolve children; the UI shows a diff.
 
-The storefront can therefore be a completely different design from the admin panel while
-still sharing the semantic contract (success is still green, danger is still red).
-
 ### 4.3 Presets
 
 Presets are embedded JSON files (`internal/theme/presets/*.json`, `go:embed`) validated by
 the same code path as an imported theme. Applying a preset creates a **draft revision**; it
 never publishes directly. The catalogue is in §8.
 
-Import/export uses an envelope so a theme can carry its assets:
+Import/export uses an envelope for presentation documents and theme-only assets:
 
 ```jsonc
 {
   "kind": "catalyst.theme",
   "schema": 2,
   "exported_at": "2025-01-01T00:00:00Z",
-  "theme": { /* document */ },
-  "assets": [ { "id": "...", "kind": "logo", "content_type": "image/png", "digest": "sha256:...", "data_base64": "..." } ]
+  "theme": { /* tokens/layout document */ },
+  "assets": [ { "id": "...", "kind": "background", "content_type": "image/webp", "digest": "sha256:...", "data_base64": "..." } ]
 }
 ```
 
-The export is deterministic (sorted keys, fixed asset order) so two exports of the same
-revision are byte-identical. A future marketplace can add a detached signature over the
-canonical JSON; the envelope has a `signature` field reserved for it.
+The existing tenant logo, mail logo URL and legal/company settings are not silently exported
+with a visual theme. A separate full-brand export can be added with explicit authorization and
+warning. The export is deterministic (sorted keys, fixed asset order); a future marketplace
+can add a detached signature over the canonical JSON.
 
 ---
 
 ## 5. Data model
 
-Migration `0059_themes.sql` (next free number; `0058` is the current highest — renumber on
-merge). All tables are owned by the migration role; the runtime role gets `SELECT/INSERT/
-UPDATE/DELETE` only, matching the existing privilege model.
+Migration `<next-free-number>_themes.sql` (check `internal/store/migrations` when
+implementation begins; the current head is `0072`). All tables are owned by the migration
+role; the runtime role gets `SELECT/INSERT/UPDATE/DELETE` only, matching the existing
+privilege model.
 
 ```sql
 -- A theme is a named container. Revisions are immutable; the container is the stable identity.
@@ -350,12 +374,13 @@ CREATE TABLE theme_assignments (
     FOREIGN KEY (theme_id, revision_id) REFERENCES theme_revisions (theme_id, id)
 );
 
--- Uploaded bytes, deduped by digest. Mirrors product_images, with a kind and alt text.
--- The digest index includes kind because the same bytes can legitimately be both a logo
--- and a favicon, and the asset row carries the role it plays.
+-- Uploaded theme-only assets such as fonts and full-width backgrounds. Existing tenant logos
+-- and catalog/category images continue to use product_images; their bytes are not copied here.
+-- The digest index includes kind because one byte payload may serve multiple theme roles;
+-- existing product_images stay the canonical store for tenant and catalog logos.
 CREATE TABLE theme_assets (
     id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    kind         text NOT NULL CHECK (kind IN ('logo','mark','favicon','og','banner','background','font','other')),
+    kind         text NOT NULL CHECK (kind IN ('favicon','og','banner','background','font','other')),
     content_type text NOT NULL CHECK (content_type IN (
                     'image/png','image/jpeg','image/webp','image/svg+xml',
                     'font/woff2','font/woff','application/octet-stream')),
@@ -385,9 +410,10 @@ CREATE TABLE theme_publications (
 CREATE INDEX theme_publications_scope_idx ON theme_publications (scope, published_at DESC);
 ```
 
-A seed row creates the default `panel` theme and assignment from the built-in
-`catalyst-billing` preset, so a fresh install and an upgraded install both have a published
-revision before the first request.
+A seed row creates a published baseline theme for each scope. On upgrade it must preserve the
+merged current token set (including a tenant's brand overlay); fresh-install bootstrap may
+select `Catalyst Console` after installing its preset document. Do not make the migration alone
+overwrite existing `tokens.css`/brand settings with a new palette.
 
 ### 5.1 Go types
 
@@ -399,7 +425,6 @@ type Document struct {
     ID         string            `json:"id"`
     Name       string            `json:"name"`
     Extends    string            `json:"extends,omitempty"`
-    Brand      Brand             `json:"brand"`
     Color      Color             `json:"color"`
     Typography Typography        `json:"typography"`
     Space      Space             `json:"space"`
@@ -437,8 +462,8 @@ Packages:
 | `internal/theme/cache` | in-process snapshot, revision lookup, `LISTEN/NOTIFY` invalidation |
 | `internal/theme/assets` | upload decode/validate/re-encode, digest, dimensions |
 | `internal/httpapi/theme.go` | public + staff routes |
-| `internal/theme/email` | email-safe inline CSS from tokens |
-| `internal/theme/pdf` | PDF palette/logo/font helpers (consumed by `invoicepdf`) |
+| `internal/theme/email` | adapter to existing `notify.MailBrandFor` / `HTMLPart`; only new email-safe token conversion |
+| `internal/theme/pdf` | adapter to existing `invoicepdf.Template` + brand; no second template renderer |
 
 ### 5.2 Notes that constrain the implementation
 
@@ -449,13 +474,13 @@ These are the repo facts that most often surprise a first implementation:
   preview path its own header branch (and keep `frame-ancestors 'none'` on `/`), otherwise
   `scripts/browser-smoke.sh` (which asserts `frame-ancestors 'none'`) and `web/web_test.go`
   fail — correctly.
-* `web/web_test.go` asserts that the shell contains no inline `<script>` and no inline
-  `style=` attribute. The server-rendered shell must keep that property: theme values go into
-  `<meta>`, `<link>`, `<title>` and text, never into inline CSS/JS.
+* `web/web_test.go` asserts that the shell contains no inline `<script>` and no literal inline
+  `style=` attribute. The existing brand overlay does use CSSOM `style.setProperty` for a
+  restricted accent family after the stylesheet loads; preserve that explicitly-tested
+  exception. Theme CSS itself must remain a first-party stylesheet, not an injected `<style>`.
 * `scripts/brand/verify.mjs` asserts `og:image` is 1200×630, the manifest names the 192/512
-  icons, `mark.svg` carries the traced path, and the favicon decodes as an image. The
-  **default** theme must continue to satisfy every one of those; a custom theme changes the
-  values, not the contract.
+  icons, `mark.svg` carries the traced path, and the favicon decodes as an image. The default
+  assets must keep these contracts until themed replacements exist.
 * `go.mod` is deliberately dependency-light (pgx, x/crypto, yaml only). A real CSS parser is
   the one new Go dependency this plan recommends (`github.com/tdewolff/parse/v2/css`, small
   and pure Go). The alternative is a hand-written tokenizer/validator, which is more code and
@@ -466,15 +491,30 @@ These are the repo facts that most often surprise a first implementation:
   one, so `go build` still works with no Node toolchain.
 * The shell is served for every SPA route. Cache the rendered shell per `(scope, revision)`
   in memory; rendering it per request is unnecessary work on the hot path.
-* Two different Catalyst fallback strings already exist and disagree: the settings default for
-  `general.company_name` is `"Catalyst Hosting"` (`internal/settings/settings.go`), while
-  `internal/notify` falls back to `"Catalyst Billing"` in three places
-  (`events.go`, `manual_create.go`). A theme must not add a third; it should own the display
-  name and leave the merchant name to `general.company_name`.
+* Two different concepts must stay distinct: `general.company_name` is a legal/merchant
+  setting; `branding.name` is the displayed tenant name. Email uses `MailBrandFor` and its
+  own `mail.brand_*` keys; PDF output uses `invoicepdf.Template`. The old `docs/branding.md`
+  §5 and the NTF-11/I18N-06 prose in `docs/paymenter-parity.md` still describe mail as
+  unbranded, although `0068_mail_brand_and_problems.sql` and `internal/notify/brand.go` now
+  implement it. Reconcile those docs in the documentation follow-up; do not base this design
+  on their stale description.
 
 ---
 
 ## 6. API surface
+
+The existing endpoints remain in service and are not replaced by `/api/v1/theme`:
+
+| Existing interface | Compatibility contract |
+|---|---|
+| `GET /api/v1/branding` | Public, pre-paint resolved tenant identity; keep the response shape stable |
+| Staff branding/settings routes | Continue writing `branding.*` and uploaded logo references with existing validation/audit |
+| `mail.brand_*` settings | Keep current HTML/plain-text fallback, URL logo semantics and event-time body snapshot |
+| `invoices.pdf_template` | Keep `invoicepdf.Template` validation and built-in fallback; expose its controls through Theme Studio, not a duplicate document |
+| Storefront merchandising/announcements APIs | Keep the existing product/category/announcement rows and visibility rules as block data sources |
+
+New public routes then deliver the theme token/layout manifest and revision-addressed CSS/JS;
+the manifest can compose the public brand response, but should not introduce a second writer.
 
 ### 6.1 Public (no session)
 
@@ -484,7 +524,7 @@ These are the repo facts that most often surprise a first implementation:
 | `GET` | `/api/v1/theme/{scope}` | Manifest for a named scope (storefront/email/invoice only; panel/portal require a session) | same |
 | `GET` | `/theme/{revision}/theme.css` | Generated tokens + preset CSS + custom CSS | `immutable, max-age=31536000` (revision-addressed) |
 | `GET` | `/theme/{revision}/boot.js` | Pre-paint personal-preference script | immutable |
-| `GET` | `/theme/assets/{id}` | Uploaded image/font bytes | immutable, `nosniff`, sandbox CSP for SVG |
+| `GET` | `/theme/assets/{id}` | Theme-only image/font bytes; existing logo/catalog media stays on `/api/v1/media/{id}` | immutable, `nosniff`; sandbox CSP for SVG |
 | `GET` | `/theme/manifest.webmanifest` | PWA manifest from brand assets | `max-age=0, must-revalidate`; ETag |
 | `GET` | `/theme/favicon.ico` | Themed favicon (redirect to asset or generated) | `max-age=0, must-revalidate` |
 | `GET` | `/theme/og.png` | Themed social card | `max-age=0, must-revalidate` |
@@ -512,12 +552,15 @@ purge.
 | `POST` | `/api/v1/staff/theme/assets` | `theme:write` | Raw body + `Content-Type`, ≤ 4 MiB |
 | `GET` | `/api/v1/staff/theme/assets` | `theme:read` | List, usage count |
 | `DELETE` | `/api/v1/staff/theme/assets/{id}` | `theme:write` | Refuse if referenced by a published revision |
-| `POST` | `/api/v1/staff/theme/{scope}/branding/remove-catalyst` | `theme:publish` | One-click brand removal + verification report |
+| `POST` | `/api/v1/staff/theme/branding/remove-catalyst` | `theme:publish` | Updates supported display/mail/browser fields through their existing validated stores; must not rewrite legal entity data |
 
 Mutations use the existing `staffMutation` wrapper: CSRF, `Idempotency-Key` required, rate
 class `mutation`, audit row in the same transaction.
 
-New permissions (closed list in `internal/authn/authz.go`, mirrored by a migration grant):
+New permissions apply to the new theme document and publishing flow only. Existing branding
+and settings endpoints continue to use their current `settings:write` policy until an explicit
+compatibility migration says otherwise. The new `theme:read`, `theme:write`, and
+`theme:publish` permissions must not silently grant write access to mail or invoice settings.
 
 * `theme:read` — view the studio, presets, history.
 * `theme:write` — create/edit drafts, upload assets, import.
@@ -554,17 +597,22 @@ rewritten at once and presets can be authored in either the billing or the game-
 
 ### 7.2 Legacy aliases (zero-risk migration)
 
-`tokens.css` today uses `--bg`, `--surface`, `--surface-2`, `--surface-3`,
-`--surface-hover`, `--surface-inset`, `--line`, `--line-strong`, `--line-accent`, `--text`,
-`--text-dim`, `--text-faint`, `--text-inverse`, `--accent`, `--accent-hover`,
-`--accent-press`, `--accent-ink`, `--accent-soft`, `--accent-soft-strong`, `--success`,
-`--warning`, `--danger`, `--info` (+ `-soft`), `--shadow-1…3`, `--shadow-focus`,
-`--skeleton`, `--overlay`, `--scrollbar`, `--s-1…8`, `--r-xs…full`, `--ease`, `--dur-1…3`.
+`tokens.css` currently defines one existing billing vocabulary, with names such as
+`--bg`, `--surface`, `--side`, `--top`, `--line`, `--text`, `--accent`, `--success`,
+`--warning`, `--danger`, `--info`, `--s-1…8`, `--r-xs…full`, `--shadow-*`, `--ease` and
+`--dur-*`. The in-progress restyle adds/changes values including `--surface-active`,
+`--line-soft`, `--text-subtle` and `--pink`. The actual list is intentionally not frozen in
+this plan; generate the compatibility map from the merged stylesheet during implementation.
 
-The generator emits these as aliases of the canonical variables. Existing CSS keeps working
-unchanged; the migration to canonical names can happen file by file, or never. There are
-**72 distinct `var(--…)` names across 18 CSS files** today, which is the exact set the
-aliases must cover — a name that is missed is a token that silently stops theming.
+The generator emits current aliases from `tokens.css`, keeping existing CSS working while
+canonical names are introduced file by file. Extend `web/test/styles.test.mjs` with a narrow
+token-reference check so a variable missed by the generator cannot silently stop theming.
+
+The tenant brand remains a separate overlay over generated theme tokens. Runtime precedence is
+`preset/theme token → selected light/dark mode → optional branding accent-family override`;
+`brand.applyBrand` may set only `--accent`, `--accent-ink`, `--accent-text`, `--accent-soft`
+and `--accent-soft-strong` for the current mode. The theme's base `color.brand` values are
+preset defaults, not a replacement for `branding.accent_light/accent_dark`.
 
 ### 7.3 Game-panel compatibility
 
@@ -581,15 +629,10 @@ colour, and it validates contrast **before** publishing.
 
 ### 7.4 What a component may use
 
-Only variables. A new rule that hardcodes a colour, font stack, radius or shadow fails
-`make theme-check` (a small script that greps CSS/TS for colour literals outside the token
-and asset files, with an allowlist for the generator and `assets/`). This is the gate that
-stops the system rotting the way most theming systems do.
-
-The current exceptions are known and finite: 10 colour literals in CSS
-(`components.css` ×3, `view-portal.css` ×2, `layout.css` ×2, `view-storefront.css`,
-`pages.css` ×2) and one in TypeScript (`lib/icons.ts`, the `#F97301` mark fill). They should
-be reduced to zero or added to the allowlist with a reason.
+Only variables. A new rule that hardcodes a colour, font stack, radius or shadow should fail
+a token check. Build the check by extending `web/test/styles.test.mjs`, which already verifies
+that rendered classes have styling; don't quote the old literal counts because they move with
+the active dashboard restyle. Keep a measured baseline in the test output.
 
 ---
 
@@ -601,7 +644,7 @@ Ten presets, each a full document (not a hue swap). All must pass WCAG AA for bo
 | # | Preset | Character | Default mode | Radius | Density | Signature |
 |---|---|---|---|---|---|---|
 | 1 | **Catalyst Console** | The game panel's dashboard: near-black `#0e1116`, compact, 4px radius, pink/rose primary `#ff3d7f` | dark | 4px | compact | Dense tables, flat cards, thin borders |
-| 2 | **Catalyst Billing** | Today's billing panel: graphite + cobalt, tan brand accents | dark | 10px | comfortable | The safe default for existing installs |
+| 2 | **Catalyst Billing** | Current billing identity with the warm rust/orange palette in the in-progress restyle; finalize from the merged `tokens.css` | dark | 4px controls / 8px large | compact/comfortable | Warm, dense operator UI; keep the tenant's accent overlay separate |
 | 3 | **Catalyst Bronze** | The game panel's shipped tan/bronze palette (`#c48d5a`) | dark | 4px | compact | Warm bronze on ink |
 | 4 | **Brutalist** | Hard edges, 2px borders, offset black shadows, mono labels, yellow/red | light | 0 | compact | No radius, no blur, high contrast |
 | 5 | **Editorial Paper** | Warm paper, serif display, magazine grid, generous whitespace | light | 2px | roomy | Serif headlines, rules instead of cards |
@@ -616,9 +659,11 @@ Space Grotesk, IBM Plex Mono, Fraunces. Each preset lists its families and fallb
 generator emits `@font-face` for the uploaded/embedded subsets only when the font is actually
 used.
 
-The default for **new** installations is `Catalyst Console`; the default for an **existing**
-installation after upgrade is `Catalyst Billing` (its current look), with a banner offering
-"Match the game panel" as a one-click draft.
+The default for **new** installations is recommended to be `Catalyst Console`, as requested
+for a suite-wide game-panel match. Existing installations preserve their currently merged
+light/dark tokens and brand settings on upgrade; never replace their palette merely by adding
+theme support. `Catalyst Billing` is the preset name for the current warm restyle once it is
+merged, not a claim that its in-progress values are final.
 
 ### 8.1 `Catalyst Console` — exact reference values
 
@@ -648,12 +693,13 @@ for AA.
 | info | `#6fa8ff` |
 | radius | `0.25rem` (4px) |
 | density | compact |
-| shell | sidebar, 232px, 56px topbar, 1440px content |
+| control radius | 4px |
 
-For reference, the game panel's *shipped* `Catalyst Bronze` preset is primary `#c48d5a`,
+The shell dimensions are billing choices, not values verified from the game panel. For
+reference, the game panel's *shipped* `Catalyst Bronze` preset is primary `#c48d5a`,
 secondary `#5ac4c2`, accent `#5a5cc4` on the same dark ground. Include it as preset 3; it is
-the conservative choice if an operator wants the console layout with the warmer Catalyst
-palette.
+the conservative choice if an operator wants the console palette with the warmer Catalyst
+accent.
 
 ---
 
@@ -678,7 +724,7 @@ range to look like a different product, bounded enough to stay accessible, fast 
           { "label": "See the plans", "href": "#plans", "variant": "primary" },
           { "label": "Client area", "href": "/login" }
         ],
-        "media": "asset:<id>",
+        "media": "theme-asset:<id>",
         "align": "left",
         "height": "lg"
     }},
@@ -703,7 +749,8 @@ Layouts are stored per page: `storefront.home`, `storefront.product`, `storefron
 |---|---|---|
 | `announcement_bar` | text, link, tone, dismissible | settings/announcements |
 | `hero` | eyebrow, title, body, actions[], media, align, height, overlay | static + asset |
-| `product_grid` | source (all/featured/category), category, columns, limit, showPrice, showCategory | catalog |
+* `product_grid` | source (all/featured/category), category, columns, limit, showPrice, showCategory | existing catalog APIs; reuse `featured`, stock, images and visibility rules |
+| `announcements` | placement, visual variant | existing scheduled announcement feed; do not duplicate announcement rows |
 | `product_list` | same, layout (rows/cards), density | catalog |
 | `category_grid` | columns, showCount, showDescription | catalog |
 | `pricing_table` | product, highlight price id, showSetup | catalog |
@@ -723,6 +770,10 @@ Layouts are stored per page: `storefront.home`, `storefront.product`, `storefron
 | `cart_summary` | showCoupon, showTax | cart |
 | `checkout_summary` | showTerms | checkout |
 
+The section layout renders the existing announcement feed rather than creating duplicate
+announcement content. `announcement_bar` is a visual treatment of a published storefront
+announcement; a separate `announcements` section may render the existing scheduled feed.
+
 Every block declares: prop schema, data source, fallbacks, empty state, error state,
 accessibility notes, and whether it is allowed on customer-facing pages only. Blocks render
 through the existing `ui/kit.ts` primitives so they inherit tokens and focus behaviour.
@@ -735,10 +786,14 @@ through the existing `ui/kit.ts` primitives so they inherit tokens and focus beh
 * The storefront page becomes: load theme + catalog in parallel, render `sections` with a
   shared data context. A missing/invalid layout falls back to the built-in `classic` layout
   so a bad publish cannot take the shop down.
-* Each block fetches only what it needs; the catalog response is shared where possible.
+The renderer must consume existing storefront data as-is: `featured` is only a promotion flag,
+visibility and prices remain server-enforced, stock/quantity comes from existing catalogue
+rows, and announcement placement/schedule stays authoritative. Layout documents control
+arrangement and styling; they cannot make a hidden product visible or fabricate price, tax or
+stock.
+
 * SEO: the shell's title/description/OG come from the server. Per-product OG/structured data
-  is phase 4 (requires SSR or a pre-render pass; note it explicitly rather than pretending
-  client-rendered meta is enough).
+  requires SSR or a pre-render pass and remains a future phase, pending the scope decision in §17.
 
 ### 9.4 Admin editor
 
@@ -784,25 +839,24 @@ A dedicated area, not one long settings page. Routes (lazy-loaded like every oth
 ```
 /settings/theme                 Overview: active theme per scope, quick actions, health
 /settings/theme/presets         Preset gallery, apply as draft, compare
-/settings/theme/brand           Name, product, legal name, tagline, logo/mark/favicon/OG,
-                                email logo, support URL, footer, “Remove Catalyst branding”
-/settings/theme/colors          Brand, semantic, surfaces (light/dark), contrast meter,
-                                harmony generator, auto-fix
+/settings/theme/brand           Brand Studio entry that links to existing `/branding`: name, logo, mode accents; add new favicon/OG controls
+/settings/theme/colors          Theme tokens, semantic colours, surfaces, contrast meter, harmony and auto-fix
 /settings/theme/typography      Families, scale, weights, tracking, font uploads
 /settings/theme/layout          Shell: nav, density, width, card/table style, radius, motion
 /settings/theme/storefront      Page/section composer (§9.4)
 /settings/theme/portal          Portal + auth page overrides
-/settings/theme/email           Email logo, colours, footer, test send
-/settings/theme/invoice         PDF logo, colours, font, sample download
+/settings/theme/email           Existing mail-brand settings and preview/test send
+/settings/theme/invoice         Existing PDF template settings and sample PDF
 /settings/theme/assets          Asset library: upload, crop/focal point, variants, alt text
 /settings/theme/css             Custom CSS editor with validation, scope warning, diff
 /settings/theme/history         Revisions, who/when, diff, preview, restore, publish
 /settings/theme/import-export   JSON import/export, preset envelope
 ```
 
-A left sub-nav mirrors these sections; the existing sticky-index pattern in
-`web/src/views/settings.ts` is reused. Every route deep-links, so a support agent can send an
-operator a URL.
+A left sub-nav mirrors these sections; keep `/branding` as a stable deep link during
+migration. The first implementation should reuse its existing identity form/API instead of
+creating a second writer for `branding.*`. Existing mail and invoice settings are surfaced
+through adapters to their current validated settings and renderers.
 
 ### 10.2 Live preview
 
@@ -818,32 +872,33 @@ operator a URL.
 
 ### 10.3 Branding removal
 
-A dedicated panel with a checklist of every Catalyst touchpoint:
+A dedicated panel with a checklist that distinguishes **already configurable** values from
+new work:
 
-| Touchpoint | State | Action |
+| Touchpoint | Current state | Theme-system action |
 |---|---|---|
-| Browser title | overridden / default | text field |
-| Meta description / OG / Twitter | overridden / default | text + asset |
-| Favicon + Apple touch icon | overridden / default | asset |
-| PWA manifest name/short name/icons | overridden / default | text + assets |
-| Boot-screen mark | overridden / default | asset |
-| Sidebar wordmark | overridden / default | logo light/dark |
-| Auth pages wordmark | overridden / default | logo |
-| Storefront header/footer | overridden / default | logo + footer text |
-| Email logo + footer | overridden / default | asset + text |
-| Invoice PDF letterhead | overridden / default | asset + legal name |
-| MFA recovery-code export header | overridden / default | text |
-| Service worker fallback title | overridden / default | text |
-| API docs / error pages | overridden / default | text |
+| Panel name, logo, light/dark accent | `/branding` and `branding.*` already work | reuse existing API; preserve no-brand fallback |
+| Email HTML, header, footer, accent, logo URL | `mail.brand_*` already works | include existing controls/preview; keep plain-text alternative |
+| PDF headings/footer/accent | `invoices.pdf_template` + brand overlay already work | expose existing template + PDF preview |
+| Browser title | fixed shell default | make theme-driven |
+| Meta description / OG / Twitter | default OG asset exists; no tenant editor | configurable text + OG image |
+| Favicon + Apple touch icon | default assets only | upload/asset reference |
+| PWA manifest name/short name/icons | default manifest exists | theme-driven fields |
+| Boot-screen mark | default mark exists | replaceable asset |
+| Storefront header/footer | brand partly reaches chrome; section order fixed | use existing brand + layout document |
+| MFA recovery-code export header | static product text | decide whether security artifacts should be white-labelled |
+| Service worker fallback title | default string | theme-driven title |
+| API docs / developer errors | product-level surface | define what is customer-facing before promising total white-labeling |
 
-**“Remove all Catalyst branding”** sets every field to the operator's own values (or clears
-them), then runs a verification pass: fetch `/`, `/products`, `/login`, the manifest, the OG
-image headers, a test email and a sample PDF; assert the string “Catalyst” and the mark
-digest do not appear. The result is shown as a pass/fail list, not a toast.
+**“Remove Catalyst branding”** updates existing tenant/mail brand settings and the new
+browser-only fields. It must not silently rewrite `general.company_name` or statutory invoice
+data: the screen explains that the legal merchant name may remain on invoices. Its report
+checks `/`, `/products`, `/login`, manifest, OG, a test email and a sample PDF, distinguishing
+presentation strings from legal identity, source code and developer-facing docs.
 
-`general.company_name` remains the legal/merchant name for invoices and tax; display names
-come from `theme.brand.name`. The UI explains the distinction so an operator does not change
-their legal entity by accident.
+The existing `branding.name` is the display name; `general.company_name` remains the legal/
+merchant value. Existing mail and PDF configuration retain their own validated settings; no
+`theme.brand.name` field is added to the persisted theme document.
 
 ### 10.4 Onboarding
 
@@ -881,21 +936,22 @@ assets referenced by a revision are never garbage-collected.
    parsed against an allowlist (no `<script>`, `<foreignObject>`, event attributes, external
    `href`, or `xlink:href`), and served with `Content-Security-Policy: default-src 'none';
    sandbox` plus `nosniff`. Fonts are validated by signature and served as `font/woff2`.
-5. **No remote URLs in v1.** Logo/OG import is upload-only. If remote import is added, it
-   needs SSRF defenses (scheme allowlist, DNS pinning, private/link-local/metadata IP block,
-   redirect and size limits) — a separate, reviewed feature.
+5. **No browser remote URLs in v1.** Browser logo/OG import is upload-only. The existing
+   `mail.brand_logo_url` is a separate compatibility exception: the recipient's mail client
+   fetches it and the billing app does not proxy/fetch it. Preserve that contract or migrate it
+   in a separately reviewed change.
 6. **Panel custom CSS is privileged.** It can hide staff UI. Require `theme:publish`, show an
    explicit risk acknowledgement the first time, and audit every publish. Storefront/portal
    custom CSS is scoped to those surfaces and cannot leak into the panel.
-7. **Every sink escapes.** `panelName` into `<title>`/meta/JSON-LD, alt text, email HTML,
-   PDF text, manifest JSON. The shell renderer uses `html/template` (contextual escaping);
-   email uses `html/template` with inline styles; PDF uses the existing text writer.
+7. **Every sink escapes.** Display name into `<title>`/meta/JSON-LD, alt text, email HTML,
+   PDF text and manifest JSON. The shell renderer uses `html/template` (contextual escaping);
+   existing mail/PDF renderers keep their own tested escaping paths.
 8. **Preview tokens** are signed, short-lived, audience-bound, single-scope, and grant no
    session. Preview responses are `no-store` and `noindex`.
 9. **Uploads and publishes are rate-limited and audited.** A double-submitted publish is
    idempotent; a replayed import is idempotent on the document digest.
-10. **Do not widen `img-src` for external images.** If an operator wants a CDN image, upload
-    it or proxy it; the CSP is a product feature.
+10. **Keep browser CSP origins tight.** Do not widen `img-src` for custom external images; use
+    same-origin digest assets.
 
 ---
 
@@ -929,53 +985,53 @@ assets referenced by a revision are never garbage-collected.
 The plan is sequenced so that each phase ships something usable and `make verify` stays
 green. Estimates assume one full-time engineer; parallelise where noted.
 
-### Phase 0 — Foundations (1–2 weeks)
+### Phase 0 — Reconcile and preserve existing appearance (short verification pass)
 
-**Outcome:** the current look is served by the new system; nothing visibly changes.
+**Outcome:** the theme work starts from the actual current product, not stale assumptions.
 
-* `internal/theme`: document types, validation, merge, canonical JSON, digest.
-* `internal/theme/presets/catalyst-billing.json`: the current `tokens.css` values.
-* `internal/theme/css`: generator (canonical + legacy aliases + game-panel HSL aliases).
-* Migration: `themes`, `theme_revisions`, `theme_assignments`, `theme_assets`,
-  `theme_publications`; seed the default theme and assignment.
-* `internal/authn`: `theme:read/write/publish` + migration grants + role test update.
-* `web/web.go`: render `index.html` from a Go template with theme values; add
-  `/theme/<rev>/theme.css`, `/theme/<rev>/boot.js`, `/theme/assets/<id>`,
-  `/theme/manifest.webmanifest`, `/theme/favicon.ico`, `/theme/og.png`.
-* `web/src/lib/theme.ts`: read `data-theme`/`data-density`, personal preference, boot
-  contract; keep the old localStorage key as a fallback.
-* Replace hardcoded brand strings in `layout.ts`, `app.ts`, auth views, storefront,
-  `icons.ts`, `sw.ts`, `mfa.ts`, `index.html`.
-* `tokens.css` becomes the generated default (or is generated at build time from the
-  built-in preset; the build must remain reproducible without a database).
+* Confirm the in-progress restyle is merged or rejected. Freeze the built-in `Catalyst Billing`
+  preset from merged `tokens.css`, and reconcile the base accent against `brand.ts` and
+  `brand.test.mjs`. An unset brand must remain byte-identical to that merged baseline.
+* Treat `/branding`, `mail.brand_*`, `invoices.pdf_template`, merchandising fields and
+  announcements as existing capabilities. Do not duplicate their settings, copy current logo
+  bytes into a new asset table, or rewrite their renderers.
+* Reconcile `docs/branding.md` with the newer behavior: it understates storefront/sign-in brand
+  reach and still says mail is unbranded despite migration `0068`. Reconcile the affected
+  Paymenter parity rows at the same time.
+* Run `brand.test.mjs`, `mail-brand.test.mjs`, invoice PDF fallback tests,
+  `web/test/styles.test.mjs`, and the existing real-browser brand assertions before changing
+  CSS/runtime ordering.
 
-**Acceptance:** a screenshot diff of every screen before/after is empty; `make verify` green;
-a CSP test asserts no inline style/script and the theme routes are same-origin.
+**Acceptance:** no new theme is selected and the brand/mail/PDF output remains unchanged;
+`make verify` passes.
 
-### Phase 1 — Theme Studio (2–3 weeks)
+### Phase 1 — Theme document and runtime (2–3 weeks)
 
-**Outcome:** an operator can pick a preset, edit brand/colours/typography/surfaces/layout,
-preview, publish, and roll back.
+**Outcome:** presets and scope-specific presentation can be previewed/published without
+changing existing brand, mail or PDF settings contracts.
 
-* Staff API: list/get/draft/update/publish/restore/diff/import/export/presets/assets.
-* Admin screens: overview, presets, brand, colors, typography, layout, assets, history,
-  import/export.
-* Colour harmony + contrast meter + auto-fix.
-* Live preview iframe + signed tokens.
-* Asset upload (raster + SVG + fonts) and library.
-* Revision diff and rollback.
-* Tests: unit (validation/merge/generator), API (permissions, idempotency, ETag), e2e
-  (preset → edit → preview → publish → rollback).
+* Define the versioned appearance/layout schema, validator, inheritance, revision store and
+  digest-addressed generated CSS/boot resources.
+* Compose public brand data from `GET /api/v1/branding`; apply the existing accent overlay
+  after theme tokens, preserving its tested current-mode-only precedence. Preserve the
+  `localStorage` light/dark choice.
+* Render the HTML shell with theme title/OG/favicon/manifest values; keep global CSP strict
+  and use route-specific frame headers only for preview.
+* Add the theme permissions/routes and adapters for existing identity, email and PDF settings;
+  do not silently widen existing `/branding` or settings permissions.
+* Tests: schema/default resolution, generated CSS, brand/no-brand precedence, CSP, ETag/cache,
+  preview token and the existing end-to-end suite.
 
-### Phase 2 — Presets and token coverage (1–2 weeks)
+### Phase 2 — Theme Studio and presets (2–3 weeks)
 
-**Outcome:** ten genuinely different designs, all accessible, all rendering every screen.
+**Outcome:** one operator workflow for theme controls, with ten distinct presentation presets.
 
-* Author the 10 preset documents (§8) and self-host the fonts.
-* Density/shell variants; portal and auth page overrides.
-* Contrast gate (AA/3:1) and visual regression screenshots per preset.
-* `make theme-check`: no colour literals outside tokens; preset schema validation; generated
-  CSS golden files.
+* Build the preset gallery, token/surface editor, typography, density/layout controls, contrast
+  report, live preview, import/export, immutable revisions and rollback.
+* Link the existing Branding, Mail and Invoice controls rather than creating parallel editors;
+  move them into one visual studio only through adapters that preserve validation/audit.
+* Extend `web/test/styles.test.mjs`, `brand.test.mjs`, `mail-brand.test.mjs` and real-browser
+  assertions; add preset contrast and screenshot coverage.
 
 ### Phase 3 — Storefront designer (2–3 weeks)
 
@@ -989,15 +1045,19 @@ preview, publish, and roll back.
 * Tests: layout parity, every block renders with empty/error data, e2e reorder/publish,
   accessibility (keyboard drag-reorder, focus management).
 
-### Phase 4 — Branding removal, email and PDF (1–2 weeks)
+### Phase 4 — White-label assets and renderer integration (1–2 weeks)
 
-**Outcome:** no Catalyst trace remains, and mail/invoices match the brand.
+**Outcome:** operators can replace the remaining Catalyst browser assets and preview existing
+mail/PDF branding in the same workflow.
 
-* Brand fields + one-click removal + verification report.
-* Email HTML wrapper from tokens (inline styles, no `<style>`), logo, footer, test send.
-* PDF logo/colours/font embedding (with the existing Helvetica fallback).
-* Tests: grep + browser + email + PDF assertions for “Catalyst”; snapshot of the email and
-  PDF.
+* Add favicon, OG/social-card, banners/backgrounds and self-hosted font support, distinct from
+  the existing logo/media store and email-client logo URL.
+* Integrate previews for current `mail.brand_*` and `invoices.pdf_template`; change
+  `notify`/`invoicepdf` only for concrete new rendering requirements.
+* Add a branding-removal checklist and report; never rewrite legal merchant identity
+  implicitly.
+* Verify existing unconfigured mail/PDF fallbacks plus configured output in browser, email
+  and PDF tests.
 
 ### Phase 5 — Hardening and launch (1 week)
 
@@ -1020,12 +1080,12 @@ the document schema and the API contract are frozen.
 | `go test ./internal/httpapi -run Theme` | permissions, CSRF/idempotency, ETag/304, cache headers, scope isolation, preview tokens |
 | Sanitizer corpus | a growing list of bypass attempts (escaped `@import`, `url()` with query strings, `image-set`, `@font-face` external, `expression`, nested comments) is rejected |
 | Contrast test | every preset's text/background and UI/border pairs meet AA / 3:1 |
-| `make theme-check` | no hardcoded colours/radii/fonts outside the token and asset files; every preset validates; generated CSS is current |
+| `make theme-check` | extend existing stylesheet checks with token-reference validation; validate presets and generated CSS |
 | `make smoke` additions | `/theme/<rev>/theme.css` is 200 with the right type; CSP has no `unsafe-inline`; boot script runs; no console errors |
-| `make e2e-ui` additions | apply preset → preview → publish → rollback; upload logo; remove branding; reorder a storefront section; every screen still renders |
-| Visual regression | screenshots of every screen × every preset at desktop/tablet/mobile; diff threshold |
-| Branding assertion | after “remove all branding”, `/`, `/products`, `/login`, manifest, OG, email and PDF contain no “Catalyst” and no Catalyst mark digest |
-| `billing doctor` | each scope has a published revision; every referenced asset exists; custom CSS re-validates |
+| `make e2e-ui` additions | apply preset → preview → publish → rollback; brand overlay still applies only its current accent; upload theme media; compose/publish a storefront page |
+| Existing brand/mail/PDF tests | keep `web/test/brand.test.mjs`, `web/test/mail-brand.test.mjs`, invoice PDF fallback tests and mail outbox snapshot coverage green |
+| Visual regression | screenshots of representative screens × presets at desktop/tablet/mobile; compare to the merged restyle baseline |
+| Branding assertion | verify configured name/logo/mail/PDF settings reach their existing surfaces; verify new favicon/OG fields; distinguish legal company data from removable presentation |
 
 Add `theme-check` and the theme tests to `make verify`, next to `openapi-check` and
 `client-check`.
@@ -1035,8 +1095,8 @@ Add `theme-check` and the theme tests to `make verify`, next to `openapi-check` 
 * No free-form HTML block, no arbitrary JavaScript, no plugin-supplied CSS on the storefront.
   The section registry covers the legitimate layout needs; arbitrary markup is the largest
   XSS and brand-safety risk in the feature.
-* No external asset URLs. Uploads only. A CDN-hosted logo is a request to widen `img-src` and
-  to depend on a third party; both are avoidable.
+* No new external asset URLs for browser theme rendering. Existing `mail.brand_logo_url` is
+  a separate mail-client reference and remains supported until deliberately migrated.
 * No per-tenant themes yet. The schema can grow a nullable `tenant_id`; the permission model
   and the assignment table are already scope-shaped.
 * No theme marketplace in v1. The export envelope is signature-ready, but operating a
@@ -1054,16 +1114,17 @@ Add `theme-check` and the theme tests to `make verify`, next to `openapi-check` 
 A new operator, from a fresh install to a live branded storefront:
 
 1. **Sign in** → a “Finish setting up your theme” card on the dashboard.
-2. **Presets** → click `Catalyst Console` (or any of the ten) → the preview iframe updates
-   instantly; “Apply as draft”.
-3. **Brand** → upload a logo, mark, favicon, OG image; type the company name and tagline.
-   The preview updates without a reload.
+2. **Presets** → choose `Catalyst Console` or another preset → preview updates instantly;
+   “Apply as draft”.
+3. **Brand** → reuse the existing `/branding` name/logo/light-dark accent form; add favicon and
+   OG assets when available. The mail and invoice controls remain accessible in the studio.
 4. **Colors** → the contrast meter shows every pair; “Auto-fix” adjusts the two that fail.
 5. **Storefront** → reorder the hero, add a “Featured products” section, hide the FAQ on
-   mobile, set the hero image. Preview at 390px.
+   mobile, set the hero image. The editor uses existing catalog visibility, featured and
+   announcement data. Preview at 390px.
 6. **Publish** → choose scopes (storefront + portal + email), confirm the diff summary.
-7. **Remove Catalyst branding** → the checklist turns green; the verification pass fetches
-   `/`, `/products`, `/login`, the manifest, a test email and a sample PDF.
+7. **Remove Catalyst branding** → the checklist updates existing branding/mail settings and
+   browser assets, while warning that statutory merchant identity is not automatically changed.
 8. **Done.** No rebuild, no restart, no ticket to the vendor. A second operator with
    `theme:read` can see the history; a `theme:write` operator can draft; only
    `theme:publish` can go live.
@@ -1074,13 +1135,14 @@ touching the base theme.
 
 ### 15.1 Definition of done
 
-* A fresh install renders the current look by default, and `Catalyst Console` matches the game
-  panel's dashboard closely enough that the two products feel like one suite.
-* An operator can change every visible brand element, upload every asset, and remove every
-  Catalyst reference without editing a file or opening a ticket.
+* A fresh install defaults to the agreed game-panel-matching design; existing installations
+  preserve their current theme tokens and the working tenant/mail/PDF brand settings.
+* An operator can change the visible presentation, upload the missing browser assets, and
+  remove removable Catalyst product branding without editing files or opening a ticket; legal
+  merchant identity remains explicit and separate.
 * The storefront can be recomposed into at least five materially different layouts.
 * Custom CSS is accepted, validated, versioned and served without weakening the CSP.
-* Every preset passes the contrast gate; every screen renders at 390/834/1440 without
+* Every preset passes the contrast gate; representative screens render at 390/834/1440 without
   overflow; `make verify` is green.
 * A publish is visible within one navigation on every instance; a rollback is one click.
 * The audit log answers “who published what, when, and what changed”.
@@ -1091,13 +1153,14 @@ touching the base theme.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Server-rendered shell breaks the SPA boot/CSP | High | Phase 0 only; keep the static shell as a fallback; smoke + e2e assert first paint, routing, CSP |
+| Server-rendered shell breaks the SPA boot/CSP | High | Phase 1 only; keep the static shell as a fallback; smoke + e2e assert first paint, routing, CSP |
 | Custom CSS exfiltration | High | `url()` restricted to digest assets; parser-based validation; scope isolation; audit |
 | Panel CSS hides staff-critical UI | High | `theme:publish` + risk acknowledgement + audit; optional policy that disallows custom CSS on `panel` scope |
 | Storefront layout regression | High | Built-in `classic` fallback; server validates layout; e2e renders every block |
-| Migration of 50k LOC of CSS | Medium | Legacy aliases keep old CSS working; `theme-check` prevents new hardcoding; migrate file by file |
-| Two sources of truth for the brand name | Medium | `theme.brand.name` is display; `general.company_name` is legal; UI explains; one-click removal sets both |
-| Font licensing | Medium | Only open-licence families ship; uploaded fonts require an acknowledgement; no external font CDNs |
+| Restyle and brand overlay disagree | High | Reconcile `tokens.css`, `lib/brand.ts` and existing brand tests before selecting default tokens; preserve empty-brand fallback |
+| Duplicate brand sources | Medium | Existing `branding.*`, `mail.brand_*`, `invoices.pdf_template` remain canonical; theme docs exclude identity values |
+| Storefront feature duplication | Medium | Layout blocks consume existing featured/category-image/stock/announcement APIs; no replacement content tables |
+| Font licensing | Medium | Only open-licence families ship; uploaded fonts require an acknowledgement; no external browser font CDNs |
 | Theme publish cache stampede | Low | Snapshot cache + NOTIFY + revision URLs; assets immutable |
 | Marketplace supply chain | Low (future) | Signed envelopes, schema version, preview, no executable content |
 | Preview token abuse | Low | HMAC, short TTL, user+revision bound, no API privilege, `noindex` |
@@ -1107,19 +1170,20 @@ touching the base theme.
 ## 17. Open questions
 
 1. **Default preset.** Should a fresh install default to `Catalyst Console` (matching the game
-   panel) or `Catalyst Billing` (the current tan/orange brand)? This plan recommends
-   `Catalyst Console` for new installs and `Catalyst Billing` for upgrades. Confirm the
-   game panel's intended primary: the demo stores `#ff3d7f` (rose), while its shipped preset
-   is `#c48d5a` (bronze).
+   panel) or the existing billing token set? The plan recommends `Catalyst Console` for new
+   installs, with migrations preserving installed token values. Confirm the game panel's
+   intended primary: the demo stores `#ff3d7f` (rose), while its shipped preset is `#c48d5a`
+   (bronze).
 2. **Storefront SSR.** Per-product OG tags and real SEO need server rendering or a
    pre-render pass. Is that in scope for this project, or phase 5+?
 3. **Custom HTML block.** Deliberately excluded from v1. Is there a must-have use case that
    the block registry cannot cover?
-4. **Email HTML.** Today's mail is plain text. Do we want HTML email at all, or only a
-   themed logo/footer on the existing plain-text bodies?
+4. **Email/PDF integration.** Their identity/logo and basic presentation already exist. Should
+   the first Theme Studio surface link to the current mail and invoice settings, or move those
+   editors into the studio immediately through adapters?
 5. **PDF fonts.** Embedding a brand font in every invoice increases file size and needs the
-   font's licence to allow embedding. Is the built-in Helvetica with themed colours enough
-   for v1?
+   font's licence to allow embedding. Is the built-in Helvetica with themed colours enough for
+   v1?
 6. **Reseller/multi-tenant.** Should the schema carry a nullable `tenant_id` now, even if the
    feature is later? Adding it later is a migration but not a redesign.
 7. **Theme marketplace.** Is a marketplace in scope, or only import/export? The envelope is
@@ -1129,55 +1193,50 @@ touching the base theme.
 
 ## Appendix A — Game panel comparison (what “better” means concretely)
 
-| Dimension | Game panel today | Billing plan |
-|---|---|---|
-| Brand assets | URL text fields; remote URLs may be blocked by CSP | Upload + digest + light/dark variants + alt text |
-| Social card | None | Server-generated, themed, per scope |
-| Banners/backgrounds | None | Asset library + background tokens |
-| Colour editing | 3 brand + 12 surfaces; harmony generator | Full token contract; harmony; contrast meter with auto-fix; derived states |
+| Tenant identity | Game panel URL fields | Billing name/logo/per-mode accent already reach panel, storefront, sign-in and invoice; preserve APIs |
+| Social card | None | Still missing; server-generated or uploaded, theme-driven |
+| Banners/backgrounds | None | Theme-only asset library + background tokens; announcements remain existing content |
+| Colour editing | 3 brand + 12 surfaces; harmony generator | Full token contract; preserve `branding.accent_*` overlay and its legibility rules |
 | Typography | None | Families, scale, weights, tracking, self-hosted |
 | Density/shape | Radius slider | Density, radius scale, border, elevation, motion, shell variant |
 | Presets | 9 hue variations | 10 structurally different designs |
-| Scopes | One | 5 with inheritance |
-| Layout | None | Section composer + shell variants |
-| Custom CSS | Regex blacklist + `<style>` | Parser + allowlist + first-party stylesheet + digest-restricted `url()` |
+| Scopes | One | 5 presentation scopes; existing identity/mail/PDF settings remain canonical |
+| Layout | None | Section composer + shell variants; existing merchandising data is reused |
+| Custom CSS | Regex blacklist + `<style>` | Parser + policy + first-party stylesheet + digest-restricted `url()` |
 | History | None | Immutable revisions, diff, preview, rollback |
-| Branding removal | Manual fields | One action + verification checklist |
-| Email/PDF | None | Themed logo/colours/footer/letterhead |
+| Branding removal | Manual fields | Unified checklist over existing brand/mail/PDF config plus new browser assets |
+| Email/PDF | None | Billing already has HTML mail branding and PDF template/brand; Theme Studio integrates them |
 | Accessibility | No contrast gate | AA gate per preset and per custom theme |
-| Security | CSP likely widened for inline CSS | Strict CSP preserved |
+| Security | Inline CSS approach | Strict billing CSP preserved |
 
 ## Appendix B — Branding touchpoint checklist
 
-Symbols are authoritative; line numbers drift. Verified against the tree at the time of
-writing.
+Symbols are authoritative; line numbers drift. Verified against the current tree.
 
-- [ ] `web/src/index.html` — `<title>`, description, OG/Twitter, favicon, Apple icon,
-      manifest, `theme-color`, inline boot mark.
-- [ ] `web/src/app.ts` — three `document.title` templates and the fatal-screen heading
-      (`app.fatal.title` fallback "Catalyst Billing is unreachable").
-- [ ] `web/src/ui/layout.ts` — sidebar wordmark (`brand-name`) and the user-menu brand.
-- [ ] `web/src/views/login.ts`, `register.ts`, `forgot-password.ts`, `reset-password.ts`,
-      `verify.ts` — the auth brand lockup.
-- [ ] `web/src/views/storefront.ts`, `storefront-product.ts` — header wordmark and footer.
-- [ ] `web/src/views/invoice.ts` — merchant-name fallback in the print view.
-- [ ] `web/src/lib/mfa.ts` — the recovery-codes export header ("Catalyst Billing — two-factor
-      recovery codes").
-- [ ] `web/src/lib/icons.ts` — the mark path's `#F97301` fill (`brandMark`).
-- [ ] `web/src/sw.ts` — `FALLBACK_TITLE` and the cache names.
-- [ ] `web/build.mjs` — manifest name/short name/description/colours/icons.
-- [ ] `web/web.go` — headers and static asset names that mention the product.
-- [ ] `internal/notify` — `orDefault(..., "Catalyst Billing")` in `events.go` (×2) and
-      `manual_create.go`, plus the mail template defaults.
-- [ ] `internal/settings/settings.go` — `general.company_name` default `"Catalyst Hosting"`
-      (note: disagrees with the notify fallback).
-- [ ] `internal/invoicepdf` — letterhead fallback and any hardcoded colours.
-- [ ] `README.md`, `assets/brand/`, `scripts/brand/` — developer-facing only; not shipped to
-      customers, but the “remove branding” report should say so explicitly.
-- [ ] API docs/OpenAPI title and descriptions.
-- [ ] Error pages (`not-found.ts`, the fatal screen) and the service-worker offline page.
-- [ ] `localStorage` keys (`catalyst.theme`, `catalyst.*`): keep reading the old key for
-      migration, write the new namespaced key.
+- [x] Tenant name, uploaded PNG/JPEG logo and per-mode accent are configurable via
+      `/api/v1/branding` and already reach panel chrome, storefront/sign-in and invoice; preserve
+      the endpoint and its unset fallback.
+- [x] Email HTML branding is configurable through `mail.brand_*`; retain the plain-text part,
+      event-time HTML snapshot and existing mail-logo URL behavior.
+- [x] Invoice PDF identity and presentation use the tenant brand plus
+      `invoices.pdf_template`; retain the built-in byte-identical fallback.
+- [x] `web/src/index.html` — make title, description, OG/Twitter, favicon, manifest,
+      `theme-color` and boot mark dynamic while retaining default asset checks.
+- [ ] `web/src/sw.ts` — `FALLBACK_TITLE` and branding-related cache behavior.
+- [ ] `web/src/views/storefront.ts`, `storefront-product.ts` — connect existing brand and
+      merchandising data to configurable section layouts.
+- [ ] `web/src/lib/mfa.ts` — decide if the recovery-codes export header is in the white-label
+      scope; do not alter recovery-code handling.
+- [ ] `web/src/lib/icons.ts` — replace hardcoded product mark only if fully white-labelled UI
+      is in scope.
+- [x] `web/build.mjs` / `web/web.go` — generate favicon/manifest/OG shell values while keeping
+      the current `brand/verify.mjs` contracts.
+- [ ] `internal/settings/group_mail_brand.go`, `internal/notify/brand.go` and
+      `internal/invoicepdf/template.go` — renderer adapters; update `docs/branding.md` because
+      its mail-brand scope statement is stale relative to migration `0068`.
+- [ ] `general.company_name` is legal/merchant identity; never overwrite it in a generic
+      “remove branding” action.
+- [ ] Product-level OG and developer-facing docs are separate scope decisions.
 
 ## Appendix C — Example generated CSS (abridged)
 
@@ -1190,7 +1249,7 @@ writing.
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
   --space-1: .25rem; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem;
   --radius-sm: 4px; --radius-md: 6px; --radius-lg: 10px;
-  --sidebar-w: 232px; --topbar-h: 56px; --content-max: 1440px;
+  /* shell dimensions come from the active billing layout preset */
   /* canonical */
   --color-bg: #0e1116;
   --color-surface-1: #161a21;
@@ -1233,70 +1292,241 @@ writing.
 
 | Package | Primary files | Reviewer |
 |---|---|---|
-| WP0 theme core | `internal/theme/**`, `0059_themes.sql` | backend |
-| WP0 shell/CSP | `web/web.go`, `web/build.mjs`, `web/src/index.html` | frontend + security |
-| WP0 runtime | `web/src/lib/theme.ts`, `web/src/styles/tokens.css` | frontend |
-| WP1 studio API | `internal/httpapi/theme.go`, `internal/theme/store/**` | backend |
-| WP1 studio UI | `web/src/views/theme-*.ts`, `web/src/ui/theme-*.ts` | frontend + design |
+| WP1 theme core | `internal/theme/**`, next-free migration after `0072` | backend |
+| WP1 shell/CSP | `web/web.go`, `web/build.mjs`, `web/src/index.html` | frontend + security |
+| WP1 runtime | `web/src/lib/theme.ts`, `web/src/styles/tokens.css` | frontend |
+| WP2 studio API | `internal/httpapi/theme.go`, `internal/theme/store/**` | backend |
+| WP2 studio UI | `web/src/views/theme-*.ts`, `web/src/ui/theme-*.ts` | frontend + design |
 | WP2 presets | `internal/theme/presets/*.json`, `assets/fonts/**` | design + frontend |
 | WP3 layout | `internal/theme/layout/**`, `web/src/lib/{layout,blocks}.ts` | frontend |
-| WP4 brand/email/PDF | `internal/notify/**`, `internal/invoicepdf/**` | backend |
+| Existing brand adapters | `internal/brand/**`, `internal/notify/brand.go`, `internal/invoicepdf/template.go` | backend |
 | WP5 hardening | tests, `Makefile`, docs | security |
 
-## Appendix E — Phase 0 file checklist
+## Appendix E — Phase 1 implementation file checklist
 
-A concrete, reviewable starting point. Every item is either a new file or a named change.
+A concrete, reviewable starting point for the new theme registry. It does not repeat the
+already-built brand/mail/PDF work.
 
 **Go core**
 
-- [ ] `internal/theme/document.go` — `Document`, `Brand`, `Color`, `Typography`, `Space`,
-      `Shape`, `Motion`, `Background`, `Layout`, `Components`.
-- [ ] `internal/theme/validate.go` — closed validation for every field (§4.1).
-- [ ] `internal/theme/merge.go` — deep merge + `inherit: false`.
-- [ ] `internal/theme/canonical.go` — sorted-key JSON + SHA-256 digest.
-- [ ] `internal/theme/css/generate.go` — canonical vars, legacy aliases, game-panel HSL
+- [x] `internal/theme/document.go` — `Document`, `Color`, `Typography`, `Space`, `Shape`,
+      `Motion`, `Background`, `Layout`, `Components` (no duplicated tenant `Brand`).
+- [x] `internal/theme/validate.go` — closed validation for every field (§4.1).
+- [x] `internal/theme/merge.go` — deep merge + `inherit: false`.
+- [x] `internal/theme/canonical.go` — sorted-key JSON + SHA-256 digest.
+- [x] `internal/theme/css/generate.go` — canonical vars, legacy aliases, game-panel HSL
       aliases, preset structural rules.
 - [ ] `internal/theme/css/sanitize.go` — parser-based custom-CSS validation.
-- [ ] `internal/theme/presets/embed.go` + `internal/theme/presets/catalyst-billing.json`.
-- [ ] `internal/theme/store/store.go` — themes, revisions, assignments, assets, publications.
-- [ ] `internal/theme/cache/cache.go` — atomic snapshot + `LISTEN/NOTIFY`.
-- [ ] `internal/theme/assets/upload.go` — decode, re-encode, digest, dimensions.
-- [ ] `internal/httpapi/theme.go` — public + staff routes (§6).
-- [ ] `internal/store/migrations/0059_themes.sql` — §5 DDL, permission grants, default seed.
-- [ ] `internal/authn/authz.go` — `PermThemeRead`, `PermThemeWrite`, `PermThemePublish`;
+- [x] `internal/theme/presets/embed.go` + `internal/theme/presets/catalyst-billing.json`.
+- [x] `internal/theme/store/store.go` — themes, revisions, assignments, assets, publications.
+- [x] `internal/theme/cache/cache.go` — atomic snapshot + `LISTEN/NOTIFY`.
+- [ ] `internal/theme/assets/upload.go` — theme-only fonts/backgrounds/favicon/OG; existing
+      tenant/catalog images keep using `product_images` and `/api/v1/media/{id}`.
+- [x] `internal/httpapi/theme.go` — public + staff routes (§6).
+- [x] `internal/store/migrations/<next-free>_themes.sql` — §5 DDL and permission grants;
+      check the live migration head at implementation time.
+- [x] `internal/authn/authz.go` — `PermThemeRead`, `PermThemeWrite`, `PermThemePublish`;
       update `AllPermissions` and the role test.
 
 **Web shell**
 
-- [ ] `web/web.go` — `ThemeProvider` interface, server-rendered shell, theme routes, preview
+- [x] `web/web.go` — `ThemeProvider` interface, server-rendered shell, theme routes, preview
       header branch, cache of rendered shells.
-- [ ] `web/src/index.html` — replace hardcoded brand/meta with `{{THEME_*}}` placeholders;
+- [x] `web/src/index.html` — replace hardcoded brand/meta with `{{THEME_*}}` placeholders;
       keep `{{STYLE}}`/`{{SCRIPT}}`.
-- [ ] `web/build.mjs` — leave theme placeholders intact; keep the default manifest/icons for
+- [x] `web/build.mjs` — leave theme placeholders intact; keep the default manifest/icons for
       the no-theme case.
-- [ ] `web/src/lib/theme.ts` — read the boot contract, personal preference, density, preset;
-      keep `catalyst.theme` as a read-only fallback.
-- [ ] `web/src/lib/brand.ts` — `brandName()`, `productName()`, `logoSrc()`, `markSrc()`,
-      `titleFor(page)`; every hardcoded string in Appendix B calls this.
-- [ ] `web/src/styles/tokens.css` — generated defaults or generated at build time; legacy
-      aliases preserved.
+- [x] `web/src/lib/theme.ts` — add theme document boot/runtime while preserving the current
+      `localStorage` light/dark preference and `lib/brand.ts` overlay.
+- [ ] `web/src/styles/tokens.css` — generate defaults only after reconciling the merged restyle
+      with brand overlay tests; keep compatibility aliases.
 - [ ] `web/src/ui/layout.ts`, `app.ts`, auth views, storefront views, `icons.ts`, `sw.ts`,
       `mfa.ts` — replace hardcoded brand strings and the `#F97301` mark fill.
-- [ ] `web/src/views/theme-*.ts` — route stubs for the studio (Phase 1 fills them).
+- [x] `web/src/views/theme-*.ts` — route stubs for the studio (Phase 1 fills them).
 
 **Tests**
 
-- [ ] `web/web_test.go` — shell renders with a theme provider; CSP unchanged; no inline.
-- [ ] `internal/theme/..._test.go` — validation, merge, digest, CSS golden, sanitizer corpus.
-- [ ] `internal/httpapi/theme_test.go` — permissions, ETag/304, scope isolation, assets.
-- [ ] `scripts/theme-check.mjs` — no colour literals outside tokens; presets valid.
-- [ ] `Makefile` — `theme-check` in `verify`.
-- [ ] `scripts/browser-smoke.sh` — theme CSS/JS routes return 200 and the right types; CSP
-      still has no `unsafe-inline`; `frame-ancestors 'none'` on `/`.
-- [ ] `scripts/e2e-ui.mjs` — a theme screen renders, apply/publish/rollback flow.
+- [ ] Extend `web/web_test.go`, `web/test/brand.test.mjs`, `web/test/mail-brand.test.mjs`,
+      invoice PDF tests and `scripts/e2e-ui.mjs`; cover theme render/publish without regressing
+      the existing branding fallbacks.
 
 ---
 
 *This document is the design contract. When implementation departs from it, record the
 departure and the reason here, the way `docs/ui-gate.md` does — the reasoning is the
 expensive part.*
+
+---
+
+## Appendix F — Implementation status (theme registry, phases 1–2)
+
+This appendix is the departure log the note above asks for: what landed, what differs from this
+document and why, and what is deliberately still open. It is written to be read by whoever picks up
+phase 3.
+
+### F.1 What landed
+
+**Go core**
+
+| File | What it is |
+| --- | --- |
+| `internal/theme/document.go` | The schema v2 document (§4.1). Every field optional, because omission *is* the inheritance mechanism. |
+| `internal/theme/defaults.go` | The built-in default document. Deliberately a reproduction of the shipped `tokens.css`, which is the whole upgrade story (§F.3.6). |
+| `internal/theme/validate.go` | Closed validation: grammars for colours, lengths, radii, font sizes, font stacks, shadows, durations, easings, gradients; closed enums for every mode/density/nav/card/table/background/component name; the layer-vs-resolved distinction. |
+| `internal/theme/customcss.go` | The custom-CSS allowlist scanner (§F.3.1). |
+| `internal/theme/merge.go` | Layer resolution: `built-in ← parent scope ← source`, plus the two rules that make the accent follow the brand (§F.3.12). |
+| `internal/theme/canonical.go` | Canonical JSON and the `sha256:` digest. |
+| `internal/theme/diff.go` | The structured `{path, from, to}` diff the history screen renders. |
+| `internal/theme/css/generate.go` | The three token vocabularies, per-mode blocks, shell-shape rules, the boot script, and the operator's CSS last. |
+| `internal/theme/presets/*.json` | Ten presets (§8) plus `presets.go`, validated at load. |
+| `internal/theme/store/store.go` | Themes, immutable revisions, assignments, publications, assets. |
+| `internal/theme/cache/cache.go` | Per-scope snapshot, atomic replacement, explicit invalidation, TTL fallback (§F.3.2). |
+| `internal/httpapi/theme.go` | The public resources and the staff surface (§6). |
+| `internal/store/migrations/0073_themes.sql` | The DDL, the partial unique indexes that make "the published revision" a fact, and the three permission grants. |
+| `internal/authn/authz.go` | `theme:read`, `theme:write`, `theme:publish` and their role sets. |
+| `internal/openapi/descriptions_theme.go` | The API contract, regenerated into `api/openapi.yaml` and `api/client/client.go`. |
+
+**Web shell**
+
+`web/web.go` renders the shell per request from a `ThemeProvider` and caches the rendered bytes per
+revision; `web/src/index.html` carries `{{THEME_*}}` placeholders; `web/build.mjs` refuses to build if a
+placeholder is dropped; `web/src/lib/theme.ts` applies the manifest at runtime on top of the preserved
+`catalyst.theme` preference; `web/src/views/theme-*.ts` are the seven studio screens;
+`web/src/styles/view-theme.css` is the studio's own styles.
+
+**Verification**
+
+- `go test ./...` and `go test -race ./...` pass. The theme packages add 250+ cases: the document
+  grammars, a 40-case custom-CSS security corpus, the merge properties, the digest, the store's
+  database invariants, the cache's fallbacks, and the HTTP surface's permission and publish flow.
+- `web/test/theme-studio.test.mjs` covers the studio's routes, endpoints, contrast helper and the
+  preserved `lib/theme.ts` contract; the whole frontend suite is 118 tests.
+- `make e2e-theme` drives the system in a real Chromium: it publishes a theme, then reads what the
+  browser *computed* — the painted background, the generated radius, the border width, the nav
+  variant, whether the sidebar overflows its own column — and fails on any console error. It passes for
+  all ten presets and rolls back what it published.
+- `make e2e-ui` (the existing authenticated browser test) passes.
+
+### F.2 Two bugs a browser found and no test would have
+
+Recorded because they are the argument for the browser gate in §14, and because both were invisible to
+a passing Go suite.
+
+1. **The storefront wore the panel's theme.** `/` is the storefront for everyone — including a signed-in
+   operator, whose dashboard is `/dashboard`. The scope resolver originally returned the panel scope
+   for a signed-in user on `/`, on the plausible reasoning that a signed-in person is "working". The
+   shop was then served the panel's stylesheet. No unit test noticed; a screenshot did.
+2. **The manifest was cached for 60 seconds, so a publish looked like it did nothing.** The client
+   applies the manifest *after* the shell has painted, so a browser serving it from its own cache
+   re-applied the previous theme: the stylesheet link was the new revision and the nav variant was the
+   old one, on the same page. The manifest is now `no-cache` (still cached; revalidated by ETag).
+
+A third was a CSS bug in the same family: the `rail` nav variant widened the sidebar to 64px but left
+the wordmark, the account name and every nav label visible, so they overflowed their own column. The
+generated stylesheet now hides them and the browser test measures the overflow.
+
+### F.3 Departures from this document
+
+**F.3.1 Custom CSS: an allowlist scanner, not `tdewolff/parse`.** §5.2 recommends the parser library.
+This build keeps the module list at three and implements the allowlist directly: CSS escapes are
+refused outright (which removes the `@\69mport` class of bypass rather than enumerating it), comments
+are stripped before inspection, only nine at-rules are permitted, every `url()` must point at a
+same-origin digest asset or a base64 *raster* data URI, braces are balanced and nesting is bounded. The
+behaviour a parser would have to preserve is pinned by the corpus in `customcss_test.go`; a swap is a
+refactor against a green suite, not a redesign.
+
+**F.3.2 The cache has no `LISTEN/NOTIFY`.** §12 asks for it. What landed is explicit invalidation on
+publish (immediate on the instance that published) plus a 30-second TTL (bounded everywhere else). That
+is the smaller thing to get right first, and the TTL is what keeps the gap bounded when a notification
+would have been dropped. Adding the listener is additive and does not change the interface.
+
+**F.3.3 No `internal/theme/assets` package.** Uploads live in `store.PutAsset`/`store.Asset` and
+`httpapi.handleThemeAssetUpload`, because the validation is HTTP-shaped (a content type, a size cap, a
+decoder) and the storage is one table. The tenant logo and catalog images are untouched: they stay in
+`product_images` and `/api/v1/media/{id}`.
+
+**F.3.4 SVG uploads are refused, not sanitised.** §11 asks for a parsed SVG with `<script>`,
+`<foreignObject>`, event attributes and external `href` removed. A half-written sanitiser for a format
+whose purpose is to be a document is worse than a refusal, and a favicon can be a PNG. The serving
+route still applies `default-src 'none'; sandbox` to an SVG row, so a row written by hand cannot become
+an XSS primitive. Adding a sanitiser later is a new accepted content type, not a change to the route.
+
+**F.3.5 The shell is substituted, not templated.** §10 does not specify; this build substitutes
+`{{THEME_*}}` per context rather than running the whole document through `html/template`. The shell is a
+build artefact whose `{{STYLE}}`/`{{SCRIPT}}` are already resolved by `web/build.mjs`, and running it
+through a contextual escaper would need every existing byte to be template-safe. Every value is escaped
+for the context it lands in, and the one raw slot (the inline boot mark) is markup this build controls.
+
+**F.3.6 The default document is today's warm palette, not `Catalyst Console`.** §8 recommends Console
+as the default for *new* installations and preserving installed tokens on upgrade. Those conflict here,
+because there is no row to migrate: the default document *is* the fallback. Making it Console would
+silently restyle every existing installation on upgrade, which the same section forbids. So the default
+is a byte-for-byte reproduction of the shipped `tokens.css`, Console ships as a preset one click away,
+and `TestDefaultReproducesTheShippedTokens` is what keeps the two in step. Changing the default is a
+change to `defaults.go` and to this paragraph.
+
+**F.3.7 One theme per scope, not one per slug.** The obvious design keys `themes` on `(scope, slug)`, so
+applying a preset makes a new theme. It is wrong: with two theme rows in one scope, "the open draft"
+stops being a single thing — applying Brutalist and then Warm SaaS left two drafts open and "Save" had
+no single target. A scope serves one presentation; applying a preset is a new revision of that
+presentation. The row is keyed on the scope and `slug`/`name` follow the current revision. A store test
+pins it.
+
+**F.3.8 `published_by` is nullable.** A publish can be initiated by the system (a CLI, a migration, a
+seed). Inventing a user row to satisfy a NOT NULL would put a fictional person in the history; the
+authoritative actor is the audit row. `published_at` *is* required, because "when did this go live" has
+no system-initiated exception.
+
+**F.3.9 The theme resources live under `/theme/r/{revision}/`.** §6 sketches
+`/theme/{revision}/theme.css`. Go's `ServeMux` refuses a wildcard segment beside a literal one in the
+same position (`/theme/assets/{id}`), so the revision routes are nested under `/r/`. The shapes and the
+caching are otherwise as specified.
+
+**F.3.10 `frame-src 'self'` in the CSP.** §11 asks that the preview be framable by its own origin only.
+`frame-ancestors` on the preview response is one half; `frame-src` on the *panel* is the other, and
+without it the browser refuses to load the iframe at all. The widening is one directive, and every
+other response keeps `frame-ancestors 'none'`.
+
+**F.3.11 Elevation, the accent family and the signal colours are per colour mode.** §7.1 lists them
+once. A shadow and an accent are not tints: a 28%-black drop shadow that reads on `#171413` is a bruise
+on `#f5f2ee`, and `#ff951e` disappears on paper. The schema therefore carries `elevation.dark`/
+`elevation.light` and per-mode `accent`/`accentHover`/`accentPress`/`accentInk` and signal colours. A
+preset that states only `color.brand.primary` gets them derived, so the extra fields cost an author
+nothing.
+
+**F.3.12 The accent follows the brand, and `secondary` does not.** Two rules in `merge.go` that are not
+plain merges. A layer that names a brand accent (or a primary with no accent) drops the accent family it
+would have inherited, per mode — otherwise a preset that says "my colour is rose" would inherit the
+default's orange in both modes, and every preset author would have to remember four values per mode. And
+`color.brand.secondary` is *mode-independent*, which is a trap: a value chosen for a dark ground is also
+used on paper, so a preset that wants a mode-correct companion leaves it absent and lets the generator
+derive it from the mode's own border.
+
+**F.3.13 The built-in default is `system`, not `dark`.** `tokens.css` puts the dark palette under
+`:root`, so with no attribute the product paints dark — that is the CSS fallback. But what a *first
+visit* does has always been "follow the OS" (`lib/theme.ts` reads `prefers-color-scheme` when nothing is
+stored), and a theme default of `dark` silently overrode it. The existing browser test caught the
+regression, in the branding block, as a preview painting the dark accent.
+
+**F.3.14 The preview token's key is per process.** There is no installation-wide signing secret in this
+deployment (sessions are opaque rows, not signed cookies), and a new environment variable whose absence
+silently breaks a feature is worse than the limitation. The cost is that a preview opened through a load
+balancer may reach an instance that did not mint the token and be refused — a refusal, not a bypass.
+Sticky sessions or a shared secret are a deployment decision.
+
+### F.4 Deliberately still open
+
+- **Phase 3, storefront composition (§9).** `layout.pages` is reserved in the schema and a non-empty
+  value is *refused* with an error naming the missing feature, rather than accepted and ignored. The
+  block registry, renderer and composer editor are not built.
+- **Full white-label asset swap (§13, Phase 4).** The shell's icons, the manifest and the social card
+  are themed by URL but the default assets are still the product's own. The favicon and OG routes
+  redirect to the built-in files; an uploaded asset is reachable and referenceable from a document but
+  the shell does not yet pick it up.
+- **`web/src/sw.ts`, `lib/mfa.ts`, `lib/icons.ts`** still carry the product's own strings and mark.
+  They are on the phase-4 list and are not touched here.
+- **`tokens.css` is unchanged.** It stays as the no-JavaScript fallback and as the byte-for-byte
+  reference the golden test compares against. Generating it is a phase-4 step that requires the
+  reconciliation §Appendix E describes.
+- **`general.company_name`** remains legal/merchant identity and is never written by the theme, as
+  §Appendix B requires.

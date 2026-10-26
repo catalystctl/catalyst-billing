@@ -3,13 +3,9 @@
 A living record of what is actually built, kept honest by checking the code rather than the
 reports. `docs/paymenter-parity.md` is the backlog; this file is where it stands.
 
-**Last verified:** `go test ./...` against a real PostgreSQL at schema version 0026, green;
-**244 browser assertions green** (`bash scripts/browser-e2e.sh`), covering 19 of the 21
-commerce/support/account screens, with one reachability gap and one screen not built — both
-named below rather than hidden.
+**Last verified:** `go test ./...` and `go build ./...` pass against the repository's real PostgreSQL test harness; `cd web && npm test` passes **118/118** tests. `bash scripts/reachability.sh --check` reports **2 unrecorded findings**: the staff operation retry and resolve actions have no operator UI. The seven public theme asset routes are recorded as deliberate resource endpoints. The remaining capability gaps are listed in **Not done, and why** below; PayPal/Mollie and other gateway breadth remain explicitly out of scope for this parity pass.
 
-**Scale now:** 79 tables (from 47), 204 documented API operations, 26 migrations, 58 view
-modules across 57 routes.
+**Scale now:** 109 tables, 353 documented API operations across 278 paths, and the theme registry plus brand overlay are present in the tree.
 
 ## Where the work happens
 
@@ -23,7 +19,7 @@ records the ownership rules that make that safe. The registry refactor that made
 
 ## Schema
 
-47 tables before this work; **79 now**. The commerce gap named in the backlog (§5) is closed:
+109 tables now; the commerce, identity, operations, and theme registries are all classified in the current schema. The earlier commerce gap named in the backlog (§5) is closed:
 
 `currencies`, `tax_rates`, `coupons`, `coupon_products`, `coupon_redemptions`, `carts`,
 `cart_items`, `config_options`, `config_option_prices`, `service_configs`, `product_upgrades`,
@@ -32,7 +28,7 @@ records the ownership rules that make that safe. The registry refactor that made
 `notification_preferences`, `notifications`, `settings`, `announcements`, `cron_runs`,
 `worker_heartbeat`, `error_logs`, `http_logs`.
 
-Migrations 0020–0026, each with the decision that shaped it recorded at the top of the file:
+Migrations 0020–0026 and the later identity, operations, and theme migrations each record the decision that shaped them at the top of the file:
 
 | Migration | What it decides |
 |---|---|
@@ -308,17 +304,38 @@ What an operator can now do, all browser-verified:
 
 ## Not done, and why
 
-One epic is not started and one is partial. Both are breadth, not capability:
+The historical epic tally is stale: most former 🟡/❌ rows have since landed. The verified remaining
+work is below. PayPal, Mollie, legacy PayPal IPN, and marketplace gateway breadth are deliberately
+excluded from this pass at the user's request.
 
-- **E4.3 PayPal / Mollie — not started.** Stripe is built and the protocol hosts more; these two
-  adapters are not written. A shop that needs PayPal needs someone to write one adapter, and
-  `extensions/stripe` is the worked example with a conformance test to copy. Deliberately deferred:
-  no customer has asked for it.
-- **E6.10 — partial.** The invoice PDF is branded per tenant now (name, logo, accent per colour
-  mode), which is the part that mattered. What is not built is a *versioned theme registry* —
-  presets, per-scope overrides, a theme applied to one product line but not another. That is a
-  different and much larger thing than branding, and the boundary is stated in `docs/branding.md` §5
-  so a later reader does not mistake the overlay for the registry.
+**Capability gaps still requiring implementation:**
+
+- **TAX-02/TAX-05/TAX-06/TAX-08:** the jurisdiction/rate engine and transaction-aware lookup exist,
+  but production invoice issuance still uses the no-tax issuer in checkout, manual/staff orders,
+  and renewals. Wire all issuance paths together so cart and immutable invoice snapshots agree;
+  decide and test the VIES-unreachable policy (refuse versus recorded fallback).
+- **I18N-01:** outbound notification mail is not localized, even though the frontend is. Add a
+  locale-aware sender/catalog resolver and prove a non-default-locale recipient receives translated mail.
+- **SF-09:** `separated` and `combined` quantity modes still produce one service rather than the
+  Paymenter-equivalent independent services/lines.
+- **SF-14:** only arbitrary N-day periods are supported; N-week and N-month units remain absent.
+- **ADM-18:** operation retry/resolve endpoints exist, but there is no operator UI for failed or
+  needs-review operations. The API must remain permission-checked and audited.
+- **ADM-28:** customer detail still lacks tickets, credits, and billing-agreement tabs.
+- **ADM-31:** invoice creation still lacks a send-email toggle and immediate PDF affordance.
+- **I18N-08:** Gravatar remains intentionally absent; local initials are used instead.
+
+**Breadth or deliberate presentation differences:** ADM-22 still lacks a complete per-run history
+view; ADM-37 has no cluster landing pages; I18N-07 has no separate dark-mode logo. These do not
+block billing, provisioning, support, or account management.
+
+One epic remains gateway breadth rather than a capability defect:
+
+- **E4.3 PayPal / Mollie — deliberately out of scope.** Stripe is built and the protocol can host
+  more adapters, but these adapters are not part of this pass.
+- **E6.10 theme registry — implemented in the current tree.** The versioned theme routes, presets,
+  scoped documents, custom CSS controls, and per-tenant brand overlay now exist. The seven public
+  theme asset routes are API-only by design and must be recorded in the reachability allow-list.
 
 ### Two defects that are capability, not breadth
 

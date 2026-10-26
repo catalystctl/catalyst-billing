@@ -22,6 +22,13 @@ import {
   skeletonPage,
   statusBadge,
 } from "../ui/kit";
+import {
+  deleteOperation,
+  hasCapabilities,
+  operationCapabilities,
+  resolveOperation,
+  retryOperation,
+} from "./operations";
 
 export const meta = { title: "Operation", crumb: "Operation" };
 
@@ -168,6 +175,29 @@ function render(ctx: Ctx, op: Operation, refresh: () => void, host: HTMLElement)
   ]);
 
   const pending = PENDING.has(op.status);
+  const caps = operationCapabilities(ctx, op);
+
+  // ADM-18: the three things an operator can do to a row the worker gave up on. Each one is
+  // offered only when the server would accept it: the status has to be one the action accepts,
+  // and the session has to hold the permission the route demands. A button that always
+  // answers 403 or 409 is worse than no button.
+  const runRetry = () => {
+    void (async () => {
+      if (await retryOperation(ctx, op)) refresh();
+    })();
+  };
+  const runResolve = () => {
+    void (async () => {
+      if (await resolveOperation(ctx, op)) refresh();
+    })();
+  };
+  const runDelete = () => {
+    void (async () => {
+      // The row is gone after a delete, so this page has nothing left to show: the queue is the
+      // only honest destination, and going back there beats re-reading a 404.
+      if (await deleteOperation(ctx, op)) ctx.navigate("/operations");
+    })();
+  };
 
   const head = pageHead({
     title: `${humanStatus(op.kind)} operation`,
@@ -183,6 +213,31 @@ function render(ctx: Ctx, op: Operation, refresh: () => void, host: HTMLElement)
       "div",
       { class: "row-wrap" },
       pending ? h("span", { class: "queue-live" }, icon("activity", 12), `Auto-refresh every ${REFRESH_MS / 1000}s`) : null,
+      caps.retry
+        ? btn("Retry", {
+            size: "sm",
+            icon: "rotate",
+            title: "Requeue this operation under the same key with a fresh attempt budget",
+            onclick: runRetry,
+          })
+        : null,
+      caps.resolve
+        ? btn("Resolve", {
+            size: "sm",
+            icon: "checkCircle",
+            title: "Record that you settled the remote state by hand",
+            onclick: runResolve,
+          })
+        : null,
+      caps.delete
+        ? btn("Delete", {
+            size: "sm",
+            variant: "danger",
+            icon: "trash",
+            title: "Remove this failed operation from the queue",
+            onclick: runDelete,
+          })
+        : null,
       btn("Refresh", { size: "sm", icon: "refresh", onclick: refresh }),
     ),
   });
@@ -264,6 +319,46 @@ function render(ctx: Ctx, op: Operation, refresh: () => void, host: HTMLElement)
     ),
   });
 
+  // The actions card is the explanation, not a second set of buttons: when nothing is on
+  // offer, the page says *why* — a role that lacks the permission reads a different sentence
+  // from an operator looking at a row that is still queued, and both are different from a
+  // succeeded row, which needs neither.
+  const actions = hasCapabilities(caps)
+    ? card({
+        title: "Operator actions",
+        sub: "What you can do about this operation",
+        body: h(
+          "div",
+          { class: "stack-sm" },
+          h(
+            "p",
+            { class: "lease-sentence" },
+            op.status === "failed" || op.status === "unknown" || op.status === "needs_review"
+              ? "A retry queues the provider call again with a fresh attempt budget. A resolve records that you settled the remote state by hand, and is what an uncertain outcome needs before it can leave the queue."
+              : "This operation is settled, so there is nothing left to retry or resolve.",
+          ),
+          caps.delete
+            ? h(
+                "p",
+                { class: "lease-sentence" },
+                "Deleting removes the row. It does not undo anything the worker already did, so a failure over a real remote change should be resolved rather than deleted.",
+              )
+            : null,
+        ),
+      })
+    : card({
+        title: "Operator actions",
+        body: h(
+          "p",
+          { class: "lease-sentence" },
+          PENDING.has(op.status)
+            ? "The worker still has this operation. Retrying or resolving it while it is queued or running would queue the same work twice, so wait for it to settle — the page refreshes itself until it does."
+            : op.status === "succeeded"
+              ? "This operation succeeded, so there is nothing to retry, resolve or delete."
+              : "Your role cannot retry or resolve operations. A retry needs service:provision; resolving and deleting need service:write:all.",
+        ),
+      });
+
   swap(
     host,
     h(
@@ -274,7 +369,7 @@ function render(ctx: Ctx, op: Operation, refresh: () => void, host: HTMLElement)
         "div",
         { class: "split" },
         h("div", { class: "stack" }, timeline, ...(errorCard ? [errorCard] : [])),
-        h("div", { class: "stack" }, facts, lease, links),
+        h("div", { class: "stack" }, facts, lease, actions, links),
       ),
     ),
   );

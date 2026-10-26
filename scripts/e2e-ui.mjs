@@ -949,6 +949,35 @@ try {
     const detail = await pageText();
     check("customer detail: shows the email", detail.includes(customerEmail));
     check("customer detail: has tabs", /Overview/.test(detail) && /Invoices/.test(detail));
+    // ADM-28: the record's tickets, credits and billing-agreement lists are tabs, backed by the
+    // existing staff endpoints. The seeded customer may hold none of them, so the assertion is
+    // that each tab exists, opens, and settles on a list or an honest empty state — never a
+    // refusal panel and never a dead tab.
+    for (const [label, expect] of [
+      ["Tickets", /This customer's support threads|No tickets/i],
+      ["Credits", /Goodwill credit issued to this customer|No credit granted/i],
+      ["Billing agreements", /Saved payment methods|No billing agreements/i],
+    ]) {
+      check(`customer detail: has a ${label} tab`, detail.includes(label));
+      await evaluate(`(() => {
+        const tab = [...document.querySelectorAll('.tab')].find((b) => b.textContent.trim().startsWith(${JSON.stringify(label)}));
+        if (tab) tab.click();
+      })()`);
+      await until(
+        `the ${label} tab to settle`,
+        "!document.querySelector('.skeleton') && !document.querySelector('.table-loading')",
+        12_000,
+      );
+      const tabText = await pageText();
+      check(`customer detail: the ${label} tab renders its panel`, expect.test(tabText));
+      check(`customer detail: the ${label} tab is not a refusal`, !/This screen is for|permission/i.test(tabText.split(label).pop() ?? ""));
+    }
+    // Back to the Overview, where the portal link lives.
+    await evaluate(`(() => {
+      const tab = [...document.querySelectorAll('.tab')].find((b) => b.textContent.trim().startsWith("Overview"));
+      if (tab) tab.click();
+    })()`);
+    await until("the overview tab to settle", "!document.querySelector('.skeleton')", 12_000);
 
     // An operator has to be able to see what the customer sees. Follow the link rather than
     // guessing the URL, because a link that points nowhere is the failure worth catching.

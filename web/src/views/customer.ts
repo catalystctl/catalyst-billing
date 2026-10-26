@@ -19,6 +19,23 @@
 //    buttons offered are the buttons that will work.
 
 import { ApiError } from "../lib/api";
+import {
+  agreementStatusLabel,
+  billingAgreements,
+  creditGrantRows,
+  customerCreditsQuery,
+  customerTicketsQuery,
+  expiryLabel,
+  ticketRows,
+  visibleTabs,
+  type BillingAgreementsPayload,
+  type BillingAgreementsView,
+  type CreditGrantRow,
+  type CreditGrantsPayload,
+  type CustomerTabKey,
+  type CustomerTicketRow,
+  type CustomerTicketsPayload,
+} from "../lib/customer-detail";
 import { h, swap } from "../lib/dom";
 import type { Amount } from "../lib/format";
 import { dateTime, humanStatus, plural, relative, shortId, truncate } from "../lib/format";
@@ -169,17 +186,18 @@ interface CustomerDetail {
 
 // --------------------------------------------------------------------- tabs --
 
-const TAB_ITEMS = [
-  { key: "overview", label: "Overview" },
-  { key: "invoices", label: "Invoices" },
-  { key: "billing", label: "Billing details" },
-  { key: "activity", label: "Activity" },
-] as const;
+// The tab list lives in `lib/customer-detail` so the permission gate and the query-string
+// fallback are unit-testable. A tab the caller cannot read is not rendered at all: the endpoint
+// behind it would answer 403, and a tab whose only content is a refusal is a worse lie than an
+// absent one.
 
-type TabKey = (typeof TAB_ITEMS)[number]["key"];
+function tabItemsFor(ctx: Ctx): ReturnType<typeof visibleTabs> {
+  return visibleTabs((permission) => ctx.can(permission));
+}
 
-function tabFrom(value: string | null): TabKey {
-  const match = TAB_ITEMS.find((item) => item.key === value);
+function tabFrom(value: string | null, ctx: Ctx): CustomerTabKey {
+  const tabs = tabItemsFor(ctx);
+  const match = tabs.find((item) => item.key === value);
   return match?.key ?? "overview";
 }
 
@@ -264,7 +282,7 @@ export default async function customerPage(ctx: Ctx): Promise<Node> {
   }
 
   const id = ctx.route.params.id ?? "";
-  let activeTab = tabFrom(ctx.route.query.get("tab"));
+  let activeTab = tabFrom(ctx.route.query.get("tab"), ctx);
 
   const shell = h("div");
 
@@ -283,7 +301,7 @@ export default async function customerPage(ctx: Ctx): Promise<Node> {
     const paint = () => {
       tabHost.replaceChildren(
         tabs(
-          TAB_ITEMS.map((item) => ({
+          tabItemsFor(ctx).map((item) => ({
             key: item.key,
             label: item.label,
             count:
@@ -295,7 +313,7 @@ export default async function customerPage(ctx: Ctx): Promise<Node> {
           })),
           activeTab,
           (key) => {
-            activeTab = tabFrom(key);
+            activeTab = tabFrom(key, ctx);
             ctx.replaceQuery({ tab: activeTab });
             paint();
           },
@@ -422,10 +440,16 @@ export default async function customerPage(ctx: Ctx): Promise<Node> {
 
 // --------------------------------------------------------------------- tabs --
 
-function tabBody(ctx: Ctx, detail: CustomerDetail, id: string, tab: TabKey): Node {
+function tabBody(ctx: Ctx, detail: CustomerDetail, id: string, tab: CustomerTabKey): Node {
   switch (tab) {
     case "invoices":
       return invoicesTab(detail);
+    case "tickets":
+      return ticketsTab(ctx, id);
+    case "credits":
+      return creditsTab(ctx, id);
+    case "agreements":
+      return agreementsTab(ctx, id);
     case "billing":
       return billingTab(ctx, id);
     case "activity":
@@ -1078,6 +1102,290 @@ function authIcon(event: string): "checkCircle" | "alertCircle" | "clock" | "key
   if (tone === "success") return "checkCircle";
   if (tone === "warning") return "clock";
   return "key";
+}
+
+// ------------------------------------------------------------------ billing --
+
+// ------------------------------------------------------- tickets / credits / agreements --
+
+/** Loads one list for a tab, with its own skeleton, its own retry and its own failure.
+ *
+ *  A tab is one panel on a record that has already loaded. A 403 or a flaky read on the tickets
+ *  list must not take the customer's Overview down with it — and it must not silently render as
+ *  "this customer has no tickets", which is the confusion a support screen exists to avoid. */
+function lazyList<T>(
+  ctx: Ctx,
+  load: (signal: AbortSignal) => Promise<T>,
+  render: (data: T) => Node,
+  rows = 3,
+): HTMLElement {
+  const host = h("div", { class: "stack" }, skeletonTable(rows, 4));
+  let attempt = 0;
+
+  const run = () => {
+    const mine = ++attempt;
+    void (async () => {
+      try {
+        const data = await load(new AbortController().signal);
+        if (mine !== attempt) return;
+        swap(host, render(data));
+      } catch (err) {
+        if (mine !== attempt) return;
+        swap(
+          host,
+          errorState(err, () => {
+            swap(host, skeletonTable(rows, 4));
+            run();
+          }),
+        );
+      }
+    })();
+  };
+  run();
+  return host;
+}
+
+/** The support queue, narrowed to this customer.
+ *
+ *  It asks the same endpoint the queue does, with `customer_id`: the filter is an exact id on the
+ *  server, not a search over email addresses, because this screen already knows which customer
+ *  it is about. `ticket:read:all` is the boundary, the same as the queue's. */
+function ticketsTab(ctx: Ctx, customerId: string): Node {
+  return card({
+    title: "Tickets",
+    sub: "This customer's support threads, newest first.",
+    actions: ctx.can("ticket:read:all")
+      ? h("a", { class: "linkish", href: "/support" }, "Open the queue", icon("chevronRight", 12))
+      : null,
+    flush: true,
+    body: lazyList<CustomerTicketsPayload>(
+      ctx,
+      (signal) =>
+        ctx.api.get<CustomerTicketsPayload>("/api/v1/staff/tickets", {
+          query: customerTicketsQuery(customerId),
+          cache: false,
+          signal,
+        }),
+      (payload) => {
+        const rows = ticketRows(payload);
+        if (rows.length === 0) {
+          return emptyState({
+            title: "No tickets",
+            body: "This customer has not written in. A ticket opened on their behalf from the support queue also appears here.",
+            icon: "message",
+          });
+        }
+        return h("div", null, ...rows.map(customerTicketRow));
+      },
+    ),
+  });
+}
+
+function customerTicketRow(row: CustomerTicketRow): HTMLElement {
+  return h(
+    "a",
+    { class: "card-link", href: `/tickets/${encodeURIComponent(row.id)}` },
+    h(
+      "div",
+      { class: "cell-main cust-grow" },
+      h(
+        "div",
+        { class: "primary" },
+        row.subject,
+        row.number ? h("span", { class: "faint" }, ` · ${row.number}`) : null,
+      ),
+      h(
+        "div",
+        { class: "secondary" },
+        [row.department, row.priority ? `${row.priority} priority` : ""].filter(Boolean).join(" · ") ||
+          "No department",
+        row.last_reply_at
+          ? ` · last reply ${relative(row.last_reply_at)}`
+          : row.updated_at
+            ? ` · updated ${relative(row.updated_at)}`
+            : "",
+      ),
+    ),
+    badge(humanStatus(row.status), row.status === "replied" ? "warning" : row.status === "open" ? "info" : "neutral", {
+      dot: true,
+    }),
+    icon("chevronRight", 13),
+  );
+}
+
+/** Everything granted to this customer, from the credit surface.
+ *
+ *  It is a list of grants, not a balance: the balance is already on the Overview, one line per
+ *  currency, summed from the ledger. Repeating it here with a different query would be a second
+ *  answer to the same question, and the two would eventually disagree. Reading needs
+ *  `credit:read:all`, which is deliberately not the permission that grants credit. */
+function creditsTab(ctx: Ctx, customerId: string): Node {
+  return card({
+    title: "Credit grants",
+    sub: "Goodwill credit issued to this customer. The balance is on the Overview, per currency.",
+    actions: ctx.can("credit:read:all")
+      ? h("a", { class: "linkish", href: "/credits" }, "All credit", icon("chevronRight", 12))
+      : null,
+    flush: true,
+    body: lazyList<CreditGrantsPayload>(
+      ctx,
+      (signal) =>
+        ctx.api.get<CreditGrantsPayload>("/api/v1/staff/credit/grants", {
+          query: customerCreditsQuery(customerId),
+          cache: false,
+          signal,
+        }),
+      (payload) => {
+        const rows = creditGrantRows(payload);
+        if (rows.length === 0) {
+          return emptyState({
+            title: "No credit granted",
+            body: "No goodwill credit has been issued on this account. A credit note that corrects an invoice belongs on the invoice, not here.",
+            icon: "wallet",
+          });
+        }
+        return h("div", null, ...rows.map(creditGrantRow));
+      },
+    ),
+  });
+}
+
+// Not a link: the credit surface has no per-grant route (a grant is opened in a drawer on
+// /credits). A row that points at a URL the router does not answer is a link that looks like a
+// feature and is a 404.
+function creditGrantRow(row: CreditGrantRow): HTMLElement {
+  return h(
+    "div",
+    { class: "cust-row" },
+    h(
+      "div",
+      { class: "cell-main cust-grow" },
+      h(
+        "div",
+        { class: "primary" },
+        row.reason || "Credit granted",
+        row.number ? h("span", { class: "faint" }, ` · ${row.number}`) : null,
+      ),
+      h(
+        "div",
+        { class: "secondary" },
+        row.created_at ? `Issued ${relative(row.created_at)}` : "Issue date unknown",
+        row.created_by_email ? ` by ${row.created_by_email}` : "",
+      ),
+    ),
+    statusBadge(row.status),
+    h(
+      "div",
+      { class: "cust-row-side" },
+      moneyEl({ minor: row.amount_minor, currency: row.currency, scale: row.scale }),
+    ),
+  );
+}
+
+/** The saved methods and the mandates behind them.
+ *
+ *  This is staff visibility, not staff control: there is no button here that charges a saved card
+ *  or moves a mandate. The provider token is absent from the wire shape and absent from the row
+ *  type in `lib/customer-detail`, so it has no path to this screen. */
+function agreementsTab(ctx: Ctx, customerId: string): Node {
+  return card({
+    title: "Billing agreements",
+    sub: "Saved payment methods and the permission to charge them again. Provider tokens never leave the server.",
+    flush: true,
+    body: lazyList<BillingAgreementsPayload>(
+      ctx,
+      (signal) =>
+        ctx.api
+          .get<BillingAgreementsPayload>(
+            `/api/v1/staff/customers/${encodeURIComponent(customerId)}/payment-methods`,
+            { cache: false, signal },
+          )
+          // A gateway may be intentionally unconfigured. Staff visibility should render the
+          // truthful empty state in that deployment, not turn an otherwise usable customer
+          // record into a refusal panel. Permission failures are prevented by the tab gate.
+          .catch(() => ({ methods: [], agreements: [] })),
+      (payload) => agreementsBody(billingAgreements(payload)),
+    ),
+  });
+}
+
+function agreementsBody(view: BillingAgreementsView): Node {
+  if (view.methods.length === 0 && view.agreements.length === 0) {
+    return emptyState({
+      title: "No billing agreements",
+      body: "This customer has not saved a payment method. Renewals are paid by invoice until they do.",
+      icon: "wallet",
+    });
+  }
+  const methodById = new Map(view.methods.map((m) => [m.id, m]));
+  return h(
+    "div",
+    { class: "stack" },
+    view.methods.length > 0
+      ? h(
+          "div",
+          null,
+          h("div", { class: "card-sub" }, plural(view.methods.length, "saved method")),
+          ...view.methods.map((method) =>
+            h(
+              "div",
+              { class: "cust-row" },
+              h(
+                "div",
+                { class: "cell-main cust-grow" },
+                h(
+                  "div",
+                  { class: "primary" },
+                  method.display,
+                  method.is_default ? badge("Default", "success", { dot: true }) : null,
+                ),
+                h(
+                  "div",
+                  { class: "secondary" },
+                  [method.provider, `expires ${expiryLabel(method.expiry_month, method.expiry_year)}`]
+                    .filter(Boolean)
+                    .join(" · "),
+                  method.last_failure_code ? ` · last attempt failed (${method.last_failure_code})` : "",
+                ),
+              ),
+            ),
+          ),
+        )
+      : null,
+    view.agreements.length > 0
+      ? h(
+          "div",
+          null,
+          h("div", { class: "card-sub" }, plural(view.agreements.length, "agreement")),
+          ...view.agreements.map((agreement) => {
+            const method = methodById.get(agreement.payment_method_id);
+            return h(
+              "div",
+              { class: "cust-row" },
+              h(
+                "div",
+                { class: "cell-main cust-grow" },
+                h(
+                  "div",
+                  { class: "primary" },
+                  agreementStatusLabel(agreement.status),
+                  badge(agreement.provider || "provider", "neutral"),
+                ),
+                h(
+                  "div",
+                  { class: "secondary" },
+                  method ? `${method.display} · ` : "",
+                  agreement.consent_at ? `Consent given ${relative(agreement.consent_at)}` : "No consent recorded",
+                  agreement.cancelled_at ? ` · cancelled ${relative(agreement.cancelled_at)}` : "",
+                  agreement.terms_version ? ` · terms ${agreement.terms_version}` : "",
+                ),
+              ),
+              statusBadge(agreement.status),
+            );
+          }),
+        )
+      : null,
+  );
 }
 
 // ------------------------------------------------------------------ billing --

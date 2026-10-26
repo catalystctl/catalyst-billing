@@ -17,8 +17,12 @@ const outdir = join(root, ".test-build");
 const result = await build({
   entryPoints: {
     "lib/brand": join(root, "src/lib/brand.ts"),
+    // ADM-28: the customer-detail tabs' request builders and wire normalisers. DOM-free so
+    // the "no provider token on this screen" rule is a test rather than a comment.
+    "lib/customer-detail": join(root, "src/lib/customer-detail.ts"),
     "lib/format": join(root, "src/lib/format.ts"),
     "lib/i18n": join(root, "src/lib/i18n.ts"),
+    "lib/invoice-controls": join(root, "src/lib/invoice-controls.ts"),
     "lib/mail-brand": join(root, "src/lib/mail-brand.ts"),
     "lib/qr": join(root, "src/lib/qr.ts"),
     "lib/router": join(root, "src/lib/router.ts"),

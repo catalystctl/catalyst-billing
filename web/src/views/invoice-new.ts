@@ -18,6 +18,13 @@ import { ApiError } from "../lib/api";
 import { money, type Amount } from "../lib/format";
 import { debounce, fill, h } from "../lib/dom";
 import { icon } from "../lib/icons";
+import {
+  creationSummary,
+  invoiceCreateBody,
+  sendEmailSelectable,
+  type CreatedInvoice,
+  type CreationSummary,
+} from "../lib/invoice-controls";
 import type { Ctx } from "../lib/types";
 import {
   amountFromInput,
@@ -34,6 +41,7 @@ import {
   select,
   textarea,
   avatar,
+  type Child,
 } from "../ui/kit";
 
 export const meta = { title: "New invoice", crumb: "New invoice" };
@@ -46,12 +54,6 @@ interface CustomerHit {
   open_invoices: number;
   outstanding: Amount[];
   has_login: boolean;
-}
-
-interface CreatedInvoice {
-  id: string;
-  number: string;
-  status: string;
 }
 
 interface CatalogProduct {
@@ -434,6 +436,12 @@ export default async function invoiceNewPage(ctx: Ctx): Promise<Node> {
   // Two decisions that belong with "issue immediately": whether the customer is emailed, and
   // whether the operator leaves with the document in hand. Both start on, and both are
   // disabled while the invoice stays a draft — a draft has no number to email or print.
+  //
+  // `send_email` is a real field on POST /api/v1/staff/invoices (a *bool, read only when the
+  // document is issued now), so the toggle is a contract, not a wish: turning it off must
+  // suppress a notification the installation would otherwise send. Whether the fields are
+  // live, what to send, and what the created document allows are decisions in
+  // lib/invoice-controls.ts, where they are tested without a DOM.
   const sendEmailBox = h("input", { type: "checkbox", id: "invoice-send-email", checked: true });
   const sendEmailField = h(
     "label",
@@ -442,6 +450,9 @@ export default async function invoiceNewPage(ctx: Ctx): Promise<Node> {
     h("span", null, "Email the customer the issued invoice (uses the installation's template)"),
   );
   const openPDFBox = h("input", { type: "checkbox", id: "invoice-open-pdf", checked: true });
+  // Creating needs invoice:write:all; downloading the document needs invoice:read:all. They are
+  // separate grants, so the PDF control follows the second, not the first.
+  const canDownloadPdf = ctx.can("invoice:read:all");
   const openPDFField = h(
     "label",
     { class: "checkbox" },
@@ -449,15 +460,72 @@ export default async function invoiceNewPage(ctx: Ctx): Promise<Node> {
     h("span", null, "Download the PDF as soon as it is issued"),
   );
   const syncIssueOptions = () => {
-    const issuing = issueBox.checked;
-    sendEmailBox.disabled = !issuing;
-    openPDFBox.disabled = !issuing;
+    // Disabled, not hidden: the operator sees that the choice exists and that it belongs to
+    // issuing, which is the thing to change if they want it. The PDF is also disabled when the
+    // session may not read invoices, because the download route is behind invoice:read:all.
+    sendEmailBox.disabled = !sendEmailSelectable(issueBox.checked);
+    openPDFBox.disabled = !issueBox.checked || !canDownloadPdf;
   };
   issueBox.addEventListener("change", syncIssueOptions);
   syncIssueOptions();
 
   const errorHost = h("div");
   const submit = btn("Create draft", { variant: "primary", type: "submit", icon: "invoice" });
+
+  // ------------------------------------------------------- after creation --
+  // ADM-31's "immediate PDF". The confirmation is a panel that replaces the form rather than
+  // only a toast: a toast is gone in four seconds and a redirect would unmount the page that
+  // carries the download, so "open the document you just made" would be a race with the
+  // router. Staying on the screen until the operator has the file, the invoice, or another one
+  // is the affordance; it is also the only version that survives a blocked popup.
+  const createdPanel = h("div", { hidden: true });
+  const showCreated = (invoice: CreatedInvoice, summary: CreationSummary) => {
+    const actions: Child[] = [];
+    if (summary.pdfPath) {
+      // An anchor, not a fetch: the route answers application/pdf with an attachment
+      // disposition, and the router skips a link carrying `download`, so the browser saves the
+      // document instead of the SPA trying to render it as a page. Same reasoning as the PDF
+      // button on views/invoice.ts.
+      actions.push(
+        h(
+          "a",
+          {
+            class: "btn btn--primary btn--sm",
+            href: summary.pdfPath,
+            download: true,
+            "data-native": "true",
+            target: "_blank",
+            rel: "noopener",
+            title: "Download the issued invoice as a PDF",
+          },
+          icon("download", 14),
+          "Download PDF",
+        ),
+      );
+    }
+    actions.push(
+      btn("Open invoice", { href: `/invoices/${invoice.id}`, variant: "ghost", size: "sm", icon: "arrowRight" }),
+      btn("Create another", {
+        variant: "ghost",
+        size: "sm",
+        icon: "plus",
+        onclick: () => window.location.reload(),
+      }),
+    );
+    createdPanel.replaceChildren(
+      banner(
+        summary.issued ? "success" : "info",
+        invoice.number ? `${invoice.number} created` : "Draft created",
+        summary.emailNote,
+        h("div", { class: "row" }, ...actions),
+      ),
+    );
+    createdPanel.hidden = false;
+    // The form stays in the tree but hidden: a second submit would create a second invoice,
+    // which is exactly the accident a confirmation exists to prevent.
+    form.hidden = true;
+    window.scrollTo({ top: 0 });
+  };
 
   const syncSubmitLabel = () => {
     fill(submit, icon("invoice", 14), issueBox.checked ? "Create and issue" : "Create draft");
@@ -507,39 +575,54 @@ export default async function invoiceNewPage(ctx: Ctx): Promise<Node> {
   const submitInvoice = async () => {
     if (!selected) return;
     const currency = currencyCode();
-    const body = {
-      customer_id: selected.id,
-      issue_now: issueBox.checked,
-      due_in_days: dueInDays(dueDays.value),
-      // Only meaningful when the document is issued in this request; the server ignores it for
-      // a draft, which has nothing to send.
-      send_email: issueBox.checked ? sendEmailBox.checked : undefined,
+    // Only what the server reads is sent. `send_email` is present exactly when the document is
+    // issued in this request: a draft queues no mail, so a value for it would be a record of a
+    // choice nobody made.
+    const body = invoiceCreateBody({
+      customerId: selected.id,
+      issueNow: issueBox.checked,
+      sendEmail: sendEmailBox.checked,
+      dueInDays: dueInDays(dueDays.value),
       memo: memo.value.trim(),
       lines: rows.map((row) => ({
         description: row.desc.value.trim(),
         quantity: parseQuantity(row.qty.value) ?? 0,
-        unit_amount_minor: amountFromInput(row.unit.value, scale()) ?? 0,
+        unitAmountMinor: amountFromInput(row.unit.value, scale()) ?? 0,
         currency,
-        // Omitted entirely for an ordinary line, so the server stores NULL and fulfilment
-        // knows there is nothing to provision.
-        ...(row.product.value ? { product_id: row.product.value } : {}),
-        ...(row.version.value ? { price_version_id: row.version.value } : {}),
+        productId: row.product.value,
+        priceVersionId: row.version.value,
       })),
-    };
+    });
 
     if (submit instanceof HTMLButtonElement) submit.disabled = true;
     try {
       const created = await ctx.api.post<CreatedInvoice>("/api/v1/staff/invoices", body);
-      ctx.toast(created.status === "draft" ? "Draft invoice created" : "Invoice issued", {
-        tone: "success",
-        detail: created.number ? `${created.number} · ${created.status}` : "No number until it is issued.",
-      });
       // ADM-31 asked for the PDF at creation. A draft has none — the document route answers 409
-      // for one — so this only opens an issued document, and only when asked.
-      if (created.status !== "draft" && openPDFBox.checked) {
-        window.open(`/api/v1/staff/invoices/${encodeURIComponent(created.id)}/pdf`, "_blank", "noopener");
+      // not_issued for one — so the summary decides from the status the server reported rather
+      // than from a client-side guess about what "issued" means.
+      const summary = creationSummary(created, {
+        sendEmail: sendEmailBox.checked,
+        autoDownload: openPDFBox.checked,
+        // The PDF route is behind invoice:read:all, which is separate from the
+        // invoice:write:all this screen needs to get here. Offering a link the route would
+        // refuse is a dead end, so the grant is checked before the button exists.
+        canDownloadPdf: canDownloadPdf,
+      });
+      // The detail states what actually happened rather than what was asked for: a suppressed
+      // notification is the one outcome an operator might otherwise assume away.
+      const detail = !created.number
+        ? "No number until it is issued."
+        : summary.issued && !sendEmailBox.checked
+          ? `${created.number} · no customer email was queued`
+          : `${created.number} · ${created.status}`;
+      ctx.toast(summary.issued ? "Invoice issued" : "Draft invoice created", { tone: "success", detail });
+      if (summary.offerDownload && summary.pdfPath) {
+        // A new tab, not a fetch, so the document download does not race the confirmation
+        // panel. A blocked popup costs nothing: the panel's own button downloads the same
+        // document.
+        window.open(summary.pdfPath, "_blank", "noopener");
       }
-      ctx.navigate(`/invoices/${created.id}`);
+      showCreated(created, summary);
     } catch (err) {
       const message =
         err instanceof ApiError
@@ -613,7 +696,17 @@ export default async function invoiceNewPage(ctx: Ctx): Promise<Node> {
         }),
         h("div", { class: "span-2" }, issueField),
         h("div", { class: "span-2" }, sendEmailField),
+        h(
+          "p",
+          { class: "field-hint span-2" },
+          "The server queues the notification in the same transaction that issues the number. Leaving this off suppresses it; a draft has nothing to send.",
+        ),
         h("div", { class: "span-2" }, openPDFField),
+        h(
+          "p",
+          { class: "field-hint span-2" },
+          "A draft has no PDF — the document route refuses one until the invoice is issued — so the download is offered once it has a number.",
+        ),
       ),
     }),
     h(
@@ -644,6 +737,7 @@ export default async function invoiceNewPage(ctx: Ctx): Promise<Node> {
       sub: "A manual document for one customer. Recurring billing is the subscription engine's job; this is the correction and the one-off.",
       actions: btn("Back to invoices", { href: "/invoices", variant: "ghost", size: "sm", icon: "arrowLeft" }),
     }),
+    createdPanel,
     h(
       "div",
       { class: "split" },

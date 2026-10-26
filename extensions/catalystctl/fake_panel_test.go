@@ -10,7 +10,6 @@ package main
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -144,17 +143,6 @@ func (f *fakePanel) addServer(srv panelServer) {
 	defer f.mu.Unlock()
 	f.servers[srv.ID] = srv
 	f.order = append(f.order, srv.ID)
-}
-
-// lastCall returns the most recent mutating call, failing when there is none.
-func (f *fakePanel) lastCall() recordedCall {
-	f.t.Helper()
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.calls) == 0 {
-		f.t.Fatal("the adapter made no mutating call")
-	}
-	return f.calls[len(f.calls)-1]
 }
 
 // callCount counts the mutating calls matching method and path.
@@ -502,9 +490,6 @@ func writePanelError(w http.ResponseWriter, status int, code, message string) {
 	}
 	_ = json.NewEncoder(w).Encode(out)
 }
-
-// drain closes a request body, ignoring the error: tests do not care.
-func drain(body io.ReadCloser) { _ = body.Close() }
 
 // itoa and atoi keep the fixture free of strconv noise in the middle of HTTP handling.
 func itoa(n int) string {

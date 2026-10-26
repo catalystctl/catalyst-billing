@@ -136,11 +136,6 @@ func (e *panelError) notFound() bool {
 	return e.status == http.StatusNotFound && e.resourceMissing
 }
 
-// misrouted reports whether a 404 came from something that is not the panel's API.
-func (e *panelError) misrouted() bool {
-	return e != nil && e.status == http.StatusNotFound && !e.notFound()
-}
-
 // locked reports whether the resource is suspended or in another state the panel refuses to act
 // on. The panel also uses 423 for "suspended", which is not a failure to report as broken.
 func (e *panelError) locked() bool { return e != nil && e.status == http.StatusLocked }

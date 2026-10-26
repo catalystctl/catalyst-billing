@@ -389,7 +389,6 @@ type jobDeclaration struct {
 }
 
 var (
-	jobNamePattern     = regexp.MustCompile(`name:\s+"([a-z0-9-]+)",`)
 	jobIntervalPattern = regexp.MustCompile(`name:\s+"([a-z0-9-]+)",\s*\n\s*interval:\s*([^,\n]+),`)
 	jobConstPattern    = regexp.MustCompile(`(?m)^\s*const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\n]+)$`)
 )

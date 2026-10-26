@@ -544,15 +544,6 @@ func (s *server) sizeDefaults() plan {
 	return plan{ID: "default", MemoryMB: 2048, DiskMB: 10240, CPUCores: 1}
 }
 
-// planIDs lists the sellable plan ids, for an error message.
-func (s *server) planIDs() string {
-	ids := make([]string, 0, len(s.cfg.plans))
-	for _, p := range s.cfg.plans {
-		ids = append(ids, p.ID)
-	}
-	return strings.Join(ids, ", ")
-}
-
 // create buys a server.
 //
 // The order of operations is the whole idempotency argument:

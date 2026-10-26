@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -279,19 +278,4 @@ func TestConformanceRefusesToStartWithoutASecretKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("the adapter started with no STRIPE_SECRET_KEY")
 	}
-}
-
-// jsonBody is a helper for asserting on a raw result when a test needs the wire
-// form rather than a decoded struct.
-func jsonBody(t *testing.T, v any) map[string]any {
-	t.Helper()
-	raw, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	return out
 }

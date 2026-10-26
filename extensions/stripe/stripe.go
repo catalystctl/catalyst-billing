@@ -360,16 +360,6 @@ func (c *stripeClient) resolveIntent(ctx context.Context, paymentID string) (int
 	return c.getIntent(ctx, sess.intentID)
 }
 
-// idempotencyKeyFor builds the key the adapter sends. The protocol's operation key
-// is already unique per logical operation, so it is used verbatim — rewriting it
-// would break the core's assumption that a replay maps to the same provider call.
-func idempotencyKeyFor(operationKey string) string {
-	if len(operationKey) <= 255 {
-		return operationKey
-	}
-	return operationKey[:255]
-}
-
 // minorAmount formats an amount the way Stripe expects it: a bare integer of
 // minor units, never a decimal. Money is never converted to float anywhere in
 // this adapter.

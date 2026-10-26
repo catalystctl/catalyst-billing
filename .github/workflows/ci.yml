@@ -8,11 +8,42 @@ name: CI
 # developer machine without a database, but here BILLING_REQUIRE_DB=1 makes a
 # missing database a failure: a green build must never mean "the money tests did
 # not run".
+#
+# # Why it is shaped like this
+#
+# Wall clock, not job count. Everything that can run beside something else does:
+# lint, the vulnerability scan, the generated-output checks, the web toolchain,
+# the secret scan and the six test shards all start at once and none of them
+# needs another.
+#
+# The suite is sharded six ways by scripts/ci-test.sh, and that script exists
+# because ordinary `go test ./...` is not parallel *enough* here: internal/httpapi
+# holds 702 of the repo's 2,255 test functions and takes ~336s on its own, which
+# is ~92% of the wall clock of the whole suite. Sharding packages alone would buy
+# nothing — the other 62 packages finish while httpapi is still going. So the
+# script splits that one package by test name, one slice per shard, and every
+# shard runs against its own PostgreSQL instance. Measured: 364s single-job ->
+# ~60s per shard on this machine.
+#
+# Two test runs used to happen for one answer: the suite once, then a second
+# verbose run of three packages to assert nothing had skipped. The shard runner
+# reads `go test -json`, so the skip assertion now costs nothing extra.
+#
+# Caches are keyed on what actually invalidates them and no tool is installed at
+# `@latest`: an unpinned `go install` on the critical path turns a green build red
+# the day upstream publishes.
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# A new commit on a PR cancels the previous run — a superseded run is pure queue.
+# On main nothing is cancelled: that run is the record.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -20,10 +51,171 @@ permissions:
 env:
   # Never let a workflow inherit a caller's proxy or token behaviour.
   GOFLAGS: -mod=readonly
+  # A test that silently skips is worse than no test.
+  BILLING_REQUIRE_DB: "1"
+  # Pinned so the cache key, the log line and the tool are the same thing.
+  STATICCHECK_VERSION: "2025.1.1"
+  GOVULNCHECK_VERSION: "v1.9.0"
+  GITLEAKS_VERSION: "v8.28.0"
 
+# Every test shard gets its own cluster. Port 5442 and these credentials match
+# compose.yaml and the default DSN, so a red shard reproduces on a laptop after
+# `make db-up` with no test code changed. (No YAML anchor: GitHub's workflow
+# schema has no place to hang a top-level one, and actionlint rejects it.)
 jobs:
-  test:
+  plan:
+    # Cheap, and it gates the six runners. A shard plan that silently drops a
+    # package is the worst kind of green build, so it is proved before anything
+    # expensive starts.
+    #
+    # --total must match the test matrix below.
+    name: shard plan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Every package and every test function lands in exactly one shard
+        run: bash scripts/ci-test.sh --total 6 --verify
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Formatting
+        run: |
+          unformatted="$(gofmt -l . | grep -v '^$' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      # vet compiles most of the tree, but not the test files and not every
+      # entry point. This is the step that proves `cmd/` still builds.
+      - name: Build
+        run: go build ./...
+
+      - name: Staticcheck
+        run: |
+          go install "honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION}"
+          "$(go env GOPATH)/bin/staticcheck" ./...
+
+      - name: Dependencies are tidy and pinned
+        run: |
+          cp go.mod /tmp/go.mod.before
+          cp go.sum /tmp/go.sum.before
+          go mod tidy
+          diff -u /tmp/go.mod.before go.mod
+          diff -u /tmp/go.sum.before go.sum
+
+  vuln:
+    name: vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: |
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  generated:
+    # The API document is generated from the route table and the typed client is
+    # generated from the document. Both are committed, and both rot silently if
+    # nobody compares them with what the router actually serves.
+    name: generated output is current
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: The OpenAPI document matches the router
+        run: go run ./cmd/openapigen -check
+
+      - name: The typed client matches the document
+        run: |
+          go run ./cmd/apiclient -out ./api/client -check
+          go build ./api/client/...
+
+      - name: Every variable the code reads is documented
+        run: node scripts/env-check.mjs
+
+      - name: Nothing above wrote a file
+        run: git diff --exit-code
+
+  web:
+    # The frontend is a separate toolchain on purpose: `go build` never needs
+    # Node, because the built dist/ is committed and embedded. This job is the
+    # half that needs it.
+    #
+    # It deliberately does not assert that the committed dist/ matches a fresh
+    # build: web/dist is rebuilt and committed by hand (`make web-build`), and
+    # gating on it turns every source change into a red build until somebody
+    # remembers. Rebuilding here still proves the bundle builds.
+    name: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Scan for committed secrets
+        run: |
+          go install "github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION}"
+          "$(go env GOPATH)/bin/gitleaks" detect --source . --verbose --redact --exit-code 1
+
+  test:
+    name: test (${{ matrix.shard }}/6)
+    needs: [plan]
+    runs-on: ubuntu-latest
+    # A shard that hangs is worse than one that fails: it burns minutes and
+    # reports nothing. The slowest shard measured ~65s, so this is generous.
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:17-alpine
@@ -41,14 +233,20 @@ jobs:
     env:
       BILLING_TEST_DSN: postgres://billing:ci-only-owner@127.0.0.1:5442/billing_test?sslmode=disable
       BILLING_DATABASE_URL: postgres://billing:ci-only-owner@127.0.0.1:5442/billing_test?sslmode=disable
-      BILLING_REQUIRE_DB: "1"
+    strategy:
+      # One red shard must not hide the other five: a single run that reports
+      # every failure beats five runs that report one each.
+      fail-fast: false
+      matrix:
+        # Keep in step with the --total in the `plan` job, which proves the plan
+        # covers every package and test function exactly once.
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          check-latest: true
 
       # The runtime role and its privileges are part of what the tests verify.
       - name: Create runtime role
@@ -66,97 +264,122 @@ jobs:
           SQL
           echo "BILLING_APP_TEST_DSN=postgres://billing_app:ci-only-app@127.0.0.1:5442/billing_test?sslmode=disable" >> "$GITHUB_ENV"
 
-      - name: Formatting
+      # Race detector on, result cache off, package vet off (the lint job owns
+      # vet), and the same plan a developer gets from `make test-shard`.
+      - name: Test shard ${{ matrix.shard }}
         run: |
-          unformatted="$(gofmt -l . | grep -v '^$' || true)"
-          if [ -n "$unformatted" ]; then
-            echo "these files are not gofmt'd:"; echo "$unformatted"; exit 1
-          fi
+          bash scripts/ci-test.sh \
+            --shard ${{ matrix.shard }} --total 6 \
+            --coverprofile "coverage.${{ matrix.shard }}.out"
 
-      - name: Vet
-        run: go vet ./...
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-${{ matrix.shard }}
+          path: coverage.${{ matrix.shard }}.out
+          if-no-files-found: warn
+          retention-days: 7
 
-      - name: Test (race detector)
-        run: go test ./... -count=1 -race -timeout 10m
-
-      # A test that silently skips is worse than no test. Assert that the
-      # database-backed suites actually ran.
-      - name: Assert integration tests were not skipped
-        run: |
-          go test ./internal/billing/ ./internal/store/ ./internal/e2e/ -count=1 -v 2>&1 | tee /tmp/test.log
-          if grep -q '^--- SKIP' /tmp/test.log; then
-            echo "database-backed tests were skipped in CI"; exit 1
-          fi
-
-  static-analysis:
+  coverage:
+    # Reports the merged figure. It is a signal, not a gate: a threshold that
+    # nobody chose would be a check that gets deleted rather than raised.
+    name: coverage
+    needs: [test]
+    if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          check-latest: true
-
-      - name: Vulnerability scan
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
-
-      - name: Staticcheck
-        run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
-          staticcheck ./...
-
-      - name: Dependencies are tidy and pinned
-        run: |
-          cp go.mod /tmp/go.mod.before
-          cp go.sum /tmp/go.sum.before
-          go mod tidy
-          diff -u /tmp/go.mod.before go.mod
-          diff -u /tmp/go.sum.before go.sum
-
-  secrets:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          fetch-depth: 0
-      - name: Scan for committed secrets
+          pattern: coverage-*
+          merge-multiple: true
+      - name: Merge the shard profiles and report the total
         run: |
-          go install github.com/zricethezav/gitleaks/v8@latest
-          gitleaks detect --source . --verbose --redact --exit-code 1
+          shopt -s nullglob
+          parts=(coverage.*.out)
+          if [ ${#parts[@]} -eq 0 ]; then
+            echo "no coverage profiles were produced; nothing to merge"; exit 0
+          fi
+          { head -1 "${parts[0]}"; cat "${parts[@]}" | grep -v '^mode:' || true; } > coverage.out
+          go tool cover -func=coverage.out | tail -1
+          cp coverage.out coverage-merged.out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-merged
+          path: coverage-merged.out
+          if-no-files-found: warn
 
   release:
     # Signed checksums and an SBOM for the artifact an operator installs.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, static-analysis, secrets]
+    needs: [plan, lint, vuln, generated, web, secrets, test]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+    strategy:
+      # Per-platform builds are independent; one matrix entry per target means
+      # they compile beside each other instead of in a loop.
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -o "dist/billing_${GOOS}_${GOARCH}" ./cmd/billing
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: billing-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/billing_${{ matrix.goos }}_${{ matrix.goarch }}
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/download-artifact@v4
         with:
-          go-version-file: go.mod
-
-      - name: Build
-        run: |
-          mkdir -p dist
-          for target in linux/amd64 linux/arm64 darwin/arm64; do
-            os="${target%/*}"; arch="${target#*/}"
-            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
-              go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
-              -o "dist/billing_${os}_${arch}" ./cmd/billing
-          done
+          pattern: billing-*
+          path: dist
+          merge-multiple: true
 
       - name: SBOM
-        run: |
-          go install github.com/anchore/syft/cmd/syft@latest
-          syft dir:. -o spdx-json=dist/sbom.spdx.json
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/sbom.spdx.json
 
       - name: Checksums
-        run: cd dist && sha256sum * > SHA256SUMS
+        run: |
+          cd dist
+          rm -f SHA256SUMS
+          sha256sum -- * > SHA256SUMS
 
       - uses: actions/upload-artifact@v4
         with:

@@ -4,7 +4,19 @@
 *.out
 node_modules/
 
-# Development credentials for the loopback test cluster. The template
+# Local tooling and generated runtime output.
+/.serena/
+*.log
+.DS_Store
+Thumbs.db
+
+# Local mock/export files produced while iterating on the UI.
+/catalyst-billing-restyled.html
+
+# Build outputs that may be produced at the repository root by direct `go build` calls.
+/apiclient
+/fakeprov
+
 # (.env.example) is committed; the real file must never be.
 .env
 coverage.out

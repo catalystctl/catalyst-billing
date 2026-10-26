@@ -1637,6 +1637,17 @@ try {
       await setField("#brand-accent-light", LIGHT);
       await setField("#brand-accent-dark", DARK);
 
+      // The mode the panel is actually in. It is not a constant: since the theme registry landed a
+      // published theme may be dark-first, so the panel follows the theme rather than the operating
+      // system, and the preview paints the accent for *that* mode. Asserting `LIGHT` outright made
+      // this test fail on a database where an operator had published a dark preset — which is a
+      // legitimate state, not a bug. The test reads the mode and asserts the accent that mode owns,
+      // which is the property that was always meant.
+      const panelMode = await evaluate(
+        "document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'",
+      );
+      const expectedAccent = panelMode === "light" ? LIGHT : DARK;
+
       // The preview must have repainted from the form, before any save: a preview that only
       // updates after a round trip is a preview of the last save, not of the values on screen.
       const preview = await evaluate(`(() => {
@@ -1645,9 +1656,14 @@ try {
         return {
           accent: el.style.getPropertyValue('--accent').trim(),
           name: (el.querySelector('.brand-name') || {}).textContent || '',
+          mode: el.dataset.mode || '',
         };
       })()`);
-      check("branding: the preview paints the typed accent", preview?.accent === LIGHT, JSON.stringify(preview));
+      check(
+        "branding: the preview paints the typed accent",
+        preview?.accent === expectedAccent,
+        `${JSON.stringify(preview)} (panel mode ${panelMode}, expected ${expectedAccent})`,
+      );
       check("branding: the preview shows the typed name", (preview?.name || "").includes("Acme"), preview?.name ?? "");
 
       const saved = await evaluate(`(() => {
@@ -1667,7 +1683,7 @@ try {
       // three assertions later as a mystery colour nobody in this run had typed.
       const applied = await until(
         "the brand to reach the shell",
-        `document.documentElement.style.getPropertyValue('--accent').trim() === ${JSON.stringify(LIGHT)}`,
+        `document.documentElement.style.getPropertyValue('--accent').trim() === ${JSON.stringify(expectedAccent)}`,
         10_000,
       ).catch(() => false);
       check(

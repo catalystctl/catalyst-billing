@@ -12,10 +12,7 @@
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background:
-    radial-gradient(1100px 520px at 12% -8%, var(--accent-soft-strong), transparent 62%),
-    radial-gradient(800px 420px at 92% 4%, rgba(139, 92, 246, 0.1), transparent 60%),
-    var(--bg);
+  background: var(--bg);
 }
 
 .store {

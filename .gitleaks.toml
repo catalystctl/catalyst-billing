@@ -1,0 +1,43 @@
+# gitleaks configuration.
+#
+# CI runs `gitleaks detect --source .`, which walks the whole commit history, so a finding is
+# permanent until history is rewritten. Rewriting three hundred commits to remove a handful of
+# deliberately fake credentials is a worse trade than naming them here.
+#
+# The allowlist is a list of exact *values* rather than a list of files. A file exemption would
+# silently also cover a real key committed to that file next month; exempting the fixture value
+# leaves everything else in the same file reported as before.
+#
+# Every value below exists to look like a credential:
+#   - the auth tests assert a provider token, a card brand's saved instrument and an MFA secret
+#     never reach a response body, a log line or an audit row, so they must contain one;
+#   - the cpanel fake accepts a fixed token because the adapter under test sends exactly that;
+#   - the browser end-to-end harness needs a *stable* TOTP sealing key so that a re-run against
+#     the same database can still disable the factor the previous run enrolled. The comment
+#     beside it in scripts/browser-e2e.sh explains why it is not generated per run.
+#
+# Anything not listed here is still reported, including anything added to these same files.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Deliberately fake credentials in test fixtures and the e2e harness"
+
+# Match against the detected secret itself, so an entry cannot spill onto another value that
+# happens to share a line.
+regexTarget = "secret"
+regexes = [
+  # A saved payment-method token, in the two tests that prove it stays write-only.
+  '''pm_tok_live_SECRET_second_4444''',
+  '''pm_tok_live_LEAKCANARY_9f3a2b''',
+  # A gateway secret whose own name is the assertion.
+  '''sk_live_must_never_be_returned_1234''',
+  # Redaction fixtures: a body password and a password-reset token.
+  '''hunter2-body-4c1e''',
+  '''abc123def456''',
+  # The token the fake WHM panel accepts.
+  '''ABCDEF0123456789''',
+  # The e2e harness's TOTP sealing key.
+  '''e2e0b1e2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e''',
+]

@@ -481,6 +481,9 @@ func TestPortalCartHappyPathAndScoping(t *testing.T) {
 	rec = env.doJSON(t, http.MethodPut, "/api/v1/portal/cart/items/"+itemID,
 		bobCookie, "", map[string]any{"quantity": 5})
 	// No CSRF token means the wrapper refuses first; send a real one for Bob.
+	if code := commerceProblem(t, rec, http.StatusForbidden); code != "csrf_failed" {
+		t.Fatalf("cross-customer update without CSRF: code = %q, want csrf_failed", code)
+	}
 	bobCookie2, bobCSRF := env.login(t, "bob-cart@example.test", "customer password 1")
 	rec = env.doJSON(t, http.MethodPut, "/api/v1/portal/cart/items/"+itemID,
 		bobCookie2, bobCSRF, map[string]any{"quantity": 5})

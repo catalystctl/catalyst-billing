@@ -112,14 +112,6 @@ type response struct {
 	Error   *rpcError `json:"error,omitempty"`
 }
 
-// notification is the outgoing envelope with no id: the core sends these to the
-// extension, and the extension never answers one.
-type notification struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params"`
-}
-
 // rpcError is the outgoing JSON-RPC error object.
 type rpcError struct {
 	Code    int    `json:"code"`

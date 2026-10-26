@@ -3,7 +3,7 @@
 
 COMPOSE ?= podman-compose
 
-.PHONY: help dev dev-stop dev-config dev-reset seed seed-reset db-up db-ensure db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui money-e2e web-build web-typecheck web-test brand brand-render brand-audit brand-regress brand-verify
+.PHONY: help dev dev-stop dev-config dev-reset seed seed-reset db-up db-ensure db-down db-reset db-logs db-psql db-psql-app db-wait db-unlock migrate test test-race test-shard test-plan vet fmt build extensions clean openapi openapi-check client env-check smoke e2e-ui money-e2e web-build web-typecheck web-test brand brand-render brand-audit brand-regress brand-verify e2e-theme
 
 help:
 	@echo "dev        database + schema + fixtures + demo data + a staff account, then serve (Ctrl-C stops)"
@@ -22,6 +22,8 @@ help:
 	@echo "env-check  verify .env.example documents every variable the code reads"
 	@echo "test       go test ./... against the real database"
 	@echo "test-race  same, with the race detector"
+	@echo "test-shard one shard of the CI plan: make test-shard SHARD=3 [TOTAL=6]"
+	@echo "test-plan  prove the CI shards cover every package and test exactly once"
 	@echo "openapi    regenerate api/openapi.yaml from the router"
 	@echo "openapi-check  fail if api/openapi.yaml is out of date with the router"
 	@echo "client     regenerate the typed client from api/openapi.yaml"
@@ -174,6 +176,26 @@ test:
 test-race:
 	BILLING_REQUIRE_DB=1 go test ./... -count=1 -race
 
+# The suite is sharded in CI, and these are the same shards, so a red shard
+# reproduces with one command instead of a guess.
+#
+# A shard assumes it owns its PostgreSQL instance: each slice of internal/httpapi
+# takes a package-wide advisory lock, so two shards pointed at the same cluster
+# block each other and fail after the lock deadline. CI gives every shard its own
+# service container. Locally, run them one at a time.
+SHARD ?= 1
+TOTAL ?= 6
+
+test-shard:
+	BILLING_REQUIRE_DB=1 bash scripts/ci-test.sh --shard $(SHARD) --total $(TOTAL)
+
+# The plan is derived from the tree, so it can be checked. This proves no
+# package and no test function was quietly left out of CI — the failure mode a
+# hand-maintained shard list has and this one must not.
+test-plan:
+	@bash scripts/ci-test.sh --total $(TOTAL) --verify
+	@bash scripts/ci-test.sh --total $(TOTAL) --list
+
 # The API document is generated from the route table, never maintained by hand.
 # `openapi-check` is what CI runs: a route that is not documented, or a documented
 # route that is not served, fails the build.
@@ -208,6 +230,31 @@ smoke: build
 # Set E2E_SCREENSHOTS=dir to keep a PNG of each screen.
 e2e-ui: build
 	bash scripts/browser-e2e.sh
+
+# The theme system, in a browser.
+#
+# The Go tests prove the document validates, the resolver merges and the generator emits the right
+# declarations. None of them can prove a browser *paints* them: a stylesheet linked after the bundle,
+# a `data-theme` set before the first paint, a shell rule keyed off an attribute the boot script
+# writes, and seven studio screens against a live API all pass a unit test and fail on a page.
+#
+# So this publishes a theme, then reads what the browser computed: the painted background, the
+# generated radius, the border width, the nav variant, whether the sidebar overflows its own column.
+# It fails on any console error, and it restores what was live before the run.
+#
+#   make e2e-theme BASE=http://127.0.0.1:8791 STAFF_EMAIL=... STAFF_PASSWORD=... [PRESET=brutalist]
+#
+# It needs a running server with a staff account and Chromium. It publishes and then rolls back, so
+# it is safe against a development database and should not be pointed at anything else.
+BASE ?= http://127.0.0.1:8791
+PRESET ?= brutalist
+E2E_THEME_SHOTS ?=
+
+e2e-theme: build
+	@test -n "$(STAFF_EMAIL)" || { echo "set STAFF_EMAIL and STAFF_PASSWORD" >&2; exit 2; }
+	node scripts/e2e-theme.mjs --base=$(BASE) --staff=$(STAFF_EMAIL) \
+		--staff-password=$(STAFF_PASSWORD) --preset=$(PRESET) \
+		$(if $(E2E_THEME_SHOTS),--screenshots=$(E2E_THEME_SHOTS),)
 
 # The money documents, clicked rather than inspected. `e2e-ui` asserts that screens render; this
 # drives the affordances that move documents: the invoice and credit-note downloads on both
@@ -252,7 +299,7 @@ brand-verify:
 # scanners. Run this before calling anything done.
 # The browser smoke test is part of verify: the UI is only proven by a browser, and a check
 # nobody runs is a check that rots.
-verify: fmt-check vet openapi-check client-check test-race smoke e2e-ui
+verify: fmt-check vet openapi-check client-check test-plan test-race smoke e2e-ui
 	@echo "verify: ok"
 
 fmt-check:

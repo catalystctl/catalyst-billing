@@ -1037,11 +1037,6 @@ func writeTestError(env *staffEnv, detail string) error {
 	})
 }
 
-// containsBytes reports whether body contains needle.
-func containsBytes(body, needle []byte) bool {
-	return containsString(string(body), string(needle))
-}
-
 // containsString reports whether s contains needle.
 func containsString(s, needle string) bool {
 	return len(needle) == 0 || (len(s) >= len(needle) && indexOf(s, needle) >= 0)

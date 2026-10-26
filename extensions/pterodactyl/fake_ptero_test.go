@@ -76,8 +76,6 @@ func newFakePtero(t *testing.T) *fakePtero {
 	return f
 }
 
-func (f *fakePtero) baseURL() string { return f.server.URL }
-
 func (f *fakePtero) config() config {
 	plans := []plan{
 		{ID: "small", MemoryMB: 2048, DiskMB: 10240, CPUPercent: 100},

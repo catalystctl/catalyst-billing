@@ -101,15 +101,6 @@ func (f *fakeWHM) config() config {
 	}
 }
 
-func (f *fakeWHM) lastRequest() whmRequest {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.requests) == 0 {
-		f.t.Fatal("no request recorded")
-	}
-	return f.requests[len(f.requests)-1]
-}
-
 func (f *fakeWHM) requestCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

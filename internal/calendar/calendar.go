@@ -25,22 +25,30 @@
 // forward by the gap, matching java.time and iCalendar. When it occurs twice
 // (fall back) the earlier instant, i.e. the first occurrence, is used.
 //
-// # Two period models
+// # Period models
 //
 // A price is sold either in calendar months (monthly, quarterly, semiannual,
-// annual) or as a fixed number of days ("every 45 days"). Those are two different
-// period models and this package keeps them apart:
+// annual) or as an explicit number of days, weeks or months ("every 45 days",
+// "every 2 weeks", "every 3 months"). The persisted interval name says which
+// model applies, and this package keeps the models apart:
 //
 //   - The **calendar model** hangs every period off an anchor day-of-month, which
-//     is what makes month ends and leap days correct. It is unchanged.
+//     is what makes month ends and leap days correct. The four named intervals and
+//     an explicit N-month count both use it; N months is the same arithmetic with
+//     a month count of N instead of the interval's fixed 1, 3, 6 or 12.
 //   - The **day-count model** counts a fixed number of civil days from an explicit
 //     origin, because a day count has no month to hang from. Counting civil days
 //     (not 24-hour multiples) is what keeps a boundary on the same wall-clock time
-//     across a daylight-saving transition.
+//     across a daylight-saving transition. A week is exactly seven civil days, so
+//     an N-week period is the day-count model with a length of 7*N days; it keeps
+//     the week unit in its name for display and range validation, but nothing in
+//     the arithmetic treats it as anything other than days.
 //
 // They are separate on purpose. Blending a day count into the month arithmetic
 // would silently move the renewal date of every existing subscription, and that is
-// the one thing this package must never do.
+// the one thing this package must never do. An explicit N-month count deliberately
+// uses the calendar model rather than 30*N days: a month is a calendar fact, not a
+// day count, and month-end clamping is what customers expect from it.
 package calendar
 
 import (
@@ -98,8 +106,9 @@ func (i Interval) String() string {
 	}
 }
 
-// ParseInterval parses a stored calendar interval name. It refuses the day-count
-// form; ParseDayInterval parses that, and ScheduleFor accepts both.
+// ParseInterval parses a stored calendar interval name. It refuses the explicit
+// day/week/month forms; ParseDayInterval, ParseWeekInterval and ParseMonthInterval
+// parse those, and ScheduleFor accepts all of them.
 func ParseInterval(s string) (Interval, error) {
 	switch s {
 	case "monthly":
@@ -115,42 +124,86 @@ func ParseInterval(s string) (Interval, error) {
 	}
 }
 
-// ------------------------------------------------------- day-count periods --
+// IsCalendarInterval reports whether name is one of the four named calendar
+// intervals. It is the predicate a caller asks before ParseInterval when the
+// alternative forms are handled separately.
+func IsCalendarInterval(name string) bool {
+	_, err := ParseInterval(name)
+	return err == nil
+}
 
-// The stored form of a day-count period is "every_45_days". A self-describing
-// string rather than a second column because it is one value — a period — and two
-// columns would let a row say "monthly" with a day count beside it.
+// --------------------------------------------------- explicit period units --
+
+// The stored form of an explicit period is self-describing: "every_45_days",
+// "every_2_weeks", "every_3_months". A self-describing string rather than a
+// number and a unit column because it is one value — a period — and two columns
+// would let a row say "monthly" with a day count beside it.
 const (
-	dayIntervalPrefix = "every_"
-	dayIntervalSuffix = "_days"
+	intervalPrefix      = "every_"
+	dayIntervalSuffix   = "_days"
+	weekIntervalSuffix  = "_weeks"
+	monthIntervalSuffix = "_months"
 )
 
-// MaxDayInterval is the longest day-count period accepted, one leap year. A
-// longer one is almost always a typo for a calendar interval, and the database
-// CHECK enforces the same bound so a row written by hand cannot exceed it.
-const MaxDayInterval = 366
+// The longest explicit period accepted. A day count is bounded by one leap year,
+// and a week or month count by the same one-year horizon: 52 weeks are 364 days,
+// and 12 months are the annual calendar interval. A longer count is almost always
+// a typo for a named interval, and the database CHECK enforces the same bounds so
+// a row written by hand cannot exceed them.
+const (
+	MaxDayInterval   = 366
+	MaxWeekInterval  = 52
+	MaxMonthInterval = 12
+)
 
 // DayInterval renders n days as the stored interval name: "every_45_days".
 func DayInterval(days int) string {
-	return dayIntervalPrefix + strconv.Itoa(days) + dayIntervalSuffix
+	return intervalPrefix + strconv.Itoa(days) + dayIntervalSuffix
+}
+
+// WeekInterval renders n weeks as the stored interval name: "every_2_weeks".
+func WeekInterval(weeks int) string {
+	return intervalPrefix + strconv.Itoa(weeks) + weekIntervalSuffix
+}
+
+// MonthInterval renders n months as the stored interval name: "every_3_months".
+func MonthInterval(months int) string {
+	return intervalPrefix + strconv.Itoa(months) + monthIntervalSuffix
 }
 
 // ParseDayInterval parses the day-count interval form and reports whether s was
 // one. It accepts only the canonical spelling, so one period has one string in the
 // database and the uniqueness of a period key cannot be defeated by "every_045_days".
 func ParseDayInterval(s string) (int, bool) {
-	if !strings.HasPrefix(s, dayIntervalPrefix) || !strings.HasSuffix(s, dayIntervalSuffix) {
+	return parseUnitInterval(s, dayIntervalSuffix, MaxDayInterval)
+}
+
+// ParseWeekInterval parses the explicit week form: "every_2_weeks".
+func ParseWeekInterval(s string) (int, bool) {
+	return parseUnitInterval(s, weekIntervalSuffix, MaxWeekInterval)
+}
+
+// ParseMonthInterval parses the explicit month form: "every_3_months".
+func ParseMonthInterval(s string) (int, bool) {
+	return parseUnitInterval(s, monthIntervalSuffix, MaxMonthInterval)
+}
+
+// parseUnitInterval parses one canonical explicit-period spelling. The leading-zero
+// check is what makes one period have one name: "every_02_weeks" is refused even
+// though it would parse, so a period key cannot be duplicated by a second spelling.
+func parseUnitInterval(s, suffix string, max int) (int, bool) {
+	if !strings.HasPrefix(s, intervalPrefix) || !strings.HasSuffix(s, suffix) {
 		return 0, false
 	}
-	digits := strings.TrimSuffix(strings.TrimPrefix(s, dayIntervalPrefix), dayIntervalSuffix)
-	days, err := strconv.Atoi(digits)
-	if err != nil || days < 1 || days > MaxDayInterval {
+	digits := strings.TrimSuffix(strings.TrimPrefix(s, intervalPrefix), suffix)
+	count, err := strconv.Atoi(digits)
+	if err != nil || count < 1 || count > max {
 		return 0, false
 	}
-	if strconv.Itoa(days) != digits {
+	if strconv.Itoa(count) != digits {
 		return 0, false
 	}
-	return days, true
+	return count, true
 }
 
 // Civil is a wall-clock date-time with no offset: what a customer in the
@@ -233,12 +286,17 @@ func (a Anchor) String() string {
 
 // Schedule is a period model plus an anchor evaluated in one business timezone.
 //
-// Exactly one of the two models is in use: a calendar interval (monthly,
-// quarterly, semiannual, annual), or a day count ("every 45 days"). See the
-// package comment for why they are not one blended model.
+// Exactly one of the models is in use: a named calendar interval (monthly,
+// quarterly, semiannual, annual), an explicit month count ("every 3 months"), or a
+// day count ("every 45 days", "every 2 weeks"). See the package comment for why
+// they are not one blended model.
 type Schedule struct {
 	interval Interval
-	// days is the day-count length, zero for a calendar interval.
+	// months is the explicit month count, zero for a named interval and for a
+	// day-count schedule.
+	months int
+	// days is the day-count length, zero for a calendar interval. A week count is
+	// converted to days here, so the arithmetic is the same civil-day model.
 	days   int
 	anchor Anchor
 	loc    *time.Location
@@ -262,6 +320,32 @@ func NewSchedule(interval Interval, anchor Anchor, loc *time.Location) (*Schedul
 		return nil, fmt.Errorf("calendar: nil location")
 	}
 	return &Schedule{interval: interval, anchor: anchor, loc: loc}, nil
+}
+
+// NewMonthSchedule builds a calendar schedule with an explicit month count:
+// every period is exactly months calendar months from the anchor, so month-end
+// clamping and leap days behave exactly as they do for the named intervals.
+func NewMonthSchedule(months int, anchor Anchor, loc *time.Location) (*Schedule, error) {
+	if months < 1 || months > MaxMonthInterval {
+		return nil, fmt.Errorf("calendar: month count %d out of range 1..%d", months, MaxMonthInterval)
+	}
+	if err := anchor.Validate(); err != nil {
+		return nil, err
+	}
+	if loc == nil {
+		return nil, fmt.Errorf("calendar: nil location")
+	}
+	return &Schedule{interval: Monthly, months: months, anchor: anchor, loc: loc}, nil
+}
+
+// NewWeekSchedule builds a week-count schedule: every period is exactly weeks
+// weeks, which is 7*weeks civil days counted from origin. A week has no month to
+// hang from, so it uses the day-count model rather than a 30-day approximation.
+func NewWeekSchedule(weeks int, anchor Anchor, origin time.Time, loc *time.Location) (*Schedule, error) {
+	if weeks < 1 || weeks > MaxWeekInterval {
+		return nil, fmt.Errorf("calendar: week count %d out of range 1..%d", weeks, MaxWeekInterval)
+	}
+	return NewDaySchedule(weeks*7, anchor, origin, loc)
 }
 
 // NewDaySchedule builds a day-count schedule: every period is exactly days civil
@@ -326,11 +410,32 @@ func ScheduleFor(intervalName string, anchor Anchor, origin time.Time, loc *time
 		}
 		return NewDaySchedule(days, anchor, origin, loc)
 	}
+	// A week is a fixed number of civil days, so it is the day-count model with a
+	// length of 7*N. It is parsed before months so "every_2_weeks" can never be
+	// mistaken for a month count.
+	if weeks, ok := ParseWeekInterval(intervalName); ok {
+		return newDayScheduleForCount(weeks*7, anchor, origin, loc)
+	}
+	// A month is a calendar fact, not a day count: an explicit N-month period uses
+	// the calendar model so the anchor clamps at month ends exactly as "quarterly"
+	// does. It deliberately does not become 30*N days.
+	if months, ok := ParseMonthInterval(intervalName); ok {
+		return NewMonthSchedule(months, anchor, loc)
+	}
 	interval, err := ParseInterval(intervalName)
 	if err != nil {
 		return nil, err
 	}
 	return NewSchedule(interval, anchor, loc)
+}
+
+// newDayScheduleForCount builds a day-count schedule from an already-validated day
+// length, choosing the floating grid when no origin was supplied.
+func newDayScheduleForCount(days int, anchor Anchor, origin time.Time, loc *time.Location) (*Schedule, error) {
+	if origin.IsZero() {
+		return newFloatingDaySchedule(days, anchor, loc)
+	}
+	return NewDaySchedule(days, anchor, origin, loc)
 }
 
 // FirstPeriod derives the first billing period of a price bought at now, from the
@@ -356,15 +461,29 @@ func FirstPeriod(intervalName string, anchorDay int, timezone string, now time.T
 	return schedule.PeriodAt(now), nil
 }
 
-// Interval returns the calendar interval of the schedule. It is the zero Interval
-// for a day-count schedule: ask IsDayCount first.
+// Interval returns the named calendar interval of the schedule. It is the zero
+// Interval for a day-count schedule and for an explicit month count (which has no
+// named interval): ask IsDayCount or IsMonthCount first.
 func (s *Schedule) Interval() Interval { return s.interval }
 
 // IsDayCount reports whether this schedule counts days rather than calendar months.
+// A week-count schedule is a day-count schedule; its length is 7*N days.
 func (s *Schedule) IsDayCount() bool { return s.days > 0 }
+
+// IsMonthCount reports whether this schedule uses an explicit month count.
+func (s *Schedule) IsMonthCount() bool { return s.months > 0 }
 
 // Days returns the day-count length, or zero for a calendar schedule.
 func (s *Schedule) Days() int { return s.days }
+
+// Months returns the number of calendar months per period. It is zero for a
+// day-count schedule.
+func (s *Schedule) Months() int {
+	if s.months > 0 {
+		return s.months
+	}
+	return s.interval.Months()
+}
 
 // Anchor returns the schedule anchor.
 func (s *Schedule) Anchor() Anchor { return s.anchor }
@@ -376,7 +495,11 @@ func (s *Schedule) Location() *time.Location { return s.loc }
 // nominal (unclamped) anchor civil time.
 type Period struct {
 	interval Interval
-	// days is the day-count length of the period, zero for a calendar period.
+	// months is the explicit month count of the period, zero for a named interval
+	// and for a day-count period.
+	months int
+	// days is the day-count length of the period, zero for a calendar period. A
+	// week-count period carries its length in days here.
 	days int
 	loc  *time.Location
 	// anchor is the full schedule anchor (nominal day plus time of day). It is
@@ -398,16 +521,28 @@ type Period struct {
 	EndCivil   Civil
 }
 
-// Interval returns the period's calendar interval. A day-count period has none, so
-// this is the zero Interval for one: ask IsDayCount first rather than reading it as
-// Monthly.
+// Interval returns the period's named calendar interval. A day-count period and an
+// explicit month count have none, so this is the zero Interval for them: ask
+// IsDayCount or IsMonthCount first rather than reading it as Monthly.
 func (p Period) Interval() Interval { return p.interval }
 
 // IsDayCount reports whether the period counts days rather than calendar months.
 func (p Period) IsDayCount() bool { return p.days > 0 }
 
+// IsMonthCount reports whether the period uses an explicit month count.
+func (p Period) IsMonthCount() bool { return p.months > 0 }
+
 // Days returns the day-count length of the period, or zero for a calendar period.
 func (p Period) Days() int { return p.days }
+
+// Months returns the number of calendar months in the period, or zero for a
+// day-count period.
+func (p Period) Months() int {
+	if p.months > 0 {
+		return p.months
+	}
+	return p.interval.Months()
+}
 
 // Location returns the business timezone.
 func (p Period) Location() *time.Location { return p.loc }
@@ -439,6 +574,9 @@ func (p Period) String() string {
 	if p.days > 0 {
 		return fmt.Sprintf("every %d days [%s, %s)", p.days, p.StartCivil, p.EndCivil)
 	}
+	if p.months > 0 {
+		return fmt.Sprintf("every %d months [%s, %s)", p.months, p.StartCivil, p.EndCivil)
+	}
 	return fmt.Sprintf("%s [%s, %s)", p.interval, p.StartCivil, p.EndCivil)
 }
 
@@ -456,7 +594,7 @@ func (p Period) shift(n int) Period {
 		return p.buildDay(addDays(p.nominalStart, p.days*n))
 	}
 	start := p.nominalStart
-	months := p.interval.Months() * n
+	months := p.Months() * n
 	year, month := addMonths(start.Year, start.Month, months)
 	return p.build(year, month)
 }
@@ -494,7 +632,7 @@ func (p Period) build(year int, month time.Month) Period {
 		}
 	}
 	startNom := nominal(year, month)
-	endYear, endMonth := addMonths(year, month, p.interval.Months())
+	endYear, endMonth := addMonths(year, month, p.Months())
 	endNom := nominal(endYear, endMonth)
 
 	start := resolve(p.loc, clamp(startNom))
@@ -502,6 +640,7 @@ func (p Period) build(year int, month time.Month) Period {
 
 	return Period{
 		interval:     p.interval,
+		months:       p.months,
 		loc:          p.loc,
 		anchor:       p.anchor,
 		nominalStart: startNom,
@@ -515,7 +654,7 @@ func (p Period) build(year int, month time.Month) Period {
 // PeriodStartingIn returns the period whose nominal start falls in year/month.
 // A month-end anchor is clamped for resolution but retained nominally.
 func (s *Schedule) PeriodStartingIn(year int, month time.Month) Period {
-	seed := Period{interval: s.interval, loc: s.loc, anchor: s.anchor}
+	seed := Period{interval: s.interval, months: s.months, loc: s.loc, anchor: s.anchor}
 	return seed.build(year, month)
 }
 

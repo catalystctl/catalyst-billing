@@ -535,6 +535,20 @@ func (c *Client) DeleteStaffOauthprovidersById(ctx context.Context, id string, q
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffOperationsById calls DELETE /api/v1/staff/operations/{id}.
+//
+// # Delete a failed operation
+//
+// Permission: service:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeleteStaffOperationsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/operations/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffRolesById calls DELETE /api/v1/staff/roles/{id}.
 //
 // # Delete a custom role
@@ -4011,6 +4025,34 @@ func (c *Client) PostStaffOauthclientsByIdRotatesecret(ctx context.Context, id s
 // An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
 func (c *Client) PostStaffOauthproviders(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/oauth-providers"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffOperationsByIdResolve calls POST /api/v1/staff/operations/{id}/resolve.
+//
+// # Resolve an operation
+//
+// Permission: service:write:all. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffOperationsByIdResolve(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/operations/{id}/resolve"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffOperationsByIdRetry calls POST /api/v1/staff/operations/{id}/retry.
+//
+// # Retry a failed operation
+//
+// Permission: service:provision. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffOperationsByIdRetry(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/operations/{id}/retry"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 

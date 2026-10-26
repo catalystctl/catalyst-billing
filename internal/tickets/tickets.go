@@ -1015,6 +1015,9 @@ type StaffFilter struct {
 	Department string
 	// Assignee is a staff user id, or "unassigned" / "none" for tickets nobody owns.
 	Assignee string
+	// CustomerID narrows the queue to one customer's tickets, exactly. It is the
+	// customer-detail screen's filter; "all" behaves like the empty string.
+	CustomerID string
 	// Query searches the subject and the customer's email/name.
 	Query string
 }
@@ -1060,6 +1063,13 @@ func (s *Store) ListForStaff(ctx context.Context, f StaffFilter, limit int, curs
 		}
 		args = append(args, f.Assignee)
 		where += fmt.Sprintf(" AND t.assigned_to = $%d", len(args))
+	}
+	if customerID := strings.TrimSpace(f.CustomerID); customerID != "" && customerID != "all" {
+		if !validUUID(customerID) {
+			return nil, "", fmt.Errorf("%w: unknown customer", ErrInvalidInput)
+		}
+		args = append(args, customerID)
+		where += fmt.Sprintf(" AND t.customer_id = $%d", len(args))
 	}
 	if q := strings.TrimSpace(f.Query); q != "" {
 		if len(q) < 2 {

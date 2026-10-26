@@ -266,7 +266,7 @@ func (r *Rules) recentValidation(ctx context.Context, country, number string, si
 		v  VATValidation
 		id string
 	)
-	err := r.pool.QueryRow(ctx, `
+	err := r.q.QueryRow(ctx, `
 		SELECT id, country_code, vat_id, status, trader_name, service_url, detail, checked_at
 		  FROM vat_id_validations
 		 WHERE country_code = $1 AND vat_id = $2 AND checked_at >= $3
@@ -289,7 +289,7 @@ func (r *Rules) recordValidation(ctx context.Context, customerID string, v VATVa
 	if v.CheckedAt.IsZero() {
 		v.CheckedAt = r.now()
 	}
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.q.Exec(ctx, `
 		INSERT INTO vat_id_validations
 			(country_code, vat_id, status, trader_name, service_url, detail, customer_id, checked_at)
 		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, '')::uuid, $8)`,

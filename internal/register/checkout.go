@@ -406,15 +406,35 @@ type charge struct {
 	product string
 }
 
+// purchaseUnit is one thing an order creates. A `combined` product is one unit carrying
+// the requested quantity; a `separated` product is N units of one, each of which gets its
+// own order item, subscription and service. Keeping the split explicit here — rather than
+// trying to remember which quantity meant what further down — is what makes the two modes
+// genuinely different instead of two spellings of the same order.
+type purchaseUnit struct {
+	line       catalogLine
+	selections []configSelection
+	quantity   int
+}
+
+// description is the unit's line text on the order and the invoice.
+func (u purchaseUnit) description() string {
+	desc := u.line.description()
+	if summary := configSummary(u.selections); summary != "" {
+		desc += " (" + summary + ")"
+	}
+	return desc
+}
+
 // checkoutTx is the whole purchase, inside the caller's transaction.
 func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req CheckoutRequest,
 	customerID string, now time.Time) (CheckoutResult, error) {
 
 	// Load every line's catalog row first, without locking: a malformed id or a
-	// mixed-currency cart must be refused before any lock is taken.
-	lines := make([]catalogLine, 0, len(req.Lines))
-	selections := make([][]configSelection, 0, len(req.Lines))
-	quantities := make([]int, 0, len(req.Lines))
+	// mixed-currency cart must be refused before any lock is taken. Each line is then
+	// expanded according to its product's quantity policy, so everything below works with
+	// concrete purchase units rather than with a quantity that means two different things.
+	units := make([]purchaseUnit, 0, len(req.Lines))
 	for _, l := range req.Lines {
 		if !validID(l.PriceVersionID) {
 			return CheckoutResult{}, ErrPriceNotFound
@@ -430,21 +450,37 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 		if err != nil {
 			return CheckoutResult{}, err
 		}
-		if cl.allowQty == "disabled" && qty != 1 {
-			return CheckoutResult{}, ErrQuantityNotAllowed
+		// The policy is shared with the cart, so a quantity the cart accepted cannot be a
+		// quantity the checkout silently changes.
+		expanded, perUnit, err := commerce.PurchaseUnits(cl.allowQty, qty)
+		if err != nil {
+			switch {
+			case cl.allowQty == commerce.QuantityDisabled && qty > 1:
+				return CheckoutResult{}, ErrQuantityNotAllowed
+			case errors.Is(err, commerce.ErrInvalidInput):
+				return CheckoutResult{}, ErrInvalidQuantity
+			default:
+				return CheckoutResult{}, ErrQuantityNotAllowed
+			}
 		}
 		sel, err := loadConfig(ctx, tx, cl, l.Config)
 		if err != nil {
 			return CheckoutResult{}, err
 		}
-		lines = append(lines, cl)
-		selections = append(selections, sel)
-		quantities = append(quantities, qty)
+		// The expansion is bounded by the same line limit as the request: a separated
+		// quantity of 1000 would otherwise produce an invoice nobody could print, and
+		// refusing is better than writing half an order.
+		if len(units)+expanded > maxLines {
+			return CheckoutResult{}, ErrTooManyLines
+		}
+		for i := 0; i < expanded; i++ {
+			units = append(units, purchaseUnit{line: cl, selections: sel, quantity: perUnit})
+		}
 	}
 
-	currency := lines[0].currency
-	for _, cl := range lines {
-		if cl.currency != currency {
+	currency := units[0].line.currency
+	for _, u := range units {
+		if u.line.currency != currency {
 			return CheckoutResult{}, ErrMixedCurrency
 		}
 	}
@@ -454,10 +490,14 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 	}
 
 	// Lock the products in a deterministic order. Two carts that share two products
-	// and lock them in opposite orders deadlock; sorting makes that impossible.
+	// and lock them in opposite orders deadlock; sorting makes that impossible. The lock
+	// and the stock check are per product, not per unit, so N separated units of one
+	// product take one lock and consume N units of stock.
 	wanted := make(map[string]int)
-	for i, cl := range lines {
-		wanted[cl.productID] += quantities[i]
+	limits := make(map[string]*int)
+	for _, u := range units {
+		wanted[u.line.productID] += u.quantity
+		limits[u.line.productID] = u.line.perUserLimit
 	}
 	productIDs := make([]string, 0, len(wanted))
 	for id := range wanted {
@@ -481,9 +521,12 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 	// Per-user limits are counted against what the customer already holds. The count
 	// is inside the same transaction as the insert, and the product lock above
 	// serialises concurrent checkouts of the same product, so two carts cannot both
-	// see "one held" and both add a second.
-	for _, cl := range lines {
-		if cl.perUserLimit == nil {
+	// see "one held" and both add a second. Checking once per product — with the summed
+	// quantity — is what stops two separated lines of the same product each passing a
+	// limit of one on their own.
+	for _, id := range productIDs {
+		limit := limits[id]
+		if limit == nil {
 			continue
 		}
 		// "Held" is a service the customer has *or* a subscription that will produce
@@ -500,10 +543,10 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 			+ (SELECT count(*) FROM services sv
 			    WHERE sv.customer_id = $1 AND sv.product_id = $2
 			      AND sv.subscription_id IS NULL AND sv.status <> 'terminated')`,
-			customerID, cl.productID).Scan(&held); err != nil {
+			customerID, id).Scan(&held); err != nil {
 			return CheckoutResult{}, fmt.Errorf("checkout: count held services: %w", err)
 		}
-		if held+wanted[cl.productID] > *cl.perUserLimit {
+		if held+wanted[id] > *limit {
 			return CheckoutResult{}, ErrUserLimitReached
 		}
 	}
@@ -531,42 +574,41 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 		}
 	}
 
-	// Build the invoice lines. One charge line per cart line, plus a setup line when
+	// Build the invoice lines. One charge line per purchase unit, plus a setup line when
 	// the price has a setup fee — the same split the staff path produces, so a
-	// customer invoice and a staff invoice of the same product look the same.
-	charges := make([]charge, 0, len(lines)*2)
-	descriptions := make([]string, 0, len(lines))
-	for i, cl := range lines {
-		desc := cl.description()
-		if summary := configSummary(selections[i]); summary != "" {
-			desc += " (" + summary + ")"
-		}
+	// customer invoice and a staff invoice of the same product look the same. A
+	// separated product therefore shows N lines of one, and a combined product one line
+	// of N, which is the visible difference between the two policies.
+	charges := make([]charge, 0, len(units)*2)
+	descriptions := make([]string, 0, len(units))
+	for _, u := range units {
+		desc := u.description()
 		descriptions = append(descriptions, desc)
 
-		unit := cl.amount + configAmount(selections[i])
+		unit := u.line.amount + configAmount(u.selections)
 		charges = append(charges, charge{
 			line: billing.Line{
 				Description:    desc,
-				QuantityMilli:  int64(quantities[i]) * 1000,
+				QuantityMilli:  int64(u.quantity) * 1000,
 				UnitPrice:      money.New(unit, cur),
-				ProductID:      ptr(cl.productID),
-				PriceVersionID: ptr(cl.priceVersionID),
+				ProductID:      ptr(u.line.productID),
+				PriceVersionID: ptr(u.line.priceVersionID),
 			},
 			kind:    "price",
-			product: cl.productID,
+			product: u.line.productID,
 		})
-		setup := cl.setup + configSetup(selections[i])
+		setup := u.line.setup + configSetup(u.selections)
 		if setup > 0 {
 			charges = append(charges, charge{
 				line: billing.Line{
 					Description:    desc + " — setup",
-					QuantityMilli:  int64(quantities[i]) * 1000,
+					QuantityMilli:  int64(u.quantity) * 1000,
 					UnitPrice:      money.New(setup, cur),
-					ProductID:      ptr(cl.productID),
-					PriceVersionID: ptr(cl.priceVersionID),
+					ProductID:      ptr(u.line.productID),
+					PriceVersionID: ptr(u.line.priceVersionID),
 				},
 				kind:    "setup",
-				product: cl.productID,
+				product: u.line.productID,
 			})
 		}
 	}
@@ -598,32 +640,15 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 		return CheckoutResult{}, fmt.Errorf("checkout: insert order: %w", err)
 	}
 
-	// One order item per cart line. Its id is the anchor fulfilment uses to enqueue a
-	// provisioning operation, so it must exist before anything is provisioned.
-	orderItemIDs := make([]string, 0, len(lines))
-	for i, cl := range lines {
-		var itemID string
-		unit := cl.amount + configAmount(selections[i])
-		setup := (cl.setup + configSetup(selections[i])) * int64(quantities[i])
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO order_items (order_id, price_version_id, description, quantity,
-				unit_minor, line_minor, setup_minor, position)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			RETURNING id`,
-			orderID, cl.priceVersionID, descriptions[i], quantities[i], unit,
-			unit*int64(quantities[i]), setup, i+1).Scan(&itemID); err != nil {
-			return CheckoutResult{}, fmt.Errorf("checkout: insert order item: %w", err)
-		}
-		orderItemIDs = append(orderItemIDs, itemID)
-	}
-
-	// One subscription per *recurring* line, starting 'pending' so an unpaid order can never
+	// One subscription per *recurring* unit, starting 'pending' so an unpaid order can never
 	// renew. The payment applier activates it; the zero-total path activates it here. A one-time
-	// or free line gets no subscription at all — see plan_interval.go for why the absence, rather
-	// than a placeholder row, is what stops it being renewed.
-	subscriptionIDs := make([]string, len(lines))
-	for i, cl := range lines {
-		start, end, recurring, err := planSchedule(cl, now)
+	// or free unit gets no subscription at all — see plan_interval.go for why the absence, rather
+	// than a placeholder row, is what stops it being renewed. Subscriptions are written before
+	// their order items because each order line records the schedule it belongs to, which is what
+	// lets a separated order's N services each point at their own subscription.
+	subscriptionIDs := make([]string, len(units))
+	for i, u := range units {
+		start, end, recurring, err := planSchedule(u.line, now)
 		if err != nil {
 			return CheckoutResult{}, err
 		}
@@ -637,15 +662,37 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 				coupon_id, coupon_cycles_applied)
 			VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $7, $8, $9)
 			RETURNING id`,
-			customerID, cl.priceVersionID, cl.interval, cl.anchorDay, cl.timezone,
+			customerID, u.line.priceVersionID, u.line.interval, u.line.anchorDay, u.line.timezone,
 			start, end, nullableString(plan.couponID), plan.cyclesApplied).Scan(&subID); err != nil {
 			return CheckoutResult{}, fmt.Errorf("checkout: insert subscription: %w", err)
 		}
 		subscriptionIDs[i] = subID
 	}
 	// The first subscription that exists, for the invoice and the coupon redemption. An order of
-	// one-time lines has none, and both columns are nullable for exactly that case.
+	// one-time units has none, and both columns are nullable for exactly that case.
 	firstSubscriptionID := firstID(subscriptionIDs)
+
+	// One order item per purchase unit. For a separated product that is N rows of one — each a
+	// real order line with its own schedule — and for combined it is one row of N. The item id is
+	// fulfilment's provisioning anchor, so it must exist before anything is provisioned, and
+	// recording the subscription on the line is what keeps a separated service linked to the
+	// schedule that bills it.
+	orderItemIDs := make([]string, 0, len(units))
+	for i, u := range units {
+		var itemID string
+		unit := u.line.amount + configAmount(u.selections)
+		setup := (u.line.setup + configSetup(u.selections)) * int64(u.quantity)
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO order_items (order_id, price_version_id, description, quantity,
+				unit_minor, line_minor, setup_minor, position, subscription_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			RETURNING id`,
+			orderID, u.line.priceVersionID, descriptions[i], u.quantity, unit,
+			unit*int64(u.quantity), setup, i+1, nullableString(subscriptionIDs[i])).Scan(&itemID); err != nil {
+			return CheckoutResult{}, fmt.Errorf("checkout: insert order item: %w", err)
+		}
+		orderItemIDs = append(orderItemIDs, itemID)
+	}
 
 	out := CheckoutResult{
 		OrderID:         orderID,
@@ -660,8 +707,8 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 	// subscriptions are activated and the services are created and queued now, which
 	// is exactly what a settled payment would have done.
 	if payable == 0 {
-		serviceIDs, err := s.activateZeroTotal(ctx, tx, customerID, lines, selections,
-			orderItemIDs, subscriptionIDs)
+		serviceIDs, err := s.activateZeroTotal(ctx, tx, customerID, units, orderItemIDs,
+			subscriptionIDs, orderID)
 		if err != nil {
 			return CheckoutResult{}, err
 		}
@@ -730,7 +777,7 @@ func (s *CheckoutService) checkoutTx(ctx context.Context, tx pgx.Tx, req Checkou
 		Terms:           s.terms,
 		DueAt:           dueAt,
 		Series:          series,
-		PriceVersionIDs: priceVersionIDs(lines),
+		PriceVersionIDs: priceVersionIDs(units),
 	})
 	if err != nil {
 		return CheckoutResult{}, err
@@ -1385,14 +1432,14 @@ func insertRedemption(ctx context.Context, tx pgx.Tx, plan couponPlan, customerI
 // written so the provisioner delivers it. This mirrors
 // fulfilment.Applier.enqueueProvisioning, which is unexported and takes an invoice.
 func (s *CheckoutService) activateZeroTotal(ctx context.Context, tx pgx.Tx, customerID string,
-	lines []catalogLine, selections [][]configSelection, orderItemIDs, subscriptionIDs []string) ([]string, error) {
+	units []purchaseUnit, orderItemIDs, subscriptionIDs []string, orderID string) ([]string, error) {
 
-	serviceIDs := make([]string, 0, len(lines))
-	for i, cl := range lines {
+	serviceIDs := make([]string, 0, len(units))
+	for i, u := range units {
 		// The adapter's target is configuration captured on the service, so a later
 		// catalog edit cannot change what an in-flight provisioning call asks for.
 		config := map[string]any{}
-		plan, region, err := provisionTarget(ctx, tx, cl.priceVersionID)
+		plan, region, err := provisionTarget(ctx, tx, u.line.priceVersionID)
 		if err != nil {
 			return nil, err
 		}
@@ -1404,13 +1451,17 @@ func (s *CheckoutService) activateZeroTotal(ctx context.Context, tx pgx.Tx, cust
 		}
 
 		var serviceID string
-		// A one-time or free line has no subscription, so the service is written with none: the
+		// A one-time or free unit has no subscription, so the service is written with none: the
 		// absence is what tells dunning, the portal and the renewal engine that this service has
-		// no schedule behind it.
+		// no schedule behind it. `quantity` is the point of `combined`: one service carrying N
+		// units, while a separated order creates N services of one. The order id makes
+		// "which order sold this service" answerable without joining through the invoice.
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO services (customer_id, subscription_id, product_id, status, generation, config)
-			VALUES ($1, $2, $3, 'pending', 1, $4)
-			RETURNING id`, customerID, nullableString(subscriptionIDs[i]), cl.productID, config).Scan(&serviceID); err != nil {
+			INSERT INTO services (customer_id, subscription_id, product_id, status, generation, config,
+				quantity, order_id)
+			VALUES ($1, $2, $3, 'pending', 1, $4, $5, $6)
+			RETURNING id`, customerID, nullableString(subscriptionIDs[i]), u.line.productID, config,
+			u.quantity, orderID).Scan(&serviceID); err != nil {
 			return nil, fmt.Errorf("checkout: create service: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `
@@ -1420,7 +1471,7 @@ func (s *CheckoutService) activateZeroTotal(ctx context.Context, tx pgx.Tx, cust
 		}
 		// The option selection is stored on the service, because the renewal engine
 		// prices from it and the provisioner reads it to build the environment.
-		for _, sel := range selections[i] {
+		for _, sel := range u.selections {
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO service_configs (service_id, config_option_id, value, amount_minor, setup_minor)
 				VALUES ($1, $2, $3, $4, $5)
@@ -1617,15 +1668,15 @@ func configSetup(sel []configSelection) int64 {
 }
 
 // priceVersionIDs lists the catalog versions an order was priced from.
-func priceVersionIDs(lines []catalogLine) []string {
-	seen := make(map[string]struct{}, len(lines))
-	out := make([]string, 0, len(lines))
-	for _, l := range lines {
-		if _, ok := seen[l.priceVersionID]; ok {
+func priceVersionIDs(units []purchaseUnit) []string {
+	seen := make(map[string]struct{}, len(units))
+	out := make([]string, 0, len(units))
+	for _, u := range units {
+		if _, ok := seen[u.line.priceVersionID]; ok {
 			continue
 		}
-		seen[l.priceVersionID] = struct{}{}
-		out = append(out, l.priceVersionID)
+		seen[u.line.priceVersionID] = struct{}{}
+		out = append(out, u.line.priceVersionID)
 	}
 	return out
 }
@@ -1657,15 +1708,6 @@ func indexOf(xs []int, v int) int {
 		}
 	}
 	return -1
-}
-
-func contains(xs []string, v string) bool {
-	for _, x := range xs {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }
 
 func ptr(s string) *string { return &s }

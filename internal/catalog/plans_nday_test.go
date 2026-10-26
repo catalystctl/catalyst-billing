@@ -141,3 +141,99 @@ func itoa(n int) string {
 	}
 	return string(digits)
 }
+
+// An explicit week or month count is part of the same closed vocabulary: it recurs,
+// carries a customer-facing label, and is storable as a price and as a subscription
+// interval. The database bounds match internal/calendar's, so a row written by hand
+// cannot create a period the renewal engine would have to guess about.
+func TestUnitIntervalsArePersisted(t *testing.T) {
+	for _, tc := range []struct {
+		name, label string
+	}{
+		{calendar.WeekInterval(2), "every 2 weeks"},
+		{calendar.WeekInterval(52), "every 52 weeks"},
+		{calendar.MonthInterval(3), "every 3 months"},
+		{calendar.MonthInterval(12), "every 12 months"},
+	} {
+		if err := catalog.ValidateInterval(tc.name); err != nil {
+			t.Fatalf("%q must be a valid interval: %v", tc.name, err)
+		}
+		if !catalog.Recurring(tc.name) {
+			t.Fatalf("%q must recur: it is a schedule", tc.name)
+		}
+		if got := catalog.IntervalLabel(tc.name); got != tc.label {
+			t.Fatalf("label of %q = %q, want %q", tc.name, got, tc.label)
+		}
+	}
+	for _, bad := range []string{
+		"every_0_weeks", "every_53_weeks", "every_02_weeks", "every_2_week",
+		"every_0_months", "every_13_months", "every_03_months", "every_3_month",
+	} {
+		if err := catalog.ValidateInterval(bad); !errors.Is(err, catalog.ErrInvalidInput) {
+			t.Fatalf("ValidateInterval(%q) = %v, want ErrInvalidInput", bad, err)
+		}
+		if catalog.Recurring(bad) {
+			t.Fatalf("%q must not recur", bad)
+		}
+	}
+
+	s, pool := newStoreWithPool(t)
+	ctx := context.Background()
+	cat := mustCategory(t, s, ctx, "unit-cat")
+	p, err := s.CreateProduct(ctx, catalog.ProductInput{Slug: "unit-periods", Name: "Units", CategoryID: &cat.ID})
+	if err != nil {
+		t.Fatalf("product: %v", err)
+	}
+	var priceID string
+	for _, interval := range []string{
+		calendar.WeekInterval(2), calendar.MonthInterval(3),
+	} {
+		price, err := s.AddPrice(ctx, p.ID, catalog.Price{
+			Name: interval, Currency: "USD", AmountMinor: 1000,
+			Interval: interval, AnchorDay: 20, AnchorTimezone: "UTC",
+		})
+		if err != nil {
+			t.Fatalf("add %s price: %v", interval, err)
+		}
+		if price.Interval != interval || !price.Recurring() {
+			t.Fatalf("stored price = %+v, want recurring %q", price, interval)
+		}
+		priceID = price.ID
+	}
+
+	// The database enforces the same bounds and canonical spelling.
+	for _, bad := range []string{"every_0_weeks", "every_53_weeks", "every_02_weeks",
+		"every_0_months", "every_13_months", "every_03_months"} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO price_versions (product_id, version, name, currency, amount_minor, interval,
+			                            anchor_day, anchor_timezone)
+			VALUES ($1, 78, 'bad', 'USD', 100, $2, 1, 'UTC')`, p.ID, bad); err == nil {
+			t.Fatalf("the database accepted the interval %q", bad)
+		}
+	}
+
+	var customerID string
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO customers (email, name) VALUES ('unit@example.test', 'U') RETURNING id`).
+		Scan(&customerID); err != nil {
+		t.Fatalf("customer: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO subscriptions (customer_id, price_version_id, status, interval, anchor_day,
+			timezone, current_period_start, current_period_end, next_billing_at)
+		VALUES ($1, $2, 'active', 'every_2_weeks', 20, 'UTC',
+		        $3::timestamptz, $3::timestamptz + interval '14 days',
+		        $3::timestamptz + interval '14 days')`,
+		customerID, priceID, time.Date(2024, 1, 20, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("a week-count subscription must be storable: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO subscriptions (customer_id, price_version_id, status, interval, anchor_day,
+			timezone, current_period_start, current_period_end, next_billing_at)
+		VALUES ($1, $2, 'active', 'every_3_months', 20, 'UTC',
+		        $3::timestamptz, $3::timestamptz + interval '3 months',
+		        $3::timestamptz + interval '3 months')`,
+		customerID, priceID, time.Date(2024, 1, 20, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("a month-count subscription must be storable: %v", err)
+	}
+}

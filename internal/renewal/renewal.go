@@ -28,6 +28,7 @@ import (
 	"github.com/catalyst/billing/internal/invoicepdf"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/store"
+	"github.com/catalyst/billing/internal/tax"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -128,6 +129,13 @@ type Engine struct {
 
 // NewEngine constructs an Engine.
 func NewEngine(pool *store.Pool, issuer *billing.Issuer, merchant billing.Merchant, terms string) *Engine {
+	// Renewals are an issuance path, so they must resolve the customer's jurisdiction in the
+	// same transaction they write the invoice snapshot in. Wrapping the caller's issuer keeps
+	// the renewal worker's construction unchanged while giving it the same tax rules the cart
+	// and checkout use.
+	if pool != nil && issuer != nil {
+		issuer = issuer.WithResolver(tax.NewRules(pool))
+	}
 	return &Engine{
 		pool:     pool,
 		issuer:   issuer,

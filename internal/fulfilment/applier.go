@@ -262,10 +262,14 @@ func (a *Applier) enqueueProvisioning(ctx context.Context, tx pgx.Tx, invoiceID 
 		}
 
 		var serviceID string
+		// `quantity` and `order_id` are the purchase shape (SVC-07): a combined line of N
+		// produces one service carrying N, and every service can answer which order sold it.
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO services (customer_id, subscription_id, product_id, status, generation, config)
-			VALUES ($1, $2, $3, 'pending', 1, $4)
-			RETURNING id`, it.CustomerID, it.SubscriptionID, it.ProductID, config).Scan(&serviceID); err != nil {
+			INSERT INTO services (customer_id, subscription_id, product_id, status, generation, config,
+				quantity, order_id)
+			VALUES ($1, $2, $3, 'pending', 1, $4, $5, $6)
+			RETURNING id`, it.CustomerID, it.SubscriptionID, it.ProductID, config,
+			it.Quantity, it.OrderID).Scan(&serviceID); err != nil {
 			return fmt.Errorf("fulfilment: create service: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `
@@ -287,8 +291,15 @@ type provisioningItem struct {
 	PlanID     string
 	Region     string
 	// SubscriptionID links the service to its billing schedule. Without it, dunning cannot
-	// find which invoice funds the service, so automated suspension never happens.
+	// find which invoice funds the service, so automated suspension never happens. For a
+	// separated line this is the unit's own schedule, not the invoice's first one.
 	SubscriptionID *string
+	// Quantity is how many of the product one service represents: N for a combined line,
+	// one for every separated unit. It is read from the order line rather than guessed.
+	Quantity int
+	// OrderID is the order that sold the service, when there is one. A manual invoice has
+	// none, which is why the column is nullable.
+	OrderID *string
 }
 
 // provisioningItemsFromOrder reads what a checkout invoice sells.
@@ -296,7 +307,7 @@ func (a *Applier) provisioningItemsFromOrder(ctx context.Context, tx pgx.Tx, inv
 	rows, err := tx.Query(ctx, `
 		SELECT oi.id, o.customer_id, p.id AS product_id,
 		       COALESCE(pv.provision_plan, ''), COALESCE(pv.provision_region, ''),
-		       i.subscription_id
+		       COALESCE(oi.subscription_id, i.subscription_id), oi.quantity, o.id
 		FROM invoices i
 		JOIN orders o ON o.id = i.order_id
 		JOIN order_items oi ON oi.order_id = o.id
@@ -312,7 +323,7 @@ func (a *Applier) provisioningItemsFromOrder(ctx context.Context, tx pgx.Tx, inv
 	for rows.Next() {
 		var it provisioningItem
 		if err := rows.Scan(&it.ID, &it.CustomerID, &it.ProductID,
-			&it.PlanID, &it.Region, &it.SubscriptionID); err != nil {
+			&it.PlanID, &it.Region, &it.SubscriptionID, &it.Quantity, &it.OrderID); err != nil {
 			return nil, fmt.Errorf("fulfilment: scan order item: %w", err)
 		}
 		items = append(items, it)
@@ -334,7 +345,7 @@ func (a *Applier) provisioningItemsFromLines(ctx context.Context, tx pgx.Tx, inv
 		SELECT il.id, i.customer_id, il.product_id,
 		       COALESCE(pv.provision_plan, cur.provision_plan, ''),
 		       COALESCE(pv.provision_region, cur.provision_region, ''),
-		       i.subscription_id
+		       i.subscription_id, GREATEST(1, round(il.quantity))::int, NULL::uuid
 		  FROM invoice_lines il
 		  JOIN invoices i ON i.id = il.invoice_id
 		  JOIN products p ON p.id = il.product_id
@@ -356,7 +367,7 @@ func (a *Applier) provisioningItemsFromLines(ctx context.Context, tx pgx.Tx, inv
 	for rows.Next() {
 		var it provisioningItem
 		if err := rows.Scan(&it.ID, &it.CustomerID, &it.ProductID,
-			&it.PlanID, &it.Region, &it.SubscriptionID); err != nil {
+			&it.PlanID, &it.Region, &it.SubscriptionID, &it.Quantity, &it.OrderID); err != nil {
 			return nil, fmt.Errorf("fulfilment: scan invoice line product: %w", err)
 		}
 		items = append(items, it)

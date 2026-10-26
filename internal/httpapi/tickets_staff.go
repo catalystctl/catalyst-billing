@@ -164,8 +164,12 @@ func (s *Server) handleStaffTicketCreate(w http.ResponseWriter, r *http.Request)
 
 // handleStaffTickets lists the queue.
 //
-// Query: status, priority, department, assignee (a user id, or "unassigned"), q (a
-// search over the subject and the customer), limit, cursor.
+// Query: status, priority, department, assignee (a user id, or "unassigned"), customer_id (an
+// exact customer id, or "all"), q (a search over the subject and the customer), limit, cursor.
+//
+// customer_id is the customer-detail screen's filter: it is exact and never a prefix, because a
+// partial match on an id would silently mix two customers' tickets. An id that is not a UUID is
+// refused rather than passed to SQL.
 func (s *Server) handleStaffTickets(w http.ResponseWriter, r *http.Request) {
 	if !s.requireTickets(w) {
 		return
@@ -187,6 +191,7 @@ func (s *Server) handleStaffTickets(w http.ResponseWriter, r *http.Request) {
 		Priority:   strings.TrimSpace(query.Get("priority")),
 		Department: strings.TrimSpace(query.Get("department")),
 		Assignee:   assignee,
+		CustomerID: strings.TrimSpace(query.Get("customer_id")),
 		Query:      strings.TrimSpace(query.Get("q")),
 	}, limit, cursor)
 	if err != nil {

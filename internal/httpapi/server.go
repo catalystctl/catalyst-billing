@@ -38,6 +38,7 @@ import (
 	"github.com/catalyst/billing/internal/portal"
 	"github.com/catalyst/billing/internal/staff"
 	"github.com/catalyst/billing/internal/store"
+	"github.com/catalyst/billing/internal/tax"
 	themecache "github.com/catalyst/billing/internal/theme/cache"
 	"github.com/catalyst/billing/web"
 	"github.com/jackc/pgx/v5"
@@ -179,6 +180,11 @@ func New(cfg Config, pool *store.Pool, inbox *payments.Inbox, provider, account 
 		now:         func() time.Time { return time.Now().UTC() },
 	}
 	if pool != nil {
+		// Wire the jurisdiction rules into the shared issuer. Every production issuance path
+		// (customer checkout, staff/manual invoices, orders, upgrades) uses this issuer, so
+		// resolving the pricer here is what makes those paths tax the same supply the cart
+		// displayed. The resolver reads inside each issuing transaction.
+		s.issuer = s.issuer.WithResolver(tax.NewRules(pool))
 		s.notify = notify.NewQueue(pool)
 		// The dunning engine is needed by the staff surface (eligibility) and the staff
 		// mutations (suspend, resume). Constructing it here means one instance with one

@@ -556,6 +556,61 @@ func TestStaffQueueFiltersAndUpdate(t *testing.T) {
 	}
 }
 
+// The queue can be narrowed to one customer, exactly.
+//
+// This is the customer-detail tickets tab's filter. It is an equality on the id rather than a
+// search, because a customer record is the one place the operator already knows which customer
+// they mean; a prefix or a name match there would mix two customers' tickets on one screen.
+func TestStaffQueueCustomerFilter(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	aliceTicket := f.open(t, f.alice, "alice's problem")
+	f.open(t, f.bob, "bob's problem")
+
+	mine, _, err := f.svc.ListForStaff(ctx, tickets.StaffFilter{CustomerID: f.alice}, 50, "")
+	if err != nil {
+		t.Fatalf("list by customer: %v", err)
+	}
+	if len(mine) != 1 || mine[0].ID != aliceTicket.Ticket.ID {
+		t.Fatalf("by customer = %+v, want only alice's ticket", mine)
+	}
+
+	// "all" is the queue's own default and must not filter anything out.
+	all, _, err := f.svc.ListForStaff(ctx, tickets.StaffFilter{CustomerID: "all"}, 50, "")
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("customer_id=all = %d tickets, want 2", len(all))
+	}
+
+	// An id that is not a UUID is a caller error, not an empty page: passing it to SQL
+	// would be a cast error dressed up as a 500.
+	if _, _, err := f.svc.ListForStaff(ctx, tickets.StaffFilter{CustomerID: "not-a-uuid"}, 50, ""); !errors.Is(err, tickets.ErrInvalidInput) {
+		t.Fatalf("bad customer id = %v, want ErrInvalidInput", err)
+	}
+
+	// It composes with the other filters rather than replacing them.
+	if _, err := f.svc.UpdateStaff(ctx, aliceTicket.Ticket.ID, tickets.StaffUpdate{Priority: "high"}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	combo, _, err := f.svc.ListForStaff(ctx, tickets.StaffFilter{CustomerID: f.alice, Priority: "high"}, 50, "")
+	if err != nil {
+		t.Fatalf("combined filter: %v", err)
+	}
+	if len(combo) != 1 || combo[0].ID != aliceTicket.Ticket.ID {
+		t.Fatalf("combined filter = %+v", combo)
+	}
+	empty, _, err := f.svc.ListForStaff(ctx, tickets.StaffFilter{CustomerID: f.alice, Priority: "low"}, 50, "")
+	if err != nil {
+		t.Fatalf("combined filter, no match: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("combined filter with no match = %d, want 0", len(empty))
+	}
+}
+
 // Closing through the staff path stamps closed_at.
 func TestStaffCloseStampsClosedAt(t *testing.T) {
 	f := newFixture(t)

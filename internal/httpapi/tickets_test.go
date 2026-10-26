@@ -687,6 +687,76 @@ func TestTicketStaffQueueWorkflow(t *testing.T) {
 	problemOf(t, rec)
 }
 
+// The queue can be narrowed to one customer through the query string — the customer-detail
+// tickets tab's request.
+//
+// The filter is exact and refuses anything that is not an id. A malformed value must be a 400
+// with a stable code, not an empty list: an empty list would make "this customer has no
+// tickets" indistinguishable from "the request was wrong", which is the one confusion a
+// support screen must not create.
+func TestTicketStaffQueueCustomerFilter(t *testing.T) {
+	env := newStaffEnv(t)
+	env.srv.WithPortal(portal.New(env.pool))
+	aliceID, _ := env.seedCustomer(t, "alice@example.test", "Alice")
+	bobID, _ := env.seedCustomer(t, "bob@example.test", "Bob")
+	alice, aliceCSRF := env.login(t, "alice@example.test", "customer password 1")
+	bob, bobCSRF := env.login(t, "bob@example.test", "customer password 1")
+	aliceTicket, _ := env.openTicket(t, alice, aliceCSRF, "alice needs help")
+	bobTicket, _ := env.openTicket(t, bob, bobCSRF, "bob needs help")
+
+	type queue struct {
+		Tickets []struct {
+			ID       string `json:"id"`
+			Customer struct {
+				ID string `json:"id"`
+			} `json:"customer"`
+		} `json:"tickets"`
+	}
+	listBy := func(customerID string) queue {
+		t.Helper()
+		rec := env.get(t, "/api/v1/staff/tickets?customer_id="+customerID, env.support)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("customer_id=%s = %d: %s", customerID, rec.Code, rec.Body)
+		}
+		var out queue
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	onlyAlice := listBy(aliceID)
+	if len(onlyAlice.Tickets) != 1 || onlyAlice.Tickets[0].ID != aliceTicket {
+		t.Fatalf("alice's tickets = %+v, want only %s", onlyAlice.Tickets, aliceTicket)
+	}
+	if onlyAlice.Tickets[0].Customer.ID != aliceID {
+		t.Fatalf("customer id = %q, want %q", onlyAlice.Tickets[0].Customer.ID, aliceID)
+	}
+
+	onlyBob := listBy(bobID)
+	if len(onlyBob.Tickets) != 1 || onlyBob.Tickets[0].ID != bobTicket {
+		t.Fatalf("bob's tickets = %+v, want only %s", onlyBob.Tickets, bobTicket)
+	}
+
+	// "all" is the queue default and keeps both.
+	if all := listBy("all"); len(all.Tickets) != 2 {
+		t.Fatalf("customer_id=all = %d tickets, want 2", len(all.Tickets))
+	}
+
+	// A value that is not an id is a caller error, with the application/problem+json envelope.
+	rec := env.get(t, "/api/v1/staff/tickets?customer_id=not-a-uuid", env.support)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed customer_id = %d, want 400: %s", rec.Code, rec.Body)
+	}
+	problemOf(t, rec)
+
+	// A customer session still cannot reach the staff queue, with or without the filter.
+	rec = env.get(t, "/api/v1/staff/tickets?customer_id="+aliceID, alice)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("customer on the filtered staff queue = %d, want 403: %s", rec.Code, rec.Body)
+	}
+}
+
 // ------------------------------------------------------------------ uploads --
 
 // An 11 MB upload is refused with 413 and the stable code, and nothing is stored. A

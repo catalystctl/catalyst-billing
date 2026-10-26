@@ -12,13 +12,15 @@
 // # Calendar periods and day-count periods
 //
 // `monthly`, `quarterly`, `semiannual` and `annual` are *calendar* periods: they hang off a
-// day-of-month, which is what makes a month end and a leap day come out right. A day-count
-// period — "every 45 days" — is a different model, and `internal/calendar` keeps the two
-// apart rather than blending them: a day count has no month to hang from, so it is counted in
-// civil days from an explicit origin. The stored form is the self-describing string
-// `every_<N>_days` with N in 1..366, produced and parsed by `calendar.DayInterval` and
-// `calendar.ParseDayInterval` — this package does not re-implement that parsing, because two
-// parsers would eventually disagree about what a valid period is.
+// day-of-month, which is what makes a month end and a leap day come out right. An explicit
+// count of days ("every 45 days") or weeks ("every 2 weeks") is a different model, and
+// `internal/calendar` keeps the two apart rather than blending them: a day count has no month
+// to hang from, so it is counted in civil days from an explicit origin, and a week is exactly
+// seven of those days. An explicit count of months ("every 3 months") stays in the calendar
+// model, because a month is a calendar fact rather than 30 days. The stored forms are the
+// self-describing strings `every_<N>_days`, `every_<N>_weeks` and `every_<N>_months`, produced
+// and parsed by `internal/calendar` — this package does not re-implement that parsing, because
+// two parsers would eventually disagree about what a valid period is.
 package catalog
 
 import (
@@ -65,22 +67,38 @@ func Recurring(interval string) bool {
 	case IntervalMonthly, IntervalQuarterly, IntervalSemiannual, IntervalAnnual:
 		return true
 	}
-	_, dayCount := calendar.ParseDayInterval(interval)
-	return dayCount
+	if _, ok := calendar.ParseDayInterval(interval); ok {
+		return true
+	}
+	if _, ok := calendar.ParseWeekInterval(interval); ok {
+		return true
+	}
+	_, ok := calendar.ParseMonthInterval(interval)
+	return ok
 }
 
-// ValidateInterval rejects anything outside the closed set, including the day-count form.
+// ValidateInterval rejects anything outside the closed set, including the explicit
+// day/week/month forms.
 func ValidateInterval(interval string) error {
 	for _, known := range Intervals {
 		if interval == known {
 			return nil
 		}
 	}
-	if _, dayCount := calendar.ParseDayInterval(interval); dayCount {
+	if _, ok := calendar.ParseDayInterval(interval); ok {
 		return nil
 	}
-	return fmt.Errorf("%w: interval must be one of %s, or %s for 1..%d days",
-		ErrInvalidInput, strings.Join(Intervals, ", "), calendar.DayInterval(45), calendar.MaxDayInterval)
+	if _, ok := calendar.ParseWeekInterval(interval); ok {
+		return nil
+	}
+	if _, ok := calendar.ParseMonthInterval(interval); ok {
+		return nil
+	}
+	return fmt.Errorf("%w: interval must be one of %s, %s for 1..%d days, %s for 1..%d weeks, or %s for 1..%d months",
+		ErrInvalidInput, strings.Join(Intervals, ", "),
+		calendar.DayInterval(45), calendar.MaxDayInterval,
+		calendar.WeekInterval(2), calendar.MaxWeekInterval,
+		calendar.MonthInterval(3), calendar.MaxMonthInterval)
 }
 
 // IntervalLabel is the customer-facing name of an interval, used where a page has to render
@@ -102,6 +120,12 @@ func IntervalLabel(interval string) string {
 	default:
 		if days, ok := calendar.ParseDayInterval(interval); ok {
 			return fmt.Sprintf("every %d days", days)
+		}
+		if weeks, ok := calendar.ParseWeekInterval(interval); ok {
+			return fmt.Sprintf("every %d weeks", weeks)
+		}
+		if months, ok := calendar.ParseMonthInterval(interval); ok {
+			return fmt.Sprintf("every %d months", months)
 		}
 		return interval
 	}

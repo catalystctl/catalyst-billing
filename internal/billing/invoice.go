@@ -241,6 +241,27 @@ type IssueRequest struct {
 	Series NumberSeries
 	// PriceVersionIDs records catalog provenance.
 	PriceVersionIDs []string
+	// At pins the instant a jurisdiction-dependent pricer resolves at. Zero means the
+	// pricer's own clock. It exists so a replayed or backdated issuance can price from
+	// the rate that applied then; ordinary callers leave it zero.
+	At time.Time
+}
+
+// PricerResolver builds the pricer for one supply inside the caller's transaction.
+//
+// It is the bridge between the invoice mechanics in this package and the jurisdiction
+// rules in `internal/tax`: the rate depends on facts about the customer (billing country,
+// VAT ID, exemption flag), and those facts must be read from the same database snapshot
+// that the invoice snapshot is written in. Resolving outside the transaction would let a
+// rate appended concurrently produce evidence describing a row the document was not
+// priced from.
+//
+// A nil pricer means "tax is switched off": the issuer then falls back to its configured
+// default, which is the shipped no-tax behaviour. An error — including a *tax.Refusal —
+// stops issuance, so there is no path from "the rules could not decide" to a zero-rated
+// document.
+type PricerResolver interface {
+	ResolvePricer(ctx context.Context, tx pgx.Tx, customerID string, at time.Time) (Pricer, error)
 }
 
 // Issued is the result of issuance.
@@ -255,11 +276,50 @@ type Issued struct {
 
 // Issuer creates invoices.
 type Issuer struct {
+	// pricer is the fallback: it is used when tax is switched off, when no resolver is
+	// configured, and for a preview that has no transaction to resolve against.
 	pricer Pricer
+	// resolver, when set, resolves the pricer for a known customer inside the issuing
+	// transaction. It is what makes checkout, staff invoices, orders and renewals all
+	// apply the same jurisdiction rules the cart displayed.
+	resolver PricerResolver
 }
 
 // NewIssuer constructs an Issuer.
 func NewIssuer(p Pricer) *Issuer { return &Issuer{pricer: p} }
+
+// WithResolver returns a copy of the issuer that resolves its pricer per customer and
+// transaction. It returns a copy rather than mutating the receiver so a shared issuer is
+// not silently reconfigured for every caller holding it.
+func (s *Issuer) WithResolver(r PricerResolver) *Issuer {
+	if s == nil || r == nil {
+		return s
+	}
+	copy := *s
+	copy.resolver = r
+	return &copy
+}
+
+// pricerFor returns the pricer to price this request with.
+//
+// The resolver is consulted only when there is a transaction to resolve against and a
+// customer to resolve for. A preview (`DraftTotals`) has neither, so it keeps the
+// configured pricer; every production issuance path passes both.
+func (s *Issuer) pricerFor(ctx context.Context, tx pgx.Tx, req IssueRequest) (Pricer, error) {
+	if s.resolver == nil || tx == nil || req.CustomerID == "" {
+		return s.pricer, nil
+	}
+	p, err := s.resolver.ResolvePricer(ctx, tx, req.CustomerID, req.At)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil {
+		// Tax is switched off. The fallback pricer is the shipped no-tax policy, and
+		// using it is the pre-existing behaviour an installation without tax expects.
+		return s.pricer, nil
+	}
+	return p, nil
+}
 
 // CreateDraft prices the request and stores an editable draft invoice.
 //
@@ -267,7 +327,7 @@ func NewIssuer(p Pricer) *Issuer { return &Issuer{pricer: p} }
 // before the document exists in the legal sense. The moment it is issued it
 // becomes immutable.
 func (s *Issuer) CreateDraft(ctx context.Context, tx pgx.Tx, req IssueRequest) (string, Totals, Snapshot, error) {
-	cur, results, snap, err := s.prepare(ctx, req)
+	cur, results, snap, err := s.prepare(ctx, tx, req)
 	if err != nil {
 		return "", Totals{}, Snapshot{}, err
 	}
@@ -299,7 +359,11 @@ func (s *Issuer) CreateDraft(ctx context.Context, tx pgx.Tx, req IssueRequest) (
 // It is shared by CreateDraft and UpdateDraft so that a draft edited a week after it was
 // created is priced by exactly the same rules as one created today: two code paths that
 // price the same lines differently is how a draft turns into a document nobody can explain.
-func (s *Issuer) prepare(ctx context.Context, req IssueRequest) (money.Currency, []LineResult, Snapshot, error) {
+//
+// The pricer is resolved through the caller's transaction (see PricerResolver), so the
+// rate, the customer's exemption facts and the immutable snapshot all come from one
+// database snapshot.
+func (s *Issuer) prepare(ctx context.Context, tx pgx.Tx, req IssueRequest) (money.Currency, []LineResult, Snapshot, error) {
 	if req.CustomerID == "" {
 		return money.Currency{}, nil, Snapshot{}, fmt.Errorf("%w: missing customer", ErrInvalidInvoice)
 	}
@@ -324,7 +388,11 @@ func (s *Issuer) prepare(ctx context.Context, req IssueRequest) (money.Currency,
 		}
 	}
 
-	results, totals, evidence, err := s.pricer.Price(ctx, req.Lines, cur)
+	pricer, err := s.pricerFor(ctx, tx, req)
+	if err != nil {
+		return money.Currency{}, nil, Snapshot{}, err
+	}
+	results, totals, evidence, err := pricer.Price(ctx, req.Lines, cur)
 	if err != nil {
 		return money.Currency{}, nil, Snapshot{}, err
 	}

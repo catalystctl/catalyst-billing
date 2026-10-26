@@ -110,7 +110,7 @@ func (s *Issuer) UpdateDraft(ctx context.Context, tx pgx.Tx, invoiceID string, u
 		upd.Period = existing.Period
 	}
 
-	_, results, snap, err := s.prepare(ctx, IssueRequest{
+	_, results, snap, err := s.prepare(ctx, tx, IssueRequest{
 		CustomerID: customerID,
 		Lines:      upd.Lines,
 		Merchant:   upd.Merchant,
@@ -150,7 +150,7 @@ func (s *Issuer) UpdateDraft(ctx context.Context, tx pgx.Tx, invoiceID string, u
 // it must be the same arithmetic the save performs. Doing that sum in the browser would
 // re-implement rounding and tax, which is how a preview and an invoice disagree.
 func (s *Issuer) DraftTotals(ctx context.Context, lines []Line) (Totals, error) {
-	_, _, snap, err := s.prepare(ctx, IssueRequest{CustomerID: "preview", Lines: lines})
+	_, _, snap, err := s.prepare(ctx, nil, IssueRequest{CustomerID: "preview", Lines: lines})
 	if err != nil {
 		return Totals{}, err
 	}

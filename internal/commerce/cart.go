@@ -51,6 +51,41 @@ const (
 // a validation error, not an order for a hundred thousand servers.
 const MaxCartQuantity = 1000
 
+// PurchaseUnits translates a requested quantity into what the shop actually creates, from
+// the product's `allow_quantity` policy:
+//
+//   - disabled: exactly one unit; a larger quantity is refused.
+//   - combined: one unit carrying the requested quantity (`services.quantity` is N).
+//   - separated: N independent units of one each, so each gets its own order line,
+//     subscription and service.
+//
+// It lives beside the cart because the cart and the checkout must agree on the rule: a cart
+// that accepted a quantity the checkout then refuses is the defect this spells once. The
+// returned numbers are also what bounds the expansion — a separated quantity of 1000 is 1000
+// units, and the caller decides whether that is a document it can write.
+func PurchaseUnits(policy string, quantity int) (units, perUnit int, err error) {
+	if quantity < 1 {
+		return 0, 0, invalid("quantity must be positive")
+	}
+	if quantity > MaxCartQuantity {
+		return 0, 0, invalid("quantity must not exceed %d", MaxCartQuantity)
+	}
+	switch policy {
+	case QuantityDisabled:
+		if quantity > 1 {
+			return 0, 0, fmt.Errorf("%w: this product does not allow a quantity", ErrNotApplicable)
+		}
+		return 1, 1, nil
+	case QuantityCombined:
+		return 1, quantity, nil
+	case QuantitySeparated:
+		return quantity, 1, nil
+	default:
+		return 0, 0, fmt.Errorf("%w: product has an unknown quantity policy %q",
+			ErrNotApplicable, policy)
+	}
+}
+
 // Cart is one customer's open cart.
 type Cart struct {
 	ID         string     `json:"id"`
@@ -299,8 +334,11 @@ func decodeConfig(raw []byte) map[string]string {
 // AddItem adds a selection to the cart, or increments an existing identical line.
 //
 // "Identical" means the same price version and the same config, which is exactly the
-// table's unique key. That is what makes `allow_quantity = combined` a single line with a
-// larger quantity while a `separated` product becomes several rows with different configs.
+// table's unique key. A cart is a selection, not the receipt: it stores the quantity the
+// customer asked for, and the checkout turns that into the purchase shape the product's
+// policy names — one line of N for `combined`, N independent lines of one for `separated`.
+// That is why the cart rows do not have to be split here: the mode is a catalog rule, and
+// the checkout is where it becomes order lines, subscriptions and services.
 func (s *Store) AddItem(ctx context.Context, customerID, currency string, req AddItemRequest) (Cart, error) {
 	var out Cart
 	err := s.pool.InTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -349,28 +387,16 @@ func (s *Store) AddItemTx(ctx context.Context, q querier, customerID, currency s
 	if quantity == 0 {
 		quantity = 1
 	}
-	if quantity < 0 {
-		return Cart{}, invalid("quantity must be positive")
+	// Validate the quantity against the product's policy with the same rule the checkout
+	// expands with, so a cart cannot hold a request the checkout will refuse.
+	if _, _, err := PurchaseUnits(price.AllowQuantity, quantity); err != nil {
+		return Cart{}, err
 	}
 	// ceiling is how many of this line the cart may hold. A product that is sold one at a time
 	// has a ceiling of one, which is what turns a second add into a refusal instead of a merge.
 	ceiling := MaxCartQuantity
-	switch price.AllowQuantity {
-	case QuantityDisabled:
-		// A product that does not allow a quantity is one per line. A request for three is
-		// a request the shop cannot fulfil, so it is refused rather than silently reduced.
-		if quantity > 1 {
-			return Cart{}, fmt.Errorf("%w: this product does not allow a quantity", ErrNotApplicable)
-		}
-		quantity = 1
+	if price.AllowQuantity == QuantityDisabled {
 		ceiling = 1
-	case QuantitySeparated, QuantityCombined:
-		if quantity > MaxCartQuantity {
-			return Cart{}, invalid("quantity must not exceed %d", MaxCartQuantity)
-		}
-	default:
-		return Cart{}, fmt.Errorf("%w: product has an unknown quantity policy %q",
-			ErrNotApplicable, price.AllowQuantity)
 	}
 
 	config, err := encodeConfig(req.Config)
@@ -453,8 +479,8 @@ func (s *Store) UpdateQuantityTx(ctx context.Context, q querier, customerID, ite
 	if err != nil {
 		return Cart{}, err
 	}
-	if price.AllowQuantity == QuantityDisabled && quantity > 1 {
-		return Cart{}, fmt.Errorf("%w: this product does not allow a quantity", ErrNotApplicable)
+	if _, _, err := PurchaseUnits(price.AllowQuantity, quantity); err != nil {
+		return Cart{}, err
 	}
 	tag, err := q.Exec(ctx, `UPDATE cart_items SET quantity = $3 WHERE id = $1 AND cart_id = $2`,
 		itemID, cart.ID, quantity)
@@ -1172,20 +1198,6 @@ func (p priceRow) Description() string {
 		return p.Product + " — " + p.Name
 	}
 	return p.Product
-}
-
-func (p priceRow) unit(cur money.Currency) money.Amount  { return money.New(p.Amount, cur) }
-func (p priceRow) setup(cur money.Currency) money.Amount { return money.New(p.Setup, cur) }
-
-// lineAmounts is the recurring and setup value of a line, each rounded once by MulInt.
-//
-// Multiplying by an integer quantity is exact: there is no fractional quantity on a cart
-// line, so there is no rounding step to record.
-func lineAmounts(price priceRow, quantity int) (struct {
-	line  money.Amount
-	setup money.Amount
-}, error) {
-	return lineAmountsWithConfig(price, quantity, 0, 0)
 }
 
 // lineAmountsWithConfig adds the selected config options' per-unit recurring and setup amounts

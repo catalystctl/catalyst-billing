@@ -501,3 +501,32 @@ func Substitute(text string, values map[string]string) string {
 	}
 	return b.String()
 }
+
+// CatalogSet returns the default locale's messages and one locale's messages in a single read.
+//
+// It exists for the mail path, which needs both: the default's text to recognise a queued message
+// (the body was rendered in the default locale) and the recipient's text to re-render it. Doing it
+// in one query keeps a drain of fifty messages at fifty round trips rather than a hundred.
+//
+// The second map is not merged: a caller that wants fallback per key must decide what "missing"
+// means for it, and the mail renderer deliberately keeps the original line instead of substituting
+// the default's text it already has.
+func (s *Store) CatalogSet(ctx context.Context, locale string) (def map[string]string, localized map[string]string, err error) {
+	catalog, err := s.LoadCatalog(ctx, locale)
+	if err != nil {
+		return nil, nil, err
+	}
+	normalized, nerr := NormalizeCode(locale)
+	if nerr != nil {
+		normalized = catalog.Default
+	}
+	def = catalog.Entries[catalog.Default]
+	localized = catalog.Entries[normalized]
+	if def == nil {
+		def = map[string]string{}
+	}
+	if localized == nil {
+		localized = map[string]string{}
+	}
+	return def, localized, nil
+}

@@ -53,18 +53,36 @@ type RulesPricer struct {
 func (p RulesPricer) Price(ctx context.Context, lines []billing.Line, cur money.Currency) ([]billing.LineResult, billing.Totals, billing.TaxEvidence, error) {
 	switch p.Decision.Kind {
 	case DecisionRate:
-		// The rate is resolved again here, through the same commerce pricer the product already
-		// used, so the arithmetic and the rounding are one implementation rather than two.
-		resolved := p.Decision
-		delegate := commerce.TaxPricer{
-			Store:       p.Store,
-			CountryCode: resolved.Supply.Country,
-			RegionCode:  resolved.Supply.Region,
-			TaxClass:    resolved.Supply.TaxClass,
-			At:          resolved.Supply.At,
-			Rounding:    p.Rounding,
+		// The decision already resolved the exact rate inside the issuing transaction (see
+		// ResolvePricer), so price from that resolved value rather than looking the rate up a
+		// second time: a second lookup could see a different row and make the evidence describe
+		// a rate the document was not priced from. The arithmetic is still FixedTaxPricer's, the
+		// one implementation of rounding.
+		ratio, err := money.ParseRatio(p.Decision.Rate)
+		if err != nil {
+			return nil, billing.Totals{}, billing.TaxEvidence{}, fmt.Errorf("tax: decision rate %q is not a rational: %w", p.Decision.Rate, err)
 		}
-		return delegate.Price(ctx, lines, cur)
+		rounding := p.Rounding
+		if !rounding.Valid() {
+			rounding = money.RoundHalfUp
+		}
+		mode := "exclusive"
+		if p.Decision.Inclusive {
+			mode = "inclusive"
+		}
+		delegate := billing.FixedTaxPricer{
+			Rate:         ratio,
+			Inclusive:    p.Decision.Inclusive,
+			Rounding:     rounding,
+			Policy:       p.Decision.Policy,
+			Jurisdiction: p.Decision.Jurisdiction,
+		}
+		results, totals, evidence, err := delegate.Price(ctx, lines, cur)
+		if err != nil {
+			return nil, billing.Totals{}, billing.TaxEvidence{}, err
+		}
+		evidence.Mode = mode
+		return results, totals, evidence, nil
 
 	case DecisionNoTax:
 		// The shipped behaviour: an installation with no rates configured charges nothing. It is
@@ -119,6 +137,15 @@ func (p RulesPricer) zero(ctx context.Context, lines []billing.Line, cur money.C
 //
 // When the rules refuse, the refusal is returned as the error. A caller that wants a price fails
 // loudly with a stable code rather than charging a plausible number.
+// ResolvePricer implements billing.PricerResolver. It resolves a customer's supply against the
+// caller's transaction, so the billing profile, the settings, the rate row and any VAT-ID
+// validation read here are the same snapshot the invoice is written in.
+//
+// A nil pricer with a nil error means tax is switched off; the issuer keeps its no-tax fallback.
+func (r *Rules) ResolvePricer(ctx context.Context, tx pgx.Tx, customerID string, at time.Time) (billing.Pricer, error) {
+	return r.WithTx(tx).PricerForCustomer(ctx, customerID, at)
+}
+
 func (r *Rules) PricerForCustomer(ctx context.Context, customerID string, at time.Time) (billing.Pricer, error) {
 	enabled, err := r.taxEnabled(ctx)
 	if err != nil {
@@ -171,7 +198,7 @@ func (r *Rules) supplyFor(ctx context.Context, customerID string, at time.Time) 
 		at = r.now()
 	}
 	supply := Supply{CustomerID: customerID, At: at}
-	err := r.pool.QueryRow(ctx, `
+	err := r.q.QueryRow(ctx, `
 		SELECT country_code, region, tax_id, tax_exempt, tax_exemption_reason
 		  FROM billing_profiles WHERE customer_id = $1`, customerID).
 		Scan(&supply.Country, &supply.Region, &supply.VATID, &supply.StaffExempt, &supply.StaffExemptReason)
@@ -191,7 +218,7 @@ func (r *Rules) supplyFor(ctx context.Context, customerID string, at time.Time) 
 // the invoice path, which has no HTTP request and therefore no settings store with an auditor.
 func (r *Rules) taxEnabled(ctx context.Context) (bool, error) {
 	var value string
-	err := r.pool.QueryRow(ctx,
+	err := r.q.QueryRow(ctx,
 		`SELECT value FROM settings WHERE group_key = 'tax' AND key = 'enabled'`).Scan(&value)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil

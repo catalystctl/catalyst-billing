@@ -16,6 +16,7 @@ import (
 	"github.com/catalyst/billing/internal/fulfilment"
 	"github.com/catalyst/billing/internal/gatewayconfig"
 	"github.com/catalyst/billing/internal/httpapi"
+	"github.com/catalyst/billing/internal/i18n"
 	"github.com/catalyst/billing/internal/lifecycle"
 	"github.com/catalyst/billing/internal/money"
 	"github.com/catalyst/billing/internal/notify"
@@ -265,6 +266,11 @@ func buildJobs(pool *store.Pool, logger *slog.Logger, apiServer *httpapi.Server)
 			logger.Error("notifications are disabled: the sender is misconfigured", "error", err)
 		} else {
 			queue := notify.NewQueue(pool)
+			// Localization is a Sender decorator: the queued row keeps the default-locale text
+			// that was rendered inside the transaction, and the drain re-renders it in the
+			// recipient's stored language. The queue, the retry schedule and the dedupe key are
+			// unchanged, so a retry is still one message.
+			sender = notify.NewLocalizedSender(sender, i18n.New(pool))
 			jobs = append(jobs, jobSpec{
 				name:     "notifications",
 				interval: 15 * time.Second,

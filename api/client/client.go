@@ -633,6 +633,20 @@ func (c *Client) DeleteStaffTaxratesById(ctx context.Context, id string, query u
 	return c.do(ctx, "DELETE", path, query, body, true, true)
 }
 
+// DeleteStaffThemeAssetsById calls DELETE /api/v1/staff/theme/assets/{id}.
+//
+// # Delete an unused theme asset
+//
+// Permission: theme:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) DeleteStaffThemeAssetsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/assets/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "DELETE", path, query, body, true, true)
+}
+
 // DeleteStaffTicketfieldsById calls DELETE /api/v1/staff/ticket-fields/{id}.
 //
 // # Retire a ticket field
@@ -2525,6 +2539,72 @@ func (c *Client) GetStaffTaxratesById(ctx context.Context, id string, query url.
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
+// GetStaffTheme calls GET /api/v1/staff/theme.
+//
+// # What is live in every scope, plus the gallery and the limits
+//
+// Permission: theme:read. Staff only.
+func (c *Client) GetStaffTheme(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffThemeAssets calls GET /api/v1/staff/theme/assets.
+//
+// # The theme asset library
+//
+// Permission: theme:read. Staff only.
+func (c *Client) GetStaffThemeAssets(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/assets"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffThemeByScope calls GET /api/v1/staff/theme/{scope}.
+//
+// One scope: the document to edit, its draft, its published revision and its history
+//
+// Permission: theme:read. Staff only.
+// scope is the scope path parameter.
+func (c *Client) GetStaffThemeByScope(ctx context.Context, scope string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/{scope}"
+	path = strings.ReplaceAll(path, "{scope}", url.PathEscape(scope))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffThemeByScopeExport calls GET /api/v1/staff/theme/{scope}/export.
+//
+// # Export a scope as a portable envelope
+//
+// Permission: theme:read. Staff only.
+// scope is the scope path parameter.
+func (c *Client) GetStaffThemeByScopeExport(ctx context.Context, scope string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/{scope}/export"
+	path = strings.ReplaceAll(path, "{scope}", url.PathEscape(scope))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffThemePresets calls GET /api/v1/staff/theme/presets.
+//
+// # The preset gallery
+//
+// Permission: theme:read. Staff only.
+func (c *Client) GetStaffThemePresets(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/presets"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetStaffThemeRevisionsByIdDiff calls GET /api/v1/staff/theme/revisions/{id}/diff.
+//
+// # What a revision changes against what is live
+//
+// Permission: theme:read. Staff only.
+// id is the id path parameter.
+func (c *Client) GetStaffThemeRevisionsByIdDiff(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/revisions/{id}/diff"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
 // GetStaffTicketfields calls GET /api/v1/staff/ticket-fields.
 //
 // # The configured ticket fields
@@ -2666,6 +2746,86 @@ func (c *Client) GetStaffWebhooks(ctx context.Context, query url.Values, body an
 // How a price is displayed with tax, for a destination
 func (c *Client) GetTaxDisclosure(ctx context.Context, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/tax/disclosure"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetTheme calls GET /api/v1/theme.
+//
+// The theme manifest for the scope the request came from
+func (c *Client) GetTheme(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/theme"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetThemeAssetsById calls GET /theme/assets/{id}.
+//
+// A theme-only asset
+// id is the id path parameter.
+func (c *Client) GetThemeAssetsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/theme/assets/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetThemeByScope calls GET /api/v1/theme/{scope}.
+//
+// The theme manifest for a named scope
+// scope is the scope path parameter.
+func (c *Client) GetThemeByScope(ctx context.Context, scope string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/theme/{scope}"
+	path = strings.ReplaceAll(path, "{scope}", url.PathEscape(scope))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetThemeFaviconico calls GET /theme/favicon.ico.
+//
+// The favicon, redirected to the themed one
+func (c *Client) GetThemeFaviconico(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/theme/favicon.ico"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetThemeManifestwebmanifest calls GET /theme/manifest.webmanifest.
+//
+// The themed PWA manifest
+func (c *Client) GetThemeManifestwebmanifest(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/theme/manifest.webmanifest"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetThemeOgpng calls GET /theme/og.png.
+//
+// The social card, redirected to the themed one
+func (c *Client) GetThemeOgpng(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/theme/og.png"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetThemePreview calls GET /theme/preview.
+//
+// Render an unpublished draft in the studio's preview frame
+func (c *Client) GetThemePreview(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/theme/preview"
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetThemeRByRevisionBootjs calls GET /theme/r/{revision}/boot.js.
+//
+// A revision's pre-paint script
+// revision is the revision path parameter.
+func (c *Client) GetThemeRByRevisionBootjs(ctx context.Context, revision string, query url.Values, body any) (*Result, error) {
+	path := "/theme/r/{revision}/boot.js"
+	path = strings.ReplaceAll(path, "{revision}", url.PathEscape(revision))
+	return c.do(ctx, "GET", path, query, body, false, false)
+}
+
+// GetThemeRByRevisionThemecss calls GET /theme/r/{revision}/theme.css.
+//
+// A revision's generated stylesheet
+// revision is the revision path parameter.
+func (c *Client) GetThemeRByRevisionThemecss(ctx context.Context, revision string, query url.Values, body any) (*Result, error) {
+	path := "/theme/r/{revision}/theme.css"
+	path = strings.ReplaceAll(path, "{revision}", url.PathEscape(revision))
 	return c.do(ctx, "GET", path, query, body, false, false)
 }
 
@@ -4196,6 +4356,84 @@ func (c *Client) PostStaffTaxrates(ctx context.Context, query url.Values, body a
 	return c.do(ctx, "POST", path, query, body, true, true)
 }
 
+// PostStaffThemeAssets calls POST /api/v1/staff/theme/assets.
+//
+// # Upload a theme asset
+//
+// Permission: theme:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffThemeAssets(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/assets"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffThemeByScopeDraft calls POST /api/v1/staff/theme/{scope}/draft.
+//
+// # Create a draft
+//
+// Permission: theme:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// scope is the scope path parameter.
+func (c *Client) PostStaffThemeByScopeDraft(ctx context.Context, scope string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/{scope}/draft"
+	path = strings.ReplaceAll(path, "{scope}", url.PathEscape(scope))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffThemeImport calls POST /api/v1/staff/theme/import.
+//
+// # Import an envelope as a draft
+//
+// Permission: theme:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffThemeImport(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/import"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffThemePreviewtoken calls POST /api/v1/staff/theme/preview-token.
+//
+// # Mint a preview link for a draft
+//
+// Permission: theme:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+func (c *Client) PostStaffThemePreviewtoken(ctx context.Context, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/preview-token"
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffThemeRevisionsByIdPublish calls POST /api/v1/staff/theme/revisions/{id}/publish.
+//
+// # Publish a revision
+//
+// Permission: theme:publish. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffThemeRevisionsByIdPublish(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/revisions/{id}/publish"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
+// PostStaffThemeRevisionsByIdRestore calls POST /api/v1/staff/theme/revisions/{id}/restore.
+//
+// # Restore an old revision as a new draft
+//
+// Permission: theme:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PostStaffThemeRevisionsByIdRestore(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/revisions/{id}/restore"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "POST", path, query, body, true, true)
+}
+
 // PostStaffTicketfields calls POST /api/v1/staff/ticket-fields.
 //
 // # Create a ticket field
@@ -4955,6 +5193,20 @@ func (c *Client) PutStaffTaximportSource(ctx context.Context, query url.Values, 
 // id is the id path parameter.
 func (c *Client) PutStaffTaxratesById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
 	path := "/api/v1/staff/tax-rates/{id}"
+	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
+	return c.do(ctx, "PUT", path, query, body, true, true)
+}
+
+// PutStaffThemeRevisionsById calls PUT /api/v1/staff/theme/revisions/{id}.
+//
+// # Replace a draft's document
+//
+// Permission: theme:write. Staff only.
+// The CSRF token is sent from Client.CSRFToken; a session without one is refused.
+// An Idempotency-Key is sent from Client.IdempotencyKey; a money action refuses the request without one.
+// id is the id path parameter.
+func (c *Client) PutStaffThemeRevisionsById(ctx context.Context, id string, query url.Values, body any) (*Result, error) {
+	path := "/api/v1/staff/theme/revisions/{id}"
 	path = strings.ReplaceAll(path, "{id}", url.PathEscape(id))
 	return c.do(ctx, "PUT", path, query, body, true, true)
 }

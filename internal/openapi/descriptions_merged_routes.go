@@ -11,24 +11,6 @@ package openapi
 
 func init() { RegisterDescriptions(func() map[string]Operation { return mergedRouteOperations }) }
 
-// paymentMethodSchema is one saved instrument. It is deliberately the *public* shape: the provider
-// token that can move money is write-only and never appears in a response.
-func paymentMethodSchema() map[string]any {
-	return map[string]any{
-		"type":     "object",
-		"required": []string{"id", "brand", "last4", "is_default"},
-		"properties": map[string]any{
-			"id":         map[string]any{"type": "string", "format": "uuid"},
-			"brand":      map[string]any{"type": "string", "description": "Card brand as the provider reported it."},
-			"last4":      map[string]any{"type": "string", "description": "The only part of the number that is stored."},
-			"exp_month":  map[string]any{"type": "integer", "minimum": 1, "maximum": 12},
-			"exp_year":   map[string]any{"type": "integer"},
-			"is_default": map[string]any{"type": "boolean"},
-			"created_at": map[string]any{"type": "string", "format": "date-time"},
-		},
-	}
-}
-
 var mergedRouteOperations = map[string]Operation{
 	// -- saved payment methods, customer side ------------------------------------------------
 
